@@ -403,12 +403,14 @@ try {
   })
   const githubView = listed?.repos?.find((r: any) => r.name === full)
   const giteaView = listed?.repos?.find((r: any) => r.name === `${giteaOrg}/${SHOP}`)
-  check(githubView?.forge === 'github' && githubView.projectId === projectId && githubView.webUrl === `${github.url}/${full}`
+  // The list names each repo's project itself, so the app never shows a repo as in no project while it reads the projects.
+  const inBilling = { id: projectId, name: `Proj Billing ${id}` }
+  check(githubView?.forge === 'github' && JSON.stringify(githubView.project) === JSON.stringify(inBilling) && githubView.webUrl === `${github.url}/${full}`
     && githubView.open.read && githubView.open.pullRequests.some((p: any) => p.branch === 'task/proj-check' && p.number === pr.number)
     && githubView.open.taskBranches.includes('task/proj-check')
-    && giteaView?.forge === 'gitea' && giteaView.projectId === projectId && giteaView.open.pullRequests.some((p: any) => p.branch === 'task/proj-gitea')
-    && giteaView.open.taskBranches.includes('task/proj-gitea'),
-  'the Repos list says where each repo lives, its project, and the open pull requests and task branches its own forge reports')
+    && giteaView?.forge === 'gitea' && JSON.stringify(giteaView.project) === JSON.stringify(inBilling)
+    && giteaView.open.pullRequests.some((p: any) => p.branch === 'task/proj-gitea') && giteaView.open.taskBranches.includes('task/proj-gitea'),
+  'the Repos list says where each repo lives, its project by id and name, and the open pull requests and task branches its own forge reports')
   const outsiderList = await as(outsider, 'GET', '/v1/repos')
   check(outsiderList.status === 200 && !outsiderList.text.includes(billing) && !outsiderList.text.includes(SHOP), "another team's Repos list has none of this team's repos")
 

@@ -131,7 +131,7 @@ On the people port:
 - `POST /v1/github/sign-in` starts the person's sign-in and answers with the code to enter on GitHub.
 - `POST /v1/github/sign-out` forgets the person's sign-in on this server.
 - `POST /v1/github/token` with `{owner, token}` sets the stopgap token. Admins only.
-- `GET /v1/repos` lists every repo of the team with where it lives, its link, its project, and its open pull requests and task branches as its forge reports them. Each forge's answer is kept for 30 seconds (`AGENTS_REPOS_CACHE_SEC`), however many people have the page open.
+- `GET /v1/repos` lists every repo of the team with where it lives, its link, its project's id and name, and its open pull requests and task branches as its forge reports them. Each forge's answer is kept for 30 seconds (`AGENTS_REPOS_CACHE_SEC`), however many people have the page open.
 - `POST /v1/projects` with `{name, description, people, agents, owner?}` makes a project, its room and its repo.
 - `POST /v1/projects/<id>/repos` with `{name, owner?}` adds a GitHub repo, made if missing, and with `{repoId}` moves a team repo with no project into the project.
 - `POST /v1/repo-requests/<id>/retry` tries a failed request again, as the person who tries.

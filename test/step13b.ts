@@ -164,10 +164,13 @@ async function run(engine: string, github: FakeGithub) {
     await form.getByRole('button', { name: 'Create project' }).click()
     check(await visible(page, '.page-head h1', 20, new RegExp(name)) && await visible(page, '.page-head .kicker', 5, /Project/),
       `${engine}: creating a project opens its page`)
+    // The row is read as soon as it shows, so a project name that arrives later doesn't count.
     const projectRepo = page.getByRole('list', { name: "The project's repos" }).locator('li', { hasText: repo })
-    check(await projectRepo.first().waitFor({ timeout: 20_000 }).then(() => true, () => false) && /GitHub/.test(await projectRepo.first().innerText())
+    const repoShows = await projectRepo.first().waitFor({ timeout: 20_000 }).then(() => true, () => false)
+    const repoRow = repoShows ? await projectRepo.first().innerText() : ''
+    check(repoShows && /GitHub/.test(repoRow) && repoRow.includes(name) && !repoRow.includes('no project')
       && (await projectRepo.first().getByRole('link', { name: /Open on GitHub/ }).getAttribute('href')) === `${github.url}/${repo}`,
-    `${engine}: the project's page lists its GitHub repo with a link to it`)
+    `${engine}: the project's page lists its GitHub repo under the project's name, with a link to it (${repoRow.replace(/\s+/g, ' ')})`)
     check(await visible(page, 'p', 10, new RegExp(`${owner}.*fixer${engine}|fixer${engine}.*${owner}`)), `${engine}: the project's page names its people and agents`)
     // The sidebar reads projects every ten seconds.
     const shows = (locator: ReturnType<Page['getByRole']>) => locator.waitFor({ timeout: 20_000 }).then(() => true, () => false)
@@ -209,6 +212,9 @@ async function run(engine: string, github: FakeGithub) {
     await phone.goto(projectUrl)
     await visible(phone, '.repo-list li', 20)
     const projectFits = await noSideScroll(phone, ['.page-head', '.page-body', '.repo-list li', '.start-run'])
+    // A long list of repos beside a task must not squeeze the task's title away.
+    check(await visible(phone, '.run-list li .row > span:first-child', 10, new RegExp(`Invoice page ${engine}`)),
+      `${engine}: at phone width the project's tasks still show their titles`)
     await shot(phone, `${engine}-projects-project-phone`, true)
     await phone.goto('/#/repos')
     await visible(phone, '.repo-list li', 20)

@@ -79,10 +79,14 @@ export type RepoForge = z.infer<typeof RepoForge>
 export const OpenPullRequest = z.object({ number: z.number().int(), title: z.string(), url: z.string(), branch: z.string() })
 export type OpenPullRequest = z.infer<typeof OpenPullRequest>
 
+// The project a repo belongs to, as much as a list of repos shows of it.
+export const ProjectRef = z.object({ id: ProjectId, name: z.string() })
+export type ProjectRef = z.infer<typeof ProjectRef>
+
 // One repo on the Repos page. What is open on it comes from its forge, which
 // may not answer, and then the page says why.
 export const RepoView = z.object({
-  id: RepoId, name: z.string(), forge: RepoForge, webUrl: z.string(), defaultBranch: z.string(), projectId: ProjectId.nullable(),
+  id: RepoId, name: z.string(), forge: RepoForge, webUrl: z.string(), defaultBranch: z.string(), project: ProjectRef.nullable(),
   open: z.discriminatedUnion('read', [
     z.object({ read: z.literal(true), pullRequests: z.array(OpenPullRequest), taskBranches: z.array(z.string()) }),
     z.object({ read: z.literal(false), problem: z.string() }),

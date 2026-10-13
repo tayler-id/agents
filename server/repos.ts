@@ -8,7 +8,7 @@ import { forge, gitUpstream, repoPath, type Forge } from './forge.ts'
 import { explainGithub, github, githubUpstream } from './github.ts'
 import { githubStatus } from './github-auth.ts'
 import { messageOf } from '../shared/errors.ts'
-import type { ProjectId, RepoForge, RepoId, ReposOverview, RepoView } from '../shared/projects.ts'
+import { ProjectRef, type RepoForge, type RepoId, type ReposOverview, type RepoView } from '../shared/projects.ts'
 
 // The columns a repo's forge is chosen by.
 export type RepoOnForge = { forge: RepoForge; remote_url: string }
@@ -66,11 +66,14 @@ async function openOn(repo: RepoOnForge): Promise<RepoView['open']> {
 // Every repo of a person's team, oldest first, with what its forge says is open
 // on it, and GitHub as that person sees it.
 export async function reposOverview(person: { id: string; team_id: string }): Promise<ReposOverview> {
-  const rows = await many<RepoOnForge & { id: RepoId; default_branch: string; project_id: ProjectId | null }>(pool,
-    'select id, forge, remote_url, default_branch, project_id from repos where team_id = $1 order by created_at, id', [person.team_id])
+  const rows = await many<RepoOnForge & { id: RepoId; default_branch: string; project: unknown }>(pool,
+    `select r.id, r.forge, r.remote_url, r.default_branch,
+       case when p.id is null then null else json_build_object('id', p.id, 'name', p.name) end as project
+     from repos r left join projects p on p.id = r.project_id
+     where r.team_id = $1 order by r.created_at, r.id`, [person.team_id])
   const repos = await Promise.all(rows.map(async (row): Promise<RepoView> => ({
     id: row.id, name: repoPath(row.remote_url), forge: row.forge, webUrl: row.remote_url.replace(/\.git$/, ''),
-    defaultBranch: row.default_branch, projectId: row.project_id, open: await openOn(row),
+    defaultBranch: row.default_branch, project: ProjectRef.nullable().parse(row.project), open: await openOn(row),
   })))
   return { github: githubStatus(person.id), repos }
 }

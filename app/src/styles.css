@@ -121,6 +121,9 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* A row's status never wraps; the name gives way to it. */
 .row > span + span { flex-shrink: 0; white-space: nowrap; }
+/* A row whose details run long, such as a project's task and its repos, puts them on a line of their own. */
+.row.stacked { flex-direction: column; align-items: stretch; gap: 2px; }
+.row.stacked > span + span { white-space: normal; overflow-wrap: anywhere; }
 .row.selected { background: var(--raised); font-weight: 600; }
 .row.static { cursor: default; }
 .empty { padding: 4px 8px; }

@@ -109,7 +109,6 @@ function useBranchTasks() {
 }
 
 function RepoList({ repos, empty, label }: { repos: RepoView[]; empty: string; label: string }) {
-  const { rows: projects } = useSnapshotOf(ProjectRow, 'projects', {}, 15000)
   const branchTasks = useBranchTasks()
   const openWork = (branch: string) => {
     const found = branchTasks.get(branch)
@@ -119,7 +118,7 @@ function RepoList({ repos, empty, label }: { repos: RepoView[]; empty: string; l
   return (
     <ul className="repo-list" aria-label={label}>
       {repos.map((repo) => {
-        const project = projects.find((p) => p.id === repo.projectId)
+        const project = repo.project
         return (
           <li key={repo.id}>
             <div className="repo-line">
@@ -399,7 +398,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
     .flatMap((tr) => repos.filter((r) => r.id === tr.repo_id).map((r) => repoName(r.remote_url)))
 
   const ownRepos = repos.filter((r) => r.project_id === projectId)
-  const views = (overview.value?.repos ?? []).filter((r) => r.projectId === projectId)
+  const views = (overview.value?.repos ?? []).filter((r) => r.project?.id === projectId)
   const ownTasks = tasks.filter((t) => t.project_id === projectId).sort((a, b) => b.created_at.localeCompare(a.created_at))
   const runOf = (t: Task) => runs.find((r) => r.task_id === t.id)
   const rooms = conversations.filter((c) => c.project_id === projectId)
@@ -437,7 +436,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             const run = runOf(t)
             return (
               <li key={t.id}>
-                <button type="button" className="row" onClick={() => go(run ? { run: run.id } : { task: t.id })}>
+                <button type="button" className="row stacked" onClick={() => go(run ? { run: run.id } : { task: t.id })}>
                   <span>{run && <span className={`dot ${run.status}`} aria-hidden="true" />}{t.title}</span>
                   <span className="muted small">{reposOf(t).join(', ') || 'no repo'} · {run ? runLabel(run.status) : 'task'} · {clock(t.created_at)}</span>
                 </button>
