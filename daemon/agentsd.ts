@@ -85,6 +85,8 @@ let secrets = knownSecrets()
 let scrub = makeScrub(secrets)
 // Live text is held back long enough to catch a secret split across chunks.
 const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length + 16))
+// Each session's current process. Only it sets the session's status. A process
+// the daemon stopped or that exited still has its lines recorded, but no status.
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
@@ -241,6 +243,10 @@ async function sendDocuments(sessionId: string, workspaceId: string) {
 }
 
 function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSession {
+  // From here the session's process is the one this starts, so a process stopped
+  // for this restart can't report the session idle over a start that fails.
+  sessions.delete(command.sessionId)
+  setups.delete(command.sessionId)
   const { payload } = command
   if (payload.harness !== 'claude') throw new Error(`no ${payload.harness} harness on this machine`)
   const cwd = payload.workspaceId ? ws.dir(payload.workspaceId) : agentHome(payload.agentId)
@@ -274,7 +280,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   })
   void (async () => {
     for await (const { live: deltas, ...batch } of session.updates()) {
-      // Once a restart has replaced this process, the session's status is the new one's to report.
+      // A process that is no longer the session's current one reports no status.
       if (sessions.get(command.sessionId) !== session) delete batch.status
       if (deltas?.length) live.push(deltas)
       if (batch.events.length || batch.raw?.length || batch.status || batch.harnessSessionId || batch.ended?.length) await post(command.sessionId, batch)

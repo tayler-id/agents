@@ -75,6 +75,8 @@ The session statuses are the agreed ones. Only `lost` gets a meaning it didn't h
 
 A `lost` session leaves `lost` the way any session changes status. The resumed harness's first line sets `running`, its result sets `idle`, and a failure sets `failed`.
 
+Only a session's current process sets its status. The daemon stops a session's process to start one with a new setup, when the agent's instructions, skills, plugins or model change. From the moment it starts the new one, the old one is no longer the session's: its lines are still recorded, but its status is dropped. So when the new start fails, the session stays `failed` with the machine's reason, and the old process's clean exit can't report it `idle`. Before this rule the daemon kept the old process as current until the new one started, and a failed start left the session showing `idle` with no notice. Check 6 covers it.
+
 ## Who records what, and when
 
 ### The server, in Postgres
@@ -163,6 +165,7 @@ A machine that comes back without restarting, such as after a network outage, se
 | Only Claude dies | The daemon sees it exit, and the turn fails with Claude's error, as today. The person's next message resumes the session. |
 | The daemon dies after reading a line and before posting it | That line is lost from the record. The continuation lists every call without a recorded result, so the session is told. |
 | The daemon dies during recovery | The next start runs recovery again. Each run adds a notice, so the record shows every restart. |
+| A restart for a new setup fails to start | The session shows `failed` with the machine's reason, such as a plugin's missing secret, and stays that way. Check 6. |
 | A follow-up arrives mid-turn | It goes to the harness at once and joins the running turn, as today. If the machine dies before Claude takes it in, the continuation includes it. |
 | Claude answers two messages with one result | The result's batch ends both commands, and the harness is no longer busy. |
 | A tool command outlives a killed Claude | On a box, removing the container ends it. On the Mac it runs to its end, unseen, and the continuation says the call may still be running. Not solved, see below. |
@@ -194,8 +197,9 @@ Each check starts its own API, daemon and team, prefixed `dur-`, on ports 8046 t
 3. `test/step18c.ts`, the fake Claude. The agent asks to run a command and is killed while the ask waits. Once a person answers during the outage, and once after the restart. Each time the same card takes the answer, no second card opens, and the command runs once.
 4. `test/step18d.ts`, the fake Claude in a box. The box writes a file and is killed mid-turn by removing its container. While it is gone the session shows `lost`. A new container on the same home volume brings back the file and the session, and the turn finishes.
 5. `test/step18e.ts`, the fake Claude. A client that stays connected and one that reconnects both read the session, its events, its posts and its asks during the outage and after the restart, and both match the record. Checks 1 to 4 run the same comparison when they finish.
+6. `test/step18f.ts`, the fake Claude. A person adds a plugin whose secret the machine lacks to an agent with a running session, then messages it. The restart fails, and the session shows `failed` with the reason after the old process has exited and the daemon has stopped. It shares ports with check 5, so the two run one after the other.
 
-On main, checks 1 to 4 time out waiting for the turn to finish, and check 5 sees the session working through the outage instead of `lost`.
+On main, checks 1 to 4 time out waiting for the turn to finish, check 5 sees the session working through the outage instead of `lost`, and check 6 sees the session `idle`.
 
 ## Schema change
 
