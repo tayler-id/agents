@@ -8,7 +8,9 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import pg from 'pg'
+import { alive, descendants, killAll } from '../daemon/fence.ts'
 
+export { alive }
 export const ROOT = new URL('..', import.meta.url).pathname
 // How long a check waits for a turn to finish, with real Claude or the fake.
 export const TURN_SECONDS = 240
@@ -58,38 +60,6 @@ export async function until(label: string, seconds: number, test: () => Promise<
   throw new Error(`timed out after ${seconds}s waiting for ${label}`)
 }
 
-export function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    // ESRCH: no such process.
-    return false
-  }
-}
-
-// Every process below `pid`, read from ps before anything is killed.
-export function descendants(pid: number): number[] {
-  const table = execFileSync('ps', ['-ww', '-eo', 'pid=,ppid='], { encoding: 'utf8' })
-    .split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter((pair) => pair.length === 2)
-  const below: number[] = []
-  let frontier = [pid]
-  while (frontier.length) {
-    const next = table.filter(([, parent]) => frontier.includes(Number(parent))).map(([child]) => Number(child))
-    below.push(...next)
-    frontier = next
-  }
-  return below
-}
-
-const kill = (pid: number) => {
-  try {
-    process.kill(pid, 'SIGKILL')
-  } catch {
-    // Already gone.
-  }
-}
-
 // A machine crash: the daemon dies first, so it can't report what happens to its
 // Claude, then Claude and every process under it. Only processes the check
 // started are touched, by their PIDs.
@@ -97,8 +67,7 @@ export async function killMachine(daemon: ChildProcess) {
   const pid = daemon.pid
   if (pid === undefined) throw new Error('the daemon has no pid')
   const below = descendants(pid)
-  kill(pid)
-  for (const child of below) kill(child)
+  killAll([pid, ...below])
   await until('the machine to die', 10, async () => !alive(pid) && below.every((child) => !alive(child)))
 }
 
@@ -126,7 +95,7 @@ export function killFakes(dir: string) {
     if (typeof pid !== 'number' || !alive(pid)) continue
     // Empty when the process has gone since.
     const command = spawnSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout
-    if (command.includes('fake-claude.ts')) kill(pid)
+    if (command.includes('fake-claude.ts')) killAll([pid])
   }
 }
 

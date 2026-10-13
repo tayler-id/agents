@@ -114,6 +114,13 @@ export type AnswerPayload = {
   updatedInput?: unknown
 }
 
+// A session a restarted machine resumes. The command is its oldest unfinished
+// message, carrying the text that resumes the session, and the turn that takes
+// it in answers every message in `covers`.
+export type ResumeTurn = { command: Extract<Command, { kind: 'message' }>; covers: string[] }
+// What a machine gets back when it reports in after starting.
+export type Recovery = { requeued: number; resumed: ResumeTurn[]; ended: number }
+
 export type Command =
   | { id: string; kind: 'message'; sessionId: string; payload: MessagePayload }
   | { id: string; kind: 'answer'; sessionId: string; payload: AnswerPayload }

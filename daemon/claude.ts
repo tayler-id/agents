@@ -160,16 +160,17 @@ function liveDeltas(line: Line): EventBatch['live'] {
 class ClaudeSession implements HarnessSession {
   private child
   private stderr: string[] = []
-  // Messages sent and not yet finished, by command id.
-  private held = new Set<string>()
-  // The messages the running turn has taken in, in order.
+  // Each message sent and not yet answered, by the uuid it was sent with, and
+  // the message commands it answers.
+  private sent = new Map<string, readonly string[]>()
+  // The uuids of the messages the running turn has taken in, in order.
   private taken: string[] = []
   // Permission requests waiting for an answer, by request id.
   private requests = new Set<string>()
   alive = true
 
   get busy() {
-    return this.held.size > 0
+    return this.sent.size > 0
   }
 
   get pid() {
@@ -203,11 +204,12 @@ class ClaudeSession implements HarnessSession {
     })
   }
 
-  // The message's uuid is its command id. Claude prints it back when a turn takes
-  // the message in, which is how the turn's result knows which messages it answered.
-  send(text: string, id: string) {
-    this.held.add(id)
-    this.write({ type: 'user', uuid: id, message: { role: 'user', content: text } })
+  // Claude prints a message back with its uuid when a turn takes it in, which is
+  // how the turn's result knows which messages it answered.
+  send(text: string, ids: readonly string[]) {
+    const uuid = randomUUID()
+    this.sent.set(uuid, ids)
+    this.write({ type: 'user', uuid, message: { role: 'user', content: text } })
   }
 
   answer({ requestId, behavior, message, updatedInput }: AnswerPayload) {
@@ -249,8 +251,8 @@ class ClaudeSession implements HarnessSession {
     // A clean exit with nothing left to answer leaves the session idle, ready to
     // resume on the next message. Any message still held failed with the process.
     const code = await exited
-    const ended = [...this.held]
-    this.held.clear()
+    const ended = [...this.sent.values()].flat()
+    this.sent.clear()
     if (code === 0 && !ended.length) {
       yield { events: [], status: 'idle' }
     } else {
@@ -262,11 +264,11 @@ class ClaudeSession implements HarnessSession {
 
   // Which messages the running turn has taken in, and which permission requests wait.
   private follow(line: Line, batch: EventBatch) {
-    if (line.type === 'user' && line.isReplay === true && typeof line.uuid === 'string' && this.held.has(line.uuid)) this.taken.push(line.uuid)
+    if (line.type === 'user' && line.isReplay === true && typeof line.uuid === 'string' && this.sent.has(line.uuid)) this.taken.push(line.uuid)
     if (line.type === 'control_request' && batch.events.some((event) => event.kind === 'ask')) this.requests.add(String(line.request_id))
     if (line.type === 'result') {
-      batch.ended = this.taken
-      for (const id of this.taken) this.held.delete(id)
+      batch.ended = this.taken.flatMap((uuid) => this.sent.get(uuid) ?? [])
+      for (const uuid of this.taken) this.sent.delete(uuid)
       this.taken = []
     }
   }

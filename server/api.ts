@@ -21,6 +21,7 @@ import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
+import { recoverMachine } from './durability.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
@@ -177,14 +178,13 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // A daemon that starts up puts back anything it had claimed but not finished.
-  // A message is never put back, since handing it over again would run its turn twice.
-  ['machines', 'POST', /^\/v1\/instance\/commands\/requeue$/, async (req) => {
+  // A daemon that starts up reports in. What it held goes back in the queue,
+  // except its unfinished messages, which come back as sessions to resume.
+  ['machines', 'POST', /^\/v1\/instance\/recover$/, async (req) => {
     const instance = await instanceFrom(req)
-    const { rowCount } = await pool.query(
-      `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed' and kind <> 'message'`,
-      [instance.id])
-    return { requeued: rowCount }
+    const recovery = await tx((client) => recoverMachine(client, instance.id))
+    void wakeRunner()
+    return recovery
   }],
 
   ['machines', 'POST', new RegExp(`^/v1/instance/commands/${UUID}/claim$`), async (req, [commandId]) => {

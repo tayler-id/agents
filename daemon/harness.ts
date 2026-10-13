@@ -30,8 +30,10 @@ export interface HarnessSession {
   // The process to stop before this session runs anywhere else.
   readonly pid: number | undefined
   // Hands over a message. A message sent while a turn runs may join that turn.
-  // `id` comes back in `ended` on the batch that finishes the message.
-  send(text: string, id: string): void
+  // `ids` are the message commands the text answers: one for a person's message,
+  // every unfinished one for a resumed session. They come back in `ended` on the
+  // batch that finishes them.
+  send(text: string, ids: readonly string[]): void
   // Answers a permission request the harness raised as an ask event. Throws when
   // no such request is waiting in this process.
   answer(answer: AnswerPayload): void
