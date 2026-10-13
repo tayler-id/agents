@@ -1,0 +1,14 @@
+research/
+.DS_Store
+node_modules/
+.env
+test/ui-shots/
+app/dist/
+.scratch/
+.env.test
+
+# Copies of the repo that agents work in, one per branch.
+.claude/worktrees/
+
+# rea's evidence about the app we studied. Kept on this Mac, never published.
+docs/evidence/

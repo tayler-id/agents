@@ -1,0 +1,80 @@
+name: agents
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agents
+      POSTGRES_DB: agents
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["postgres", "-c", "wal_level=logical"]
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agents"]
+      interval: 2s
+      retries: 30
+
+  # Follows Postgres's change log and serves shapes. Only the API's proxy talks to it.
+  electric:
+    image: electricsql/electric:1.8.1
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://agents:${POSTGRES_PASSWORD}@postgres:5432/agents?sslmode=disable
+      ELECTRIC_SECRET: ${ELECTRIC_SECRET}
+      ELECTRIC_STORAGE_DIR: /var/lib/electric
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - electricdata:/var/lib/electric
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Checks run against their own database, followed by their own Electric, so a
+  # check's pipeline runs never reach the real server's runner.
+  electric-test:
+    image: electricsql/electric:1.8.1
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://agents:${POSTGRES_PASSWORD}@postgres:5432/agents_test?sslmode=disable
+      ELECTRIC_SECRET: ${ELECTRIC_SECRET}
+      ELECTRIC_STORAGE_DIR: /var/lib/electric
+      # Replication slots are shared by the whole Postgres server, so this one needs its own name.
+      ELECTRIC_REPLICATION_STREAM_ID: test
+    ports:
+      - "127.0.0.1:3002:3000"
+    volumes:
+      - electrictestdata:/var/lib/electric
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # A local git forge: repos, issues, pull requests and webhooks, so the factory
+  # runs end to end without touching GitHub. Webhooks reach the API's machine port.
+  forge:
+    image: gitea/gitea:1.27.3
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__ROOT_URL: http://127.0.0.1:3001/
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__webhook__ALLOWED_HOST_LIST: "*"
+      GITEA__repository__DEFAULT_BRANCH: main
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - forgedata:/data
+
+volumes:
+  pgdata:
+  electricdata:
+  electrictestdata:
+  forgedata:

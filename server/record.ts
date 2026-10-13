@@ -1,0 +1,373 @@
+// Every write to the shared record goes through here, inside the caller's
+// transaction, so numbering, scrubbing and the links between messages, events
+// and commands stay consistent.
+
+import { basename } from 'node:path'
+import type pg from 'pg'
+import { maybe, one } from './db.ts'
+import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, MessagePayload, NewEvent } from '../shared/types.ts'
+import { memoryBlock } from './agents.ts'
+import { finishTurn, PASS, queueTurns } from './rooms.ts'
+import { reportToConversation } from './tasks.ts'
+
+export const scrub = makeScrub(envSecrets(process.env))
+
+// The running cost a usage event reports, or 0. The body is Claude's own line.
+function totalCost(body: unknown): number {
+  const value = typeof body === 'object' && body !== null && 'total_cost_usd' in body ? Number(body.total_cost_usd) : 0
+  return Number.isFinite(value) ? value : 0
+}
+const TEXT_LIMIT = 8000
+
+export class HttpError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+export type Person = { id: string; team_id: string; login: string }
+type Session = {
+  id: string; team_id: string; instance_id: string; conversation_id: string | null; agent_id: string; last_seq: string
+}
+type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }
+
+// Gives new events the next numbers in their session, skipping any client id
+// already recorded, so a retried post leaves no gap and no duplicate.
+export async function appendEvents(
+  client: pg.PoolClient, sessionId: string, batch: EventBatch, author: string | null = null,
+): Promise<number[]> {
+  const session = await maybe<Session>(client,
+    'select id, team_id, instance_id, conversation_id, agent_id, last_seq from sessions where id = $1 for update', [sessionId])
+  if (!session) throw new HttpError(404, 'no such session')
+
+  const ids = batch.events.map((e) => e.clientId)
+  const { rows: seen } = await client.query<{ client_id: string }>(
+    'select client_id from events where session_id = $1 and client_id = any($2)', [sessionId, ids])
+  const seenIds = new Set(seen.map((r) => r.client_id))
+  const fresh = batch.events.filter((e, i) => !seenIds.has(e.clientId) && ids.indexOf(e.clientId) === i)
+
+  let seq = Number(session.last_seq)
+  const seqs: number[] = []
+  for (const event of fresh) {
+    seq += 1
+    seqs.push(seq)
+    await insertEvent(client, session, seq, event, author)
+  }
+  for (const raw of batch.raw ?? []) {
+    await client.query(
+      'insert into raw_events (session_id, client_id, line) values ($1, $2, $3) on conflict do nothing',
+      [sessionId, raw.clientId, JSON.stringify(scrub(raw.line))])
+  }
+
+  const turnsEnded = fresh.filter((e) => e.kind === 'usage')
+  // Claude reports the session's running total, kept across resumes.
+  const cost = Math.max(0, ...turnsEnded.map((e) => totalCost(e.body)))
+  await client.query(
+    `update sessions set last_seq = $2, turns = turns + $3, last_active_at = now(),
+       status = coalesce($4, status), harness_session_id = coalesce($5, harness_session_id),
+       cost_usd = case when $6::numeric > 0 then greatest(coalesce(cost_usd, 0), $6::numeric) else cost_usd end
+     where id = $1`,
+    [sessionId, seq, turnsEnded.length, batch.status ?? null, batch.harnessSessionId ?? null, cost])
+  if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
+    const conversationId = session.conversation_id
+    const room = await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [conversationId])
+    if (turnsEnded.length) {
+      const reply = await postAgentReply(client, session, conversationId)
+      if (room) await finishTurn(client, conversationId, session.agent_id, reply === null || reply.trim() === PASS ? 'pass' : 'sent')
+    } else if (room) {
+      // A failed session gives up its turn at once, rather than the room waiting out the deadline.
+      await finishTurn(client, conversationId, session.agent_id, 'error')
+    }
+  }
+  if (turnsEnded.length && !session.conversation_id) await reportToConversation(client, session.id)
+  // Asks are opened after the session row is settled, since a standing rule may
+  // answer one at once and add to this session again.
+  for (const event of fresh.filter((e) => e.kind === 'ask')) await openAsk(client, session, event)
+  return seqs
+}
+
+type AskBody = { requestId: string; toolName?: string; input?: Record<string, unknown>; description?: string }
+
+// What a standing rule matches against: the command for Bash, the path for file tools.
+function askSubject(toolName: string | undefined, input: Record<string, unknown> | undefined): string {
+  const value = toolName === 'Bash' ? input?.command : input?.file_path ?? input?.path
+  return typeof value === 'string' ? value : ''
+}
+
+// An "always" or "never" for Bash covers commands that start with the same word.
+// For other tools it covers the tool.
+function rulePattern(toolName: string | undefined, input: Record<string, unknown> | undefined): string | null {
+  if (toolName !== 'Bash') return null
+  const first = askSubject(toolName, input).trim().split(/\s+/)[0]
+  return first ? `${first} ` : null
+}
+
+// An agent asked before running a gated tool. A standing rule answers at once;
+// otherwise the ask waits for a person.
+async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent) {
+  const body = event.body as AskBody
+  const ask = await one<{ id: string }>(client, 'the new ask',
+    `insert into asks (team_id, kind, session_id, conversation_id, tool_use_id, payload)
+     values ($1, 'tool_approval', $2, $3, $4, $5) returning id`,
+    [session.team_id, session.id, session.conversation_id, event.toolUseId ?? null, JSON.stringify(scrub(body))])
+  const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
+    `select decision from approval_rules
+     where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
+       and (agent_id is null or agent_id = $4) and (pattern is null or left($5, length(pattern)) = pattern)
+     order by length(coalesce(pattern, '')) desc limit 1`,
+    [session.team_id, body.toolName ?? '', session.instance_id, session.agent_id, askSubject(body.toolName, body.input)])
+  if (rule) await answerAsk(client, ask.id, null, rule.decision, 'answered by a standing rule')
+}
+
+export type Decision = 'allow' | 'deny' | 'always' | 'never'
+
+// Records a person's answer (or a standing rule's), makes "always" and "never"
+// into rules, and sends the answer to the machine running the session.
+export async function answerAsk(
+  client: pg.PoolClient, askId: string, person: Person | null, decision: Decision | 'allow' | 'deny', message?: string,
+) {
+  const ask = await maybe<{
+    id: string; status: string; session_id: string; payload: AskBody; instance_id: string; agent_id: string; team_id: string
+  }>(client,
+    `select a.id, a.status, a.session_id, a.payload, s.instance_id, s.agent_id, s.team_id
+     from asks a join sessions s on s.id = a.session_id where a.id = $1 for update of a`, [askId])
+  if (!ask) throw new HttpError(404, 'no such ask')
+  if (ask.status !== 'open') throw new HttpError(409, 'this ask is already answered')
+  const behavior = decision === 'allow' || decision === 'always' ? 'allow' : 'deny'
+  await client.query(
+    `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
+    [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
+  if (decision === 'always' || decision === 'never') {
+    await client.query(
+      `insert into approval_rules (team_id, instance_id, agent_id, tool_name, pattern, decision, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [ask.team_id, ask.instance_id, ask.agent_id, ask.payload.toolName ?? '',
+        rulePattern(ask.payload.toolName, ask.payload.input), behavior, person?.id ?? null])
+  }
+  const [seq] = await appendEvents(client, ask.session_id, {
+    events: [{
+      clientId: `answer:${askId}`, kind: 'answer', text: `${decision} ${ask.payload.toolName ?? ''}`.trim(),
+      body: { askId, requestId: ask.payload.requestId, decision, message: message ?? null },
+    }],
+    status: 'running',
+  }, person?.id ?? null)
+  const event = await one<{ id: string }>(client, 'the answer event',
+    'select id from events where session_id = $1 and seq = $2', [ask.session_id, seq])
+  const payload: AnswerPayload = { requestId: ask.payload.requestId, behavior, updatedInput: ask.payload.input, message }
+  await client.query(
+    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id) values ($1, $2, $3, 'answer', $4, $5)`,
+    [ask.team_id, ask.instance_id, ask.session_id, JSON.stringify(payload), event.id])
+}
+
+// Asks the session's machine to stop the current turn.
+export async function interruptSession(client: pg.PoolClient, sessionId: string) {
+  const session = await maybe<{ team_id: string; instance_id: string }>(client,
+    'select team_id, instance_id from sessions where id = $1', [sessionId])
+  if (!session) throw new HttpError(404, 'no such session')
+  await client.query(
+    `insert into commands (team_id, instance_id, session_id, kind) values ($1, $2, $3, 'interrupt')`,
+    [session.team_id, session.instance_id, sessionId])
+}
+
+async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
+  const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
+  await client.query(
+    `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
+       tool_use_id, tool_name, text, body, client_id)
+     values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [session.team_id, session.id, seq, event.kind, author, event.parentToolUseId ?? null,
+      event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
+}
+
+type NewMessage = {
+  speaker: 'person' | 'agent'
+  personId?: string
+  agentId?: string
+  body: string
+  clientId: string
+  sessionId?: string
+  eventId?: string
+}
+
+export async function appendMessage(
+  client: pg.PoolClient, conversationId: string, message: NewMessage,
+): Promise<{ id: string; seq: number; fresh: boolean }> {
+  const conversation = await maybe<{ team_id: string; last_seq: string }>(client,
+    'select team_id, last_seq from conversations where id = $1 for update', [conversationId])
+  if (!conversation) throw new HttpError(404, 'no such conversation')
+  const existing = await maybe<{ id: string; seq: string }>(client,
+    'select id, seq from messages where conversation_id = $1 and client_id = $2', [conversationId, message.clientId])
+  if (existing) return { id: existing.id, seq: Number(existing.seq), fresh: false }
+
+  const seq = Number(conversation.last_seq) + 1
+  const row = await one<{ id: string }>(client, 'the new message',
+    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    [conversation.team_id, conversationId, seq, message.speaker, message.personId ?? null, message.agentId ?? null,
+      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId])
+  await client.query('update conversations set last_seq = $2 where id = $1', [conversationId, seq])
+  return { id: row.id, seq, fresh: true }
+}
+
+// When an agent's turn ends in a conversation, its last words in that turn
+// become its post there, unless it passed its turn in a room. Subagents' words
+// stay in the record only. Returns the words, or null when there were none.
+async function postAgentReply(client: pg.PoolClient, session: Session, conversationId: string): Promise<string | null> {
+  const reply = await maybe<{ id: string; text: string }>(client,
+    `select id, body->>'text' as text from events
+     where session_id = $1 and kind = 'assistant' and parent_tool_use_id is null
+       and coalesce(body->>'text', '') <> ''
+       and seq > coalesce((select max(seq) from events where session_id = $1 and kind = 'user'), 0)
+     order by seq desc limit 1`, [session.id])
+  if (!reply) return null
+  if (reply.text.trim() === PASS) return reply.text
+  await appendMessage(client, conversationId, {
+    speaker: 'agent', agentId: session.agent_id, body: reply.text,
+    clientId: `event:${reply.id}`, sessionId: session.id, eventId: reply.id,
+  })
+  return reply.text
+}
+
+// What an agent brings to every session: its skills, its plugins and what it
+// remembers about the people involved and the team.
+export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'memory'>> {
+  const { rows: skills } = await client.query<AgentSkill>(
+    `select s.name, s.description, s.content from skills s join agents a on a.team_id = s.team_id
+     where a.id = $1 and (s.agent_id = a.id or s.agent_id is null) order by s.name`, [agentId])
+  const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
+  const memory = await memoryBlock(client, agentId, personIds)
+  return { skills, plugins, memory: memory || undefined }
+}
+
+// Finds the person's DM with an agent, or opens one.
+export async function openDm(client: pg.PoolClient, person: Person, agentName: string): Promise<string> {
+  const agent = await maybe<{ id: string }>(client,
+    'select id from agents where team_id = $1 and name = $2 and archived_at is null for update',
+    [person.team_id, agentName])
+  if (!agent) throw new HttpError(404, `no agent named ${agentName}`)
+  const existing = await maybe<{ id: string }>(client,
+    `select c.id from conversations c
+     join conversation_members m on m.conversation_id = c.id and m.person_id = $1
+     where c.kind = 'dm' and c.agent_id = $2 and c.archived_at is null limit 1`, [person.id, agent.id])
+  if (existing) return existing.id
+  const created = await one<{ id: string }>(client, 'the new conversation',
+    `insert into conversations (team_id, kind, agent_id) values ($1, 'dm', $2) returning id`,
+    [person.team_id, agent.id])
+  await client.query(
+    `insert into conversation_members (team_id, conversation_id, person_id, agent_id)
+     values ($1, $2, $3, null), ($1, $2, null, $4)`, [person.team_id, created.id, person.id, agent.id])
+  return created.id
+}
+
+// A person's post. In a main or DM conversation its agent answers: the post goes
+// into that agent's session for the conversation, and the agent's machine gets
+// a command to hand it to the harness.
+export async function sendPersonMessage(
+  client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
+): Promise<{ messageId: string; seq: number }> {
+  const conversation = await maybe<{ id: string; kind: string; agent_id: string | null; member: boolean; visibility: string; source: string | null }>(client,
+    `select c.id, c.kind, c.agent_id, c.visibility, c.source,
+       exists (select 1 from conversation_members m where m.conversation_id = c.id and m.person_id = $2) as member
+     from conversations c where c.id = $1 and c.team_id = $3 and c.archived_at is null`, [conversationId, person.id, person.team_id])
+  if (!conversation || (!conversation.member && !(conversation.kind === 'room' && conversation.visibility === 'team'))) {
+    throw new HttpError(404, 'no such conversation of yours')
+  }
+  if (conversation.kind !== 'main' && conversation.kind !== 'dm' && conversation.kind !== 'room') {
+    throw new HttpError(400, `${conversation.kind} conversations take no posts`)
+  }
+  if (conversation.source === 'pipeline') throw new HttpError(400, "a pipeline's room is for its runs' posts")
+  // Posting in a team room you can see makes you a member of it.
+  if (!conversation.member) {
+    await client.query('insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3) on conflict do nothing',
+      [person.team_id, conversationId, person.id])
+  }
+
+  const message = await appendMessage(client, conversationId, {
+    speaker: 'person', personId: person.id, body: text, clientId: `person:${clientId}`,
+  })
+  if (!message.fresh) return { messageId: message.id, seq: message.seq }
+  if (conversation.kind === 'room') {
+    await queueTurns(client, person.team_id, conversationId, text)
+    return { messageId: message.id, seq: message.seq }
+  }
+
+  const agent = await one<Agent>(client, 'the agent of the conversation',
+    'select id, home_instance_id, harness, model, instructions from agents where id = $1', [conversation.agent_id])
+  if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
+  const session = await conversationSession(client, person.team_id, person.id, conversationId, agent)
+  const [seq] = await appendEvents(client, session.id, {
+    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text, messageId: message.id }, text }],
+  }, person.id)
+  const event = await one<{ id: string }>(client, 'the event for the post',
+    'select id from events where session_id = $1 and seq = $2', [session.id, seq])
+
+  const payload: MessagePayload = {
+    text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
+    instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
+  }
+  await client.query(
+    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
+     values ($1, $2, $3, 'message', $4, $5)`,
+    [person.team_id, session.instance_id, session.id, JSON.stringify(payload), event.id])
+  return { messageId: message.id, seq: message.seq }
+}
+
+type ConversationSession = { id: string; instance_id: string; harness_session_id: string | null }
+
+// The agent's open session for this conversation, or a new one on its home machine.
+export async function conversationSession(
+  client: pg.PoolClient, teamId: string, startedBy: string | null, conversationId: string, agent: Pick<Agent, 'id' | 'home_instance_id' | 'harness' | 'model'>,
+): Promise<ConversationSession> {
+  const found = await maybe<ConversationSession>(client,
+    `select id, instance_id, harness_session_id from sessions
+     where conversation_id = $1 and agent_id = $2 and archived_at is null
+     order by created_at desc limit 1`, [conversationId, agent.id])
+  if (found) return found
+  const created = await one<ConversationSession>(client, 'the new session',
+    `insert into sessions (team_id, conversation_id, instance_id, agent_id, started_by, harness, model)
+     values ($1, $2, $3, $4, $5, $6, $7) returning id, instance_id, harness_session_id`,
+    [teamId, conversationId, agent.home_instance_id, agent.id, startedBy, agent.harness, agent.model])
+  return created
+}
+
+// Claims one queued command for its machine. Only one claim can win.
+export async function claimCommand(client: pg.Pool | pg.PoolClient, instanceId: string, commandId: string): Promise<Command | null> {
+  const row = await maybe<{ id: string; kind: Command['kind']; session_id: string; payload: never }>(client,
+    `update commands set status = 'claimed', claimed_at = now()
+     where id = $1 and instance_id = $2 and status = 'queued'
+     returning id, kind, session_id, payload`, [commandId, instanceId])
+  return row ? ({ id: row.id, kind: row.kind, sessionId: row.session_id, payload: row.payload } as Command) : null
+}
+
+// Files an agent wrote in its task's folder. Each file is one document on the
+// task, and each change to it is the document's next version.
+export async function saveDocuments(
+  client: pg.PoolClient, instanceId: string, sessionId: string, documents: { path: string; content: string }[],
+): Promise<{ path: string; version: number }[]> {
+  const session = await maybe<{ team_id: string; task_id: string | null }>(client,
+    'select team_id, task_id from sessions where id = $1 and instance_id = $2', [sessionId, instanceId])
+  if (!session) throw new HttpError(404, 'no such session on this instance')
+  if (!session.task_id) throw new HttpError(400, 'only a task session has a task folder')
+  const saved: { path: string; version: number }[] = []
+  for (const document of documents) {
+    const path = document.path.replace(/^\/+/, '')
+    const content = scrub(document.content)
+    const artifact = await one<{ id: string; current_version: number | null }>(client, 'the document',
+      `insert into artifacts (team_id, task_id, kind, path, title, made_by_session) values ($1, $2, 'document', $3, $4, $5)
+       on conflict (task_id, path) where kind = 'document' do update set updated_at = artifacts.updated_at
+       returning id, current_version`, [session.team_id, session.task_id, path, basename(path), sessionId])
+    const latest = await maybe<{ content: string }>(client,
+      'select content from artifact_versions where artifact_id = $1 and version = $2', [artifact.id, artifact.current_version])
+    if (latest?.content === content) continue
+    const version = (artifact.current_version ?? 0) + 1
+    await client.query(
+      'insert into artifact_versions (artifact_id, version, content, author_session) values ($1, $2, $3, $4)',
+      [artifact.id, version, content, sessionId])
+    await client.query('update artifacts set current_version = $2, updated_at = now() where id = $1', [artifact.id, version])
+    saved.push({ path, version })
+  }
+  return saved
+}

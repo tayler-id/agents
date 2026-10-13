@@ -1,0 +1,283 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task, useSnapshot,
+} from './data.ts'
+import { ConversationView } from './Conversation.tsx'
+import { SessionPanel } from './Session.tsx'
+import { RunView, shortRunLabel } from './Run.tsx'
+import { PipelineView } from './Pipeline.tsx'
+import { DocumentPanel } from './Document.tsx'
+import { AgentPage, NewAgent } from './AgentPage.tsx'
+import { NewRoom, NewTask, TaskView } from './Work.tsx'
+
+// Where the app is: a conversation, run, task, pipeline, agent or new-thing form
+// in the middle, and maybe a session or a document beside it.
+type Route = {
+  conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
+  create: 'agent' | 'room' | 'task' | null; session: string | null; document: string | null
+}
+const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, session: null, document: null }
+const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
+
+function readRoute(): Route {
+  const [, kind = '', id = '', sub, subId] = window.location.hash.split('/')
+  const route = { ...EMPTY }
+  if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
+  if (kind === 'n' && (id === 'agent' || id === 'room' || id === 'task')) route.create = id
+  if (sub === 's') route.session = subId || null
+  if (sub === 'd') route.document = subId || null
+  return route
+}
+
+export function go(to: Partial<Route>) {
+  const r = { ...EMPTY, ...to }
+  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : ''
+  const found = Object.entries(KINDS).find(([, key]) => r[key])
+  window.location.hash = r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
+}
+
+function useRoute(): Route {
+  const [route, setRoute] = useState(readRoute)
+  useEffect(() => {
+    const update = () => setRoute(readRoute())
+    window.addEventListener('hashchange', update)
+    return () => window.removeEventListener('hashchange', update)
+  }, [])
+  return route
+}
+
+export function App() {
+  const [me, setMe] = useState<Me | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => { api.me().then(setMe, (e: unknown) => { setError(messageOf(e)) }) }, [])
+
+  if (error) {
+    return (
+      <main className="blocked">
+        <h1>Can't open the app</h1>
+        <p>{error}</p>
+        <p className="muted">Ask a teammate to add your Tailscale login to the team.</p>
+      </main>
+    )
+  }
+  if (!me) return <main className="blocked" aria-busy="true"><p className="muted">Connecting…</p></main>
+  return <Workspace me={me} />
+}
+
+function Workspace({ me }: { me: Me }) {
+  const route = useRoute()
+  // The menu stays open only on the route it was opened on, so going anywhere closes it.
+  const here = window.location.hash
+  const [menuOpenOn, setMenuOpenOn] = useState<string | null>(null)
+  const menuOpen = menuOpenOn === here
+  const setMenuOpen = (open: boolean) => { setMenuOpenOn(open ? here : null) }
+  const { rows: runs } = useSnapshot<Run>('runs', {}, 4000)
+  const side = Boolean(route.session || route.document)
+  const back = () => go({ conversation: route.conversation, run: route.run, task: route.task })
+  return (
+    <div className={`shell${side ? ' with-panel' : ''}${menuOpen ? ' menu-open' : ''}`}>
+      <header className="topbar">
+        <button type="button" className="ghost" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Menu</button>
+        <span className="topbar-title">{me.team.name}</span>
+      </header>
+      <Sidebar me={me} route={route} runs={runs} />
+      <main className="main" aria-label={route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
+        {route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
+          : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
+            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
+              : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
+                : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
+                  : route.create === 'agent' ? <NewAgent />
+                    : route.create === 'room' ? <NewRoom me={me} />
+                      : route.create === 'task' ? <NewTask />
+                        : <Welcome />}
+      </main>
+      {route.session && (route.conversation || route.run || route.task) && (
+        <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
+      )}
+      {route.document && (route.run || route.task) && (
+        <DocumentPanel key={route.document} artifactId={route.document}
+          taskId={route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null} onClose={back} />
+      )}
+    </div>
+  )
+}
+
+function Welcome() {
+  return (
+    <section className="welcome">
+      <h1>Pick an agent to talk to</h1>
+      <p className="muted">Every conversation, every pipeline run and everything their agents do is shared with your team as it happens.</p>
+    </section>
+  )
+}
+
+const LIVE = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
+
+function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
+  const { rows: agents } = useSnapshot<Agent>('agents')
+  const { rows: conversations } = useSnapshot<Conversation>('conversations')
+  const { rows: members } = useSnapshot<Member>('conversation_members')
+  const { rows: people } = useSnapshot<Person>('people')
+  const { rows: instances } = useSnapshot<Instance>('instances')
+  const { rows: pipelines } = useSnapshot<Pipeline>('pipelines', {}, 10000)
+  const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
+  // Polled, so the sidebar holds none of the browser's six connections.
+  const { rows: conversationSessions } = useSnapshot<Session>('sessions', { of: 'conversations' }, 3000)
+  const { rows: taskSessions } = useSnapshot<Session>('sessions', { of: 'tasks' }, 3000)
+  const sessions = [...conversationSessions, ...taskSessions]
+  const [opening, setOpening] = useState('')
+  const [boxError, setBoxError] = useState('')
+
+  const agentName = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents])
+  const login = useMemo(() => new Map(people.map((p) => [p.id, p.login])), [people])
+  const current = conversations.find((c) => c.id === route.conversation)
+  const taskTitle = (taskId: string) => tasks.find((t) => t.id === taskId)?.title ?? 'Run'
+
+  const label = (c: Conversation) => {
+    if (c.kind === 'room') return `# ${c.name ?? 'room'}`
+    const who = members.filter((m) => m.conversation_id === c.id).flatMap((m) => (m.person_id ? [m.person_id === me.person.id ? 'you' : login.get(m.person_id) ?? 'someone'] : []))
+    const agent = c.agent_id ? agentName.get(c.agent_id) ?? 'agent' : null
+    return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
+  }
+
+  const open = async (agent: Agent) => {
+    setOpening(agent.id)
+    try {
+      go({ conversation: (await api.openDm(agent.name)).conversationId })
+    } finally {
+      setOpening('')
+    }
+  }
+
+  const box = async (instance: Instance, action: 'claim' | 'release') => {
+    setBoxError('')
+    try {
+      await (action === 'claim' ? api.claimBox(instance.id) : api.releaseBox(instance.id))
+    } catch (e) {
+      setBoxError((e as Error).message)
+    }
+  }
+
+  const running = sessions.filter((s) => LIVE.has(s.status))
+  // Replays score proposals. They show on their proposal's run, not here.
+  const recentRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8)
+  const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)
+  // Tasks people started, outside pipelines.
+  const runTasks = new Set(runs.map((r) => r.task_id))
+  const myTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6)
+  return (
+    <nav className="sidebar" aria-label="Workspace">
+      <div className="team">
+        <strong>{me.team.name}</strong>
+        <span className="muted small">{me.person.login}</span>
+      </div>
+      <div className="new-links">
+        <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
+        <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>
+        <button type="button" className="link small" onClick={() => go({ create: 'agent' })}>New agent</button>
+      </div>
+
+      <h2 className="kicker">Agents</h2>
+      <ul className="list" aria-label="Agents">
+        {agents.map((agent) => (
+          <li key={agent.id}>
+            <button type="button" className={`row${current?.kind === 'dm' && current.agent_id === agent.id ? ' selected' : ''}`}
+              onClick={act(() => open(agent))} disabled={opening === agent.id}>
+              <span>{agent.name}</span>
+              {agent.title && <span className="muted small">{agent.title}</span>}
+            </button>
+          </li>
+        ))}
+        {!agents.length && <li className="muted small empty">No agents yet</li>}
+      </ul>
+
+      <h2 className="kicker">Conversations</h2>
+      <ul className="list" aria-label="Conversations">
+        {[...conversations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => (
+          <li key={c.id}>
+            <button type="button" className={`row${c.id === route.conversation ? ' selected' : ''}`} onClick={() => go({ conversation: c.id })}>
+              <span>{label(c)}</span>
+            </button>
+          </li>
+        ))}
+        {!conversations.length && <li className="muted small empty">Nothing yet</li>}
+      </ul>
+
+      <h2 className="kicker">Tasks</h2>
+      <ul className="list" aria-label="Tasks">
+        {myTasks.map((t) => (
+          <li key={t.id}>
+            <button type="button" className={`row${t.id === route.task ? ' selected' : ''}`} onClick={() => go({ task: t.id })}>
+              <span>{t.title}</span>
+            </button>
+          </li>
+        ))}
+        {!myTasks.length && <li className="muted small empty">No tasks yet</li>}
+      </ul>
+
+      <h2 className="kicker">Pipelines</h2>
+      <ul className="list" aria-label="Pipelines">
+        {pipelines.map((p) => (
+          <li key={p.id}>
+            <button type="button" className={`row${p.id === route.pipeline ? ' selected' : ''}`} onClick={() => go({ pipeline: p.id })}>
+              <span>{p.name}</span>
+            </button>
+          </li>
+        ))}
+        {!pipelines.length && <li className="muted small empty">No pipelines yet</li>}
+      </ul>
+
+      <h2 className="kicker">Runs</h2>
+      <ul className="list" aria-label="Runs">
+        {recentRuns.map((r) => (
+          <li key={r.id}>
+            <button type="button" className={`row${r.id === route.run ? ' selected' : ''}`} onClick={() => go({ run: r.id })}>
+              <span><span className={`dot ${r.status}`} aria-hidden="true" />{taskTitle(r.task_id)}</span>
+              <span className="muted small">{shortRunLabel(r.status)}</span>
+            </button>
+          </li>
+        ))}
+        {!recentRuns.length && <li className="muted small empty">No runs yet</li>}
+      </ul>
+
+      <h2 className="kicker">Running now</h2>
+      <ul className="list" aria-label="Running now">
+        {running.map((s) => (
+          <li key={s.id}>
+            <button type="button" className="row" onClick={() => {
+              const run = runOfSession(s)
+              if (s.conversation_id) go({ conversation: s.conversation_id, session: s.id })
+              else if (run) go({ run: run.id, session: s.id })
+              else if (s.task_id) go({ task: s.task_id, session: s.id })
+            }}>
+              <span><span className={`dot ${s.status}`} aria-hidden="true" />{agentName.get(s.agent_id) ?? 'agent'}{s.stage ? ` · ${s.stage}` : ''}</span>
+              <span className="muted small">{s.status.replace('_', ' ')}</span>
+            </button>
+          </li>
+        ))}
+        {!running.length && <li className="muted small empty">Nothing running</li>}
+      </ul>
+
+      <h2 className="kicker">Machines</h2>
+      <ul className="list" aria-label="Machines">
+        {instances.map((i) => (
+          <li key={i.id} className="row static">
+            <span><span className={`dot ${i.status}`} aria-hidden="true" />{i.name}{i.kind === 'box' ? ' (box)' : ''}</span>
+            {i.kind === 'box'
+              ? i.claimed_by_run
+                ? <span className="muted small">on a run</span>
+                : i.claimed_by
+                  ? i.claimed_by === me.person.id
+                    ? <button type="button" className="link small" onClick={act(() => box(i, 'release'))}>Release</button>
+                    : <span className="muted small">{login.get(i.claimed_by) ?? 'taken'}</span>
+                  : <button type="button" className="link small" onClick={act(() => box(i, 'claim'))}>Claim</button>
+              : <span className="muted small">{i.status}</span>}
+          </li>
+        ))}
+      </ul>
+      {boxError && <p className="error small" role="alert">{boxError}</p>}
+    </nav>
+  )
+}
