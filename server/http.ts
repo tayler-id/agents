@@ -2,6 +2,7 @@
 // a request's body.
 
 import type { IncomingMessage } from 'node:http'
+import type { z } from 'zod'
 import { HttpError } from './record.ts'
 
 // People reach the API only through tailscale serve, on a Unix socket. Machines,
@@ -38,6 +39,25 @@ export async function readJson(req: IncomingMessage): Promise<Record<string, unk
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, 'body must be a JSON object')
   return value as Record<string, unknown>
+}
+
+// A JSON body read through its schema. A body that does not fit answers 400 with
+// what is wrong, in the schema's own words.
+export async function parseBody<S extends z.ZodType>(req: IncomingMessage, schema: S): Promise<z.output<S>> {
+  const result = schema.safeParse(await readJson(req))
+  if (!result.success) throw new HttpError(400, problems(result.error))
+  return result.data
+}
+
+// An id from a route's path, as its own type. One that cannot be an id names nothing.
+export function pathId<S extends z.ZodType>(schema: S, value: string): z.output<S> {
+  const result = schema.safeParse(value)
+  if (!result.success) throw new HttpError(404, 'not found')
+  return result.data
+}
+
+export function problems(error: z.ZodError): string {
+  return error.issues.map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message)).join('; ')
 }
 
 // A property of a value from outside, which may be anything at all.

@@ -32,6 +32,11 @@ async function requireConversation(person: Person, args: URLSearchParams): Promi
   return id
 }
 
+// Invites and the logins waiting to join are for admins only.
+function requireAdmin(person: Person) {
+  if (person.role !== 'admin') throw new HttpError(403, 'Only team admins can see this.')
+}
+
 // Rows that hang off a task (a run's stages, a task's documents) are visible to
 // whoever can see the task.
 async function requireTaskOf(person: Person, sql: string, id: string): Promise<string> {
@@ -46,8 +51,17 @@ const personShapes: Record<string, PersonShape> = {
   instances: async (p) => ({
     table: 'instances', where: 'team_id = $1', params: [p.team_id],
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
-      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since'],
+      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error'],
   }),
+  invites: async (p) => {
+    requireAdmin(p)
+    return { table: 'invites', where: 'team_id = $1', params: [p.team_id] }
+  },
+  // Logins on no team, so not any team's. Every admin on the server sees them.
+  join_requests: async (p) => {
+    requireAdmin(p)
+    return { table: 'join_requests', where: `status = 'waiting'`, params: [] }
+  },
   agents: async (p) => ({ table: 'agents', where: 'team_id = $1 and archived_at is null', params: [p.team_id] }),
   conversations: async (p) => ({
     table: 'conversations',

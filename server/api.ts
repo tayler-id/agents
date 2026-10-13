@@ -32,6 +32,7 @@ import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTempla
 import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { sendRoutine } from './routines.ts'
+import { onboardingRoutes } from './onboarding-routes.ts'
 import {
   EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
@@ -95,12 +96,6 @@ const bounded = (value: string | null, fallback: number, max: number) =>
 const UUID = '([0-9a-f-]{36})'
 
 const routes: Route[] = [
-  ['people', 'GET', /^\/v1\/me$/, async (req) => {
-    const person = await personFrom(req)
-    const team = await maybe<{ id: string; name: string }>(pool, 'select id, name from teams where id = $1', [person.team_id])
-    return { person: { id: person.id, login: person.login }, team }
-  }],
-
   ['machines', 'GET', /^\/v1\/record\/search$/, async (req, _params, url) => {
     const { teamId, sessionId } = await agentScope(req, url)
     return { hits: await searchRecord(teamId, sessionId, url.searchParams.get('q') ?? '', bounded(url.searchParams.get('limit'), 10, 50)) }
@@ -371,17 +366,18 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // A person keeps a box for themselves, or lets it go back to the pool.
+  // A person keeps a box for themselves, or lets it go back to the pool. A
+  // person's own box is never in the pool.
   ['people', 'POST', new RegExp(`^/v1/instances/${UUID}/(claim|release)$`), async (req, [instanceId, action]) => {
     const person = await personFrom(req)
     const { rowCount } = await pool.query(
       action === 'claim'
         ? `update instances set claimed_by = $3, claimed_at = now(), idle_since = null
-           where id = $1 and team_id = $2 and kind = 'box' and claimed_by is null and claimed_by_run is null`
+           where id = $1 and team_id = $2 and kind = 'box' and not personal and claimed_by is null and claimed_by_run is null`
         : `update instances set claimed_by = null, claimed_at = null, idle_since = now()
-           where id = $1 and team_id = $2 and kind = 'box' and claimed_by = $3`,
+           where id = $1 and team_id = $2 and kind = 'box' and not personal and claimed_by = $3`,
       [instanceId, person.team_id, person.id])
-    if (!rowCount) throw new HttpError(409, action === 'claim' ? 'that box is taken or is not a box' : 'you do not hold that box')
+    if (!rowCount) throw new HttpError(409, action === 'claim' ? 'that box is taken or is not a box' : 'you do not hold that box, or it is your own box, which stays yours')
     return { ok: true }
   }],
 
@@ -391,6 +387,8 @@ const routes: Route[] = [
     const clientId = optionalText(body.clientId, 'clientId') ?? randomUUID()
     return tx((client) => sendPersonMessage(client, person, conversationId, text(body.text, 'text'), clientId))
   }],
+
+  ...onboardingRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
