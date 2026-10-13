@@ -92,9 +92,11 @@ async function serious(page: Page) {
   return found.length
 }
 
+// Nothing scrolls sideways, neither the page nor a box inside it, and nothing is cut off at the right edge.
 async function noSideScroll(page: Page) {
   return page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth
-    && [...document.querySelectorAll('.page-head, .page-body, .panel, dialog[open]')].every((el) => el.getBoundingClientRect().right <= window.innerWidth + 1))
+    && [...document.querySelectorAll('.page-head, .page-body, .panel, .document, dialog[open], .palette-results')]
+      .every((el) => el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().right <= window.innerWidth + 1))
 }
 
 async function within(seconds: number, test: () => Promise<unknown>): Promise<boolean> {
@@ -209,11 +211,17 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     check(await serious(page) === 0, `${engine}: the open palette has no serious accessibility problems`)
     await page.keyboard.press('Enter')
     check(await gone(page, 'dialog.palette[open]', 5) && await within(10, async () => page.url().includes(`/t/${b}`)), `${engine}: Enter opens the task and closes the palette`)
+    const focused = () => page.evaluate(() => {
+      const element = document.activeElement
+      return element ? `${element.tagName} ${element.getAttribute('aria-label') ?? ''}` : ''
+    })
+    const before = await focused()
     await page.keyboard.press('ControlOrMeta+k')
     await page.keyboard.type('nothing matches this')
     const empty = await visible(page, 'dialog.palette', 5, /Nothing matches/)
     await page.keyboard.press('Escape')
     check(empty && await gone(page, 'dialog.palette[open]', 5), `${engine}: the palette says when nothing matches, and Escape closes it`)
+    check(before.startsWith('MAIN') && await focused() === before, `${engine}: closing the palette gives focus back to where it was (${before})`)
     await page.keyboard.press('ControlOrMeta+k')
     await page.keyboard.type('new room')
     await page.keyboard.press('Enter')
@@ -292,6 +300,15 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     await visible(page, 'aside[aria-label="Document"] .comment .quote', 15, /Words that are nowhere/)
     await doc.locator('.comment .quote', { hasText: 'Words that are nowhere' }).click()
     check(await visible(page, 'aside[aria-label="Document"] [role="status"]', 10, /is not in version 1 any more/), `${engine}: a quote that is not in the version says so`)
+    const spot = await page.evaluate(() => {
+      const highlights = CSS.highlights.get('comment-quote')
+      const [range] = highlights ? [...highlights] : []
+      const box = range instanceof Range ? range.getBoundingClientRect() : null
+      return box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null
+    })
+    if (spot) await page.mouse.click(spot.x, spot.y)
+    check(spot && await visible(page, 'aside[aria-label="Document"] .comment.active', 10, /This line repeats the first/),
+      `${engine}: clicking marked text in the document makes its comment the current one`)
     const docPhone = await phoneOf(alice)
     await docPhone.goto(page.url())
     await visible(docPhone, 'aside[aria-label="Document"] .comment .quote', 20)
