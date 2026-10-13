@@ -18,7 +18,7 @@ Out of scope, per the intent: separate customer orgs, a phone app, pipeline chan
 - Every step ends in a check that I watch fail before I trust it.
 - Nothing is called done until the whole suite passes (`npm run check`, every step's check, not only the newest), and the real running system has been tried: the background API, a real daemon, and the app.
 - Nothing goes to an outside service. Issues, pull requests and webhooks use a local git forge in Docker, so the factory can be proven end to end without touching your GitHub.
-- No commits. Everything stays in the working tree for you to review.
+- No commits. Everything stays in the working tree for you to review. Tayler allowed commits and branches on 2026-10-13.
 - The UI is tested every way available: Playwright headless end to end in Chromium, WebKit and Firefox with two teammates at once, the real Electron app through Playwright, screenshots in light and dark at wide and phone widths that I look at against your design rules, an accessibility scan, and the real path in Chrome against the real server.
 
 ## Steps
@@ -165,3 +165,21 @@ The room and task views had never passed in a browser. Getting them to pass agai
 - **The guard.** `test/names.ts` runs first in `npm run check` and fails on the studied app's name, an abbreviation of it, or an agent called anything else. It failed on 270 lines before the rename. It then missed an env var that followed a literal `\n` in the README, since a regex word boundary never falls between `n` and `G`. It now catches that case, and it was seen failing on that line before the fix.
 - **The data.** Both databases were dumped to `~/.agents-app/backups/` first. Each volume was copied into a new one, with matching file counts. The role and both databases were renamed inside Postgres, which kept the password and both replication slots, and Electric picked up its 270 shapes. The old volumes stay as a fallback until Tayler says to remove them.
 - **Verified.** `npm run check` passed, all 18 checks, and `test/real.ts` passed against the live server under its new tailnet name. bug-fix was republished as pull request #2 because a comment in it changed, and the first pull request was retitled.
+
+### The code review (in progress)
+
+An agent on another model reviewed the code on 2026-10-13. All eight of its findings held. These were fixed on main:
+
+- **A linked `node_modules`.** `.gitignore` said `node_modules/`, which matches only a real folder. In a worktree that links main's packages, git listed the link, the name guard crashed reading it, and `git add -A` would have committed it. The ignore rule now covers the link, and the guard reads only regular files. Seen failing in a scratch clone, with EISDIR on the link and ENOENT on a tracked file moved away.
+- **A bare abbreviation.** The guard missed the old name's abbreviation at the end of a path, in the `WORKDIR` of `box/Dockerfile`. It catches it now, seen failing on that line, and the box keeps the daemon in `/opt/agents`.
+- **The README.** It skipped `npm run app:build`, so a fresh install answered every page with a 404, and it never said how the box firewall gets into colima. Both steps are in. On a fresh clone with a throwaway Postgres, the API gave a 404 before the build and the app after it. The firewall command prints the same block this Mac's colima runs.
+- **A rules file.** `AGENTS.md`, imported by a one-line `CLAUDE.md`. Asked a question only that file answers, Claude answered NONE without it and the exact command with it.
+- **Docs that overclaimed.** `docs/decisions.md` now says worktree isolation isn't built, the AWS export misses the boxes' home volumes, and the framework and verifier disagree on the evidence format. The build plan is marked as history.
+- **Node on this Mac.** The `node` first on this Mac's PATH, in `/usr/local/bin`, is a launcher that can't load native packages such as lmdb, so the API fails to start under it. The README's PATH rule matters, and `AGENTS.md` repeats it.
+
+The rest goes to the agents that own the code:
+- the AWS export must move the boxes' volumes
+- the verifier corrects its claims and owns one evidence format that the framework uses
+- the projects branch checks for write access, as Tayler chose
+- a new durability workstream makes a turn cut off by a dying machine resume or show as interrupted
+- a new security workstream closes the people port to direct tailnet connections

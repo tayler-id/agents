@@ -205,5 +205,10 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ## The name guard (`test/names.ts`)
 
-- **Solves now.** The product is Agents. The guard fails `npm run check`, before anything else runs, when a file outside the research notes uses the studied app's name, an abbreviation of it, or calls an agent anything but an agent. It found 270 lines before the rename on 2026-10-13 and none after.
+- **Solves now.** The product is Agents. The guard fails `npm run check`, before anything else runs, when a file outside the research notes uses the studied app's name, an abbreviation of it, or calls an agent anything but an agent. It found 270 lines before the rename on 2026-10-13 and none after. It reads only regular files, so a worktree that links main's packages can run it.
 - **Helps later.** A name can't creep back in through a copied snippet, a new env var or a doc, because the next check run names the file and line.
+
+## Rules for agents (`AGENTS.md`, `CLAUDE.md`)
+
+- **Solves now.** Any agent that opens the repo gets the rules in force today: what to read first, names, keeping off the live system, schema changes, sharing the test database, what done means and how changes land. Claude loads them through `CLAUDE.md`, which imports `AGENTS.md`. Other agent tools read `AGENTS.md` directly.
+- **Helps later.** The framework's fuller rules merge into the same file, so there is one rules file to keep current.

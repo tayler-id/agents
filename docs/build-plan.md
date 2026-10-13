@@ -1,5 +1,7 @@
 # Build plan
 
+This is the plan the first build followed, kept as history. Where it differs from what was built, `docs/build-log.md` and `docs/decisions.md` are current.
+
 What we build, in what order, and how each phase proves it works. The goal is in `docs/intent/multiplayer.md`. How the studied app works is in `research/teardown.md`. The behaviors phase 1 must match are rea's ledger in `docs/evidence/ledger/`.
 
 ## The shape of the system
@@ -35,7 +37,7 @@ Secrets never enter these tables. The daemon scrubs them before sending, and the
 | Tailscale | Use. It connects teammates' Macs and boxes to the server and tells the API who each person is. |
 | Electric sync service 1.8 | Use, in Docker. |
 | Durable Streams server 0.3 | Use. |
-| pg-boss | Use, for the job queue, cron and retries. |
+| pg-boss | Planned for the job queue, cron and retries, and not used. The runner keeps runs as rows with a row lock, and a Postgres notification wakes it. |
 | API | Build. TypeScript on Node 24. |
 | Auth proxy | Build. A small TypeScript service in front of Electric and Durable Streams. |
 | Daemon | Build. Wraps `claude -p --input-format stream-json --output-format stream-json`, runs Claude hooks for approvals, reads the session transcript for anything the stream leaves out, sends a heartbeat, and claims jobs for its instance. |
@@ -57,7 +59,7 @@ Built in this order. Each step ends in a check that I first watch fail, then pas
 ## Phase 2: the factory
 
 - Pipelines are TypeScript files in a `pipelines/` folder. Each stage runs a Claude session on a claimed instance. Each loop has a cap, and when it runs out a person takes over.
-- A runner on pg-boss starts runs from cron and from GitHub, Linear and Slack webhooks.
+- A runner starts runs from cron and from GitHub, Linear and Slack webhooks. It was planned on pg-boss and built on Postgres rows instead.
 - Boxes can be claimed, released, shut down when idle and recreated from the image, with a volume for the home folder and workspace.
 - Every run records its pipeline version, metrics and spend. Each pipeline has a spend cap.
 - First pipeline, bug-fix: a report comes in, check whether it's already fixed, remove duplicates, build a trusted reproduction, classify the difficulty, fix it or plan it, then ping the shepherd.

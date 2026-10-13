@@ -2,6 +2,33 @@
 
 Every decision about how Agents is built and how work on it happens, newest group first. Each entry says what it is for, how it works, how it is built, and where it stands. Parts still being built live on agent branches until they merge, and their design docs in `docs/design/` hold the detail.
 
+## 2026-10-13, after the code review
+
+### Keep the core
+
+- **Purpose.** A review of the code asked whether the architecture holds. It does, with one gap, which the next entry covers.
+- **How it works.** Postgres stays the one shared record. The API owns every write and permission. Electric serves live views. The Durable Streams server that `server/streams.ts` starts serves live text from files on the server, with no cloud service behind it. Pipelines stay versioned code.
+- **Implementation.** What is built on main.
+- **Status.** Decided.
+
+### Turns survive a machine dying
+
+- **Purpose.** If a machine dies mid-turn, the work resumes or is shown as interrupted. Today the daemon marks a message done as soon as Claude receives it. A crash mid-turn leaves the session showing working forever, and a pending approval can't be answered.
+- **How it works.**
+  - A turn's command stays claimed until the turn ends.
+  - A machine that restarts reports its interrupted sessions as interrupted, then resumes each one.
+  - A pending approval survives a restart.
+  - The app shows what is true after any crash or reconnect.
+- **Implementation.** A durability workstream on its own branch. It is done when five crash tests pass:
+  1. killing the machine during the model's output
+  2. killing it after a tool acts but before the result is saved
+  3. restarting it while an approval waits
+  4. replacing a box, with its files and session recovered
+  5. reconnecting the app and checking what it shows against the record
+
+  After that, other agent engines with durable sessions can run behind `daemon/harness.ts` against the same five tests. One replaces ours only if it clearly wins.
+- **Status.** Decided, being built.
+
 ## 2026-10-13: how agents code on this repo
 
 ### The product is Agents, and our docs name only what we use
@@ -68,8 +95,8 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - a verdict from an agent that did not write the change
   - a clean merge against current main
 - **Grading and the ledger.** Verdicts are graded, from verified in the live UI down to type-checked only. "Couldn't verify" is kept apart from pass and fail. The ledger is keyed by pull request and head commit. After a rebase, a verdict survives only if the patch itself is unchanged.
-- **Implementation.** `docs/design/self-improve.md` and the repo-level `CLAUDE.md`, on the framework agent's branch. Each repo gets a versioned policy: sandbox, caps, protected paths and the size limit.
-- **Status.** Being built. It still has to decide between forward-only runs and sending failures back to implement, and write down why.
+- **Implementation.** `docs/design/self-improve.md` and a fuller rules file, on the framework agent's branch. Its rules merge into `AGENTS.md` when it lands. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
+- **Status.** Being built. It still has to decide between forward-only runs and sending failures back to implement, and write down why. The framework and the verifier describe evidence in two different formats, so the merge gate can't read the verifier's screenshots yet. One schema in `shared/`, used by both, comes before either merges.
 
 ### Size and time limits per task
 
@@ -99,7 +126,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - fixtures, evidence capture, and visual compare and baseline
   
   The browser driver sits behind one interface, so a second driver can slot in.
-- **Status.** Being built. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
+- **Status.** Being built. The baseline screenshots and the check that breaks each feature are not built yet, whatever its design doc says. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
 
 ### How our CLIs talk to agents
 
@@ -118,7 +145,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
 ### Parallel agents, worktrees and landing
 
 - **Purpose.** Many agents work at once without colliding, and nothing lands unverified.
-- **How it works.**
+- **How it works once `agents-git` exists.**
   - Each task gets one branch and a fresh worktree outside the repo, with its own ports, test database and copy of its dependencies.
   - Work lands with merge commits, never squashed, so history alone proves what landed.
   - Before landing, the coordinator runs these gates:
@@ -129,7 +156,13 @@ Every decision about how Agents is built and how work on it happens, newest grou
     - It runs the full suite on the merged result.
     - It gets an independent review.
   - Agents never install packages through a link to main's packages, never edit `.gitignore`, and never add check scripts to `package.json`.
-- **Implementation.** Today, by hand, by the coordinator. Next comes `agents-git`, a TypeScript CLI for these jobs:
+- **How it works today.** None of that isolation is built.
+  - The seven branches' worktrees sit inside the repo, under `.claude/worktrees/`.
+  - Five of them link main's `node_modules` instead of having their own copy.
+  - All seven share the `agents_test` database and the test Electric on port 3002.
+  - Agents keep apart by agreement, not tooling. Each uses its own team-name prefix and migration number, and takes a lock folder before checks on port 7701. Two agents running the same check at once still collide on its ports.
+  - The coordinator runs the landing gates by hand.
+- **Implementation.** `agents-git`, a TypeScript CLI for these jobs:
   - starting a task's branch and worktree
   - saving work to refs that survive removal
   - syncing, running checks, submitting and landing
@@ -137,7 +170,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - cleanup that previews by default
   
   Claude Code hooks route agents through it.
-- **Status.** Decided. `agents-git` starts after the first branches merge.
+- **Status.** Decided, not built. `agents-git` starts after the first branches merge.
 
 ### The repo on GitHub
 
@@ -170,7 +203,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - Everyone gets a Connect GitHub button that signs in like `gh auth login`. The token stays on the server, and boxes reach GitHub only through the server's git proxy.
   - Teams that want agents to have their own identity, for repos that require approvals, install the Agents GitHub App with one click.
   - A self-hosted server gets its own App created through GitHub's manifest flow. Its tokens are minted per job, scoped to one repo, and expire within an hour.
-  - Our public repo uses the App, because Tayler cannot approve his own pull requests.
+  - Our public repo uses the App, because Tayler cannot approve their own pull requests.
 - **Implementation.** On the projects agent's branch. Its personal-token file is a stopgap.
 - **Status.** Being built.
 
@@ -181,7 +214,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - A reviewer agent runs automatically on teammates' pull requests, and on outside ones only when a maintainer asks.
     - One agent finds problems, and a second verifies each against the code.
     - It posts one comment-only review sorted into act on, consider, noted and dismissed. Each finding cites a rule, and dismissals give their reason.
-  - A bug-fix agent starts only when a maintainer applies a label, after the server confirms that person has write access.
+  - A bug-fix agent starts only when a maintainer applies a label, after the server confirms that person has write, maintain or admin access. Tayler chose write over triage on 2026-10-13.
     - Triage is read-only.
     - A UI bug must be reproduced twice through the real UI.
     - Before the pull request opens, a fresh agent rereads the issue and checks that the diff fixes it.
@@ -267,12 +300,16 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - Boxes may reach only the Claude API, the package registries and the server, never the metadata endpoint.
   - The cutover takes about 10 minutes, and the Mac's stack stays as the rollback.
 - **Implementation.** The AWS stack is written in the CDK in TypeScript, on the AWS agent's branch.
-- **Status.** Ready to run once Tayler sets up AWS access.
+- **Status.** Built on the AWS agent's branch, not ready to run. Its export moves Postgres, the forge and the secrets but not the boxes' home volumes, so agents would lose their workspaces, sessions and browser logins. The export must move those too, proven by a rehearsal in which tasks resume. Two choices wait on Tayler:
+  - box-to-server traffic inside the VPC rather than over the tailnet
+  - the allowlist, which blocks browsing from boxes
+
+  It costs about $217 a month.
 
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
 - **A GitHub CLI wrapper,** and a written spec for agent-facing CLIs. These may shape our own GitHub commands and the shared CLI library.
-- **A tool that trains instruction files from examples.** Compared with our coach and improve pipelines.
+- **A tool that trains instruction files from examples.** Evaluated against coach and improve. The recommendation is to build its evidence rules into coach and improve, and not to install it. Waits on Tayler.
 
 Each gets an entry here once decided.
