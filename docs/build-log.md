@@ -184,3 +184,11 @@ The rest goes to the agents that own the code:
 - the projects branch checks for write access, as Tayler chose
 - a new durability workstream makes a turn cut off by a dying machine resume or show as interrupted
 - a new security workstream closes the people port to direct tailnet connections
+
+### Shared resources and a leaked token (done)
+
+Running ten agents at once on 2026-10-13 found three problems on main.
+
+- **The test Electric ran out of open files.** Thousands of shapes from every agent's checks hit Docker's default limit of 1,024, and shapes stopped receiving changes. Its limit is now 65,536. `check:step2` passes against it after the restart. The live Electric had no errors and is unchanged.
+- **The Mac ran out of System V semaphores.** Every new API died at start with SIGABRT and printed nothing. 87,379 of 87,381 semaphores were held by sets whose processes were gone: 4,910 sets from Postgres servers that another project's test previews started and killed, and 1,007 from our own APIs, which never closed the stream store when stopped. I removed only sets whose every process was dead, which is the test Postgres itself uses, and kept the 58 that running servers held, the Homebrew Postgres and the live API's among them. The API now closes its stream store when stopped, and a new line in `check:step2` failed on the old code.
+- **A failed git command could put a machine's token in the record.** The daemon passed the token to git as an argument, and a failed command's message repeats its arguments. The daemon logged and posted that message, the API saved it unscrubbed, and no pattern knew our own token's shape. Git now gets the token through its environment, the scrubber knows machine tokens, and both the daemon and the API scrub a command's error. Two new lines in `check:step2` failed on the old code. The live record had no failed commands, so nothing leaked. The workflow branch's review found it.
