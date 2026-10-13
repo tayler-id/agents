@@ -37,7 +37,8 @@ function parse(body: Buffer): Loose {
   return value
 }
 
-export type IssueEvent = { action: string; number: number; labels: string[]; report: Report }
+// `sender` is who asked for the work on a public forge, by putting a label on the issue.
+export type IssueEvent = { action: string; number: number; labels: string[]; report: Report; sender?: string }
 
 // The parts of Gitea's issues event a run needs, or null if it has none of them.
 function issueEvent(payload: Loose): IssueEvent | null {
@@ -99,7 +100,7 @@ export async function startIssueRuns(repo: RepoOnForge & { id: string; team_id: 
     const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url)))
       .filter((i) => i.number !== issue.number).map((i) => ({ number: i.number, title: i.title }))
     const runId = await start({
-      pipelineId: row.id, trigger: 'forge', report, repoId: repo.id, openIssues,
+      pipelineId: row.id, trigger: 'forge', report, repoId: repo.id, openIssues, sender: issue.sender,
       once: `issue:${row.id}:${repo.id}:${issue.number}`,
     })
     if (runId) runs.push(runId)

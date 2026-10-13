@@ -9,9 +9,10 @@
 //   node --env-file=.env server/admin.ts forge-login <login> <forge user>
 //   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
 //   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
-//   pbpaste | node --env-file=.env server/admin.ts github <organization or account>
-// github reads the token from standard input, so it never shows in the process
-// list or the shell history, and saves it in ~/.agents-app/github.json.
+//   pbpaste | node --env-file=.env server/admin.ts github-token <organization or account>
+// github-token sets the stopgap personal access token, for a team before anyone
+// signs in with GitHub. It reads the token from standard input, so it never shows
+// in the process list or the shell history, and keeps it in AGENTS_GITHUB_DIR.
 
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -21,7 +22,7 @@ import { sha256 } from './auth.ts'
 import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
 import { STATUS } from '../shared/framework.ts'
 import { POLICY } from '../shared/policy.ts'
-import { connectGithub } from './github.ts'
+import { setStopgap } from './github-auth.ts'
 
 // Records a new version of the policy, points the repo at it with its owner,
 // and protects the repo's default branch on the forge to match.
@@ -72,7 +73,7 @@ const USAGE = [
   'forge-login <login> <forge user>',
   'set-policy <team> <repo clone url> <policy.json> <owner login>',
   'add-lesson <team> <rule> <incident>',
-  'github <organization or account> (the token on standard input)',
+  'github-token <organization or account> (the stopgap token on standard input)',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
@@ -123,8 +124,8 @@ try {
     const { rowCount } = await pool.query('insert into lessons (team_id, rule, incident) select id, $2, $3 from teams where name = $1', [team, rule, incident])
     if (!rowCount) throw new Error(`no team ${team ?? ''}`)
     console.log(`added a written lesson to ${team}. It becomes enforced once it names what holds it.`)
-  } else if (command === 'github' && args.length === 1) {
-    console.log(JSON.stringify(await connectGithub(await readStdin(), first)))
+  } else if (command === 'github-token' && args.length === 1) {
+    console.log(JSON.stringify(await setStopgap(await readStdin(), first)))
   } else {
     console.error(`usage: ${USAGE}`)
     process.exitCode = 2

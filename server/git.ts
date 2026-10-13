@@ -143,9 +143,9 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
   }
   let upstream: { url: string; authorization: string }
   try {
-    upstream = gitUpstreamFor(repo)
+    upstream = await gitUpstreamFor(repo)
   } catch (error) {
-    // GitHub is not set up or not connected. The machine is told so, as a 503.
+    // GitHub is not set up, or no sign-in reaches the repo. The machine is told so, as a 503.
     if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
     throw error
   }

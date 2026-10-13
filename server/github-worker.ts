@@ -1,16 +1,24 @@
 // Background work against GitHub, beside the runner. GitHub can't send webhooks
 // to this server, which only the tailnet reaches, so the worker asks it instead:
-// for new issues on the repos of teams with a pipeline that starts from forge
-// issues, and for the state of the pull requests the app opened. It also tries
-// again any repo request that an API restart left half done. Like the runner it
-// serves only AGENTS_RUNNER_TEAMS when that is set.
+// for labels put on issues of the repos of teams with a pipeline that starts
+// from forge issues, and for the state of the pull requests the app opened. It
+// also tries again any repo request that an API restart left half done. Like
+// the runner it serves only AGENTS_RUNNER_TEAMS when that is set.
+//
+// Anyone can open an issue on a public repo, so on GitHub a run starts only
+// from a label that starts with agent:, put on the issue by someone with triage
+// access or more. Opening an issue starts nothing, whatever labels its form
+// adds. The issue's text reaches the agent as a quoted report, without the parts
+// a reader can't see.
 
 import { z } from 'zod'
 import { many, pool } from './db.ts'
 import { repoPath } from './forge.ts'
-import { github, githubStatus } from './github.ts'
+import { github } from './github.ts'
+import { GITHUB } from './github-auth.ts'
 import { startIssueRuns, wantsIssues } from './hooks.ts'
 import { fulfillRepoRequest } from './projects.ts'
+import { reportFromIssue } from './public-text.ts'
 import { scopedTeams, wakeRunner } from './runner.ts'
 import { messageOf } from '../shared/errors.ts'
 import type { RepoRequestId } from '../shared/projects.ts'
@@ -34,17 +42,29 @@ async function retryStuckRequests(teams: string[] | null) {
 
 type PolledRepo = { id: string; team_id: string; forge: 'github'; remote_url: string; created_at: Date; polled_at: Date | null }
 
-// Starts runs for the issues opened on a repo since the last poll. Returns how many.
+// The labels that ask agents for work on GitHub. bug and its like never qualify,
+// since an issue form puts them on for whoever opens the issue.
+const AGENT_LABEL = /^agent:/
+
+// Starts runs for the agent labels people with triage access put on the repo's
+// issues since the last poll. Returns how many.
 async function pollRepo(repo: PolledRepo): Promise<number> {
   const asked = new Date()
-  // A repo never polled has had issues worth a run since it joined the team.
-  const since = new Date((repo.polled_at ?? repo.created_at).getTime() - OVERLAP_MS)
+  const path = repoPath(repo.remote_url)
+  // A repo never polled has had labels worth a run since it joined the team.
+  const since = repo.polled_at ? new Date(repo.polled_at.getTime() - OVERLAP_MS) : repo.created_at
+  const labels = await github.newLabels(path)
   let started = 0
-  for (const issue of await github.issuesSince(repoPath(repo.remote_url), since)) {
-    // GitHub lists pull requests among issues, and an issue from before the repo joined the team is not new work.
-    if (issue.isPullRequest || new Date(issue.createdAt) < repo.created_at) continue
-    const report = { title: issue.title, body: issue.body, issue: issue.number, url: issue.html_url, author: issue.user?.login }
-    started += (await startIssueRuns(repo, { action: 'opened', number: issue.number, labels: issue.labels, report })).length
+  // Null means GitHub's list is as it was at the last poll, so there is nothing new.
+  for (const event of labels ?? []) {
+    if (new Date(event.createdAt) < since || !AGENT_LABEL.test(event.label)) continue
+    if (!(await github.hasTriage(path, event.actor))) {
+      console.log(`${event.actor} put ${event.label} on ${path}#${event.issue.number} without triage access, so no run starts`)
+      continue
+    }
+    const report = { ...reportFromIssue(event.issue), issue: event.issue.number, url: event.issue.html_url, author: event.issue.user?.login }
+    const issue = { action: 'label_updated', number: event.issue.number, labels: [event.label], report, sender: event.actor }
+    started += (await startIssueRuns(repo, issue)).length
   }
   await pool.query('update repos set polled_at = $2 where id = $1', [repo.id, asked])
   return started
@@ -82,8 +102,9 @@ async function pollPullRequests(teams: string[] | null) {
        and ($1::uuid[] is null or a.team_id = any($1))`, [teams])
   for (const link of links) {
     try {
-      const pr = await github.pullRequest(repoPath(link.remote_url), PullNumber.parse(link.url.split('/pull/')[1]))
-      const state = pr.merged ? 'merged' : pr.state === 'closed' ? 'closed' : null
+      const pr = await github.pullRequestIfChanged(repoPath(link.remote_url), PullNumber.parse(link.url.split('/pull/')[1]))
+      // Null means unchanged since the last poll, so it is still open.
+      const state = pr?.merged ? 'merged' : pr?.state === 'closed' ? 'closed' : null
       if (state) await pool.query(`update artifacts set state = $2, updated_at = now() where id = $1 and state = 'open'`, [link.id, state])
     } catch (error) {
       // As for issues, the link stays open and the next round asks again.
@@ -95,7 +116,7 @@ async function pollPullRequests(teams: string[] | null) {
 async function round() {
   const teams = await scopedTeams()
   await retryStuckRequests(teams)
-  if (githubStatus().state !== 'connected') return
+  if (!GITHUB.on) return
   await pollIssues(teams)
   await pollPullRequests(teams)
 }

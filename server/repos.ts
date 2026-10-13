@@ -5,7 +5,8 @@
 import { z } from 'zod'
 import { many, pool } from './db.ts'
 import { forge, gitUpstream, repoPath, type Forge } from './forge.ts'
-import { explainGithub, github, githubStatus, githubUpstream } from './github.ts'
+import { explainGithub, github, githubUpstream } from './github.ts'
+import { githubStatus } from './github-auth.ts'
 import { messageOf } from '../shared/errors.ts'
 import type { ProjectId, RepoForge, RepoId, ReposOverview, RepoView } from '../shared/projects.ts'
 
@@ -19,8 +20,19 @@ export function forgeFor(repo: RepoOnForge): Forge {
   }
 }
 
+// A run that someone asked for by labelling a GitHub issue opens its pull
+// request only while they still have triage access or more. Throws, saying so,
+// when they no longer do. A run a teammate started in the app has no asker here.
+export async function checkAsker(repo: RepoOnForge, sender: string | undefined): Promise<void> {
+  if (repo.forge !== 'github' || sender === undefined) return
+  const path = repoPath(repo.remote_url)
+  if (!(await github.hasTriage(path, sender))) {
+    throw new Error(`${sender}, who asked for this run, no longer has triage access to ${path}, so its pull request was not opened.`)
+  }
+}
+
 // The repo's git endpoint on its forge, and the credentials the proxy adds.
-export function gitUpstreamFor(repo: RepoOnForge): { url: string; authorization: string } {
+export async function gitUpstreamFor(repo: RepoOnForge): Promise<{ url: string; authorization: string }> {
   switch (repo.forge) {
     case 'gitea': return gitUpstream(repo.remote_url)
     case 'github': return githubUpstream(repo.remote_url)
@@ -51,13 +63,14 @@ async function openOn(repo: RepoOnForge): Promise<RepoView['open']> {
   return open
 }
 
-// Every repo of a team, oldest first, with what its forge says is open on it.
-export async function reposOverview(teamId: string): Promise<ReposOverview> {
+// Every repo of a person's team, oldest first, with what its forge says is open
+// on it, and GitHub as that person sees it.
+export async function reposOverview(person: { id: string; team_id: string }): Promise<ReposOverview> {
   const rows = await many<RepoOnForge & { id: RepoId; default_branch: string; project_id: ProjectId | null }>(pool,
-    'select id, forge, remote_url, default_branch, project_id from repos where team_id = $1 order by created_at, id', [teamId])
+    'select id, forge, remote_url, default_branch, project_id from repos where team_id = $1 order by created_at, id', [person.team_id])
   const repos = await Promise.all(rows.map(async (row): Promise<RepoView> => ({
     id: row.id, name: repoPath(row.remote_url), forge: row.forge, webUrl: row.remote_url.replace(/\.git$/, ''),
     defaultBranch: row.default_branch, projectId: row.project_id, open: await openOn(row),
   })))
-  return { github: githubStatus(), repos }
+  return { github: githubStatus(person.id), repos }
 }

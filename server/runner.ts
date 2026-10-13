@@ -13,7 +13,7 @@ import { appendEvents, appendMessage, HttpError, type Person } from './record.ts
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
-import { forgeFor, type RepoOnForge } from './repos.ts'
+import { checkAsker, forgeFor, type RepoOnForge } from './repos.ts'
 import { placeTask } from './projects.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
@@ -51,7 +51,10 @@ const REVIEWER_SESSIONS = z.object({ reviewers: z.array(z.object({ sessionId: z.
 export const wakeRunner = () => pool.query(`select pg_notify('${CHANNEL}', '')`).then(() => undefined, () => undefined)
 
 // A replay also carries the commit each repo started from in the run it replays.
-type Payload = { report: Report; repoId: string; openIssues: { number: number; title: string }[]; once?: string; commits?: Record<string, string> }
+// `sender` is who asked for a run on GitHub, checked again before its pull request opens.
+type Payload = {
+  report: Report; repoId: string; openIssues: { number: number; title: string }[]; once?: string; commits?: Record<string, string>; sender?: string
+}
 export type Run = {
   id: string; team_id: string; pipeline_version_id: string; task_id: string; status: string; trigger: string
   trigger_payload: Payload; started_at: Date | null; created_at: Date; replay_of: string | null; proposal_id: string | null
@@ -136,7 +139,7 @@ function execResult(value: unknown): ExecResult {
 // event already started one.
 export async function startRun(client: pg.PoolClient, options: {
   pipelineId: string; trigger: string; report: Report; repoId: string; openIssues?: Payload['openIssues']
-  once?: string; startedBy?: string
+  once?: string; startedBy?: string; sender?: string
 }): Promise<string | null> {
   const pipeline = await maybe<{ team_id: string; name: string; current_version_id: string; conversation_id: string | null; source: string }>(client,
     `select p.team_id, p.name, p.current_version_id, p.conversation_id, v.source
@@ -162,7 +165,7 @@ export async function startRun(client: pg.PoolClient, options: {
       pipeline.conversation_id, options.trigger])
   await client.query('insert into task_repos (task_id, repo_id, is_primary) values ($1, $2, true)', [task.id, options.repoId])
   await placeTask(client, task.id)
-  const payload: Payload = { report: options.report, repoId: options.repoId, openIssues: options.openIssues ?? [], once: options.once }
+  const payload: Payload = { report: options.report, repoId: options.repoId, openIssues: options.openIssues ?? [], once: options.once, sender: options.sender }
   const run = await one<{ id: string }>(client, 'the new run',
     `insert into runs (team_id, pipeline_version_id, task_id, trigger, trigger_payload)
      values ($1, $2, $3, $4, $5) returning id`,
@@ -788,6 +791,7 @@ async function openPullRequest(client: pg.PoolClient, run: Run, pipeline: Pipeli
   const repo = await repoOf(client, run)
   const ctx = await context(client, run, rows, row)
   try {
+    await checkAsker(repo, run.trigger_payload.sender)
     // On a repo with a policy the pull request is the commit the gates judged,
     // and its description is the runner's evidence, with the agent's summary in it.
     const governed = await framework.policyOf(client, run)

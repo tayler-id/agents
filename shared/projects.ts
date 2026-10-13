@@ -49,13 +49,26 @@ export const RepoRequestRow = z.discriminatedUnion('status', [
 ])
 export type RepoRequestRow = z.infer<typeof RepoRequestRow>
 
-// Whether GitHub is set up on the server, and whether an admin connected it.
-// Never the token.
+// A person's own GitHub sign-in on this server. Never the token.
+export const YourGithub = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('none') }),
+  // Waiting for the person to enter the code on GitHub's device page.
+  z.object({ state: z.literal('waiting'), userCode: z.string(), verificationUri: z.string(), expiresAt: z.string() }),
+  // The last sign-in ended without a token, for this reason.
+  z.object({ state: z.literal('stopped'), reason: z.string() }),
+  z.object({ state: z.literal('connected'), login: z.string(), savedAt: z.string() }),
+])
+export type YourGithub = z.infer<typeof YourGithub>
+
+// GitHub on this server, as one person sees it: off until the server's settings
+// name it, then whether people can sign in, the person's own sign-in, and the
+// stopgap token's account if an admin set one.
 export const GithubStatus = z.discriminatedUnion('state', [
-  // The server's settings leave GitHub off. `missing` names the settings to add.
+  // `missing` names the settings to add.
   z.object({ state: z.literal('off'), missing: z.array(z.string()) }),
-  z.object({ state: z.literal('disconnected') }),
-  z.object({ state: z.literal('connected'), login: z.string(), owner: z.string(), ownerKind: z.enum(['org', 'user']), savedAt: z.string() }),
+  z.object({
+    state: z.literal('on'), signIn: z.boolean(), you: YourGithub, stopgap: z.object({ login: z.string(), owner: z.string() }).nullable(),
+  }),
 ])
 export type GithubStatus = z.infer<typeof GithubStatus>
 
@@ -81,17 +94,21 @@ export const ReposOverview = z.object({ github: GithubStatus, repos: z.array(Rep
 export type ReposOverview = z.infer<typeof ReposOverview>
 
 // Request bodies.
+// `owner` is the GitHub organization or account the repo goes under. Left out,
+// it is the person's own account, or the stopgap's organization.
 export const NewProjectBody = z.object({
   name: z.string().trim().min(1, 'A project needs a name.').max(PROJECT_NAME_MAX),
   description: z.string().trim().max(300),
   people: z.array(z.string()),
   agents: z.array(z.string()),
+  owner: GithubOwner.optional(),
 })
 export type NewProjectBody = z.infer<typeof NewProjectBody>
 // A GitHub repo by name, made if it does not exist, or a team repo that belongs to no project.
-export const AddRepoBody = z.union([z.object({ name: RepoName }), z.object({ repoId: RepoId })])
+export const AddRepoBody = z.union([z.object({ name: RepoName, owner: GithubOwner.optional() }), z.object({ repoId: RepoId })])
 export type AddRepoBody = z.infer<typeof AddRepoBody>
-export const ConnectGithubBody = z.object({ owner: GithubOwner, token: GithubToken })
+// The stopgap: an admin's personal access token for the whole team.
+export const StopgapBody = z.object({ owner: GithubOwner, token: GithubToken })
 
 // Responses.
 export const NewProjectResult = z.object({ projectId: ProjectId, conversationId: z.uuid(), requestId: RepoRequestId })

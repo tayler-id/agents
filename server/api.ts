@@ -29,10 +29,10 @@ import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
 import { forgeFor, reposOverview, type RepoOnForge } from './repos.ts'
-import { connectGithub, githubStatus } from './github.ts'
+import { githubStatus, setStopgap, signOut, startSignIn } from './github-auth.ts'
 import { startGithubWorker } from './github-worker.ts'
-import { addRepoToProject, createProject, retryRepoRequest } from './projects.ts'
-import { AddRepoBody, ConnectGithubBody, NewProjectBody, ProjectId, RepoRequestId } from '../shared/projects.ts'
+import { addRepoToProject, askGithub, createProject, retryRepoRequest } from './projects.ts'
+import { AddRepoBody, NewProjectBody, ProjectId, RepoRequestId, StopgapBody } from '../shared/projects.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
@@ -468,20 +468,32 @@ const routes: Route[] = [
   }],
 
   // Every repo of the team, with what its forge says is open on it.
-  ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview((await personFrom(req)).team_id)],
+  ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview(await personFrom(req))],
 
-  // Whether GitHub is connected, and to which account and organization. Never the token.
-  ['people', 'GET', /^\/v1\/github$/, async (req) => {
-    await personFrom(req)
-    return githubStatus()
+  // Whether GitHub is set up, and the person's own sign-in. Never a token.
+  ['people', 'GET', /^\/v1\/github$/, async (req) => githubStatus((await personFrom(req)).id)],
+
+  // Signs the person in with GitHub's device flow. The answer has the code they enter on GitHub.
+  ['people', 'POST', /^\/v1\/github\/sign-in$/, async (req) => {
+    const person = await personFrom(req)
+    await askGithub(() => startSignIn(person.id))
+    return githubStatus(person.id)
   }],
 
-  ['people', 'POST', /^\/v1\/github$/, async (req) => {
+  ['people', 'POST', /^\/v1\/github\/sign-out$/, async (req) => {
     const person = await personFrom(req)
-    if (!(await isAdmin(person))) throw new HttpError(403, 'Only an admin can connect GitHub.')
-    const body = await parseBody(req, ConnectGithubBody)
-    // connectGithub's refusals are written for the admin to act on.
-    return connectGithub(body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
+    signOut(person.id)
+    return githubStatus(person.id)
+  }],
+
+  // The stopgap until people sign in: an admin's personal access token for the whole team.
+  ['people', 'POST', /^\/v1\/github\/token$/, async (req) => {
+    const person = await personFrom(req)
+    if (!(await isAdmin(person))) throw new HttpError(403, 'Only an admin can set the stopgap token.')
+    const body = await parseBody(req, StopgapBody)
+    // setStopgap's refusals are written for the admin to act on.
+    await setStopgap(body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
+    return githubStatus(person.id)
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {

@@ -6,7 +6,8 @@
 import type pg from 'pg'
 import { maybe, one, pool, tx } from './db.ts'
 import { ForgeError, repoPath } from './forge.ts'
-import { connectedOwner, explainGithub, github, githubRemoteUrl, type GithubRepo } from './github.ts'
+import { explainGithub, github, githubRemoteUrl, type GithubRepo } from './github.ts'
+import { defaultOwner, type Who } from './github-auth.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { createRoom } from './rooms.ts'
 import {
@@ -15,8 +16,8 @@ import {
 } from '../shared/projects.ts'
 
 // A call to GitHub made while a person waits. Its failure reaches them with
-// GitHub's reason: 503 when GitHub is off or not connected, 502 otherwise.
-async function askGithub<T>(work: () => Promise<T>): Promise<T> {
+// GitHub's reason: 503 when GitHub is off or no sign-in reaches it, 502 otherwise.
+export async function askGithub<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work()
   } catch (error) {
@@ -66,8 +67,8 @@ async function projectOf(person: Person, projectId: ProjectId) {
 export async function createProject(person: Person, body: NewProjectBody) {
   const name = RepoName.safeParse(repoNameFor(body.name))
   if (!name.success) throw new HttpError(400, 'A project name needs a letter or a digit, which its repo is named after.')
-  const owner = await askGithub(async () => connectedOwner())
-  const taken = await askGithub(() => github.repo(owner, name.data))
+  const owner = body.owner ?? await askGithub(() => defaultOwner(person.id))
+  const taken = await askGithub(() => github.repo({ person: person.id }, owner, name.data))
   if (taken) {
     throw new HttpError(409, `${taken.full_name} already exists on GitHub. Name the project differently, or add that repo to a project from the project's page.`)
   }
@@ -84,18 +85,24 @@ export async function createProject(person: Person, body: NewProjectBody) {
   return made
 }
 
-// Asks GitHub for a requested repo, made if missing, and records it. The request
-// stays locked while GitHub is asked, so two servers never ask for one repo at
-// once, and a try that finds it taken or settled does nothing.
+// Asks GitHub for a requested repo, made if missing, and records it. GitHub is
+// asked as the person who asked for the repo, whose sign-in the repo's calls use
+// from then on. The request stays locked while GitHub is asked, so two servers
+// never ask for one repo at once, and a try that finds it taken or settled does nothing.
 export async function fulfillRepoRequest(requestId: RepoRequestId): Promise<void> {
   await tx(async (client) => {
-    const request = await maybe<{ team_id: string; project_id: ProjectId; owner: string; name: RepoName; description: string }>(client,
-      `select team_id, project_id, owner, name, description from repo_requests where id = $1 and status = 'creating' for update skip locked`,
-      [requestId])
+    const request = await maybe<{ team_id: string; project_id: ProjectId; owner: string; name: RepoName; description: string; requested_by: string | null }>(client,
+      `select team_id, project_id, owner, name, description, requested_by from repo_requests
+       where id = $1 and status = 'creating' for update skip locked`, [requestId])
     if (!request) return
+    if (!request.requested_by) {
+      await move(client, requestId, { to: 'failed', error: 'The person who asked for this repo has left the team. Try again to ask for it yourself.' })
+      return
+    }
+    const who: Who = { person: request.requested_by }
     let repo: GithubRepo
     try {
-      repo = await github.repo(request.owner, request.name) ?? await github.createRepo(request.owner, request.name, request.description)
+      repo = await github.repo(who, request.owner, request.name) ?? await github.createRepo(who, request.owner, request.name, request.description)
     } catch (error) {
       // GitHub said no or could not be reached. The request keeps the reason, and
       // Try again starts over. Failures after this point are Postgres's, and leave
@@ -114,11 +121,14 @@ export async function fulfillRepoRequest(requestId: RepoRequestId): Promise<void
   })
 }
 
+// Whoever tries a failed request again asks for the repo as themselves from then on.
 export async function retryRepoRequest(person: Person, requestId: RepoRequestId) {
   const moved = await tx(async (client) => {
     const owned = await maybe(client, 'select 1 from repo_requests where id = $1 and team_id = $2', [requestId, person.team_id])
     if (!owned) throw new HttpError(404, 'no such repo request')
-    return move(client, requestId, { to: 'creating' })
+    const retried = await move(client, requestId, { to: 'creating' })
+    if (retried) await client.query('update repo_requests set requested_by = $2 where id = $1', [requestId, person.id])
+    return retried
   })
   if (!moved) throw new HttpError(409, 'Only a request that failed can be tried again.')
   await fulfillRepoRequest(requestId)
@@ -134,7 +144,7 @@ export async function addRepoToProject(person: Person, projectId: ProjectId, bod
     if (!rowCount) throw new HttpError(409, "That repo isn't one of the team's repos without a project.")
     return { repoId: body.repoId }
   }
-  const owner = await askGithub(async () => connectedOwner())
+  const owner = body.owner ?? await askGithub(() => defaultOwner(person.id))
   const requestId = await tx((client) => requestRepo(client, person, project.id, owner, body.name, project.description)).catch(refuseDuplicate)
   await fulfillRepoRequest(requestId)
   return { requestId }
