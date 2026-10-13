@@ -116,3 +116,98 @@ Durability, in `server/migrations/0010_durability.sql`. The design is `docs/desi
 - **`asks.request_ended_at`.** An approval is answered through the harness request that raised it, and the request dies with its process. This is when that happened without the decision reaching it, set when the machine restarts, on an ask still open and on one whose decision was not yet delivered. A resumed session that asks again for the same tool and input takes over the ask, and a decision already given reaches it at once. When the turn ends, an ask still open, or one whose kept decision nobody took up, expires. Null while the request is alive or has its answer.
 - **Recovery's events name their messages.** No schema change. An interrupted notice lists the message commands it cut off in `body.messages`, and recovery counts those notices to stop resuming a turn after three restarts. The text a resumed session is sent is a `user` event with no author and `body.resumes`, which the task page leaves out of its transcript.
 - **Session status `lost`, used.** The agreed status now means a turn was in flight when its machine stopped, and nothing is working on it. The server sets it when the machine restarts or stops answering. No new value.
+
+Coach and improve learn from checked evidence, in `server/migrations/0012_evidence.sql`. The design is `docs/design/evidence.md`.
+
+- **`session_reads`, new.** How far each session has been read for evidence, so each event is read once.
+
+  | Column | Type | What it holds |
+  |---|---|---|
+  | session_id | uuid, key | The session |
+  | team_id | uuid | |
+  | read_to_seq | bigint | The last step read |
+  | run_id | uuid, optional | The run that read it |
+  | read_at | time | |
+
+- **`candidates`, new.** A correction no rule covers, with the gap findings that carry it. It persists across runs, and code counts it from its live findings each time.
+
+  | Column | Type | What it holds |
+  |---|---|---|
+  | id | uuid, key | |
+  | team_id | uuid | |
+  | agent_id | uuid | The agent it is about |
+  | correction | text | The rule that would have prevented it, as the reader first put it |
+  | status | text | open, merged into another, or closed once a hunk for it was kept |
+  | merged_into | uuid, optional | Set when merged |
+  | run_id | uuid, optional | The run that first saw it |
+  | created_at | time | |
+
+- **`session_findings`, new.** A finding code kept: an exact quote, the event it came from, and what it shows. About an agent, or about a pipeline.
+
+  | Column | Type | What it holds |
+  |---|---|---|
+  | id | uuid, key | |
+  | team_id | uuid | |
+  | agent_id, pipeline_id | uuid, one of them | What the evidence is about |
+  | session_id | uuid | The session read |
+  | event_id | bigint | The event quoted |
+  | seq | bigint | Its step in the session |
+  | kind | text | followed, ignored, harm or gap |
+  | quote | text | Found in the event's stored text |
+  | rule_hash, rule_text | text, optional | The agent's rule a followed, ignored or harm finding is about |
+  | candidate_id | uuid, optional | The candidate an agent's gap belongs to |
+  | note | text, optional | The correction for a gap, or what went wrong in a pipeline run |
+  | fix | text, optional | For a gap: check when a lint rule, type or check could catch it, else text |
+  | trigger | text, optional | For a narrow gap: when it applies |
+  | source | text | person, pipeline or box, counted apart |
+  | person_id | uuid, optional | Who made the correction, when a person did |
+  | occasion | uuid | The session, or the run a stage session belongs to |
+  | seen_at | time | The event's time. A finding counts for 90 days from it. |
+  | run_id | uuid, optional | The run that recorded it |
+
+  One row per subject, event, kind, rule and candidate, so a finding read twice is one finding.
+
+- **`proposal_hunks`, new.** The hunks of a proposal. The server computed each one's text and diff. Each cites finding ids, and holds the decision on it, which is the team's memory.
+
+  | Column | Type | What it holds |
+  |---|---|---|
+  | id | uuid, key | |
+  | team_id | uuid | |
+  | proposal_id | uuid | |
+  | n | int | Its place in the proposal |
+  | target | text | instructions, skill, profile, check or pipeline |
+  | op | text | add, change or delete |
+  | rule_hash | text, optional | The rule an instructions change or delete touches, or the one an add follows |
+  | skill_name, skill_description | text, optional | For a skill hunk |
+  | person_id | uuid, optional | For a profile hunk |
+  | before, after, diff | text | The text it replaces, the text it writes, and the diff |
+  | content_hash | text | sha256 of before |
+  | finding_ids | uuid[] | The findings it cites |
+  | occasions | int | Distinct occasions behind them |
+  | counts | jsonb | Sessions by source, and people |
+  | evidence | jsonb | The cited findings as they read when proposed |
+  | decision | text, optional | accepted or rejected |
+  | reason | text, optional | Why |
+  | decided_by | uuid, optional | Who, or none when nobody did |
+  | decided_at | time, optional | |
+
+- **`session_replays`, new.** One replay of one turn, scoring a coach proposal.
+
+  | Column | Type | What it holds |
+  |---|---|---|
+  | id | uuid, key | |
+  | team_id | uuid | |
+  | proposal_id | uuid | |
+  | kind | text | behind, a case behind the change, or unrelated |
+  | variant | text | change or current |
+  | source_session_id | uuid | The session replayed |
+  | upto_seq | bigint | The step the replay answers |
+  | finding_id | uuid, optional | The finding a case behind the change checks |
+  | label | text | What the judge sees instead of the variant |
+  | task_id, session_id | uuid | The replay's task and session |
+  | status | text | running, replied or failed |
+  | reply | text, optional | The replayed reply |
+  | verdict | text, optional | fixed, still, ok or worse |
+  | created_at, replied_at | time | |
+
+- **`proposals.target` gains `agent`.** A coach proposal's hunks touch one agent's instructions, skills, profiles and checks. The targets `instructions` and `skill` stay for proposals already made.
