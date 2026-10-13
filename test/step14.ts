@@ -654,7 +654,7 @@ try {
     await post(`/v1/asks/${must(first, 'the research gate').id}/answer`, { decision: 'reject', message: 'Name the function too.' })
     const second = await askAt(runId, 'review_research', first?.id)
     const prompts = await all<{ text: string }>(
-      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' limit 1) order by e.seq`, [runId])
+      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' and session_id is not null order by n limit 1) order by e.seq`, [runId])
     check(second && prompts[1]?.text.includes('Name the function too.') && prompts[1].text.includes('- On "checkout.js": Which function?')
       && (await documentOf(runId, 'research.md'))?.current_version === 2,
     'sending research back gives the agent the note and each comment with its quote, and it writes a second version')
@@ -692,7 +692,7 @@ try {
     const handoff = await openAsk(touch.runId)
     const touched = (await stagesOf(touch.runId)).filter((s) => s.stage === 'research_untouched')
     const retry = await one<{ text: string }>(
-      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' limit 1) order by e.seq offset 1 limit 1`, [touch.runId])
+      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' and session_id is not null order by n limit 1) order by e.seq offset 1 limit 1`, [touch.runId])
     check(handoff?.payload.question.includes('research has run 3 times') && touched.length === 3 && touched.every((s) => s.outcome === 'fails' && s.summary?.includes('oops.txt'))
       && retry?.text.includes('The runner found changes'),
     'research that changes code fails the runner\'s check, goes back to the agent, and reaches a person after three tries')
