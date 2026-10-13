@@ -24,7 +24,7 @@ import pg from 'pg'
 import WebSocket from 'ws'
 import { must } from './must.ts'
 import {
-  ROOT, IMAGE, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, F2, within, docker, tryDocker, boxCheckEnv, computerTools, textOf, imageOf, pngSize, pageSays,
+  ROOT, IMAGE, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, F2, within, docker, tryDocker, boxCheckEnv, computerTools, textOf, imageOf, pngSize, pageSays, stopAll,
 } from './computers.ts'
 
 const PEOPLE_PORT = 7980
@@ -43,6 +43,10 @@ const work = join(homedir(), '.agents-app', 'checks', `comp-${id}`)
 const LATENCY_TRIALS = 20
 // The longest a key press may take to show before the check calls the path broken.
 const LATENCY_LIMIT_MS = 1000
+// How long one F2 press may take to change the square before its trial gives up.
+const KEY_SHOWS_MS = 3000
+// docker stats samples about once a second, so this gives five or six samples.
+const IDLE_SAMPLE_MS = 6000
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
@@ -167,7 +171,7 @@ try {
   })
   check(screenUp, `the box comes online and reports a ${SCREEN.width}x${SCREEN.height} screen`)
   if (!screenUp) throw new Error('the box never reported a screen, so nothing after this can run')
-  const idle = await measure(container, () => sleep(6000))
+  const idle = await measure(container, () => sleep(IDLE_SAMPLE_MS))
   console.log(`      idle box with its desktop and an open browser: ${idle.last} MiB, CPU up to ${idle.cpu}%`)
 
   // A person watches: the API asks the box for a tunnel and joins the two.
@@ -268,7 +272,11 @@ try {
   const status = await tools.callTool({ name: 'screen_status', arguments: {} })
   check((status.structuredContent as any)?.control?.login === alice, 'screen_status tells the agent who has the screen')
 
-  // Only the holder's keys reach the box.
+  // Only the holder's keys and clicks reach the box. Alice types, then bob types
+  // and clicks. Xvnc reads each connection's messages in order and answers a
+  // request for the screen only after reading what came before it, so once it
+  // answers bob's, whatever of his got through is queued ahead of alice's F2
+  // presses below, which wait until the page has taken them.
   const typeKeys = (screen: Awaited<ReturnType<typeof RfbClient.connect>>, text: string) => {
     for (const char of text) {
       screen.send(keyEvent(char.charCodeAt(0), true))
@@ -278,7 +286,9 @@ try {
   typeKeys(aliceScreen, '!!')
   typeKeys(bobScreen, '??')
   bobScreen.send(pointerEvent(10, 10, 1))
-  await sleep(1500)
+  bobScreen.send(pointerEvent(10, 10, 0))
+  // Bob's view has no request outstanding, since connecting asked once and was answered.
+  await bobScreen.refresh(false)
 
   // Latency: alice presses F2 and waits for the square's pixels to change.
   const squareX = SQUARE.left + SQUARE.size / 2
@@ -290,9 +300,9 @@ try {
     const started = performance.now()
     aliceScreen.send(keyEvent(F2, true))
     aliceScreen.send(keyEvent(F2, false))
-    const deadline = started + 3000
+    const deadline = started + KEY_SHOWS_MS
     while (aliceScreen.pixel(squareX, squareY).r === before && performance.now() < deadline) {
-      await Promise.race([aliceScreen.refresh(true), sleep(3000)])
+      await Promise.race([aliceScreen.refresh(true), sleep(KEY_SHOWS_MS)])
     }
     latencies.push(performance.now() - started)
   }
@@ -308,8 +318,14 @@ try {
   check(handed.status === 200 && handed.json?.control?.holder === 'agent' && !after.isError
     && (after.structuredContent as any)?.personUsedScreen === alice && textOf(after).includes(`${alice} used the screen since your last action`),
   'after alice hands back, the agent acts again and is told she used the screen')
+  // Alice types after handing back. Once Xvnc answers her request for the
+  // screen, the agent types, so any of her keys that got through reach the page
+  // before the agent's. Her view has no request outstanding, since each F2 press
+  // above ended with an answer.
   typeKeys(aliceScreen, '##')
-  await sleep(1500)
+  await aliceScreen.refresh(false)
+  await tools.callTool({ name: 'computer', arguments: { action: 'type', text: ' ok' } })
+  check(await within(10, async () => (await pageSays(tools)).endsWith(' ok')), "the agent's typing reaches the page again after the hand-back")
   const final = await pageSays(tools)
   check(final.startsWith('typed:héllo from the agent ✓!!'), `alice's typing reached the page while she held the screen (${final})`)
   check(!final.includes('?'), "bob's typing never reached the page while alice held the screen")
@@ -368,8 +384,7 @@ try {
   console.error(`FAIL  ${(error as Error).stack}`)
 } finally {
   for (const close of closers) await Promise.resolve(close()).catch(() => undefined)
-  for (const child of children) child.kill('SIGTERM')
-  await sleep(1000)
+  await stopAll(children)
   // Boxes are removed whatever happened, or they would keep calling a closed port.
   const boxes = await db.query(`select i.id from instances i join teams t on t.id = i.team_id where t.name = $1 and i.kind = 'box'`, [team]).catch(() => ({ rows: [] }))
   for (const { id: boxId } of boxes.rows) {

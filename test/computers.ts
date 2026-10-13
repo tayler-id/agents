@@ -2,7 +2,8 @@
 // the page its browser shows, the environment their API and box run with, and
 // the agent's computer tools, started the way Claude Code starts them.
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -41,6 +42,16 @@ export async function within(seconds: number, test: () => Promise<unknown>): Pro
     await sleep(300)
   }
   return false
+}
+
+// Stops the processes a check started and waits until each has exited.
+export async function stopAll(children: ChildProcess[]) {
+  await Promise.all(children.map(async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const exited = once(child, 'exit')
+    child.kill('SIGTERM')
+    await exited
+  }))
 }
 
 export const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim()

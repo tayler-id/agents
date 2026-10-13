@@ -17,12 +17,11 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { must } from './must.ts'
-import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, tryDocker, boxCheckEnv, computerTools, pageSays } from './computers.ts'
+import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, tryDocker, boxCheckEnv, computerTools, pageSays, stopAll } from './computers.ts'
 
 const SHOTS = join(ROOT, 'test', 'ui-shots')
 const PEOPLE_PORT = 7982
@@ -48,6 +47,8 @@ const work = join(homedir(), '.agents-app', 'checks', `comp-ui-${id}`)
 const LATENCY_TRIALS = 10
 // The longest a key press may take to show before the check calls the path broken.
 const LATENCY_LIMIT_MS = 1000
+// How long one F2 press may take to change the square before its trial gives up.
+const KEY_SHOWS_MS = 3000
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
@@ -149,25 +150,28 @@ async function runEngine(engine: string, taskId: string, sessionId: string, inst
     const square = { x: SQUARE.left + SQUARE.size / 2, y: toolbar + SQUARE.top + SQUARE.size / 2 }
     const latencies: number[] = []
     for (let i = 0; i < LATENCY_TRIALS; i++) {
-      const measured = page.evaluate(([x, y]) => new Promise<number>((resolve) => {
+      // The page starts watching the square before the key goes out, and writes
+      // on the body how long the change took to show, or -1 if it never did.
+      await page.evaluate(([x, y, limit]) => {
+        delete document.body.dataset.latency
         const canvas = document.querySelector('.screen canvas')
-        if (!(canvas instanceof HTMLCanvasElement)) return resolve(-1)
-        const context = canvas.getContext('2d')
-        const red = () => context?.getImageData(x, y, 1, 1).data[0]
+        const context = canvas instanceof HTMLCanvasElement ? canvas.getContext('2d') : null
+        if (!context) throw new Error('the Screen view has no canvas to read')
+        const red = () => context.getImageData(x, y, 1, 1).data[0]
         const before = red()
         let pressed = 0
         window.addEventListener('keydown', () => { pressed = performance.now() }, { once: true, capture: true })
-        const deadline = performance.now() + 3000
+        const deadline = performance.now() + limit
         const look = () => {
-          if (pressed && red() !== before) return resolve(performance.now() - pressed)
-          if (performance.now() > deadline) return resolve(-1)
-          requestAnimationFrame(look)
+          if (pressed && red() !== before) document.body.dataset.latency = String(performance.now() - pressed)
+          else if (performance.now() > deadline) document.body.dataset.latency = '-1'
+          else requestAnimationFrame(look)
         }
         look()
-      }), [square.x, square.y] as const)
-      await sleep(50)
+      }, [square.x, square.y, KEY_SHOWS_MS] as const)
       await page.keyboard.press('F2')
-      latencies.push(await measured)
+      const shownIn = await page.waitForFunction(() => document.body.dataset.latency)
+      latencies.push(Number(await shownIn.jsonValue()))
     }
     const shown = latencies.filter((ms) => ms >= 0).sort((a, b) => a - b)
     const median = shown[Math.floor(shown.length / 2)] ?? Infinity
@@ -270,8 +274,7 @@ try {
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)
 } finally {
   for (const close of closers) await close().catch(() => undefined)
-  for (const child of children) child.kill('SIGTERM')
-  await sleep(1000)
+  await stopAll(children)
   // Boxes are removed whatever happened, or they would keep calling a closed port.
   const boxes = await db.query(`select i.id from instances i join teams t on t.id = i.team_id where t.name = $1 and i.kind = 'box'`, [team]).catch(() => ({ rows: [] }))
   for (const { id: boxId } of boxes.rows) {
