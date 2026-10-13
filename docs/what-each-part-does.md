@@ -331,6 +331,25 @@ The design is `docs/design/durability.md`.
 
 - **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
 
+## Agent computers
+
+The design is `docs/design/computers.md`.
+
+### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
+
+- **Solves now.** Every box has a desktop: TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume, so logins survive a restart. The daemon starts all three and restarts any that exits. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download.
+- **Helps later.** Each developer's own box and the AWS host use the same image. Another screen size is one environment variable.
+
+### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`)
+
+- **Solves now.** Every session in a box gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first.
+- **Helps later.** The Mac helper in the design can serve the same tools through the same socket.
+
+### Checking their own work (`daemon/computer-guide.ts`)
+
+- **Solves now.** A session on a machine with a screen is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
+- **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

@@ -7,7 +7,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -17,6 +17,7 @@ import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
+import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
 import { MessagePayload, PUSH_PAYLOAD, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
@@ -29,12 +30,18 @@ import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
 import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
+import { startDesktop, type Desktop } from './desktop.ts'
+import { startScreenService, type ScreenService } from './screen.ts'
+import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL } from './computer-guide.ts'
 
 const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
 const STAGE_MCP = fileURLToPath(new URL('./stage-mcp.ts', import.meta.url))
+const COMPUTER_MCP = fileURLToPath(new URL('./computer-mcp.ts', import.meta.url))
+// The screen's sockets, outside the home volume, which outlives the container.
+const SCREEN_DIR = join(tmpdir(), 'agents-screen')
 // Every agent is told about the shared record, so it looks for teammates' work first.
 const TEAM_RECORD_GUIDE = "You work on a team. Everything you and your teammates' agents say and do goes into a "
   + 'shared team record. Before you start on a problem, use the team-record tool search_record to look for related '
@@ -97,6 +104,46 @@ const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
 
+// A box's image sets AGENTS_DESKTOP to the screen's size, with the browsers and
+// Playwright's MCP server beside it. A machine without it, such as a Mac, has no
+// desktop for agents.
+const DesktopEnv = z.object({
+  AGENTS_DESKTOP: ScreenSizeText,
+  PLAYWRIGHT_BROWSERS_PATH: z.string().min(1),
+  AGENTS_BROWSER_MCP: z.string().min(1),
+})
+function desktopEnv(): z.infer<typeof DesktopEnv> | null {
+  if (process.env.AGENTS_DESKTOP === undefined) return null
+  const parsed = DesktopEnv.safeParse(process.env)
+  if (!parsed.success) {
+    console.error(`agentsd: AGENTS_DESKTOP is set, but ${z.prettifyError(parsed.error)}`)
+    process.exit(2)
+  }
+  return parsed.data
+}
+const desktopConfig = desktopEnv()
+const desktop: Desktop | null = desktopConfig && startDesktop({
+  size: desktopConfig.AGENTS_DESKTOP, runDir: SCREEN_DIR, profileDir: join(HOME, 'browser'), browsersPath: desktopConfig.PLAYWRIGHT_BROWSERS_PATH,
+})
+// Set once the desktop is up: the size the heartbeat reports, the service
+// sessions' `computer` servers talk to, and what those servers need.
+type Screen = { size: ScreenSize; service: ScreenService; socket: string; cdpUrl: string; browserMcp: string }
+let screen: Screen | null = null
+if (desktop && desktopConfig) {
+  desktop.ready.then(() => {
+    const socket = join(SCREEN_DIR, 'agent.sock')
+    screen = {
+      size: desktop.size, socket, cdpUrl: desktop.cdpUrl, browserMcp: desktopConfig.AGENTS_BROWSER_MCP,
+      service: startScreenService({ desktop, socketPath: socket }),
+    }
+    console.log(`desktop up at ${desktop.size.width}x${desktop.size.height}`)
+  }, (error: unknown) => {
+    // The supervisors keep trying to start what failed. Until the daemon starts
+    // again the machine reports no screen, so the app offers none.
+    console.error(`desktop: ${messageOf(error)}`)
+  })
+}
+
 class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -149,7 +196,9 @@ function agentHome(agentId: string): string {
 // The session's MCP config: the team-record tools, acting as this session, and
 // for a pipeline stage the report_result tool. The file holds the machine's
 // token, so only this user can read it.
-function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>): string {
+// On a machine with a screen it adds the `computer` server, and in a task's
+// session tells it the task folder, where saved screenshots become documents.
+function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null): string {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = { ...plugins }
@@ -157,6 +206,15 @@ function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Rec
     servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
   }
   if (stage) servers.stage = { command: process.execPath, args: [STAGE_MCP], env: { AGENTS_STAGE_OUTCOMES: JSON.stringify(stage.outcomes) } }
+  if (computer) {
+    servers[COMPUTER_SERVER] = {
+      command: process.execPath, args: [COMPUTER_MCP],
+      env: {
+        AGENTS_SCREEN_SOCKET: computer.socket, AGENTS_BROWSER_MCP: computer.browserMcp, AGENTS_BROWSER_CDP: computer.cdpUrl,
+        ...(taskFolder ? { AGENTS_TASK_FOLDER: taskFolder } : {}),
+      },
+    }
+  }
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 })
   return file
 }
@@ -262,13 +320,22 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     throw new Error(`this machine has no value for ${[...new Set(plugins.missing)].join(', ')}, which the agent's plugins need. `
       + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
-  if (payload.skills) writeSkills(cwd, payload.skills)
+  // A machine with a screen gives every session its computer, the standing
+  // instructions to check work on it, and the verify-work skill, unless the agent
+  // has a skill of that name itself.
+  const computer = screen
+  const agentSkills = payload.skills ?? []
+  const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
+  if (skills) writeSkills(cwd, skills)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
-    instructions: [TEAM_RECORD_GUIDE, payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
-    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
+    instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
+    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null),
     // A judge's session gets no team-record tools, so it cannot read the author's session.
-    allowedTools: [...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
+    allowedTools: [
+      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : []),
+      ...(computer ? COMPUTER_TOOLS_ALLOWED : []),
+    ],
     acceptEdits: payload.permissions.workspaceWrites,
     // A server before this release sends a stage's budget only in the stage.
     maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
@@ -369,7 +436,9 @@ function inOrder(sessionId: string, work: () => Promise<void>) {
 
 async function heartbeat() {
   while (!stopping) {
-    await api('POST', '/v1/instance/heartbeat', { status: 'online' }).catch((error: unknown) => { console.error(messageOf(error)) })
+    // The screen's size, once the desktop is up, so the app offers the Screen view.
+    const beat: Heartbeat = { status: 'online', screen: screen ? screen.size : null }
+    await api('POST', '/v1/instance/heartbeat', beat).catch((error: unknown) => { console.error(messageOf(error)) })
     await sleep(HEARTBEAT_SEC * 1000)
   }
 }
@@ -596,6 +665,8 @@ async function shutdown() {
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)
+  await screen?.service.stop()
+  await desktop?.stop()
   await api('POST', '/v1/instance/heartbeat', { status: 'offline' }).catch(() => {})
   process.exit(0)
 }
