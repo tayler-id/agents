@@ -69,7 +69,7 @@ function check(ok: unknown, label: string) {
 function envWith(extra: Record<string, string>): NodeJS.ProcessEnv {
   return {
     ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('AGENTS_GITHUB_'))),
-    PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}`, ...extra,
+    PATH: `${dirname(process.execPath)}:${must(process.env.PATH, 'a PATH')}`, ...extra,
   }
 }
 

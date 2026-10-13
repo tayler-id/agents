@@ -16,7 +16,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import pg from 'pg'
@@ -113,9 +113,14 @@ const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, 
 const all = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows
 
 // The environment for a process this check starts: the check's own, never
-// GitHub's settings from it, plus the ones given.
+// GitHub's settings from it, plus the ones given. The Node running this check
+// comes first on PATH, so the fake Claude, started by its #! line, runs on it
+// and not on a Node that can't load the native packages.
 function envWith(extra: Record<string, string>): NodeJS.ProcessEnv {
-  return { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('AGENTS_GITHUB_'))), ...extra }
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('AGENTS_GITHUB_'))),
+    PATH: `${dirname(process.execPath)}:${must(process.env.PATH, 'a PATH')}`, ...extra,
+  }
 }
 
 // Runs a command to its end without blocking, since the fake GitHub it may talk
