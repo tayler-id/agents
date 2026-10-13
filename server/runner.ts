@@ -841,7 +841,7 @@ export function startRunner() {
         }
         await withClient((client) => expireTurns(client, teams)).catch(logged('turns'))
         await finishPushes(teams).catch(logged('pull requests'))
-        await withClient((client) => markLostMachines(client, teams)).catch(logged('lost machines'))
+        await markLostMachines(teams).catch(logged('lost machines'))
         const rows = await many<{ id: string }>(pool,
           `select id from runs where status in ('queued', 'running', 'waiting') and ($1::uuid[] is null or team_id = any($1))
            order by created_at`, [teams])

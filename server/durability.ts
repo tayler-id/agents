@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { many } from './db.ts'
+import { many, pool, tx } from './db.ts'
 import {
   MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, messageState, moveMessage, WORKING, type CommandStatus,
 } from '../shared/lifecycle.ts'
@@ -105,26 +105,33 @@ const STOPPED_ANSWERING = 'The machine running this session stopped answering.'
 // Marks a machine that has stopped answering stale, and each working session on
 // it lost, when the session has been quiet as long too. The second condition
 // keeps a box that is still starting from losing the session it is about to run.
-export async function markLostMachines(client: pg.PoolClient, teamIds: string[] | null) {
-  if (Date.now() < WATCHING_FROM) return
-  await client.query(
-    `update instances set status = 'stale' where status = 'online' and last_seen_at < now() - make_interval(secs => $1)
-       and ($2::uuid[] is null or team_id = any($2))`, [LOST_AFTER_SEC, teamIds])
-  const sessions = await many<{ id: string; status: SessionStatus; claimed: boolean }>(client,
-    `select s.id, s.status,
+const LOST_SESSIONS = `select s.id, s.status,
        exists (select 1 from commands c where c.session_id = s.id and c.kind = 'message' and c.status = 'claimed') as claimed
      from sessions s join instances i on i.id = s.instance_id
      where s.status = any($1) and ($3::uuid[] is null or s.team_id = any($3))
        and (i.last_seen_at is null or i.last_seen_at < now() - make_interval(secs => $2))
        and coalesce(s.last_active_at, s.created_at) < now() - make_interval(secs => $2)
-     order by s.id for update of s skip locked`, [WORKING, LOST_AFTER_SEC, teamIds])
-  for (const session of sessions) {
-    if (session.claimed) moveMessage(messageState('claimed', session.status), 'interrupted')
-    await appendEvents(client, session.id, {
-      events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_ANSWERING, body: { subtype: 'interrupted', reason: STOPPED_ANSWERING } }],
-      status: 'lost',
-    })
-  }
+     order by s.id`
+
+export async function markLostMachines(teamIds: string[] | null) {
+  if (Date.now() < WATCHING_FROM) return
+  await pool.query(
+    `update instances set status = 'stale' where status = 'online' and last_seen_at < now() - make_interval(secs => $1)
+       and ($2::uuid[] is null or team_id = any($2))`, [LOST_AFTER_SEC, teamIds])
+  // A transaction's connection has no error listener, so a Postgres restart
+  // during one stops the API. Most ticks find nothing to mark, and look without one.
+  if (!(await many(pool, LOST_SESSIONS, [WORKING, LOST_AFTER_SEC, teamIds])).length) return
+  await tx(async (client) => {
+    const sessions = await many<{ id: string; status: SessionStatus; claimed: boolean }>(client,
+      `${LOST_SESSIONS} for update of s skip locked`, [WORKING, LOST_AFTER_SEC, teamIds])
+    for (const session of sessions) {
+      if (session.claimed) moveMessage(messageState('claimed', session.status), 'interrupted')
+      await appendEvents(client, session.id, {
+        events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_ANSWERING, body: { subtype: 'interrupted', reason: STOPPED_ANSWERING } }],
+        status: 'lost',
+      })
+    }
+  })
 }
 
 const RESTARTED = 'The machine restarted in the middle of this turn.'
