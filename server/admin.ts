@@ -17,6 +17,7 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { text } from 'node:stream/consumers'
 import { maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
@@ -58,11 +59,7 @@ async function addPerson(team: string, login: string, role: 'admin' | 'member') 
   if (!rowCount) throw new Error(`no team ${team}`)
 }
 
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = []
-  for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk)
-  return Buffer.concat(chunks).toString('utf8').trim()
-}
+const readStdin = async (): Promise<string> => (await text(process.stdin)).trim()
 
 const USAGE = [
   'add-team <team> <login>',

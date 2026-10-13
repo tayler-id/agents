@@ -2,7 +2,7 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { runLabel } from './Run.tsx'
 import {
-  act, api, clock, repoName, usePolled, useSnapshot, useSnapshotOf,
+  act, api, clock, messageOf, repoName, usePolled, useSnapshot, useSnapshotOf,
   type Agent, type Artifact, type Conversation, type Me, type Member, type Person, type Pipeline, type Repo, type Run, type Task, type TaskRepo,
 } from './data.ts'
 import { ProjectRow, RepoId, RepoRequestRow, repoNameFor, type GithubStatus, type RepoView } from '../../shared/projects.ts'
@@ -27,7 +27,7 @@ export function GithubConnect({ github, refresh }: { github: GithubStatus | null
     try {
       await api.githubSignIn()
     } catch (e) {
-      setError((e as Error).message)
+      setError(messageOf(e))
     }
     refresh()
   }
@@ -75,7 +75,7 @@ function StopgapForm({ refresh }: { refresh: () => void }) {
       setToken('')
       refresh()
     } catch (e) {
-      setError((e as Error).message)
+      setError(messageOf(e))
     }
   }
   return (
@@ -214,7 +214,7 @@ export function NewProject({ me }: { me: Me }) {
       })
       go({ project: projectId })
     } catch (e) {
-      setError((e as Error).message)
+      setError(messageOf(e))
       setBusy(false)
     }
   }
@@ -308,7 +308,7 @@ function AddRepo({ projectId, repos }: { projectId: string; repos: Repo[] }) {
       setName('')
       setRepoId('')
     } catch (e) {
-      setError((e as Error).message)
+      setError(messageOf(e))
     }
   }
   return (
@@ -352,7 +352,7 @@ function StartProjectRun({ repos }: { repos: Repo[] }) {
       const { runId } = await api.startRun(pipelineId, title.trim(), body.trim(), repoId)
       go({ run: runId })
     } catch (e) {
-      setError((e as Error).message)
+      setError(messageOf(e))
     }
   }
   return (

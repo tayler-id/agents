@@ -16,6 +16,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
+import { z } from 'zod'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { startFakeGithub, type FakeGithub } from './fake-github.ts'
 import { must } from './must.ts'
@@ -234,7 +235,7 @@ try {
   await db.connect()
   execFileSync(process.execPath, ['server/migrate.ts'], { cwd: ROOT, env: envWith({}) })
   admin('add-team', team, owner)
-  const { token } = JSON.parse(admin('add-instance', team, `proj-ui-mac-${id}`, 'mac', owner)) as { token: string }
+  const { token } = z.object({ token: z.string() }).parse(JSON.parse(admin('add-instance', team, `proj-ui-mac-${id}`, 'mac', owner)))
   for (const engine of engines) {
     admin('add-person', team, `proj-ui-alice-${engine}-${id}@local`)
     admin('add-agent', team, `fixer${engine}`, `proj-ui-mac-${id}`, '', 'You fix bugs.')
@@ -260,8 +261,8 @@ try {
   await within(20, async () => (await one('select status from instances where name = $1', [`proj-ui-mac-${id}`]))?.status === 'online')
   for (const engine of engines) await run(engine, fake)
 } catch (error) {
-  failures.push((error as Error).message)
-  console.error(`FAIL  ${(error as Error).stack ?? ''}`)
+  failures.push(error instanceof Error ? error.message : String(error))
+  console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
 } finally {
   for (const child of children) child.kill('SIGTERM')
   await sleep(1000)

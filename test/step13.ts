@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import pg from 'pg'
+import { z } from 'zod'
 import { forge, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { startFakeGithub, type FakeGithub } from './fake-github.ts'
 import { must } from './must.ts'
@@ -391,9 +392,9 @@ try {
     files: [{ operation: 'create', path: 'NOTE.md', content: Buffer.from('note\n').toString('base64') }],
   })
   await forge.openPullRequest(`${giteaOrg}/${SHOP}`, 'task/proj-gitea', 'main', 'A Gitea task', '')
-  const pr = await (await fetch(`${github.url}/repos/${full}/pulls`, {
+  const pr = z.object({ number: z.number(), html_url: z.string() }).parse(await (await fetch(`${github.url}/repos/${full}/pulls`, {
     method: 'POST', headers: { authorization: `Bearer ${stopgapToken}` }, body: JSON.stringify({ head: 'task/proj-check', base: 'main', title: 'A GitHub task' }),
-  })).json() as { number: number; html_url: string }
+  })).json())
   // The list keeps each forge's answer for a second here, so it is read until the new pull requests show.
   let listed: any = null
   await within(10, async () => {
@@ -527,8 +528,8 @@ try {
   check(!tokens.some((t) => apiOutput.includes(t) || answers.some((a) => a.includes(t))), 'no token is in anything the API printed or answered')
   check(realState() === realBefore, "the real server's GitHub tokens were not touched")
 } catch (error) {
-  failures.push((error as Error).message)
-  console.error(`FAIL  ${(error as Error).stack ?? ''}`)
+  failures.push(error instanceof Error ? error.message : String(error))
+  console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
 } finally {
   for (const child of children) child.kill('SIGTERM')
   await sleep(1000)
