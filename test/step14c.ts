@@ -191,7 +191,9 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     await order.getByRole('button', { name: 'Lift hold' }).click()
     check(await visible(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Base work \\(${engine}\\)`)), `${engine}: lifting the hold puts it back in Ready`)
     await order.getByLabel('Priority', { exact: true }).selectOption({ label: '0, most urgent' })
-    check(await visible(page, 'section[aria-label="Order of work"] [role="status"]', 10, /Saved/), `${engine}: changing the priority says it saved`)
+    check(await visible(page, 'section[aria-label="Order of work"] [role="status"]', 10, /Saved/)
+      && await visible(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Base work \\(${engine}\\)priority P0`)),
+    `${engine}: changing the priority says it saved, and Ready shows it`)
     await order.getByRole('button', { name: 'Mark done' }).click()
     check(await visible(page, 'section[aria-label="Order of work"] button', 15, /Reopen/)
       && await visible(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Stacked work \\(${engine}\\)`)),
@@ -201,9 +203,13 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     // The palette, by keyboard alone.
     await page.goto('/')
     await page.locator('body').click({ position: { x: 640, y: 400 } })
-    await page.keyboard.press('ControlOrMeta+k')
+    // Keys typed before the palette's field has focus reach the page, where c and r are shortcuts.
+    const openPalette = async () => {
+      await page.keyboard.press('ControlOrMeta+k')
+      return within(5, () => page.evaluate(() => document.activeElement?.getAttribute('role') === 'combobox'))
+    }
     const palette = page.getByRole('dialog', { name: 'Go to' })
-    check(await visible(page, 'dialog.palette[open]', 5) && await page.evaluate(() => document.activeElement?.getAttribute('role') === 'combobox'),
+    check(await openPalette() && await visible(page, 'dialog.palette[open]', 5),
       `${engine}: ${process.platform === 'darwin' ? 'Cmd' : 'Ctrl'}+K opens the palette with focus in its field`)
     await page.keyboard.type(`stacked work ${engine}`)
     check(await visible(page, '[role="option"][aria-selected="true"]', 10, new RegExp(`Stacked work \\(${engine}\\)`)), `${engine}: typing finds a task, picked first`)
@@ -216,16 +222,16 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
       return element ? `${element.tagName} ${element.getAttribute('aria-label') ?? ''}` : ''
     })
     const before = await focused()
-    await page.keyboard.press('ControlOrMeta+k')
+    const reopened = await openPalette()
     await page.keyboard.type('nothing matches this')
     const empty = await visible(page, 'dialog.palette', 5, /Nothing matches/)
     await page.keyboard.press('Escape')
     check(empty && await gone(page, 'dialog.palette[open]', 5), `${engine}: the palette says when nothing matches, and Escape closes it`)
-    check(before.startsWith('MAIN') && await focused() === before, `${engine}: closing the palette gives focus back to where it was (${before})`)
-    await page.keyboard.press('ControlOrMeta+k')
+    check(reopened && before.startsWith('MAIN') && await focused() === before, `${engine}: closing the palette gives focus back to where it was (${before})`)
+    const third = await openPalette()
     await page.keyboard.type('new room')
     await page.keyboard.press('Enter')
-    check(await visible(page, 'form[aria-label="New room"]', 10), `${engine}: the palette's actions work from the keyboard`)
+    check(third && await visible(page, 'form[aria-label="New room"]', 10), `${engine}: the palette's actions work from the keyboard`)
 
     await page.goto(`/#/t/${b}`)
     await page.getByLabel('Why (optional)').waitFor()
@@ -237,7 +243,7 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     check(stayed && await visible(page, 'form[aria-label="New task"]', 10), `${engine}: single keys type into a field, and outside one c starts a new task`)
     await page.keyboard.press('r')
     check(await visible(page, 'form[aria-label="New room"]', 10), `${engine}: and r starts a new room`)
-    await page.keyboard.press('ControlOrMeta+k')
+    await openPalette()
     await palette.getByLabel('Single-key shortcuts').uncheck()
     await page.keyboard.press('Escape')
     await page.locator('h1').click()
