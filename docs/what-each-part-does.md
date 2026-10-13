@@ -278,8 +278,8 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### Writing without asking (`server/permissions.ts`)
 
-- **Solves now.** A task's session creates, edits and deletes files in its own workspace without asking. Commands still ask on a Mac and run without asking on a box. Conversations ask as before.
-- **Helps later.** Agents on boxes can work through a whole task without a person approving each step.
+- **Solves now.** A task's session creates, edits and deletes files in its own workspace without asking. Commands still ask, on a Mac and on a box. Conversations ask as before.
+- **Helps later.** If Tayler decides boxes may run commands without asking, it is one place to change.
 
 ### The research, plan and implement pipeline (`pipelines/research-plan-implement.ts`)
 

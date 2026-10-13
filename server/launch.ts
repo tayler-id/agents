@@ -5,7 +5,7 @@
 import type pg from 'pg'
 import { maybe, one } from './db.ts'
 import { HttpError, type Person } from './record.ts'
-import { sendToSession } from './tasks.ts'
+import { sendToSession } from './session-messages.ts'
 import { checkoutsOf } from './checkout.ts'
 import type { AgentId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
 import type { WorkspaceRepo } from '../shared/types.ts'

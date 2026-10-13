@@ -137,7 +137,7 @@ Documents in the `task` folder open in the same kind of panel. Their Diff tab sh
 
 **Solves.** Tayler had to approve every Write and every Bash call on the README task.
 
-**The rule.** A session in a task's workspace runs Claude Code with `--permission-mode acceptEdits`. On a box it may also run commands. The server decides from the machine the session runs on (`server/permissions.ts`) and sends it in the message command as `permissions`. The daemon turns it into flags.
+**The rule.** A session in a task's workspace runs Claude Code with `--permission-mode acceptEdits`. The server decides from whether the session has a workspace (`server/permissions.ts`) and sends it in the message command as `permissions`. The daemon turns it into flags.
 
 **What still asks on a Mac, and why.** I ran a probe session against Claude Code 2.1.296 on 2026-10-13, with the same flags, and saw each of these ask:
 
@@ -150,7 +150,7 @@ The probe didn't try web fetches or searches, so this doc says nothing about the
 
 **What no longer asks.** Creating, editing and deleting files anywhere in the workspace, in each repo's checkout and in the `task` folder, with the file tools or with shell commands that only touch files there. The probe ran `mkdir`, `touch`, `mv`, `rm -f` and `echo x > out.txt` without asking. Reading inside the workspace never asked.
 
-**On a box.** Commands run without asking too. A box is a container that holds only its workspaces and its own machine token.
+**On a box.** The same rule, so commands ask there too. A box holds its workspaces, its machine token and the Claude token. An earlier version of this branch let a box's sessions run commands without asking, which took away a person's approval of each command. That waits on Tayler's decision, and until then a box asks as a Mac does.
 
 **Unchanged.** Conversations with an agent run in the agent's own folder, and ask as before. Pipeline stages keep their own `allow` lists, and get the same workspace permissions as a task's session.
 
