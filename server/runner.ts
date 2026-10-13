@@ -11,7 +11,7 @@ import { many, maybe, one, pool } from './db.ts'
 import { appendEvents, appendMessage, HttpError, type Person } from './record.ts'
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
-import { folderNames } from './checkout.ts'
+import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
 import { expireTurns } from './rooms.ts'
@@ -51,7 +51,6 @@ type Command = { status: string; error: string | null; result: unknown }
 
 const tail = (text: string, n: number) => (text.length > n ? `…${text.slice(-n)}` : text)
 const branchOf = (run: Run, task: Task) => `${run.replay_of ? 'replay' : 'task'}/${task.slug}`
-const repoName = (remoteUrl: string) => repoPath(remoteUrl).split('/')[1] ?? remoteUrl
 
 // A stage named by a run's row. Rows only ever name stages of their own
 // pipeline version, which never changes, so a missing one is a bug.
@@ -149,8 +148,7 @@ async function reposOf(client: pg.PoolClient, run: Run): Promise<RepoRef[]> {
   const rows = await many<Omit<RepoRef, 'name'>>(client,
     `select r.id as "repoId", r.remote_url, r.default_branch, r.setup_command from task_repos tr
      join repos r on r.id = tr.repo_id where tr.task_id = $1 order by tr.is_primary desc, r.remote_url`, [run.task_id])
-  const names = folderNames(rows.map((r) => r.remote_url))
-  return rows.map((r, i) => ({ ...r, name: names[i] ?? repoName(r.remote_url) }))
+  return withFolders(rows).map(({ folder, ...r }) => ({ ...r, name: folder }))
 }
 
 // The run's primary repo. Every run is started with one.

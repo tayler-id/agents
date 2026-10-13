@@ -12,15 +12,14 @@ import { agentKit, appendEvents, appendMessage, HttpError, scrub, type Person } 
 import { setTaskRepos } from './checkout.ts'
 import { draftSession } from './drafts.ts'
 import { launchTask } from './launch.ts'
+import { TaskId } from '../shared/ids.ts'
+import type { NewTask } from '../shared/work.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 const slugOf = (title: string) =>
   `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task'}-${randomBytes(2).toString('hex')}`
 
-export async function startTask(client: pg.PoolClient, person: Person, body: {
-  title: string; instructions: string; agentId: string; repoIds?: string[]; conversationId?: string | null; messageId?: string | null
-  draft?: boolean
-}): Promise<{ taskId: string; sessionId: string }> {
+export async function startTask(client: pg.PoolClient, person: Person, body: Omit<NewTask, 'repoId'>): Promise<{ taskId: string; sessionId: string }> {
   const agent = await maybe<{ id: string; name: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client,
     'select id, name, home_instance_id, harness, model, instructions from agents where id = $1 and team_id = $2 and archived_at is null',
     [body.agentId, person.team_id])
@@ -38,9 +37,10 @@ export async function startTask(client: pg.PoolClient, person: Person, body: {
       body.messageId ? 'message' : 'app'])
   if (body.messageId) await client.query('update messages set task_id = $2 where id = $1 and conversation_id = $3', [body.messageId, task.id, body.conversationId])
 
-  await setTaskRepos(client, person.team_id, task.id, body.repoIds ?? [])
-  if (body.draft) return { taskId: task.id, sessionId: await draftSession(client, person, task.id, agent.id) }
-  return launchTask(client, person, task.id)
+  const taskId = TaskId.parse(task.id)
+  await setTaskRepos(client, person, taskId, body.repoIds)
+  if (body.draft) return { taskId, sessionId: await draftSession(client, person, taskId, body.agentId) }
+  return launchTask(client, person, taskId)
 }
 
 // A person's message to a task's session. It runs once the workspace is set up,
