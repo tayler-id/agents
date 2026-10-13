@@ -1,7 +1,7 @@
 // Who the app acts as on GitHub. Each person connects their own GitHub account
-// by signing in with GitHub's device flow, the way `gh auth login` does: the API
-// asks GitHub for a code, the person enters it at GitHub's device page, and the
-// API keeps the token GitHub then gives it. Tokens live only in files on this
+// by signing in with GitHub's device flow, as GitHub's own command line tool
+// does. The API asks GitHub for a code, the person enters it at GitHub's device
+// page, and the API keeps the token GitHub then gives it. Tokens live only in files on this
 // machine, mode 600, one per person, and never reach Postgres, a log, a machine
 // or a browser. A repo's calls to GitHub use the token of the person who brought
 // the repo into a project. An admin's personal access token is a stopgap for a
