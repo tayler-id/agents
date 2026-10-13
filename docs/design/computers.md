@@ -2,7 +2,7 @@
 
 Every agent that runs in a box gets its own computer: a Linux desktop, a browser, and tools to see and drive both. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
 
-Tayler asked for this on 2026-10-13: "each agent should have their own computer, computer use, browser, way to control it etc just like [the app we studied] ... they need to be able to verify their own work always". This is the design. `docs/build-log.md` records what was built and how it was checked.
+Tayler asked for this on 2026-10-13: each agent should have its own computer, with computer use, a browser and a way for people to control it, and agents need to be able to verify their own work, always. This is the design. `docs/build-log.md` records what was built and how it was checked.
 
 ## What it solves
 
@@ -119,7 +119,7 @@ Migration `server/migrations/0008_computers.sql`. Row types are declared once in
 
 ## The Mac computer-use helper (design only, not built)
 
-Agents could also drive a teammate's Mac, for apps that only run there. The studied app ships a helper for this but leaves it switched off. This is how ours would work.
+Agents could also drive a teammate's Mac, for apps that only run there. This is how it would work.
 
 - **A separate signed helper app, not the daemon.** macOS grants Screen Recording and Accessibility to a code-signed app identity. Granting them to `node` would give them to every Node program on the Mac. A small Swift app, "Agents Computer Helper", with its own bundle id, holds both permissions. The daemon starts it and talks to it over a Unix socket in `~/.agents-app` with a token minted for each launch.
 - **What it uses.** ScreenCaptureKit (`SCScreenshotManager`) for screenshots, scaled to 1280 pixels wide like a box. `CGEvent` for clicks, keys and scrolls. The Accessibility API (`AXUIElement`) to read the focused app's element tree, so the agent can target "the Save button" rather than guess coordinates.

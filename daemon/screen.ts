@@ -18,8 +18,9 @@ import { BadAction, plan, type Pointer, type Step } from './actions.ts'
 import { RfbClient } from './rfb.ts'
 import { encodePng } from './png.ts'
 
-// The pause after an action before its screenshot, for the page to react. The
-// studied app settles for 500 ms too.
+// The pause after an action before its screenshot: long enough for a page to
+// repaint and a click's navigation to start, short enough that a run of actions
+// stays quick.
 const SETTLE_MS = 500
 // An action request is a little JSON. This stops a bad caller from holding the
 // daemon's memory.
