@@ -16,7 +16,7 @@ The design is in `docs/design/durability.md`. This note says what is proven, wha
 
 ## Proven
 
-All on the branch after the rebase onto `aad82a8`, on 2026-10-13.
+The branch runs are on the rebase onto `aad82a8`, on 2026-10-13. The main runs are on `1715371` for step18a, step18c, step18e and step18f, and on `aad82a8` for step18b, step18d and step18g. The two commits differ only in how command errors are scrubbed.
 
 | Check | On the branch | On main | Break test, red then green |
 |---|---|---|---|
@@ -34,7 +34,7 @@ step2 drops the API's Postgres connections on purpose. It failed in 2 of 4 runs 
 
 ## Not done
 
-- The gaps in `docs/design/durability.md` under "Not covered": tool commands that outlive a killed Claude on the Mac, lines lost between Claude and the record, a missing conversation, and a session whose machine is gone for good.
+- The gaps in `docs/design/durability.md` under "Not covered": tool commands that outlive a killed Claude on the Mac, lines lost between Claude and the record, a missing conversation, a session whose machine is gone for good, and a Postgres restart during a transaction stopping the API.
 - Box images must be rebuilt when this lands, since the old daemon calls `/v1/instance/commands/requeue`, which is gone.
 
 ## Decisions waiting on Tayler
