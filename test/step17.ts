@@ -164,9 +164,10 @@ try {
     const unset = await ctl(['secret', 'unset', 'STEP17_TOKEN'])
     const unsetAgain = await ctl(['secret', 'unset', 'STEP17_TOKEN'])
     const absent = await ctl(['machine', 'read', 'agents/nothing-here.txt', '--missing', '--timeout', '1'])
+    const present = await ctl(['machine', 'read', 'secrets.json', '--missing', '--timeout', '1'])
     check(secret.out.head.endsWith('-> held by the machine mac') && held.out.ok && held.out.untrusted.includes('file on the machine')
-      && unset.out.head.endsWith('-> not held by the machine mac') && unsetAgain.out.already && absent.out.ok,
-    'secret set and unset change what the machine holds, machine read prints its file as untrusted text, and --missing passes on an absent file')
+      && unset.out.head.endsWith('-> not held by the machine mac') && unsetAgain.out.already && absent.out.ok && present.code === 1,
+    'secret set and unset change what the machine holds, machine read prints its file as untrusted text, and --missing passes on an absent file and fails on a present one')
     const instances = await ctl(['list'], { instance: false })
     check(instances.out.ok && /^\d+ instances?$/.test(instances.out.head) && instances.out.detail.includes(`name=${name}`), 'list counts the instances in this checkout and shows this one')
     const done = await ctl(['evidence'])

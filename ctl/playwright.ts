@@ -268,8 +268,10 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
         id: v.id, impact: v.impact ?? 'none', help: v.help, nodes: v.nodes.length, target: JSON.stringify(v.nodes[0]?.target ?? []),
       }))
     },
+    // Measured against the layout width, not window.innerWidth: Chromium's phone
+    // mode widens innerWidth to fit content that is too wide, so it never overflows.
     overflow: async (key) => (await open(key)).page.evaluate(() => {
-      const width = window.innerWidth
+      const width = document.documentElement.clientWidth
       const scrollWidth = document.documentElement.scrollWidth
       const offenders: { element: string; right: number }[] = []
       if (scrollWidth > width) {

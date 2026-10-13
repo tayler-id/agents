@@ -75,8 +75,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'ctl/cli.ts', anchor: 'claimed_by is not null as claimed', replace: 'true as claimed' }] },
   { name: 'secret-unset', why: 'secret unset leaves the value on the machine', sections: 'seed', red: 'secret set and unset change what the machine holds',
     edits: [{ file: 'ctl/cli.ts', anchor: '.filter(([k]) => k !== key)', replace: '.filter(() => true)' }] },
-  { name: 'machine-missing', why: 'machine read --missing passes only when the file is there', sections: 'seed', red: 'secret set and unset change what the machine holds',
-    edits: [{ file: 'ctl/cli.ts', anchor: 'values.missing ? text === null :', replace: 'values.missing ? text !== null :' }] },
+  { name: 'machine-missing', why: 'machine read --missing passes whether the file is there or not', sections: 'seed', red: 'secret set and unset change what the machine holds',
+    edits: [{ file: 'ctl/cli.ts', anchor: 'if (values.missing) return text === null ?', replace: 'if (values.missing) return true ?' }] },
   { name: 'list', why: 'list shows each instance under the wrong name', sections: 'seed', red: 'list counts the instances in this checkout and shows this one',
     edits: [{ file: 'ctl/cli.ts', anchor: 'name: s.name, phase: s.phase', replace: 'name: s.phase, phase: s.phase' }] },
   { name: 'evidence', why: "evidence prints the actions' summaries without fencing them", sections: 'seed', red: "evidence counts the run's actions and fences their summaries as untrusted",
@@ -84,7 +84,8 @@ const BREAKS: Break[] = [
 
   // The rules every CLI of ours keeps.
   { name: 'stderr', why: 'plain failures go to stderr', sections: 'conformance', red: 'a failure prints on stdout, with nothing on stderr',
-    edits: [{ file: 'ctl/main.ts', anchor: 'process.stdout.write(`${json ? JSON.stringify(output) : render(output, full)}\\n`)', replace: '(json || output.ok ? process.stdout : process.stderr).write(`${json ? JSON.stringify(output) : render(output, full)}\\n`)' }] },
+    // A statement, not a line starting with a parenthesis, which would join the line above.
+    edits: [{ file: 'ctl/main.ts', anchor: 'process.stdout.write(`${json ? JSON.stringify(output) : render(output, full)}\\n`)', replace: 'const stream = json || output.ok ? process.stdout : process.stderr\nstream.write(`${json ? JSON.stringify(output) : render(output, full)}\\n`)' }] },
   { name: 'exit-code', why: 'every command exits 0', sections: 'conformance', red: '--json prints one envelope whose code is the exit code (failingRead)',
     edits: [{ file: 'ctl/main.ts', anchor: 'process.exitCode = code', replace: 'process.exitCode = 0' }] },
   { name: 'unknown-flag', why: 'unknown flags are let through', sections: 'conformance', red: 'an unknown flag exits 2 and lists the valid flags',
