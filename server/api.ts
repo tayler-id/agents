@@ -4,8 +4,10 @@
 // boxes included, reach it on a loopback port with a bearer token instead.
 
 import { randomUUID } from 'node:crypto'
-import { chmod, lstat, mkdir, readFile, rm } from 'node:fs/promises'
+import { once } from 'node:events'
+import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { connect, type Server } from 'node:net'
+import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
@@ -537,7 +539,13 @@ function accepts(path: string): Promise<boolean> {
 // taking it over would send people to this one instead, so that stops this one.
 async function listenForPeople(server: Server, path: string) {
   // On a new server the folder may not exist yet. Made here, only its owner can open it.
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const folder = dirname(path)
+  await mkdir(folder, { recursive: true, mode: 0o700 })
+  // Another user who could write to the folder could put their own socket in its place.
+  const owner = await stat(folder)
+  if (owner.uid !== userInfo().uid || (owner.mode & 0o022) !== 0) {
+    throw new Error(`${folder} must belong to this user and be writable by no one else, since the people socket lives in it`)
+  }
   const existing = await lstat(path).catch((error: unknown) => {
     if (hasCode(error, 'ENOENT')) return null
     throw error
@@ -545,11 +553,15 @@ async function listenForPeople(server: Server, path: string) {
   if (existing && !existing.isSocket()) throw new Error(`${path} is not a socket, so the API will not replace it`)
   if (existing && await accepts(path)) throw new Error(`another API already serves people on ${path}`)
   if (existing) await rm(path)
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(path, () => { server.off('error', reject); resolve() })
-  })
-  // Whatever the umask, only this user's processes may connect. tailscaled runs as this user.
+  // The socket file appears when listen binds, which it does before returning, so
+  // the umask keeps it private from its first moment. tailscaled runs as this user.
+  const umask = process.umask(0o077)
+  try {
+    server.listen(path)
+  } finally {
+    process.umask(umask)
+  }
+  await once(server, 'listening')
   await chmod(path, 0o600)
 }
 
