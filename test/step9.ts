@@ -182,6 +182,10 @@ try {
   check(candidate?.finished === 2 && current?.finished === 2 && candidate?.problems === 0 && current?.problems === 2,
     `the scores show the change needs no reminders where the current version needed two: ${JSON.stringify(proposal?.scores)}`)
   check(proposal?.diff.includes(`+`) && proposal.diff.includes(CLEARER) && proposal.status === 'open', 'the proposal carries the diff and waits for the shepherd')
+  const cited = await all<{ evidence: { quote: string; session: string }[] }>('select evidence from proposal_hunks where proposal_id = $1', [proposal?.id])
+  check(cited.length === 1 && cited[0]?.evidence.length === 2 && cited[0].evidence.every((q) => q.quote.startsWith('You ended your turn without calling report_result'))
+    && new Set(cited[0].evidence.map((q) => q.session)).size === 2,
+  "the change's hunk cites the reminder in each past run, checked in code")
   const pr = await forgeAdmin.call<{ number: number; body: string }[]>('GET', `/repos/${org}/${PIPES}/pulls?state=open`)
   const gate = await openAsk(improve)
   check(pr.length === 1 && pr[0]?.body.includes('Replayed 2 past runs') && proposal?.pull_request?.includes(`/pulls/${pr[0].number}`)

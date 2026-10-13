@@ -176,6 +176,8 @@ try {
     check(await visible(page, 'table.scores tbody tr', 10, /With the change/) && /2 of 2/.test(await scores.innerText()),
       `the proposal shows both versions' scores: ${(await scores.innerText().catch(() => '')).replace(/\s+/g, ' ')}`)
     check(await visible(page, '.diff .added', 10, /Always call report_result/), "the proposal's diff shows the added line")
+    check(await page.locator('.quotes blockquote', { hasText: 'You ended your turn without calling report_result' }).count() === 2,
+      'the proposal shows the reminder from each past run that the change rests on')
     check(await visible(page, 'section.ask-card', 10, /scored better/), 'the gate to approve it sits beside the proposal')
     await page.screenshot({ path: join(SHOTS, 'chromium-proposal-light.png'), fullPage: true })
     check(await serious(page) === 0, 'chromium: the proposal page has no serious accessibility problems')
