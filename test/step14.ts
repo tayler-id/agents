@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import pg from 'pg'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
@@ -397,6 +399,77 @@ try {
     await pushed(nothing.pushId)
     const failed = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [nothing.pushId])
     check(failed?.status === 'failed' && failed.error?.includes('nothing to open'), `a task with no changes opens no pull request, and says why: ${failed?.error ?? 'no error'}`)
+  })
+
+  await section('order of work', async () => {
+    type Answer = { ready: { id: string; title: string }[]; held: { id: string; kind: string; reason: string; until: string | null }[] }
+    const readyFor = async (who: string): Promise<Answer> => {
+      const res = await fetch(`${PEOPLE}/v1/tasks/ready`, { headers: { 'tailscale-user-login': who } })
+      if (!res.ok) throw new Error(`/v1/tasks/ready: ${res.status} ${await res.text()}`)
+      return res.json() as Promise<Answer>
+    }
+    const queue = async (title: string) => String((await post('/v1/tasks', { title, instructions: '', agentId: writer, draft: true })).taskId)
+    const [a, b, c, d] = [await queue('Order A, the base'), await queue('Order B, stacked on A'), await queue('Order C, urgent'), await queue('Order D, later')]
+    const mine = (answer: Answer) => answer.ready.map((t) => t.id).filter((taskId) => [a, b, c, d].includes(taskId))
+    await post(`/v1/tasks/${c}/priority`, { priority: 0 })
+
+    const added = await post(`/v1/tasks/${b}/blockers`, { blockerId: a, reason: 'Its branch stacks on A' })
+    const again = await post(`/v1/tasks/${b}/blockers`, { blockerId: a, reason: 'Its branch stacks on A' })
+    check(added.already === false && again.already === true, 'adding the same edge twice changes nothing the second time, and says so')
+    const stranger = must(await one<{ id: string }>(`insert into tasks (team_id, slug, title) select id, $2, 'Elsewhere' from teams where name = $1 returning id`,
+      [otherTeam, `elsewhere-${id}`]), 'the other team task').id
+    const cycle = await as(alice, `/v1/tasks/${a}/blockers`, { blockerId: b, reason: null })
+    const itself = await as(alice, `/v1/tasks/${a}/blockers`, { blockerId: a, reason: null })
+    const foreign = await as(alice, `/v1/tasks/${a}/blockers`, { blockerId: stranger, reason: null })
+    check(cycle.status === 409 && (await cycle.text()).includes('wait on each other') && itself.status === 400 && foreign.status === 404,
+      "an edge that would close a cycle, an edge to the task itself and one to another team's task are refused")
+
+    const held = await post(`/v1/tasks/${d}/hold`, { kind: 'decision', reason: 'Waiting on Tayler', until: null })
+    const heldAgain = await post(`/v1/tasks/${d}/hold`, { kind: 'decision', reason: 'Waiting on Tayler', until: null })
+    const twoLines = await as(alice, `/v1/tasks/${d}/hold`, { kind: 'decision', reason: 'one\ntwo', until: null })
+    check(held.already === false && heldAgain.already === true && twoLines.status === 400, 'a hold is set once, and its reason must be one line')
+
+    const first = await readyFor(alice)
+    check(mine(first).join(' ') === [c, a].join(' '), 'ready lists queued tasks that nothing blocks or holds, the most urgent first, then the oldest')
+    check(first.held.some((t) => t.id === d && t.kind === 'decision' && t.reason === 'Waiting on Tayler' && t.until === null), 'held work shows apart, with its kind and reason')
+    check(mine(await readyFor(amir)).join(' ') === [c, a].join(' ') && !mine(await readyFor(outsider)).length,
+      "a teammate sees the same ready list, and another team's person sees none of it")
+
+    const today = must(await one<{ day: string }>('select current_date::text as day'), 'the date').day
+    await post(`/v1/tasks/${d}/hold`, { kind: 'future', reason: 'Not before today', until: today })
+    const lapsed = await readyFor(alice)
+    check(mine(lapsed).includes(d) && !lapsed.held.some((t) => t.id === d), 'a hold lapses on its until date, and the task is ready again')
+    const removedHold = await post(`/v1/tasks/${d}/unhold`)
+    const removedHoldAgain = await post(`/v1/tasks/${d}/unhold`)
+    check(removedHold.already === false && removedHoldAgain.already === true, 'lifting a hold twice changes nothing the second time')
+
+    const discard = await as(alice, `/v1/tasks/${a}/discard`)
+    const refusal = await discard.json() as { error?: string }
+    check(discard.status === 409 && refusal.error === 'this task still blocks "Order B, stacked on A"', `a task that queued work waits on cannot be discarded, and the refusal names that work: ${refusal.error ?? ''}`)
+    const done = await post(`/v1/tasks/${a}/done`)
+    const doneAgain = await post(`/v1/tasks/${a}/done`)
+    const freed = await readyFor(alice)
+    const doneHold = await as(alice, `/v1/tasks/${a}/hold`, { kind: 'parked', reason: 'No', until: null })
+    check(done.already === false && doneAgain.already === true && mine(freed).includes(b) && !mine(freed).includes(a) && doneHold.status === 409,
+      'marking the blocker done frees the task waiting on it, marking it again changes nothing, and a done task takes no hold')
+    await post(`/v1/tasks/${a}/reopen`)
+    const reopenAgain = await post(`/v1/tasks/${a}/reopen`)
+    check(reopenAgain.already === true && !mine(await readyFor(alice)).includes(b), 'reopening the blocker blocks its dependent again')
+    const unblocked = await post(`/v1/tasks/${b}/blockers/${a}/remove`)
+    const unblockedAgain = await post(`/v1/tasks/${b}/blockers/${a}/remove`)
+    check(unblocked.already === false && unblockedAgain.already === true && mine(await readyFor(alice)).includes(b), 'removing the edge frees the task, and removing it again changes nothing')
+
+    // Agents read the same list through their team-record tool, as a session on this machine.
+    const client = new Client({ name: 'step14', version: '1.0.0' })
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: [join(ROOT, 'daemon/record-mcp.ts')],
+      env: { ...process.env, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_SESSION: draftSession },
+    }))
+    const result = await client.callTool({ name: 'ready_tasks', arguments: {} })
+    await client.close()
+    const said = JSON.stringify(result.content)
+    check(said.indexOf('Order C, urgent') < said.indexOf('Order A, the base') && said.includes('Order B, stacked on A') && said.includes('1. Order C, urgent'),
+      `an agent's ready_tasks tool lists the same tasks in the same order: ${said.slice(0, 160)}`)
   })
 
   await section('writing without asking', async () => {
