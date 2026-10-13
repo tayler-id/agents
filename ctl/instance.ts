@@ -10,11 +10,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { chromium } from '@playwright/test'
+import type { PageKey } from './driver.ts'
 import { z } from 'zod'
 import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT } from './config.ts'
 import { withClient } from './db.ts'
 import { call } from './api.ts'
+import { CliError, EXIT, Refused, UsageError } from './output.ts'
+import { playwrightDriver } from './playwright.ts'
 import { claimPorts, releasePorts } from './ports.ts'
 import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
 import { removeForge, seedForge, seedTeam, writeScenario } from './seed.ts'
@@ -57,11 +59,28 @@ const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+
 
 export type UpOptions = { name?: InstanceName; port?: number; harness: Harness; pipelines: boolean; build: boolean }
 
-export async function up(options: UpOptions): Promise<ReadyState> {
+// Whether an instance's API and daemon are still the processes it started.
+async function running(state: InstanceState): Promise<boolean> {
+  const needed = state.processes.filter((p) => p.role !== 'session')
+  if (!needed.length) return false
+  for (const record of needed) if (!(await isOurs(record))) return false
+  return true
+}
+
+// `up` again gives back the instance it already started, so a rerun starts nothing.
+export async function up(options: UpOptions): Promise<{ state: ReadyState; already: boolean }> {
   config()
+  const fits = (s: InstanceState) => s.harness === options.harness && s.pipelines === options.pipelines
+  const named = options.name ? readState(options.name) : null
+  const candidates = options.name ? (named ? [named] : []) : listStates().filter(fits)
+  for (const existing of candidates) {
+    if (existing.phase === 'ready' && fits(existing) && await running(existing)) return { state: existing, already: true }
+  }
+  if (named) {
+    const why = named.phase !== 'ready' ? `it is ${named.phase}` : !fits(named) ? `it runs ${named.harness} Claude${named.pipelines ? ' with' : ' without'} pipelines` : 'its API or daemon stopped'
+    throw new Refused(`instance ${named.name} is already here, and ${why}`, [`Run \`bin/agentsctl down --instance ${named.name}\` to stop it, then up again`])
+  }
   const name = options.name ?? InstanceName.parse(`v${randomBytes(3).toString('hex')}`)
-  const existing = readState(name)
-  if (existing) throw new Error(`instance ${name} already exists (${existing.phase}). Stop it with: bin/agentsctl down --instance ${name}`)
   const ports = await claimPorts(name, options.port)
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), `agentsctl-${name}-`)))
   const evidence = join(EVIDENCE_DIR, `${name}-${stamp()}`)
@@ -120,12 +139,15 @@ export async function up(options: UpOptions): Promise<ReadyState> {
 
     const done = toReady(state, seed)
     saveState(done)
-    return done
+    return { state: done, already: false }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     saveState(toFailed(state, message))
     await down(name, { keepData: false })
-    throw new Error(`up failed and was undone: ${message}. Evidence is in ${evidence}`)
+    throw new CliError(EXIT.failed, `up failed, and stopped everything it started: ${message}`, [
+      `Read the logs in ${evidence}`,
+      `Run \`bin/agentsctl up${options.name ? ` --instance ${options.name}` : ''}\` again once the cause is fixed`,
+    ])
   }
 }
 
@@ -142,19 +164,23 @@ async function machineStatus(machineId: string) {
 export function resolve(name: InstanceName | undefined): InstanceState {
   if (name) {
     const state = readState(name)
-    if (!state) throw new Error(`no instance named ${name} in this checkout. Start one with: bin/agentsctl up --instance ${name}`)
+    if (!state) throw new CliError(EXIT.failed, `no instance named ${name} in this checkout`, [`Run \`bin/agentsctl up --instance ${name}\` to start it`, 'Run `bin/agentsctl list` to see the instances here'])
     return state
   }
   const live = listStates().filter((s) => s.phase !== 'stopped')
   const [only] = live
   if (only && live.length === 1) return only
-  if (!live.length) throw new Error('no instance is running in this checkout. Start one with: bin/agentsctl up')
-  throw new Error(`several instances are running (${live.map((s) => s.name).join(', ')}). Say which with --instance.`)
+  if (!live.length) throw new CliError(EXIT.failed, 'no instance is running in this checkout', ['Run `bin/agentsctl up --pipelines` to start one'])
+  throw new UsageError(`several instances are running: ${live.map((s) => s.name).join(', ')}`, live.map((s) => `Add \`--instance ${s.name}\` to mean ${s.name}`))
 }
 
 export function ready(name: InstanceName | undefined): ReadyState {
   const state = resolve(name)
-  if (state.phase !== 'ready') throw new Error(`instance ${state.name} is ${state.phase}, not ready. Run bin/agentsctl doctor --instance ${state.name}`)
+  if (state.phase !== 'ready') {
+    throw new CliError(EXIT.failed, `instance ${state.name} is ${state.phase}, not ready`, [
+      `Run \`bin/agentsctl doctor --instance ${state.name}\` to see why`, `Run \`bin/agentsctl down --instance ${state.name}\` to stop what is left`,
+    ])
+  }
   return state
 }
 
@@ -183,27 +209,28 @@ function newest(dir: string): number {
 // as the instance's owner, with its team and agents in the sidebar. A browser of
 // its own, closed again, so doctor starts nothing that outlives it.
 async function appUsable(state: ReadyState): Promise<{ ok: boolean; detail: string }> {
-  const browser = await chromium.launch()
+  const driver = playwrightDriver(state, async () => {})
+  const key: PageKey = { target: 'browser', engine: 'chromium', viewport: 'desktop', login: state.seed.owner.login }
   try {
-    const context = await browser.newContext({ baseURL: `http://127.0.0.1:${String(state.ports.people)}`, extraHTTPHeaders: { 'tailscale-user-login': state.seed.owner.login } })
-    const page = await context.newPage()
-    await page.goto('/')
-    const sidebar = page.getByRole('navigation', { name: 'Workspace' })
-    await sidebar.waitFor({ timeout: USABLE_MS })
-    // The sidebar's lists load after the sidebar shows, so each agent gets the same time to appear.
-    const agents = page.getByRole('list', { name: 'Agents' })
-    const missing: string[] = []
-    for (const name of Object.keys(state.seed.agents)) {
-      const shown = await agents.getByRole('button', { name, exact: true }).waitFor({ timeout: USABLE_MS }).then(() => true, () => false)
-      if (!shown) missing.push(name)
+    await driver.open(key)
+    await driver.wait(key, { role: 'navigation', name: 'Workspace' }, false, USABLE_MS)
+    // The sidebar's lists load after the sidebar shows. An agent's row reads its
+    // name, then its title when it has one, so each name is looked for at the start of a line.
+    const agents = Object.keys(state.seed.agents)
+    const missing = (text: string) => agents.filter((name) => !text.split('\n').some((line) => line === name || line.startsWith(`${name} `)))
+    const deadline = Date.now() + USABLE_MS
+    let lacking = missing(await driver.text(key, { role: 'list', name: 'Agents' }, USABLE_MS))
+    while (lacking.length && Date.now() < deadline) {
+      await sleep(LOOK_MS)
+      lacking = missing(await driver.text(key, { role: 'list', name: 'Agents' }, USABLE_MS))
     }
-    const text = await sidebar.innerText()
-    const ok = text.includes(state.team) && !missing.length
-    return { ok, detail: ok ? `the app opens for ${state.seed.owner.login} on ${state.team}, with ${Object.keys(state.seed.agents).join(', ')} in the sidebar` : `the app opened, but ${missing.length ? `the sidebar lacks ${missing.join(', ')}` : `shows no ${state.team}`}` }
+    const team = (await driver.text(key, { role: 'navigation', name: 'Workspace' }, USABLE_MS)).includes(state.team)
+    const ok = team && !lacking.length
+    return { ok, detail: ok ? `the app opens for ${state.seed.owner.login} on ${state.team}, with ${agents.join(', ')} in the sidebar` : `the app opened, but ${lacking.length ? `the sidebar lacks ${lacking.join(', ')}` : `shows no ${state.team}`}` }
   } catch (error) {
     return { ok: false, detail: `the app did not render its workspace: ${(error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''}` }
   } finally {
-    await browser.close()
+    await driver.shutdown()
   }
 }
 
@@ -221,10 +248,16 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
   }
   const livePort = Object.values(state.ports).find((p) => LIVE_PORTS.includes(p))
   add('not live', livePort === undefined, livePort === undefined ? `ports ${Object.values(state.ports).join(', ')} are the instance's own` : `port ${String(livePort)} is the live system's`)
-  for (const record of state.processes) {
+  for (const record of state.processes.filter((p) => p.role !== 'session')) {
     const ours = await isOurs(record)
     add(`${record.role} process`, ours, ours ? `pid ${String(record.pid)} is running ${record.argv.slice(1).join(' ')}` : `pid ${String(record.pid)} is gone, or is another program now. Its log is ${record.log}`)
   }
+  // The browser session starts on the first browser or desktop command and can be
+  // reset at any time, so whether it runs says nothing about the instance's health.
+  const sessions = state.processes.filter((p) => p.role === 'session')
+  let session: ProcessRecord | null = null
+  for (const record of sessions) if (await isOurs(record)) session = record
+  add('browser session', true, session ? `pid ${String(session.pid)} holds the browsers` : 'not running. The next browser or desktop command starts it')
   const api = state.processes.find((p) => p.role === 'api')
   for (const [door, port] of [['machine door', state.ports.machines], ['people door', state.ports.people], ['stream server', state.ports.streams]] as const) {
     const pid = await listener(port)
@@ -272,9 +305,12 @@ async function dockerHas(kind: 'container' | 'volume', name: string): Promise<bo
 }
 
 // Stops what the instance started and removes what it made, leaving its evidence.
-export async function down(name: InstanceName | undefined, options: { keepData: boolean }): Promise<StoppedState> {
+// Null when there is nothing to stop: the instance named has no state file here,
+// or no instance is running, so `down` again is a no-op.
+export async function down(name: InstanceName | undefined, options: { keepData: boolean }): Promise<StoppedState | null> {
+  if (name ? !readState(name) : !listStates().length) return null
   const state = resolve(name)
-  if (state.phase === 'stopped') throw new Error(`instance ${state.name} is already stopped`)
+  if (state.phase === 'stopped') return null
   const stopping = state.phase === 'stopping' ? state : toStopping(state)
   saveState(stopping)
   // The browsers and desktop apps the session opened, recorded in case the session itself died first.

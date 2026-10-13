@@ -7,10 +7,9 @@
 import pg from 'pg'
 import { z } from 'zod'
 import { config } from './config.ts'
+import { Json, Refused } from './output.ts'
 import type { Seed } from './state.ts'
 
-export const Json = z.json()
-export type Json = z.infer<typeof Json>
 export const Rows = z.array(z.record(z.string(), Json))
 export type Rows = z.infer<typeof Rows>
 
@@ -45,12 +44,20 @@ function plain(value: unknown): unknown {
   return value
 }
 
+// Postgres's code for a write inside a read-only transaction.
+const READ_ONLY_VIOLATION = '25006'
+
 export async function readOnly(sql: string, values: string[]): Promise<Rows> {
   return withClient(async (client) => {
     await client.query('begin transaction read only')
     try {
       const result = await client.query<Record<string, unknown>>(sql, values)
       return Rows.parse(result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, plain(v)]))))
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === READ_ONLY_VIOLATION) {
+        throw new Refused(`db reads only, so Postgres refused: ${error.message}`, ['Change the record the way a person or an agent does: through bin/agentsctl browser, desktop or api'])
+      }
+      throw error
     } finally {
       await client.query('rollback')
     }

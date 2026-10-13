@@ -1,5 +1,5 @@
 // Evidence: what a run did and what it found, kept in the instance's evidence
-// folder under .verify/evidence, which `down` never removes. Every agentsctl
+// folder under .scratch/verify/evidence, which `down` never removes. Every agentsctl
 // command adds a line to actions.jsonl saying what it did and how it went, and
 // commands that capture something (a screenshot, an ARIA snapshot, a response,
 // rows) write it beside that log under a numbered name, so the folder reads in

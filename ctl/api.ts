@@ -6,7 +6,7 @@
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import { config } from './config.ts'
-import { Json } from './db.ts'
+import { Json } from './output.ts'
 import type { ReadyState } from './state.ts'
 
 export const Caller = z.enum(['person', 'machine', 'webhook'])

@@ -8,12 +8,12 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import type { Page } from '@playwright/test'
 import { z } from 'zod'
 import { BASELINES_DIR, ROOT } from './config.ts'
 import { decode, diff, encode, type Box } from './png.ts'
-import { screenshot } from './drive.ts'
-import type { Engine, Viewport } from './protocol.ts'
+import { failing, type Driver, type PageKey } from './driver.ts'
+import { CliError, EXIT } from './output.ts'
+import { ENGINES, VIEWPORTS, type Capture, type Engine, type Handle, type Viewport } from './protocol.ts'
 
 // A pixel counts as changed when a channel moves by more than this. Below it is
 // the jitter of font smoothing between two renders of the same page.
@@ -32,23 +32,6 @@ export const VOLATILE: Rule[] = [
   { why: 'memory logs are named by the day they were written', scope: '.memories', pattern: '\\b\\d{4}-\\d{2}-\\d{2}\\b', replace: '2026-01-01' },
 ]
 
-export async function normalize(page: Page) {
-  await page.evaluate((rules) => {
-    for (const rule of rules) {
-      const pattern = new RegExp(rule.pattern, 'g')
-      for (const root of Array.from(document.querySelectorAll(rule.scope))) {
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          const text = node.textContent ?? ''
-          const next = text.replace(pattern, rule.replace)
-          if (next !== text) node.textContent = next
-        }
-      }
-    }
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
-  }, VOLATILE)
-}
-
 // How often a capture looks again while the page settles, and for how long.
 const STEADY_POLL_MS = 300
 const STEADY_MS = 15_000
@@ -56,15 +39,13 @@ const STEADY_MS = 15_000
 // A screenshot taken once the page has no read in flight and two shots in a row
 // come out the same, so a list still loading or a status still changing never
 // makes it into a baseline.
-export async function steadyShot(ctx: { page: Page; errors: string[]; quiet: () => Promise<void> }, path: string) {
-  const { page } = ctx
-  await page.mouse.move(0, 0)
+export async function steadyShot(driver: Driver, key: PageKey, path: string, timeoutMs: number) {
   let last: Buffer | null = null
   const deadline = Date.now() + STEADY_MS
   for (;;) {
-    await ctx.quiet()
-    await normalize(page)
-    const shot = await screenshot(ctx, {})
+    await driver.settle(key, timeoutMs)
+    await driver.normalize(key)
+    const shot = await driver.screenshot(key, { timeoutMs })
     if (last?.equals(shot)) {
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(path, shot)
@@ -76,9 +57,32 @@ export async function steadyShot(ctx: { page: Page; errors: string[]; quiet: () 
   }
 }
 
+// Captures one view, at the route the given page is on, in every engine at both
+// widths, and checks each capture: accessibility, sideways scrolling at phone
+// width, and errors in the console since that page's last check. Each page loads
+// afresh, so every list reads the record as it is now.
+export async function captureViews(driver: Driver, from: PageKey, name: string, ready: Handle | undefined, evidence: string, timeoutMs: number): Promise<Capture[]> {
+  const route = new URL(driver.url(from)).hash || '#/'
+  const captures: Capture[] = []
+  for (const engine of ENGINES) {
+    for (const viewport of VIEWPORTS) {
+      const key: PageKey = { ...from, target: 'browser', engine, viewport }
+      await driver.open(key)
+      await driver.goto(key, route, timeoutMs, true)
+      if (ready) await driver.wait(key, ready, false, timeoutMs)
+      const file = capturePath(evidence, engine, viewport, name)
+      await steadyShot(driver, key, file, timeoutMs)
+      const width = viewport === 'phone' ? await driver.overflow(key) : null
+      const overflow = width !== null && width.scrollWidth > width.width
+      captures.push({ engine, viewport, file, violations: failing(await driver.a11y(key)), overflow, errors: driver.console(key) })
+    }
+  }
+  return captures
+}
+
 export const combo = (engine: Engine, viewport: Viewport) => `${engine}-${viewport}`
 export const capturePath = (evidence: string, engine: Engine, viewport: Viewport, state: string) => join(evidence, 'visual', combo(engine, viewport), `${state}.png`)
-const baselinePath = (name: string, state: string) => join(BASELINES_DIR, name, `${state}.png`)
+const baselinePath = (dir: string, name: string, state: string) => join(dir, name, `${state}.png`)
 
 const Combo = z.string().regex(/^(chromium|firefox|webkit)-(desktop|phone)$/)
 
@@ -108,11 +112,12 @@ export type CompareResult = z.infer<typeof CompareResult>
 
 const where = (box: Box) => `${String(box.width)}x${String(box.height)} at (${String(box.x)}, ${String(box.y)})`
 
-export function compare(evidence: string): CompareResult {
+// `baselines` is the skill's folder, or another for a check that must leave the skill's baselines alone.
+export function compare(evidence: string, baselines = BASELINES_DIR): CompareResult {
   const results: Comparison[] = []
   const taken = captures(evidence)
   for (const [name, state] of taken) {
-    const base = baselinePath(name, state)
+    const base = baselinePath(baselines, name, state)
     const runFile = join(evidence, 'visual', name, `${state}.png`)
     const row = { state, combo: name, changed: 0, share: 0, regions: [], diff: null }
     if (!existsSync(base)) {
@@ -142,9 +147,9 @@ export function compare(evidence: string): CompareResult {
     })
   }
   const capturedNames = new Set(taken.map(([name, state]) => `${name}/${state}`))
-  const notCaptured = existsSync(BASELINES_DIR)
-    ? readdirSync(BASELINES_DIR).filter((d) => Combo.safeParse(d).success)
-      .flatMap((d) => readdirSync(join(BASELINES_DIR, d)).filter((f) => f.endsWith('.png')).map((f) => `${d}/${f.slice(0, -4)}`))
+  const notCaptured = existsSync(baselines)
+    ? readdirSync(baselines).filter((d) => Combo.safeParse(d).success)
+      .flatMap((d) => readdirSync(join(baselines, d)).filter((f) => f.endsWith('.png')).map((f) => `${d}/${f.slice(0, -4)}`))
       .filter((n) => !capturedNames.has(n))
     : []
   const ok = results.length > 0 && results.every((r) => r.status === 'same' || r.status === 'within tolerance')
@@ -153,21 +158,34 @@ export function compare(evidence: string): CompareResult {
 
 export const BaselineUpdate = z.object({ at: z.iso.datetime(), reason: z.string().min(10), from: z.string(), files: z.array(z.string()) })
 export type BaselineUpdate = z.infer<typeof BaselineUpdate>
-export const UPDATES_FILE = join(BASELINES_DIR, 'updates.jsonl')
+export const UPDATES_FILE = 'updates.jsonl'
 
 // Makes a run's captures the baselines, and logs why. A reason is required,
 // since a baseline changed to make a run pass would hide the change it shows.
-export function baseline(evidence: string, reason: string, only: string[]): BaselineUpdate {
+// Captures that match their baseline byte for byte are left alone, and when
+// all of them match, nothing is written or logged.
+export function baseline(evidence: string, reason: string, only: string[], baselines = BASELINES_DIR): { update: BaselineUpdate | null; unchanged: number } {
   const picked = captures(evidence).filter(([, state]) => !only.length || only.includes(state))
-  if (!picked.length) throw new Error(`no captures in ${evidence}${only.length ? ` for ${only.join(', ')}` : ''}. Capture with bin/agentsctl visual shot first.`)
+  if (!picked.length) {
+    throw new CliError(EXIT.failed, `no captures in ${relative(ROOT, evidence)}${only.length ? ` for ${only.join(', ')}` : ''}`, [
+      'Run `bin/agentsctl visual shot <state>` on a view, or `bin/agentsctl map run all --visual`, first',
+    ])
+  }
   const files: string[] = []
+  let unchanged = 0
   for (const [name, state] of picked) {
-    const target = baselinePath(name, state)
+    const source = join(evidence, 'visual', name, `${state}.png`)
+    const target = baselinePath(baselines, name, state)
+    if (existsSync(target) && readFileSync(target).equals(readFileSync(source))) {
+      unchanged++
+      continue
+    }
     mkdirSync(dirname(target), { recursive: true })
-    copyFileSync(join(evidence, 'visual', name, `${state}.png`), target)
+    copyFileSync(source, target)
     files.push(relative(ROOT, target))
   }
+  if (!files.length) return { update: null, unchanged }
   const update = BaselineUpdate.parse({ at: new Date().toISOString(), reason, from: relative(ROOT, evidence), files })
-  appendFileSync(UPDATES_FILE, `${JSON.stringify(update)}\n`)
-  return update
+  appendFileSync(join(baselines, UPDATES_FILE), `${JSON.stringify(update)}\n`)
+  return { update, unchanged }
 }

@@ -10,8 +10,10 @@
 // "$(bin/agentsctl ...)" to use one command's output in another. No other shell
 // is involved; the words go straight to agentsctl.
 
+import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { promisify } from 'node:util'
 import { z } from 'zod'
 import { FEATURES_DIR, ROOT } from './config.ts'
 import { nextPath } from './evidence.ts'
@@ -19,12 +21,16 @@ import type { Output } from './output.ts'
 import type { ReadyState } from './state.ts'
 import { Verdict } from './verdict.ts'
 
+const exec = promisify(execFile)
+
 export const SECTIONS = ['Sub-features', 'How to get to it (user POV)', 'Driving it with agentsctl', 'Gotchas'] as const
 const AGENTSCTL = 'bin/agentsctl'
 // A substitution's place in a command that is only being parsed, shaped like the ids most of them print.
 const STAND_IN = '00000000-0000-0000-0000-000000000000'
 // The step label that marks a step needing a real Claude session.
 const REAL = '(real Claude)'
+// The step label that marks a step needing the pipelines on the forge.
+const PIPELINES = '(pipelines)'
 
 type Part = { kind: 'text'; text: string } | { kind: 'sub'; words: Word[] }
 type Word = Part[]
@@ -108,7 +114,7 @@ async function expand(word: Word, fill: (words: Word[]) => Promise<string>): Pro
   return out
 }
 
-export type Step = { label: string; real: boolean; commands: string[] }
+export type Step = { label: string; real: boolean; pipelines: boolean; commands: string[] }
 export type Feature = {
   id: string; file: string; title: string; sections: string[]
   subFeatures: string[]; needs: { pipelines: boolean; real: boolean }; preconditions: string[]; steps: Step[]
@@ -116,8 +122,10 @@ export type Feature = {
 
 const codeSpans = (text: string) => [...text.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]))
 
-export function readFeature(file: string): Feature {
-  const lines = readFileSync(file, 'utf8').split('\n')
+export const readFeature = (file: string): Feature => parseFeature(readFileSync(file, 'utf8'), file)
+
+export function parseFeature(text: string, file: string): Feature {
+  const lines = text.split('\n')
   const title = lines.find((l) => l.startsWith('# '))?.slice(2).trim() ?? ''
   const sections = lines.filter((l) => l.startsWith('## ')).map((l) => l.slice(3).trim())
   const body = (heading: string) => {
@@ -139,7 +147,10 @@ export function readFeature(file: string): Feature {
   const all = bullets(driving)
   const steps = all.filter((b) => b.startsWith('**')).map((b): Step => {
     const label = /^\*\*(.+?)\*\*/.exec(b)?.[1] ?? ''
-    return { label: label.replace(/\.$/, ''), real: label.includes(REAL), commands: codeSpans(b).filter((c) => c.startsWith(`${AGENTSCTL} `)) }
+    return {
+      label: label.replace(/\.$/, ''), real: label.includes(REAL), pipelines: label.includes(PIPELINES),
+      commands: codeSpans(b).filter((c) => c.startsWith(`${AGENTSCTL} `)),
+    }
   })
   const preconditions = all.filter((b) => !b.startsWith('**'))
   const ups = preconditions.flatMap(codeSpans).filter((c) => c.startsWith(`${AGENTSCTL} up`))
@@ -208,6 +219,45 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
 
 // A step's verdict on the ladder in verdict.ts, or `not run` when an earlier step
 // failed and this one depends on what that one left.
+// The commands in a step that assert something: they wait for a state, compare
+// text or a count, check a view, or read a side effect back. Editing the map
+// can drop or change one of these, which is how a regression would hide, so the
+// guard lists every one a change removed, or changed, which reads as removed.
+const ASSERTS = /^bin\/agentsctl (?:(?:browser|desktop) (?:wait|text|count|a11y|console|network|overflow)|machine read|visual shot)\b|^bin\/agentsctl (?:db|api) .*--expect/
+
+function assertions(text: string, file: string): string[] {
+  return parseFeature(text, file).steps.flatMap((step) => step.commands.filter((c) => ASSERTS.test(c)).map((c) => `"${step.label}": ${c}`))
+}
+
+// Every assertion the feature map had at `base` that it no longer has, by file.
+export async function guardMap(base: string): Promise<string[]> {
+  const relativeDir = relative(ROOT, FEATURES_DIR)
+  const show = async (path: string): Promise<string | null> => {
+    try {
+      return (await exec('git', ['show', `${base}:${path}`], { cwd: ROOT, maxBuffer: 16 * 1024 * 1024 })).stdout
+    } catch (error) {
+      // git exits 128 when the path is not in that commit: a file the change adds.
+      if (error instanceof Error && 'code' in error && error.code === 128) return null
+      throw error
+    }
+  }
+  const listed = (await exec('git', ['ls-tree', '--name-only', base, `${relativeDir}/`], { cwd: ROOT })).stdout.split('\n').filter((f) => f.endsWith('.md') && !f.endsWith('README.md'))
+  const removed: string[] = []
+  for (const path of listed) {
+    const before = await show(path)
+    if (before === null) continue
+    const name = path.split('/').at(-1) ?? path
+    const now = existsSync(join(ROOT, path)) ? readFileSync(join(ROOT, path), 'utf8') : null
+    if (now === null) {
+      removed.push(`${name} was deleted, with all ${String(assertions(before, name).length)} of its assertions`)
+      continue
+    }
+    const kept = new Set(assertions(now, name))
+    for (const a of assertions(before, name)) if (!kept.has(a)) removed.push(`${name}, ${a}`)
+  }
+  return removed
+}
+
 export const StepReport = z.object({
   label: z.string(),
   verdict: z.enum(['live-ui-verified', 'verifier-failed', 'verifier-blocked', 'not run']),
@@ -246,8 +296,8 @@ export async function runMap(state: ReadyState, targets: string[], options: { vi
     const argv = await Promise.all(words.map((w) => expand(w, fill)))
     if (argv[0] !== AGENTSCTL) throw new Error(`a substituted command must be ${AGENTSCTL}: ${argv.join(' ')}`)
     const { code, output } = await run(withInstance(argv.slice(1)))
-    if (code !== 0) throw new Error(`${argv.join(' ')} failed: ${output.summary}`)
-    return output.summary.trim()
+    if (code !== 0) throw new Error(`${argv.join(' ')} failed: ${output.head}`)
+    return output.head.trim()
   }
   const reports: FeatureReport[] = []
   // Set once the instance itself stopped being healthy. Nothing after that can be judged.
@@ -262,6 +312,10 @@ export async function runMap(state: ReadyState, targets: string[], options: { vi
       const unrun = broken ?? blocked
       if (unrun) {
         steps.push({ label: step.label, verdict: 'verifier-blocked', reason: unrun, commands: [] })
+        continue
+      }
+      if (step.pipelines && !state.pipelines) {
+        steps.push({ label: step.label, verdict: 'verifier-blocked', reason: `needs an instance started with: ${AGENTSCTL} up --pipelines`, commands: [] })
         continue
       }
       if (step.real !== (state.harness === 'real')) {
@@ -285,9 +339,9 @@ export async function runMap(state: ReadyState, targets: string[], options: { vi
             continue
           }
           const { code, output } = await run(withInstance(argv.slice(1)))
-          commands.push({ command, ok: code === 0, skipped: false, summary: output.summary })
+          commands.push({ command, ok: code === 0, skipped: false, summary: [output.head, output.detail].filter(Boolean).join('\n') })
           if (code !== 0) {
-            failure = `${command}: ${output.summary}`
+            failure = `${command}: ${output.head}`
             break
           }
         } catch (error) {

@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { LIVE_PORTS, PORT_RANGE } from './config.ts'
+import { Refused } from './output.ts'
 import { stateFile, type InstanceName, type Ports } from './state.ts'
 
 export const PORTS_PER_INSTANCE = 3
@@ -66,7 +67,7 @@ export async function claimPorts(name: InstanceName, first?: number): Promise<Po
   for (const start of starts) {
     const block = blockOf(start)
     const ports = portsOf(block)
-    if (ports.some((p) => LIVE_PORTS.includes(p))) throw new Error(`ports ${ports.join(', ')} include one the live system uses`)
+    if (ports.some((p) => LIVE_PORTS.includes(p))) throw new Refused(`ports ${ports.join(', ')} include one the live system uses`, ['Run `bin/agentsctl up` without --port to take a free block in 8020-8039'])
     const locked: number[] = []
     for (const port of ports) {
       if (!lockPort(port, name)) break
@@ -77,5 +78,8 @@ export async function claimPorts(name: InstanceName, first?: number): Promise<Po
     tried.push(`${String(start)}-${String(start + PORTS_PER_INSTANCE - 1)}`)
     for (const port of locked) rmSync(join(LOCKS, String(port)))
   }
-  throw new Error(`no free block of ${String(PORTS_PER_INSTANCE)} ports: tried ${tried.join(', ')}. Stop an instance with agentsctl down, or pass --port.`)
+  throw new Refused(`no free block of ${String(PORTS_PER_INSTANCE)} ports: tried ${tried.join(', ')}`, [
+    'Run `bin/agentsctl list` to see the instances in this checkout, and `bin/agentsctl down --instance <name>` to stop one',
+    'Or pass `--port <first>` for a block you know is free',
+  ])
 }

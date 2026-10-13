@@ -11,6 +11,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import { childEnv, ROOT } from './config.ts'
 import { withClient } from './db.ts'
+import { Refused } from './output.ts'
 import { ForgeError, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { AgentId, InstanceId, PersonId, readState, RepoId, saveState, TeamId, type ForgeRepo, type InstanceName, type ReadyState, type Seed } from './state.ts'
 
@@ -44,16 +45,34 @@ async function admin(...args: string[]): Promise<string> {
 const NewInstance = z.object({ instance: z.string(), token: z.string().startsWith('machine_') })
 const NewAgent = z.object({ agent: z.string(), agentId: AgentId })
 
-export async function addPerson(team: string, login: string) {
+const Found = z.object({ team: z.string(), id: z.uuid() })
+
+// What a seed finds already there: on the instance's team, or, for a login, on another team.
+async function existing(sql: string, values: string[]): Promise<z.infer<typeof Found> | null> {
+  const [row] = await withClient(async (client) => z.array(Found).parse((await client.query(sql, values)).rows))
+  return row ?? null
+}
+
+// Each seed is safe to run again: one that finds its row already there adds nothing.
+export async function addPerson(team: string, login: string): Promise<{ already: boolean }> {
+  const found = await existing('select t.name as team, p.id from people p join teams t on t.id = p.team_id where p.login = $1', [login])
+  if (found && found.team !== team) throw new Refused(`${login} is already on another team, ${found.team}`, ['Logins are unique across teams. Pick another name for the person'])
+  if (found) return { already: true }
   await admin('add-person', team, login)
+  return { already: false }
 }
 
-export async function addAgent(team: string, name: string, instructions: string): Promise<z.infer<typeof AgentId>> {
-  return NewAgent.parse(JSON.parse(await admin('add-agent', team, name, MACHINE, AGENT_MODEL, instructions))).agentId
+export async function addAgent(team: string, name: string, instructions: string): Promise<{ agentId: z.infer<typeof AgentId>; already: boolean }> {
+  const found = await existing('select t.name as team, a.id from agents a join teams t on t.id = a.team_id where t.name = $1 and a.name = $2 and a.archived_at is null', [team, name])
+  if (found) return { agentId: AgentId.parse(found.id), already: true }
+  return { agentId: NewAgent.parse(JSON.parse(await admin('add-agent', team, name, MACHINE, AGENT_MODEL, instructions))).agentId, already: false }
 }
 
-export async function addBox(team: string, name: string, owner: string) {
+export async function addBox(team: string, name: string, owner: string): Promise<{ already: boolean }> {
+  const found = await existing('select t.name as team, i.id from instances i join teams t on t.id = i.team_id where t.name = $1 and i.name = $2', [team, name])
+  if (found) return { already: true }
   NewInstance.parse(JSON.parse(await admin('add-instance', team, name, 'box', owner)))
+  return { already: false }
 }
 
 // The team, its two people, its machine and its agents.
@@ -63,7 +82,7 @@ export async function seedTeam(name: InstanceName, team: string): Promise<Seed> 
   await addPerson(team, teammate)
   const { token } = NewInstance.parse(JSON.parse(await admin('add-instance', team, MACHINE, 'mac', owner)))
   const agents: Record<string, z.infer<typeof AgentId>> = {}
-  for (const [agent, instructions] of Object.entries(AGENTS)) agents[agent] = await addAgent(team, agent, instructions)
+  for (const [agent, instructions] of Object.entries(AGENTS)) agents[agent] = (await addAgent(team, agent, instructions)).agentId
   return withClient(async (client) => {
     const teamRow = z.object({ id: TeamId }).parse((await client.query('select id from teams where name = $1', [team])).rows[0])
     const people = z.array(z.object({ id: PersonId, login: z.string() }))
@@ -93,12 +112,14 @@ async function addRepo(name: InstanceName, teamId: string, repo: string, files: 
 }
 
 // Another copy of the shop, for a task or a run on a repo of its own.
-export async function seedExtraRepo(state: ReadyState, repo: string): Promise<ForgeRepo> {
+export async function seedExtraRepo(state: ReadyState, repo: string): Promise<{ repo: ForgeRepo; already: boolean }> {
+  const had = state.forgeRepos.find((r) => r.path === `${orgOf(state.name)}/${repo}`)
+  if (had) return { repo: had, already: true }
   const made = await addRepo(state.name, state.seed.teamId, repo, shopFiles(), 'extra')
   const latest = readState(state.name)
   if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the repo was made`)
   saveState({ ...latest, forgeRepos: [...latest.forgeRepos, made] })
-  return made
+  return { repo: made, already: false }
 }
 
 // The team's repos on the forge: shop, a small app with a known bug, and
@@ -146,8 +167,10 @@ const PLAN = '# Plan\n\nMove tax rates into **one table** per country.\n\n- Add 
 // The improve pipeline's change: a clearer triage prompt, which the replays score.
 export const CLEARER = 'Always call report_result when you finish.'
 const TRIAGE_LINE = 'Decide what this report is, without changing any code:'
-// Long enough to watch a stage run, in the run page and in Running now.
+// Long enough to watch a stage run on the run page, which is live.
 const STAGE_MS = 3000
+// Running now refreshes every 3 seconds, so a stage there must last several of those.
+const SLOW_STAGE_MS = 15_000
 
 // What the fake Claude harness does: replies in conversations by rule, and
 // steps through pipeline stages by the group a run's title names.
@@ -175,6 +198,11 @@ export function scenario() {
       'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', summary: 'A new bug.' }],
       'easy,hard,cannot_reproduce': [{ outcome: 'cannot_reproduce', summary: 'No test fails.' }],
     },
+    // A stage that takes long enough to see in Running now, which refreshes every few seconds.
+    SLOW: {
+      'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', summary: 'A new bug.', sleepMs: SLOW_STAGE_MS }],
+      'easy,hard,cannot_reproduce': [{ outcome: 'cannot_reproduce', summary: 'No test fails.' }],
+    },
     Improve: {
       'changed,nothing': [{ outcome: 'changed', summary: 'Both recent runs needed a reminder at triage, so the triage prompt now says to always call report_result.',
         replace: { 'pipelines/pipelines/bug-fix.ts': [TRIAGE_LINE, `${CLEARER} ${TRIAGE_LINE}`] } }],
@@ -182,6 +210,10 @@ export function scenario() {
     Coach: {
       'changed,nothing': [{ outcome: 'changed', summary: 'Two people asked for British spelling in separate sessions.',
         data: { agent: 'fixer', instructions: 'You fix bugs. Write in British English.' } }],
+    },
+    SkillCoach: {
+      'changed,nothing': [{ outcome: 'changed', summary: 'People kept asking for release notes in the same shape.',
+        data: { agent: 'fixer', skill: { name: 'release-notes', content: 'Write one line per merged pull request, newest first.' } } }],
     },
   }
 }

@@ -9,12 +9,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
+import { Refused } from './output.ts'
 
 export const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
-// Where instance state and evidence live, inside the checkout so each worktree
-// keeps its own. Git ignores the folder.
-export const VERIFY_DIR = join(ROOT, '.verify')
+// Where instance state and evidence live: in the checkout's .scratch folder,
+// which git and lint already ignore, so each worktree keeps its own.
+export const VERIFY_DIR = join(ROOT, '.scratch', 'verify')
 export const INSTANCES_DIR = join(VERIFY_DIR, 'instances')
 export const EVIDENCE_DIR = join(VERIFY_DIR, 'evidence')
 export const SKILL_DIR = join(ROOT, '.claude', 'skills', 'verify-agents')
@@ -31,7 +32,7 @@ const FileEnv = z.record(z.string(), z.string())
 
 function readEnvFile(name: string): Record<string, string> {
   const path = join(ROOT, name)
-  if (!existsSync(path)) throw new Error(`${name} is missing from ${ROOT}. Copy it from the main checkout.`)
+  if (!existsSync(path)) throw new Refused(`${name} is missing from ${ROOT}`, [`Copy it from the main checkout: cp ~/Projects/agents/${name} ${ROOT}`])
   return FileEnv.parse(parseEnv(readFileSync(path, 'utf8')))
 }
 
@@ -61,17 +62,17 @@ export function config(): Config {
   const parsed = Config.safeParse(env)
   if (!parsed.success) {
     const missing = parsed.error.issues.map((issue) => issue.path.join('.')).join(', ')
-    throw new Error(`agentsctl needs ${missing}, from .env, .env.test or the environment`)
+    throw new Refused(`agentsctl needs ${missing}, from .env, .env.test or the environment`)
   }
   for (const key of ['DATABASE_URL', 'ELECTRIC_URL'] as const) {
     const fromTest = testFile[key]
-    if (!fromTest) throw new Error(`.env.test must set ${key}, so agentsctl runs against the test database and its Electric`)
+    if (!fromTest) throw new Refused(`.env.test must set ${key}, so agentsctl runs against the test database and its Electric`)
     if (parsed.data[key] !== fromTest) {
-      throw new Error(`${key} is ${redact(parsed.data[key])} but .env.test says ${redact(fromTest)}. Unset ${key} in your shell: agentsctl only runs against the test system.`)
+      throw new Refused(`${key} is ${redact(parsed.data[key])} but .env.test says ${redact(fromTest)}. Unset ${key} in your shell: agentsctl only runs against the test system.`)
     }
   }
   const database = new URL(parsed.data.DATABASE_URL).pathname.slice(1)
-  if (!database.endsWith('_test')) throw new Error(`the database ${database} is not a test database (its name must end in _test)`)
+  if (!database.endsWith('_test')) throw new Refused(`the database ${database} is not a test database (its name must end in _test)`)
   loaded = { ...parsed.data, env }
   return loaded
 }

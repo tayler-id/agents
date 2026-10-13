@@ -37,7 +37,8 @@ export const Handle = z.object({
   role: Role,
   name: z.string().optional(),
   text: z.string().optional(),
-  within: z.object({ role: Role, name: z.string() }).optional(),
+  // The container: a role, with its accessible name, or the text inside it for containers that have no name, such as list items.
+  within: z.object({ role: Role, name: z.string().optional(), text: z.string().optional() }).optional(),
 })
 export type Handle = z.infer<typeof Handle>
 
@@ -46,16 +47,21 @@ export const Op = z.discriminatedUnion('op', [
   z.object({ op: z.literal('goto'), route: z.string() }),
   z.object({ op: z.literal('click'), handle: Handle }),
   z.object({ op: z.literal('fill'), handle: Handle, value: z.string() }),
-  z.object({ op: z.literal('select'), handle: Handle, option: z.string() }),
+  // A choice by its label, or by its value when the label changes from run to run, such as one with a time in it.
+  z.object({ op: z.literal('select'), handle: Handle, option: z.union([z.object({ label: z.string() }), z.object({ value: z.string() })]) }),
   z.object({ op: z.literal('check'), handle: Handle, on: z.boolean() }),
   z.object({ op: z.literal('press'), key: z.string(), handle: Handle.optional() }),
   z.object({ op: z.literal('type'), text: z.string() }),
   z.object({ op: z.literal('wait'), handle: Handle, gone: z.boolean() }),
-  z.object({ op: z.literal('text'), handle: Handle }),
-  z.object({ op: z.literal('count'), handle: Handle }),
+  // With `holds`, waits until the text holds those words, since lists refresh every few seconds.
+  z.object({ op: z.literal('text'), handle: Handle, holds: z.string().optional() }),
+  // With `equals`, waits until that many match, since lists fill in as rows arrive.
+  z.object({ op: z.literal('count'), handle: Handle, equals: z.number().int().nonnegative().optional() }),
   z.object({ op: z.literal('snapshot'), path: z.string() }),
   z.object({ op: z.literal('screenshot'), path: z.string(), full: z.boolean() }),
   z.object({ op: z.literal('console') }),
+  z.object({ op: z.literal('network'), path: z.string() }),
+  z.object({ op: z.literal('trace'), action: z.enum(['start', 'stop']), path: z.string() }),
   z.object({ op: z.literal('overflow') }),
   z.object({ op: z.literal('a11y') }),
   z.object({ op: z.literal('focus') }),
@@ -89,6 +95,8 @@ export const Found = z.object({
   url: z.string(),
   summary: z.string(),
   pass: z.boolean(),
+  // True when the operation found its end state already in place and changed nothing.
+  already: z.boolean().optional(),
   files: z.array(z.string()),
   text: z.string().optional(),
   count: z.number().int().optional(),
@@ -98,6 +106,7 @@ export const Found = z.object({
   focus: z.string().optional(),
   path: z.array(z.string()).optional(),
   captures: z.array(Capture).optional(),
+  network: z.array(z.object({ method: z.string(), url: z.string(), status: z.number().int().nullable(), failed: z.string().nullable(), ms: z.number() })).optional(),
 })
 export type Found = z.infer<typeof Found>
 
