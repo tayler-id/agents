@@ -1,0 +1,387 @@
+// Agent computers, step 15. A real box built from box/Dockerfile, under the tag
+// agents-box:computers, runs the stand-in for Claude. Its desktop comes up and
+// reports a screen. A task's session in it gets the computer tools, the
+// standing instructions and the verify-work skill, and those tools drive the
+// box's screen and browser. People watch the screen through the API's people
+// port and take it over: only the one who holds it can type, the agent is
+// refused until they hand it back, the record shows it, and a view closed
+// without handing back gives the screen back on its own. A screenshot the agent
+// saves becomes an image document. Prints the image's size, the time from a key
+// press in a viewer to its pixels, and the box's memory and CPU.
+// The box reaches this check's API only on 7701, the machine port the box
+// firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
+//   node --env-file=.env --env-file=.env.test test/step15.ts
+
+import { execFile, execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { promisify } from 'node:util'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { Duplex } from 'node:stream'
+import { setTimeout as sleep } from 'node:timers/promises'
+import pg from 'pg'
+import WebSocket from 'ws'
+import { must } from './must.ts'
+import {
+  ROOT, IMAGE, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, F2, within, docker, tryDocker, boxCheckEnv, computerTools, textOf, imageOf, pngSize, pageSays,
+} from './computers.ts'
+
+const PEOPLE_PORT = 7980
+const STREAMS_PORT = 7981
+const API = `http://127.0.0.1:${MACHINE_PORT}`
+const PEOPLE = `http://127.0.0.1:${PEOPLE_PORT}`
+const id = randomBytes(4).toString('hex')
+const team = `comp-${id}`
+const otherTeam = `comp-other-${id}`
+const alice = `alice-comp-${id}@local`
+const bob = `bob-comp-${id}@local`
+const carol = `carol-comp-${id}@local`
+const boxName = `box-${id}`
+// Box mounts come from the colima VM, which sees only the home folder.
+const work = join(homedir(), '.agents-app', 'checks', `comp-${id}`)
+const LATENCY_TRIALS = 20
+// The longest a key press may take to show before the check calls the path broken.
+const LATENCY_LIMIT_MS = 1000
+
+const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
+const children: ChildProcess[] = []
+const failures: string[] = []
+const closers: (() => Promise<void> | void)[] = []
+
+function check(ok: unknown, label: string) {
+  console.log(`${ok ? 'pass' : 'FAIL'}  ${label}`)
+  if (!ok) failures.push(label)
+}
+
+const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows[0]
+// A command that runs while the check keeps sampling the box's stats.
+const run = promisify(execFile)
+const checkEnv = boxCheckEnv(team, work, PEOPLE_PORT, STREAMS_PORT)
+const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', '--env-file=.env.test', ...args],
+  { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...checkEnv } })
+
+async function post(login: string, path: string, body: unknown = {}) {
+  const res = await fetch(PEOPLE + path, { method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': login }, body: JSON.stringify(body) })
+  return { status: res.status, json: await res.json().catch(() => null) }
+}
+
+// A person's Screen view, as the app opens it: a WebSocket on the people port
+// carrying the screen as binary frames and who holds it as text frames.
+type View = { ws: WebSocket; stream: Duplex; controls: any[]; closed: { code: number; reason: string } | null }
+function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PEOPLE_PORT}`, headers: Record<string, string> = {}): Promise<View | number> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`${base}/v1/screens/${instanceId}`, { headers: { 'tailscale-user-login': login, ...headers } })
+    const view: View = {
+      ws, controls: [], closed: null,
+      stream: new Duplex({ read() { /* frames are pushed as they arrive */ }, write(chunk, _encoding, done) { ws.send(chunk, done) } }),
+    }
+    ws.on('unexpected-response', (_req, res) => { resolve(res.statusCode ?? 0) })
+    ws.on('open', () => { resolve(view) })
+    // Messages arrive as single Buffers with ws's default settings.
+    ws.on('message', (data, isBinary) => {
+      if (!Buffer.isBuffer(data)) throw new Error('a screen message arrived as something other than one Buffer')
+      if (isBinary) view.stream.push(data)
+      else view.controls.push(JSON.parse(data.toString('utf8')))
+    })
+    ws.on('close', (code, reason) => {
+      view.closed = { code, reason: String(reason) }
+      view.stream.destroy()
+    })
+    ws.on('error', () => { /* an unexpected response or a close reports it */ })
+  })
+}
+
+const holderOf = (view: View) => view.controls.at(-1)?.control
+
+// How opening a screen goes for a person: watching once the API says who holds
+// it, closed with the code and reason the API gave, or an HTTP refusal.
+async function outcome(login: string, instanceId: string): Promise<string> {
+  const view = await openView(login, instanceId)
+  if (typeof view === 'number') return `http ${view}`
+  await within(10, async () => view.closed !== null || view.controls.length > 0)
+  const result = view.closed ? `closed ${view.closed.code} ${view.closed.reason}` : view.controls.length ? 'watching' : 'silent'
+  view.ws.close()
+  return result
+}
+
+// Samples the container's memory and CPU while `during` runs, from docker stats.
+async function measure(container: string, during: () => Promise<unknown>) {
+  const stats = spawn('docker', ['stats', '--format', '{{.MemUsage}}|{{.CPUPerc}}', container])
+  const samples: { mib: number; cpu: number }[] = []
+  stats.stdout.setEncoding('utf8').on('data', (text: string) => {
+    for (const line of text.split('\n')) {
+      // Each refresh starts with terminal escape codes before the values.
+      const match = /([\d.]+)(MiB|GiB)\s*\/[^|]*\|([\d.]+)%/.exec(line)
+      if (match) samples.push({ mib: Number(match[1]) * (match[2] === 'GiB' ? 1024 : 1), cpu: Number(match[3]) })
+    }
+  })
+  // docker stats takes a second or two to print its first sample, and samples
+  // about once a second after that, so wait for one before and one after.
+  await within(10, async () => samples.length > 0)
+  await during()
+  const after = samples.length
+  await within(5, async () => samples.length > after)
+  stats.kill()
+  const peak = Math.max(...samples.map((s) => s.mib))
+  const cpu = Math.max(...samples.map((s) => s.cpu))
+  const settled = samples.at(-1)?.mib ?? 0
+  return { peak: Math.round(peak), last: Math.round(settled), cpu: Math.round(cpu), samples: samples.length }
+}
+
+process.on('SIGTERM', () => {
+  for (const child of children) child.kill('SIGTERM')
+  process.exit(1)
+})
+
+let container = ''
+try {
+  await db.connect()
+  mkdirSync(work, { recursive: true })
+  writeFileSync(join(work, 'scenario.json'), JSON.stringify({ turns: [{ match: 'Show me the page you checked', screenshot: true, reply: 'Here it is.' }] }))
+  node('server/migrate.ts')
+  node('server/admin.ts', 'add-team', team, alice)
+  node('server/admin.ts', 'add-person', team, bob)
+  node('server/admin.ts', 'add-team', otherTeam, carol)
+
+  const built = Date.now()
+  node('server/boxes.ts', 'build')
+  const imageBytes = Number(docker('image', 'inspect', IMAGE, '--format', '{{.Size}}'))
+  console.log(`      built ${IMAGE} in ${Math.round((Date.now() - built) / 1000)} s, ${(imageBytes / 1e9).toFixed(2)} GB compressed`)
+
+  const api = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
+    cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...checkEnv },
+  })
+  children.push(api)
+  await within(20, () => fetch(API).then(() => true, () => false))
+
+  const { instanceId } = JSON.parse(node('server/boxes.ts', 'create', team, boxName))
+  container = `agents-box-${instanceId}`
+  node('server/admin.ts', 'add-agent', team, 'tester', boxName)
+  const { id: teamId } = must(await one('select id from teams where name = $1', [team]), 'teamId')
+
+  // The desktop comes up and the box says it has a screen.
+  const screenUp = await within(120, async () => {
+    const row = await one('select status, screen_width, screen_height from instances where id = $1', [instanceId])
+    return row?.status === 'online' && row.screen_width === SCREEN.width && row.screen_height === SCREEN.height
+  })
+  check(screenUp, `the box comes online and reports a ${SCREEN.width}x${SCREEN.height} screen`)
+  if (!screenUp) throw new Error('the box never reported a screen, so nothing after this can run')
+  const idle = await measure(container, () => sleep(6000))
+  console.log(`      idle box with its desktop and an open browser: ${idle.last} MiB, CPU up to ${idle.cpu}%`)
+
+  // A person watches: the API asks the box for a tunnel and joins the two.
+  const { RfbClient } = await import('../daemon/rfb.ts')
+  const { keyEvent, pointerEvent } = await import('../shared/rfb.ts')
+  const connectStarted = Date.now()
+  const aliceView = must(await openView(alice, instanceId) as View, "alice's view")
+  closers.push(() => { aliceView.ws.close() })
+  const aliceScreen = await RfbClient.connect(aliceView.stream)
+  await aliceScreen.refresh(false)
+  const firstFrameMs = Date.now() - connectStarted
+  check(aliceScreen.width === SCREEN.width && aliceScreen.height === SCREEN.height && aliceScreen.name === 'Agents box',
+    `alice, watching through the people port, gets the box's screen (${aliceScreen.width}x${aliceScreen.height}, first frame in ${firstFrameMs} ms)`)
+  check(holderOf(aliceView)?.holder === 'agent', 'the view says the agent has the screen')
+
+  // A task in the box: its session gets the computer, the instructions and the skill.
+  const task = await post(alice, '/v1/tasks', { title: 'Check the page', instructions: 'Look at it.', agentId: must(await one('select id from agents where team_id = $1 and name = $2', [teamId, 'tester']), 'agent').id })
+  const sessionId: string = must(task.json?.sessionId, 'the task session')
+  const taskId: string = must(task.json?.taskId, 'the task')
+  await within(120, async () => (await one('select status from sessions where id = $1', [sessionId]))?.status === 'idle')
+  const workspace = must(await one('select w.path from workspaces w join sessions s on s.workspace_id = w.id where s.id = $1', [sessionId]), 'workspace').path as string
+  const starts = tryDocker('exec', container, 'cat', `${workspace}/.fake/starts.jsonl`) ?? ''
+  const claudeArgs = tryDocker('exec', container, 'ps', '-ww', '-eo', 'args') ?? ''
+  const allowed = /--allowedTools (\S+)/.exec(claudeArgs.split('\n').find((line) => line.includes('fake-claude')) ?? '')?.[1]?.split(',') ?? []
+  check(starts.includes('You have your own computer') && starts.includes('verify-work'),
+    "the session's standing instructions describe its computer and checking its work")
+  check(tryDocker('exec', container, 'test', '-f', `${workspace}/.claude/skills/verify-work/SKILL.md`) !== null, 'the session has the verify-work skill')
+  check(allowed.includes('mcp__computer__computer') && allowed.includes('mcp__computer__browser_navigate') && !allowed.includes('mcp__computer__browser_evaluate'),
+    'the computer and browser tools run without asking, and running page scripts asks a person')
+
+  const { client: tools, server } = await computerTools(container, sessionId, workspace)
+  closers.push(() => tools.close())
+  const toolNames = (await tools.listTools()).tools.map((t) => t.name)
+  const guide = await import('../daemon/computer-guide.ts')
+  const allowedNames = new Set(guide.COMPUTER_TOOLS_ALLOWED.map((name) => name.replace('mcp__computer__', '')))
+  const browserTools = toolNames.filter((name) => name.startsWith('browser_'))
+  check(server.env.AGENTS_TASK_FOLDER === `${workspace}/task` && ['computer', 'save_screenshot', 'screen_status'].every((name) => toolNames.includes(name))
+    && browserTools.length > 10 && browserTools.every((name) => allowedNames.has(name) !== guide.BROWSER_TOOLS_THAT_ASK.includes(name)),
+  `the computer server offers its own tools and ${browserTools.length} browser tools, each either allowed or asking a person`)
+
+
+  // The agent drives the box's browser and screen.
+  await tools.callTool({ name: 'browser_navigate', arguments: { url: PAGE_URL } })
+  const snapshot = textOf(await tools.callTool({ name: 'browser_snapshot', arguments: {} }))
+  check(snapshot.includes('Agents check page'), "browser_navigate opens a page in the box's browser, and browser_snapshot reads it")
+  await aliceScreen.refresh(false)
+  // The page starts below the browser's toolbar. The black square says where.
+  let squareTop = -1
+  for (let y = 0; y < SCREEN.height && squareTop < 0; y++) {
+    const { r, g, b } = aliceScreen.pixel(SQUARE.left + SQUARE.size / 2, y)
+    if (r + g + b === 0) squareTop = y
+  }
+  const toolbar = squareTop - SQUARE.top
+  const shot = await tools.callTool({ name: 'computer', arguments: { action: 'screenshot' } })
+  const size = pngSize(imageOf(shot) ?? '')
+  check(squareTop > 0 && size?.width === SCREEN.width && size.height === SCREEN.height, `the computer tool's screenshot is a ${SCREEN.width}x${SCREEN.height} PNG`)
+  const clicked = await tools.callTool({ name: 'computer', arguments: { action: 'left_click', coordinate: [INPUT.left + INPUT.width / 2, toolbar + INPUT.top + INPUT.height / 2] } })
+  await tools.callTool({ name: 'computer', arguments: { action: 'type', text: 'héllo from the agent ✓' } })
+  const typed = await pageSays(tools)
+  check(!clicked.isError && typed === 'typed:héllo from the agent ✓', `the agent's clicks and typing reach the page, accents and symbols included (${typed})`)
+  const badKey = await tools.callTool({ name: 'computer', arguments: { action: 'key', text: 'NoSuchKey' } })
+  check(badKey.isError && textOf(badKey).includes('not a key name'), 'a key name the screen does not know is refused with a reason')
+
+  // A screenshot the agent saves becomes an image document on the task when its
+  // turn ends. That turn also takes a screenshot through the computer tool.
+  const saved = await tools.callTool({ name: 'save_screenshot', arguments: { name: 'agents-check-page' } })
+  const savedSha = (tryDocker('exec', container, 'sha256sum', `${workspace}/task/checks/agents-check-page.png`) ?? '').split(' ')[0]
+  await post(alice, `/v1/sessions/${sessionId}/messages`, { text: 'Show me the page you checked.' })
+  const findImage = () => one(
+    `select a.id, v.version, v.content, b.media_type, b.sha256 from artifacts a join artifact_versions v on v.artifact_id = a.id
+     join blobs b on b.id = v.blob_id where a.task_id = $1 and a.path = 'checks/agents-check-page.png'`, [taskId])
+  await within(60, findImage)
+  const imageDoc = await findImage()
+  check(!saved.isError && savedSha && imageDoc?.media_type === 'image/png' && imageDoc.sha256 === savedSha && imageDoc.content === '',
+    "a screenshot the agent saves with save_screenshot becomes an image document on the task, byte for byte")
+  const imageUrl = imageDoc ? `${PEOPLE}/v1/artifacts/${imageDoc.id}/versions/${imageDoc.version}/image` : `${PEOPLE}/none`
+  const fetched = await fetch(imageUrl, { headers: { 'tailscale-user-login': alice } })
+  const fetchedSha = createHash('sha256').update(Buffer.from(await fetched.arrayBuffer())).digest('hex')
+  const outsider = await fetch(imageUrl, { headers: { 'tailscale-user-login': carol } })
+  check(fetched.status === 200 && fetched.headers.get('content-type') === 'image/png' && fetchedSha === savedSha && outsider.status === 404,
+    "the task's people fetch the image through the people port, and a person on another team can't")
+  const toolResults = (await db.query(`select body::text as body from events where session_id = $1 and kind = 'tool_result'`, [sessionId])).rows.map((r) => r.body as string)
+  const rawLines = (await db.query('select line::text as line from raw_events where session_id = $1', [sessionId])).rows.map((r) => r.line as string)
+  check(toolResults.some((body) => /"omitted": ?true/.test(body)) && ![...toolResults, ...rawLines].some((text) => text.includes('iVBORw0KGgo')),
+    "a screenshot in a tool's result reaches the record as its size and hash, never its bytes")
+
+  // Alice takes over. The agent is refused, by name, in both kinds of tool.
+  const bobView = must(await openView(bob, instanceId) as View, "bob's view")
+  closers.push(() => { bobView.ws.close() })
+  const bobScreen = await RfbClient.connect(bobView.stream)
+  const took = await post(alice, `/v1/screens/${instanceId}/take`, { sessionId })
+  check(took.status === 200 && took.json?.control?.holder === 'person' && took.json.control.login === alice, 'alice takes over the screen')
+  check(await within(10, async () => holderOf(aliceView)?.login === alice && holderOf(bobView)?.login === alice), 'both views are told alice has the screen')
+  const refused = await tools.callTool({ name: 'computer', arguments: { action: 'screenshot' } })
+  const refusedBrowser = await tools.callTool({ name: 'browser_snapshot', arguments: {} })
+  check(refused.isError && textOf(refused).includes(`${alice} has taken over the screen`) && refusedBrowser.isError && textOf(refusedBrowser).includes(alice),
+    "while alice holds the screen, the agent's screen and browser actions are refused, naming her")
+  const status = await tools.callTool({ name: 'screen_status', arguments: {} })
+  check((status.structuredContent as any)?.control?.login === alice, 'screen_status tells the agent who has the screen')
+
+  // Only the holder's keys reach the box.
+  const typeKeys = (screen: Awaited<ReturnType<typeof RfbClient.connect>>, text: string) => {
+    for (const char of text) {
+      screen.send(keyEvent(char.charCodeAt(0), true))
+      screen.send(keyEvent(char.charCodeAt(0), false))
+    }
+  }
+  typeKeys(aliceScreen, '!!')
+  typeKeys(bobScreen, '??')
+  bobScreen.send(pointerEvent(10, 10, 1))
+  await sleep(1500)
+
+  // Latency: alice presses F2 and waits for the square's pixels to change.
+  const squareX = SQUARE.left + SQUARE.size / 2
+  const squareY = toolbar + SQUARE.top + SQUARE.size / 2
+  const latencies: number[] = []
+  for (let i = 0; i < LATENCY_TRIALS; i++) {
+    await aliceScreen.refresh(false)
+    const before = aliceScreen.pixel(squareX, squareY).r
+    const started = performance.now()
+    aliceScreen.send(keyEvent(F2, true))
+    aliceScreen.send(keyEvent(F2, false))
+    const deadline = started + 3000
+    while (aliceScreen.pixel(squareX, squareY).r === before && performance.now() < deadline) {
+      await Promise.race([aliceScreen.refresh(true), sleep(3000)])
+    }
+    latencies.push(performance.now() - started)
+  }
+  latencies.sort((a, b) => a - b)
+  const median = must(latencies[Math.floor(latencies.length / 2)], 'median')
+  const p95 = must(latencies[Math.floor(latencies.length * 0.95)], 'p95')
+  console.log(`      key press to pixels through the API: median ${median.toFixed(0)} ms, p95 ${p95.toFixed(0)} ms over ${LATENCY_TRIALS} presses`)
+  check(median < LATENCY_LIMIT_MS, `a key press in alice's view shows on her screen within ${LATENCY_LIMIT_MS} ms (median ${median.toFixed(0)} ms)`)
+
+  // Alice hands back. The agent acts again and hears that she used the screen.
+  const handed = await post(alice, `/v1/screens/${instanceId}/hand-back`, { sessionId })
+  const after = await tools.callTool({ name: 'computer', arguments: { action: 'screenshot' } })
+  check(handed.status === 200 && handed.json?.control?.holder === 'agent' && !after.isError
+    && (after.structuredContent as any)?.personUsedScreen === alice && textOf(after).includes(`${alice} used the screen since your last action`),
+  'after alice hands back, the agent acts again and is told she used the screen')
+  typeKeys(aliceScreen, '##')
+  await sleep(1500)
+  const final = await pageSays(tools)
+  check(final.startsWith('typed:héllo from the agent ✓!!'), `alice's typing reached the page while she held the screen (${final})`)
+  check(!final.includes('?'), "bob's typing never reached the page while alice held the screen")
+  check(!final.includes('#'), "alice's typing stops reaching the page once she hands it back")
+
+  // The record shows the takeover.
+  const takeover = await one('select ended_by, session_id from screen_takeovers where instance_id = $1 order by started_at limit 1', [instanceId])
+  const notices = (await db.query(`select text from events where session_id = $1 and kind = 'notice' and body->>'subtype' = 'screen' order by seq`, [sessionId])).rows.map((r) => r.text)
+  check(takeover?.ended_by === 'handed_back' && takeover.session_id === sessionId
+    && notices.includes(`${alice} took over the screen`) && notices.includes(`${alice} handed the screen back`),
+  "the takeover is recorded, and the session's record has a notice when it starts and ends")
+
+  // Who may watch and take over.
+  check(await outcome(carol, instanceId) === 'closed 4403 no such screen' && (await post(carol, `/v1/screens/${instanceId}/take`, { sessionId: null })).status === 404,
+    "a person on another team can't watch the screen or take it over")
+  check(await openView(alice, instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 400 && await openView('', instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 404,
+    'the machine port refuses a person, and has no screen view to open')
+  const { id: privateTask } = must(await one(
+    `insert into tasks (team_id, slug, title, owner_id, agent_id, visibility) select $1, $2, 'Private work', p.id, a.id, 'private'
+     from people p, agents a where p.login = $3 and a.team_id = $1 returning id`, [teamId, `private-${id}`, alice]), 'private task')
+  const { id: privateSession } = must(await one(
+    `insert into sessions (team_id, task_id, instance_id, agent_id, status) select $1, $2, $3, id, 'running' from agents where team_id = $1 returning id`,
+    [teamId, privateTask, instanceId]), 'private session')
+  const bobOutcome = await outcome(bob, instanceId)
+  const aliceOutcome = await outcome(alice, instanceId)
+  check(bobOutcome === "closed 4403 This screen has shown work you can't see." && aliceOutcome === 'watching',
+    `someone who can't see private work running on the box can't watch it, and its owner can (${bobOutcome}; ${aliceOutcome})`)
+  await db.query('delete from sessions where id = $1', [privateSession])
+
+  // Alice takes over again and closes her view without handing back.
+  await post(alice, `/v1/screens/${instanceId}/take`, { sessionId })
+  aliceView.ws.close()
+  const gone = await within(60, async () => (await one(`select ended_by from screen_takeovers where instance_id = $1 order by started_at desc limit 1`, [instanceId]))?.ended_by === 'left')
+  const back = await tools.callTool({ name: 'computer', arguments: { action: 'screenshot' } })
+  check(gone && !back.isError && await within(10, async () => holderOf(bobView)?.holder === 'agent'),
+    'a person who closes the view without handing back loses the screen, and the agent has it again')
+
+  // From inside the new image, only the machine port answers. curl prints 000
+  // when it can't connect at all.
+  const reach = (port: number) => spawnSync('docker', ['exec', container, 'curl', '-s', '-m', '3', '-o', '/dev/null', '-w', '%{http_code}',
+    '-H', `tailscale-user-login: ${alice}`, `http://host.docker.internal:${port}/v1/me`], { encoding: 'utf8' }).stdout.trim()
+  check(reach(MACHINE_PORT) === '400' && reach(PEOPLE_PORT) === '000', 'from inside the box the machine port answers and the people port cannot be reached')
+
+  // Sizing: the agent's browser on the page, then all three engines at once.
+  const busy = await measure(container, async () => {
+    for (let i = 0; i < 5; i++) await tools.callTool({ name: 'computer', arguments: { action: 'scroll', coordinate: [640, 400], scroll_direction: 'down', scroll_amount: 3 } })
+  })
+  const browsers = await measure(container, async () => {
+    const { stdout } = await run('docker', ['exec', container, 'node', '/opt/check/box-browsers.ts', '/usr/local/lib/node_modules/playwright', PAGE_URL])
+    console.log(stdout.trim().replace(/^/gm, '      '))
+  })
+  console.log(`      agent driving the screen: ${busy.peak} MiB at most, CPU up to ${busy.cpu}%`)
+  console.log(`      Chromium, Firefox and WebKit at once beside it: ${browsers.peak} MiB at most, CPU up to ${browsers.cpu}%`)
+} catch (error) {
+  failures.push((error as Error).message)
+  console.error(`FAIL  ${(error as Error).stack}`)
+} finally {
+  for (const close of closers) await Promise.resolve(close()).catch(() => undefined)
+  for (const child of children) child.kill('SIGTERM')
+  await sleep(1000)
+  // Boxes are removed whatever happened, or they would keep calling a closed port.
+  const boxes = await db.query(`select i.id from instances i join teams t on t.id = i.team_id where t.name = $1 and i.kind = 'box'`, [team]).catch(() => ({ rows: [] }))
+  for (const { id: boxId } of boxes.rows) {
+    tryDocker('rm', '-f', `agents-box-${boxId}`)
+    tryDocker('volume', 'rm', `agents-box-${boxId}-home`)
+  }
+  if (!failures.length) {
+    await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
+    rmSync(work, { recursive: true, force: true })
+  }
+  await db.end().catch(() => undefined)
+}
+
+console.log(`\n${failures.length ? `${failures.length} failed (team ${team} kept)` : 'all passed (test teams and box removed)'}`)
+process.exit(failures.length ? 1 : 0)

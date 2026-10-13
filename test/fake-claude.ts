@@ -6,8 +6,9 @@
 // steps are keyed by the stage's outcomes joined with commas, one step per try. A
 // step can write or edit files, report a result, skip reporting, cost money, or
 // fail. Outside a stage, the first of the scenario's `turns` rules whose `match`
-// appears in the message decides the reply and any files written. Otherwise it
-// answers "fake reply".
+// appears in the message decides the reply and any files written, and whether
+// the turn takes a screenshot with the computer tool. Otherwise it answers "fake
+// reply".
 //
 // A rule can also append a line to a file through one Bash call, asking a person
 // first the way Claude asks before a gated tool. For crash checks it can stop
@@ -104,7 +105,9 @@ type Append = {
 // `hang` stops the turn when the rule matches, as if the model never finished.
 // `replyIf` answers differently when the session's instructions have these
 // words, the way an agent follows what it was told.
-type Rule = { match: string; reply?: string; replyIf?: Record<string, string>; write?: Record<string, string>; append?: Append; hang?: boolean }
+type Rule = {
+  match: string; reply?: string; replyIf?: Record<string, string>; write?: Record<string, string>; append?: Append; hang?: boolean; screenshot?: boolean
+}
 const scenario: Record<string, Record<string, Step[]>> & { turns?: Rule[] } = process.env.AGENTS_FAKE_SCENARIO
   ? JSON.parse(readFileSync(process.env.AGENTS_FAKE_SCENARIO, 'utf8')) : {}
 
@@ -193,6 +196,18 @@ async function appendLine(text: string, append: Append): Promise<string | null> 
   if (append.hangOnce && counter(`hang-${append.file}`) === 0) await hang()
   callResult(id, '')
   return null
+}
+
+// A 1x1 PNG, standing in for a screenshot.
+const PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+
+// A computer-tool screenshot, printed the way Claude Code 2.1.296 prints an MCP
+// tool's image: in the tool result and again in the line's tool_use_result.
+function screenshot() {
+  const id = `toolu_${randomUUID().slice(0, 8)}`
+  const content = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PIXEL_PNG } }, { type: 'text', text: 'Screen 1x1.' }]
+  emit({ type: 'assistant', parent_tool_use_id: null, message: { id: `msg_${randomUUID().slice(0, 8)}`, model: 'fake', content: [{ type: 'tool_use', id, name: 'mcp__computer__computer', input: { action: 'screenshot' } }] } })
+  emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] }, tool_use_result: content })
 }
 
 function say(text: string) {
@@ -287,6 +302,7 @@ async function turn(text: string, uuid: string | undefined) {
     tool('Bash', { command }, `${ran.stdout}${ran.stderr}`.trim() || `exit ${ran.status ?? 'none'}`, ran.status !== 0)
   }
   for (const decision of step.decide ?? []) tool('mcp__team-record__log_decision', decision, 'Logged in the decision log.')
+  if (rule?.screenshot) screenshot()
   const holdsBack = step.noReport || (step.reportOnlyIf !== undefined && !text.includes(step.reportOnlyIf))
   if (key && step.outcome && !(holdsBack && !nudge)) {
     const data = {
