@@ -285,6 +285,48 @@ try {
     check(foreign.status === 404 && malformed.status === 400 && (await malformed.text()).includes('baseCommit'),
       "another team's machine cannot post a workspace's changes, and a post missing its base is refused")
   })
+
+  await section('pull requests', async () => {
+    const ask = { title: 'Add a README and notes', body: 'From step 14.' }
+    const pushed = (pushId: string) => within(60, async () => (await one<{ status: string }>('select status from pushes where id = $1', [pushId]))?.status !== 'pushing')
+    // Set the session working by hand: the fake agent's turns end too fast to catch one.
+    await db.query(`update sessions set status = 'running' where id = $1`, [draftSession])
+    const busy = await as(alice, `/v1/tasks/${draftTask}/pull-requests`, ask)
+    await db.query(`update sessions set status = 'idle' where id = $1`, [draftSession])
+    check(busy.status === 409 && (await busy.text()).includes('still working'), 'no pull request opens while the agent is working')
+
+    const { pushId } = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
+    const ended = await pushed(pushId)
+    const push = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [pushId])
+    const links = await all<{ title: string; state: string }>(`select title, state from artifacts where task_id = $1 and kind = 'link' order by title`, [draftTask])
+    check(ended && push?.status === 'done' && links.length === 2 && links.every((l) => l.state === 'open')
+      && links.some((l) => l.title.includes(`${org}/${SHOP}`)) && links.some((l) => l.title.includes(`${org}/${SERVICE}`)),
+    `a pull request opens for each repo with changes, and shows on the task: ${links.map((l) => l.title).join(', ') || (push?.error ?? 'none')}`)
+
+    const slug = must(await one<{ slug: string }>('select slug from tasks where id = $1', [draftTask]), 'the slug').slug
+    const open = await forgeAdmin.call<{ number: number; title: string; body: string; head: { ref: string } }[]>('GET', `/repos/${org}/${SHOP}/pulls?state=open`)
+    const pr = open.find((p) => p.head.ref === `task/${slug}`)
+    const files = pr ? await forgeAdmin.call<{ filename: string }[]>('GET', `/repos/${org}/${SHOP}/pulls/${pr.number}/files`) : []
+    const commits = pr ? await forgeAdmin.call<{ commit: { author: { name: string } } }[]>('GET', `/repos/${org}/${SHOP}/pulls/${pr.number}/commits`) : []
+    check(pr?.title === ask.title && pr.body === ask.body && files.some((f) => f.filename === 'checkout.js')
+      && commits.length > 0 && commits.every((c) => c.commit.author.name === 'helper'),
+    "the forge has the pull request on the task branch, with the change, in the task agent's name")
+    const seen = await shapeRows(amir, 'pushes', { task: draftTask })
+    check(seen.rows.some((r) => r.id === pushId && r.status === 'done' && r.error === null), 'a teammate sees how the push went')
+
+    const again = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
+    await pushed(again.pushId)
+    const linksAgain = await all(`select 1 from artifacts where task_id = $1 and kind = 'link'`, [draftTask])
+    const openAgain = await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${SHOP}/pulls?state=open`)
+    check(linksAgain.length === 2 && openAgain.length === open.length, 'asking again updates the open pull requests instead of opening more')
+
+    const quiet = await post('/v1/tasks', { title: 'Look around', instructions: 'Change nothing.', agentId: writer, repoIds: [shopRepo] })
+    await within(60, async () => (await one<{ status: string }>('select status from sessions where id = $1', [quiet.sessionId]))?.status === 'idle')
+    const nothing = await post(`/v1/tasks/${quiet.taskId}/pull-requests`, { title: 'Nothing', body: '' })
+    await pushed(nothing.pushId)
+    const failed = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [nothing.pushId])
+    check(failed?.status === 'failed' && failed.error?.includes('nothing to open'), `a task with no changes opens no pull request, and says why: ${failed?.error ?? 'no error'}`)
+  })
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)
