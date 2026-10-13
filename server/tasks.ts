@@ -14,7 +14,7 @@ import { draftSession } from './drafts.ts'
 import { launchTask } from './launch.ts'
 import { CONVERSATION_PERMISSIONS, workspacePermissions } from './permissions.ts'
 import { TaskId } from '../shared/ids.ts'
-import type { NewTask } from '../shared/work.ts'
+import { CommentAnchor, type NewComment, type NewTask } from '../shared/work.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 const slugOf = (title: string) =>
@@ -90,7 +90,7 @@ export async function reportToConversation(client: pg.PoolClient, sessionId: str
 
 // A comment on a version of a document. Sent to the agent, it reaches the
 // session that wrote the document, which can revise it.
-export async function addComment(client: pg.PoolClient, person: Person, artifactId: string, body: { version: number; text: string; quote?: string | null; send?: boolean }) {
+export async function addComment(client: pg.PoolClient, person: Person, artifactId: string, body: NewComment) {
   const artifact = await maybe<{ id: string; team_id: string; task_id: string; path: string; made_by_session: string | null }>(client,
     `select id, team_id, task_id, path, made_by_session from artifacts where id = $1 and team_id = $2 and kind = 'document'`, [artifactId, person.team_id])
   if (!artifact || !(await canSeeTask(person, artifact.task_id))) throw new HttpError(404, 'no such document')
@@ -100,7 +100,7 @@ export async function addComment(client: pg.PoolClient, person: Person, artifact
   const comment = await one<{ id: string }>(client, 'the new comment',
     `insert into comments (team_id, artifact_id, version, anchor, author_person, body, sent_to_session)
      values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-    [person.team_id, artifactId, body.version, body.quote ? JSON.stringify({ quote: body.quote }) : null, person.id, body.text, sendTo])
+    [person.team_id, artifactId, body.version, body.quote ? JSON.stringify(CommentAnchor.parse({ quote: body.quote, occurrence: body.occurrence })) : null, person.id, body.text, sendTo])
   if (sendTo) {
     const quote = body.quote ? `On "${body.quote}":\n` : ''
     await sendToSession(client, person, sendTo,

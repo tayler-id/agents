@@ -35,7 +35,7 @@ import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { TaskId, WorkspaceId } from '../shared/ids.ts'
-import { ChangesPost, DraftAction, NewTask, PullRequestAsk, TaskFields } from '../shared/work.ts'
+import { ChangesPost, DraftAction, NewComment, NewTask, PullRequestAsk, TaskFields } from '../shared/work.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -344,10 +344,8 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/artifacts/${UUID}/comments$`), async (req, [artifactId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    const commentId = await tx((client) => addComment(client, person, artifactId, {
-      version: Number(body.version), text: text(body.text, 'text'), quote: optionalText(body.quote, 'quote'), send: body.send === true,
-    }))
+    const comment = parsed(NewComment, await readJson(req))
+    const commentId = await tx((client) => addComment(client, person, artifactId, comment))
     return { commentId }
   }],
 

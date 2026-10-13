@@ -187,10 +187,26 @@ export const DocumentRow = z.object({ id: ArtifactId, task_id: TaskId, title: z.
 export type DocumentRow = z.infer<typeof DocumentRow>
 export const DOCUMENT_COLUMNS = Object.keys(DocumentRow.shape)
 
+// A quote names a passage, not a document's worth of text.
+const QUOTE_MAX = 2000
+// More matches than this in one version means the quote is too short to place.
+const OCCURRENCE_MAX = 10_000
+
 // Where a comment sits in its version: the quoted text and which of its
 // matches, counted from zero. A quote typed by hand means the first match.
 export const CommentAnchor = z.object({
-  quote: z.string().trim().min(1).max(2000),
-  occurrence: z.number().int().min(0).max(10_000).default(0),
+  quote: z.string().trim().min(1).max(QUOTE_MAX),
+  occurrence: z.number().int().min(0).max(OCCURRENCE_MAX).default(0),
 })
 export type CommentAnchor = z.infer<typeof CommentAnchor>
+
+// POST /v1/artifacts/:id/comments. Sent to the agent, the comment reaches the
+// session that wrote the document.
+export const NewComment = z.object({
+  version: z.number().int().min(1),
+  text: z.string().trim().min(1).max(TEXT_MAX),
+  quote: z.string().trim().min(1).max(QUOTE_MAX).optional(),
+  occurrence: z.number().int().min(0).max(OCCURRENCE_MAX).optional(),
+  send: z.boolean().default(false),
+}).refine((comment) => comment.occurrence === undefined || comment.quote !== undefined, 'occurrence places a quote, so it needs one')
+export type NewComment = z.infer<typeof NewComment>

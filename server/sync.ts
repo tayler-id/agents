@@ -13,7 +13,7 @@ import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VI
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
-import { FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS } from '../shared/work.ts'
+import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -143,6 +143,11 @@ const personShapes: Record<string, PersonShape> = {
   file_change: async (p, args) => ({
     table: 'file_changes', where: 'id = $1', columns: FILE_CHANGE_DETAIL_COLUMNS,
     params: [await requireTaskOf(p, 'select task_id from file_changes where id = $1 and team_id = $2', arg(args, 'id'))],
+  }),
+  // Every document of every task the person may see, without contents, for the palette.
+  documents: async (p) => ({
+    table: 'artifacts', where: `team_id = $1 and kind = 'document' and task_id in (select id from tasks where ${VISIBLE_TASK})`,
+    params: [p.team_id, p.id], columns: DOCUMENT_COLUMNS,
   }),
   // Each time someone asked to open a task's pull requests, and how it went.
   pushes: async (p, args) => {
