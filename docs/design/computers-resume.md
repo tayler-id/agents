@@ -1,54 +1,53 @@
-# Agent computers: where the work stands
+# Agent computers, where the work stands
 
-A note for whoever picks this up, kept current with each commit. The design is `docs/design/computers.md`.
+A note for whoever picks this up, kept current with each commit. The design is `docs/design/computers.md`, and `docs/build-log.md` has what was checked and measured.
 
 ## Done, on this branch
 
+Rebased onto main at 6e37987 on 2026-10-13. Commit ids change with each rebase, so find them by subject.
+
 | Commit | What |
 |---|---|
-| 0e16c31 | Design doc, `docs/design/computers.md` |
-| 0608199 | Migration `server/migrations/0008_computers.sql`, with its `docs/data-model.md` entry |
-| 5b09db5 | Box image: Xvnc, matchbox, tini, Playwright 1.64.0 with Chromium, Firefox and WebKit, Playwright MCP 0.0.83 |
-| 1672e93 | The box's desktop, screen service and `computer` MCP server, standing instructions and the `verify-work` skill |
-| 4d90169 | Typing outside ASCII pastes through the clipboard (xclip), 90 of 90 strings whole |
-| 321997f | Watching and taking over through the API: control connection, tunnels, input filter, the handoff state machine, takeover rows and notices |
-| c0fea7f | Images in a task's folder become documents (`blobs`, the image route, the document panel) |
-| e7c8ee1 | Screenshots in tool results are kept out of the record (size and SHA-256 instead) |
-| 7685dee | The design doc and code no longer refer to the studied app |
-| cf38bcb | Screenshots wait for the screen to settle |
-| b563f97 | The Screen view in the app, loaded only when opened |
-| bcbdf42 | `test/step15.ts` and `test/step15b.ts`, with `test/computers.ts` and `test/box-browsers.ts` |
+| Design: agent computers, the Screen view and images as documents | `docs/design/computers.md` |
+| Schema for agent computers | Migration `server/migrations/0008_computers.sql`, with its `docs/data-model.md` entry |
+| Box image | Xvnc, matchbox, xclip, tini, Playwright 1.64.0 with Chromium, Firefox and WebKit, and Playwright MCP 0.0.83 |
+| Agents in boxes get a computer | The box's desktop, screen service and `computer` MCP server, the standing instructions and the `verify-work` skill |
+| Type text outside ASCII by pasting it | 90 of 90 strings arrived whole, against 9 of 18 typed key by key |
+| Watch and take over a box's screen through the API | Control connection, tunnels, the input filter, the handoff state machine, takeover rows and notices |
+| Images in a task's folder become documents | `blobs`, the image route and the document panel |
+| Keep screenshots in tool results out of the record | Size and SHA-256 in place of the bytes |
+| Describe agent computers in our own words | No reference to the app we studied |
+| Screenshots wait for the screen to settle | 200 ms without a paint, 3 s at most |
+| The Screen view | The app's view, loaded only when opened |
+| Checks for agent computers | `test/step15.ts` and `test/step15b.ts`, with `test/computers.ts` and `test/box-browsers.ts` |
+| Checks wait on conditions, not fixed sleeps | Keys from someone not holding the screen are ordered behind a key that must show |
+| Check what the Screen view says when its box stops | Close code 4502 to viewers, then 4404, and the app's message in three engines |
+| Check that a box's screen and browser come back | After an idle stop, a kill and a recreate on a volume locked elsewhere |
+| Reword comments where a colon joined two halves | Comments only |
+| Drop a phone rule that the panel's rule already covers | CSS |
+| Step 15b measures sideways scrolling against the page's own width | Chromium's innerWidth grows with overflow under phone emulation |
 
-Both checks pass: step15 has 30 checks, step15b has 17 per engine in Chromium, WebKit and Firefox.
+## Checks
 
-## Measured (this Mac, colima arm64, 4 CPUs, 8 GB)
-
-- Image `agents-box:computers`: 1.05 GB compressed, 3.78 GB on disk, against 251 MB and 974 MB before. Layers: desktop 236 MB, Playwright package 22 MB, Chromium libraries 82 MB, Firefox libraries 158 MB, WebKit libraries 192 MB, Chromium and its headless shell 713 MB, Firefox 300 MB, WebKit 290 MB, Playwright MCP 19 MB.
-- Box memory: idle with its desktop and open browser 328 MiB at 0 to 1% CPU. An agent driving the screen 586 MiB, up to 16% CPU. Chromium, Firefox and WebKit open at once beside it 1146 MiB, up to 249% CPU. Claude Code itself is not in these numbers, since the checks use the stand-in.
-- Screen: first frame 37 to 51 ms after a viewer connects. Key press to pixels through the API, Node viewer: median 20 ms, p95 29 to 33 ms. In the browser through the Screen view: Chromium median 32 ms, WebKit 31 ms, Firefox 23 ms.
-
-## Still to do
-
-1. Seen failing: break each guarded behavior, run the check, watch it fail, restore byte for byte, watch it pass. Planned breaks: drop the input filter's holder test (bob's keys reach the page), skip the image stripping reviver, make `watchable` skip the private-work count, return the agent's control from `move` without the takeover row, remove the paste path, remove the settle step.
-2. Check each commit passes typecheck and lint alone, in a temporary worktree.
-3. Add the build-log section in `docs/build-log.md` and update the design doc's sizing section with the numbers above.
-4. Report to the coordinator.
+- Step 15 has 32 checks and step 15b has 18 in each of Chromium, WebKit and Firefox.
+- Both passed on the last commit, rebased onto 6e37987, at 18:09 on 2026-10-13. If the API ever aborts at start with no message, look at `ipcs -s -b`. This Mac ran out of System V semaphores once that day, and lmdb aborts without them.
+- Every check was seen failing under `.scratch/breaks.ts`, a local file that git ignores. `node .scratch/breaks.ts check-all` checks every anchor, `node .scratch/breaks.ts <set>` applies one set, and `git checkout -- <files it lists>` restores. Step 15's sets are quiet, input, stuck, flow, team, noscreen and notunnel. Step 15b's are ui-a to ui-d, run with `AGENTS_UI_ENGINES=chromium`.
+- `.scratch/clean-teams.ts` deletes the `comp-` teams and folders that failed runs keep. It refuses any database but `agents_test`.
 
 ## Running the checks
 
-- Take the lock first: `mkdir ~/.agents-app/checks/run.lock`, and `rmdir` it after. Both checks use port 7701, the only check port the box firewall opens.
-- `node --env-file=.env --env-file=.env.test test/step15.ts` takes about 4 minutes when the image is cached, 7 when it builds.
-- `node --env-file=.env --env-file=.env.test test/step15b.ts` takes about 5 minutes. `AGENTS_UI_ENGINES=chromium` runs one engine.
-- Teams are `comp-*`. A failed run keeps its team in `agents_test` and its folder under `~/.agents-app/checks/comp-*`. Both are safe to delete.
+- Take the lock first with `mkdir ~/.agents-app/checks/run.lock`, and `rmdir` it after. Both checks use port 7701, the only check port the box firewall opens.
+- `node --env-file=.env --env-file=.env.test test/step15.ts` took about 2 minutes on this Mac with the image cached. Building the image added 51 to 203 seconds.
+- `node --env-file=.env --env-file=.env.test test/step15b.ts` took under a minute in three engines.
+- Teams are `comp-*`. A failed run keeps its team in `agents_test` and its folder under `~/.agents-app/checks/`.
 
 ## Left running
 
-- No containers. Every box a check makes is removed when it ends.
-- The image `agents-box:computers` (3.78 GB). Remove it with `docker rmi agents-box:computers` once nobody needs it. `agents-box:latest` is the live server's and was never touched.
+- No containers or volumes. Every box a check makes is removed when it ends.
+- The image `agents-box:computers`, 3.78 GB on disk. Remove it with `docker rmi agents-box:computers` once nobody needs it. `agents-box:latest` is the live server's and was never touched.
 
-## Open questions for Tayler
+## Not done
 
-- Should agents' browsers reach only named origins, such as localhost and preview domains?
-- Saved screenshots can't be scrubbed of secrets on screen. Keep the instruction only, or more?
-- The 24-hour privacy window for watching a box that ran private work.
-- The image carries three browser engines (about 1.4 GB of the 2.8 GB added). Keep all three?
+- The Mac helper is a design only.
+- No x86 image, nothing tried over the tailnet, and no real Claude session at the computer in a box.
+- Three choices for Tayler, listed at the end of the design doc.

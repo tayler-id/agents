@@ -337,8 +337,8 @@ The design is `docs/design/computers.md`.
 
 ### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
 
-- **Solves now.** Every box has a desktop: TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume, so logins survive a restart. The daemon starts all three and restarts any that exits. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download.
-- **Helps later.** Each developer's own box and the AWS host use the same image. Another screen size is one environment variable.
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download.
+- **Helps later.** Each developer's own box and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
 
 ### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`)
 
@@ -352,7 +352,7 @@ The design is `docs/design/computers.md`.
 
 ### The Screen view (`app/src/Screen.tsx`)
 
-- **Solves now.** A task or session running in a box has a Screen button. It opens the box's screen beside the work, live, through noVNC, with who holds it and one action: Take over or Hand back. While a person holds it, their keys and clicks go to the box, and everyone else watching sees who has it. A refusal, such as private work on the box, shows its reason. The view loads only when someone opens a screen, so the rest of the app stays light.
+- **Solves now.** A task or session running in a box has a Screen button. It opens the box's screen beside the work, live, through noVNC, with who holds it and one action: Take over or Hand back. While a person holds it, their keys and clicks go to the box, and everyone else watching sees who has it. A refusal, such as private work on the box, shows its reason, and a stopped box says it is not connected and offers Reconnect. The view loads only when someone opens a screen, so the rest of the app stays light.
 - **Helps later.** Runs and conversations can link to the same view once their pages show which box a stage ran on.
 
 ### Images as documents (`shared/documents.ts`, `server/record.ts`, `app/src/Document.tsx`)

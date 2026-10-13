@@ -2,7 +2,7 @@
 
 Every agent that runs in a box gets its own computer: a Linux desktop, a browser, and tools to see and drive both. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
 
-Tayler asked for this on 2026-10-13: each agent should have its own computer, with computer use, a browser and a way for people to control it, and agents need to be able to verify their own work, always. This is the design. `docs/build-log.md` records what was built and how it was checked.
+Tayler asked for this on 2026-10-13: each agent should have its own computer, with computer use, a browser and a way for people to control it, and agents need to be able to verify their own work, always. This is the design, and everything in it is built on the agent computers branch except what "Not done" at the end lists. `docs/build-log.md` records how it was checked.
 
 ## What it solves
 
@@ -33,10 +33,10 @@ Tayler asked for this on 2026-10-13: each agent should have its own computer, wi
 
 - **Display and VNC server in one process.** TigerVNC's `Xvnc` is an X server whose framebuffer is served over RFB, the VNC protocol. One process replaces Xvfb plus x11vnc, keeps one copy of the framebuffer, and pushes changes as X damages them instead of polling. It listens only on a Unix socket (`-rfbunixpath`, `-rfbport -1`), never on TCP, accepts connections as shared (`-AlwaysShared`, `-DisconnectClients=0`), and refuses resize requests, so the screen stays at the size the agent's coordinates assume.
 - **Screen size 1280 x 800.** That is the size Claude's computer-use guidance recommends, so a screenshot reaches the model without scaling and the coordinates it answers with need no mapping.
-- **Window manager.** matchbox gives every window the whole screen, with no title bars or taskbar. An agent sees one app at a time, which is what it works with, and screenshots carry no chrome. It costs about 1 MB beyond libraries Chromium needs anyway, where openbox and fluxbox pull in about 150 MB through image loaders.
-- **The browser.** Playwright's Chromium build, started by the daemon with its DevTools port on the box's loopback and its profile in the box's home volume, so logins and cookies survive restarts and image rebuilds. It stays open on the screen, so a person watching sees the page the agent works on.
+- **Window manager.** matchbox gives every window the whole screen, with no title bars or taskbar. An agent sees one app at a time, which is what it works with, and screenshots carry no chrome. matchbox and its own library take 0.4 MB installed, and the other libraries it uses are small or ones the browsers need too. In a probe, openbox pulled in 151 MB and fluxbox 167 MB, mostly image loaders.
+- **The browser.** Playwright's Chromium build, started by the daemon with its DevTools port on the box's loopback. Its profile is in the box's home volume, which outlives the container the way workspaces do. No check yet shows a login surviving a rebuild. It stays open on the screen, so a person watching sees the page the agent works on.
 - **Playwright's browsers for checks.** The image carries Playwright 1.64.0, the version `package-lock.json` pins, with its Chromium, Chromium headless shell, Firefox and WebKit builds and the system libraries each needs on Debian 12 arm64. Agents and `agentsctl` run checks in all three engines without a download.
-- **Who starts what.** The daemon is the box's main process (under `tini`, which reaps the browser's child processes). It starts Xvnc, matchbox and Chromium, restarts any that exit, and removes the stale X lock and browser profile lock a container restart leaves behind.
+- **Who starts what.** The daemon is the box's main process (under `tini`, which reaps the browser's child processes). It starts Xvnc, matchbox and Chromium, restarts any that exit, and first clears the locks that would stop them. A killed box keeps Xvnc's lock, and Xvnc refuses to start while the process the lock names is alive, which in a probe was the new Xvnc itself. A home volume whose browser was killed on another host keeps Chromium's profile lock, and Chromium refuses a profile locked by another host. `test/step15.ts` brings a box back after an idle stop, after a kill, and on a volume locked elsewhere.
 
 ### Agent tools
 
@@ -50,7 +50,7 @@ Every session on a machine with a screen gets one MCP server, `computer` (`daemo
 | `browser_*` | Playwright MCP 0.0.83's browser tools, proxied unchanged, driving the box's Chromium over its DevTools port. |
 
 - **Why one server.** A person taking over must stop the agent's use of the screen, through the mouse and keyboard and through the browser's DevTools protocol alike. The `computer` server checks the control state before every action, its own and Playwright's, so one gate covers both. Playwright's tools run in a child process the server starts and talks to over MCP.
-- **How actions reach the screen.** The daemon's screen service keeps one RFB connection to Xvnc for agents. Clicks and keys go out as RFB pointer and key events, and screenshots come back as raw framebuffer updates that the service encodes as PNG. No xdotool, ImageMagick or ffmpeg is needed. Typing any Unicode character works because Xvnc maps unknown keysyms on demand. Actions from several sessions on one box run one at a time.
+- **How actions reach the screen.** The daemon's screen service keeps one RFB connection to Xvnc for agents. Clicks and keys go out as RFB pointer and key events, and screenshots come back as raw framebuffer updates that the service encodes as PNG, once the screen has been still for 200 ms or after 3 s at most. No xdotool, ImageMagick or ffmpeg is needed. Printable ASCII is typed key by key. Other text is put on the X clipboard with xclip and pasted with ctrl+v, because Xvnc adds a key to its keymap for each such character and the browser often reads the press before the new keymap. Typed key by key, 9 of 18 strings of accented, Greek, Cyrillic, CJK and emoji text arrived whole. Pasted, 90 of 90 did. Pasting needs an app where ctrl+v pastes, which the browser is. Actions from several sessions on one box run one at a time.
 - **Inputs and outputs are zod schemas.** Each tool's input and structured output is a zod schema in `shared/screen.ts`. The proxied browser tools keep Playwright's own schemas.
 
 **Which actions run without asking.** The box is the agent's own computer, the way its workspace is its own folder. Watching and driving its own screen and browser are allowed without a prompt, because verification needs dozens of them per change and a prompt for each would make the tools useless. These ask a person first, through the usual approval card, because each one can carry data or code out of the box or read a logged-in site's secrets:
@@ -60,7 +60,7 @@ Every session on a machine with a screen gets one MCP server, `computer` (`daemo
 - `browser_run_code_unsafe`, which runs code in Playwright's own process.
 - `browser_network_request`, which returns full request and response headers and bodies, where session cookies and tokens live.
 
-The standing instructions also tell agents never to type passwords, payment details or one-time codes, never to submit forms that act on real accounts (purchases, messages to people, deletions, settings changes), and to ask a person to take over for those. Prompts can't enforce that. A list of origins the box's browser may reach would, through Playwright MCP's `--allowed-origins`, and is a decision for Tayler (see the end).
+The standing instructions also tell agents never to type passwords, payment details or one-time codes, never to submit forms that act on real accounts (purchases, messages to people, deletions, settings changes), and to ask a person to take over for those. Prompts can't enforce that. The box's browser reaches the open web, as Tayler decided on 2026-10-13, so nothing limits which sites it opens.
 
 ### Watching and taking over
 
@@ -71,8 +71,8 @@ The standing instructions also tell agents never to type passwords, payment deta
 - **What enforces it.**
   - **The API filters each viewer's input.** It parses the RFB messages a viewer's browser sends and forwards key and pointer events only from the person who holds the screen. Clipboard pastes, desktop resizes and power requests from any viewer are dropped, so nothing enters the box from a viewer except typed and clicked input. When control moves away from a person, the API releases any key or mouse button they still hold, so the agent never inherits a stuck modifier.
   - **The box refuses the agent's actions while a person holds the screen.** The API sends every change of control to the box over the control socket. The screen service aborts an action in progress, releases what it held, and answers each `computer` or `browser_*` call with "alice has taken over the screen. Wait until they hand it back (screen_status tells you), then take a screenshot before you act." After the hand-back, the agent's next action reports that a person used the screen and includes a fresh screenshot.
-  - **The record shows it.** Each takeover is a row in `screen_takeovers`, and a notice goes into the active sessions on that box: "alice took over the screen", then "alice handed the screen back" or "alice left the screen".
-- **Latency.** Measured by `test/step15.ts` and `test/step15b.ts` on this Mac and recorded in `docs/build-log.md`: time to the first frame, and the time from a key press in the viewer to the changed pixels arriving, through the people port, the API relay, the box tunnel, Xvnc and the box's browser. Over the tailnet add the round trip to the server Mac.
+  - **The record shows it.** Each takeover is a row in `screen_takeovers`, and a notice goes into the active sessions on that box: "alice took over the screen", then "alice handed the screen back" or "The screen went back to the agent after alice closed the Screen view".
+- **Latency.** Measured on this Mac by `test/step15.ts` and `test/step15b.ts`, from a key press in the viewer to the changed pixels arriving, through the people port, the API relay, the box tunnel, Xvnc and the box's browser. The first frame arrives 27 to 111 ms after a viewer connects. Through the API to a Node viewer, the median is 15 to 25 ms and the 95th percentile 29 to 36 ms. In the Screen view, the median is 32 ms in Chromium, 16 to 32 ms in WebKit and 15 to 23 ms in Firefox. Over the tailnet it is not measured, and adds the round trip to the server Mac.
 
 ### Verifying their own work
 
@@ -82,7 +82,7 @@ The standing instructions also tell agents never to type passwords, payment deta
 
 ### Images as documents
 
-- **Where the bytes live: Postgres.** Postgres is the only system of record (`docs/intent/multiplayer.md`). Keeping images there means one backup, one access check, one store to move to AWS, and the version row and its bytes commit together. Screenshots are 50 to 500 KB, so a team saving a few per task adds megabytes a day, which Postgres holds without trouble. A file store on the server would add a second thing to back up, keep in step and move, for a size that doesn't need it yet.
+- **Where the bytes live: Postgres.** Postgres is the only system of record (`docs/intent/multiplayer.md`). Keeping images there means one backup, one access check, one store to move to AWS, and the version row and its bytes commit together. A 1280 x 800 screenshot of the check page is 20 KB as PNG, a busier page is larger, and each image may be up to 5 MB. A few per task is a size Postgres holds without trouble. A file store on the server would add a second thing to back up, keep in step and move, for a size that doesn't need it yet.
 - **In their own table.** Bytes live in `blobs`, not in `artifact_versions`. Electric follows every column of every table a shape reads, so image bytes in the version row would stream through logical replication and into every open document list. `blobs` is never a shape. A version points at its blob, and the app fetches the bytes from `GET /v1/artifacts/<id>/versions/<n>/image`, which checks the person can see the task.
 - **Limits.** PNG, JPEG, WebP and GIF only, recognised by their first bytes rather than the file name, up to 5 MB each. SVG is refused because it can carry script. Blobs are kept per team and keyed by their SHA-256, so the same screenshot saved twice is stored once.
 - **Secrets in pixels.** The scrubber works on text. A screenshot of a page or terminal that shows a secret keeps it. The standing instructions tell agents never to screenshot secrets, and the live stream is never stored, but a saved image can't be scrubbed. This is a decision for Tayler (see the end).
@@ -113,7 +113,7 @@ Migration `server/migrations/0008_computers.sql`. Row types are declared once in
 ## What each person sees
 
 - **A task or session running in a box** shows a Screen button in its header and in its session panel. It opens the Screen view beside the task, or in its place at phone width.
-- **The Screen view** shows the box's name and size, who has the screen ("The agent has the screen", "You have the screen", "alice has the screen"), the live display scaled to fit, and one action: Take over, or Hand back. While a person holds it, their keyboard and mouse go to the box and everyone else watching sees who has it. A box that is stopped, or a screen whose box hasn't connected, says so instead of a blank picture.
+- **The Screen view** shows the box's name and size, who has the screen ("The agent has the screen", "You have the screen", "alice has the screen"), the live display scaled to fit, and one action: Take over, or Hand back. While a person holds it, their keyboard and mouse go to the box and everyone else watching sees who has it. When the box is stopped or hasn't connected, the status line says so, with a Reconnect link.
 - **Made by this task** lists screenshots with the other documents. Opening one shows the image, its versions and comments.
 - **The session panel** shows takeovers as notices, in order with the agent's steps.
 
@@ -134,26 +134,35 @@ Agents could also drive a teammate's Mac, for apps that only run there. This is 
 
 ## Sizing for the AWS box host
 
-Measured with `docker stats` on this Mac's colima VM (arm64, 4 CPUs, 8 GB) and recorded in `docs/build-log.md`. The numbers that size the host:
+Measured with `docker stats` during `test/step15.ts` on this Mac's colima VM (arm64, 4 CPUs, 8 GB). Claude Code is not in these numbers, since the checks run the stand-in for it.
 
-- **Image.** What each addition costs is listed in `box/Dockerfile` and the build log.
-- **Idle box with its desktop.** The desktop alone (Xvnc and matchbox) is about 11 MB. With Chromium open on a blank page the box is about 230 MB, at under 1% of a CPU. These two come from a probe container before the daemon ran the desktop, and the build log has the numbers for the finished box.
-- **Busy box.** Chromium on a page the agent drives, plus Playwright checks in three engines, measured as the peak during `test/step15.ts`. Claude Code adds its own process on top.
-- **What to plan per box** is in the build log, next to the measurements, so the AWS plan can multiply it by the number of boxes per host.
+- **Image.** 1.05 GB compressed and 3.78 GB on disk, against 251 MB and 974 MB before. What each layer costs is in the build log.
+- **Idle box.** The desktop with Chromium open on a blank page takes 323 to 328 MiB, at 0 to 4% of a CPU.
+- **Busy box.** An agent driving the screen takes 564 to 587 MiB at most, up to 24% of a CPU. With Chromium, Firefox and WebKit open at once beside it, as an agent's checks would have them, it takes 1136 to 1160 MiB at most, up to 249% of a CPU.
+- **What to plan per box,** before adding Claude Code: about 0.6 GB while it works on the screen, and about 1.2 GB with a peak of 2.5 CPUs while its checks run three engines.
 
-## x86
+## x86 (not built)
 
-Nothing in the image is arm64-specific. Debian ships TigerVNC, matchbox and the libraries for amd64, Playwright downloads its x64 builds, and the daemon finds the browser by looking for the one installed Chromium. Building for x86 means building on an x86 host, or `docker buildx build --platform linux/amd64` from this Mac, which emulates and is slow. Graviton (arm64) hosts on AWS match this Mac and need nothing extra.
+Only arm64 is built and tried. Debian ships TigerVNC, matchbox and xclip for amd64, Playwright publishes x64 builds of all three browsers, and the daemon finds the browser by looking for the one installed Chromium, so the same Dockerfile should build there. Building for x86 means building on an x86 host, or `docker buildx build --platform linux/amd64` from this Mac, which emulates and is slow. Graviton (arm64) hosts on AWS match this Mac's architecture, and no box has run on one yet.
 
 ## What other agents need from this
 
 - **Onboarding (each developer's own box and their Claude login).** A developer's box should be created from this image so it has the desktop. Their Claude login needs nothing new. The Screen view works for any box whose daemon reports a screen.
-- **The AWS move.** Boxes need 512 MB of `/dev/shm` (`--shm-size`), outbound HTTPS from the box to the API's machine port for the WebSockets (an ALB or the tailnet must allow WebSocket upgrades), and the sizes above. `tailscale serve` passes WebSocket upgrades through with the person's identity, so the people side needs nothing new.
+- **The AWS move.** Boxes need 512 MB of `/dev/shm` (`--shm-size`), outbound WebSockets from the box to the API's machine port (an ALB or the tailnet must allow WebSocket upgrades), and the sizes above. The export must carry the boxes' home volumes, which now hold the browser's profile too. Whether `tailscale serve` passes the Screen view's WebSocket through with the person's identity is not tried, since the checks reach the people port directly.
 - **Verification (`agentsctl`).** The image carries Playwright 1.64.0 with Chromium 156.0.8078.4 (revision 1248) and its headless shell, Firefox 157.0 (1555), WebKit 27.2 (2370) and ffmpeg (1013), in `/opt/ms-playwright`, which `PLAYWRIGHT_BROWSERS_PATH` names. It is read-only to the agent. Another Playwright version's browsers go in the home volume with `PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright npx playwright install`.
 
 ## Decisions for Tayler
 
-- **Should agents' browsers reach only named origins?** Playwright MCP can limit the box's browser to, for example, localhost and the team's preview domains. It would stop an agent wandering onto real sites, and it would also stop it reading documentation.
-- **Screenshots can hold secrets.** Saved images aren't scrubbed. Options: keep the instruction only; or blur known secret values by rendering them through the browser's own text before saving, which only works for browser screenshots.
+- **Screenshots can hold secrets.** Saved images aren't scrubbed. The options are to keep the instruction only, or to have the daemon refuse to save a screenshot while the browser's page text contains a known secret value, which can't cover anything outside the page.
 - **The 24-hour privacy window** for watching a box that ran private work.
-- **The image is large** because it carries three browser engines for checks. The build log lists what each engine costs, so dropping one is a measured choice.
+- **Limits on the browser.** The standing instructions tell agents never to type passwords, payment details or one-time codes, and never to submit a form that acts on a real account, but to ask a person to take over for that step. Five browser tools ask a person before each use. Both trade some of what a browser on the open web can do for safety, which `AGENTS.md` leaves to Tayler, so they stay only if Tayler keeps them.
+
+## Not done
+
+- **The Mac helper** is a design only. Nothing of it is built.
+- **x86.** No amd64 image has been built.
+- **The tailnet.** Latency over the tailnet, and the Screen view through `tailscale serve`, are not tried. The checks reach the people port directly with the identity header.
+- **A real agent at the computer.** The checks drive the computer tools themselves and run the stand-in for Claude. Real Claude Code's image results were checked once, outside a box, to get their format right. No real Claude session has used the computer in a box yet, so whether agents follow the verify-work loop unprompted is not shown.
+- **Logins surviving a rebuild.** The browser's profile is in the home volume, and no check signs in, rebuilds the box and looks.
+- **Built, with no check yet.** The API letting go of a viewer's held keys and buttons when control moves, dropping clipboard, resize and power messages from viewers, and actions from several sessions on one box running one at a time.
+- **Screenshot scrubbing** waits on the decision above.

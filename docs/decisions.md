@@ -339,8 +339,11 @@ Tayler went with the coordinator's picks on all of these.
   - Agents verify each change with tests and in the browser, and attach screenshots to the task.
   - Documents can hold images.
   - A helper that lets agents use a Mac is designed but not built.
-- **Implementation.** On the agent computers branch.
-- **Status.** Being built.
+- **Implementation.** On the agent computers branch, designed in `docs/design/computers.md`. Its checks, `test/step15.ts` and `test/step15b.ts`, run a real box with the stand-in for Claude, and both pass on its last commit. `docs/build-log.md` records what they proved.
+- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Three choices wait on Tayler:
+  - what to do about secrets in saved screenshots, which the scrubber can't read
+  - the 24-hour window in which a box that ran private work can be watched only by people who can see that work
+  - whether agents keep the standing instruction never to type passwords or act on real accounts without a person, and the approval before five browser tools, both of which limit the browser for safety
 
 ### The cloud half moves to AWS
 
