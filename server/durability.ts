@@ -1,14 +1,15 @@
 // What keeps a turn alive through its machine dying. The server finishes each
-// message when the turn that answers it ends, and a machine that restarts gets
-// back every session it cut off, with the text that resumes it.
-// docs/design/durability.md has the whole design.
+// message when the turn that answers it ends, a machine that restarts gets back
+// every session it cut off with the text that resumes it, and an approval
+// outlives the harness request that raised it. docs/design/durability.md has the
+// whole design.
 
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { many } from './db.ts'
 import { messageState, moveMessage, type CommandStatus } from '../shared/lifecycle.ts'
 import type { EventBatch, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
-import { appendEvents, scrub } from './record.ts'
+import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
 
 // Finishes the messages a batch names: done when the batch ends the turn that
 // took them in, failed when their harness exited first. A retried batch finds
@@ -31,20 +32,88 @@ export async function endMessages(client: pg.PoolClient, sessionId: string, batc
     [open.map((row) => row.id), to, reason])
 }
 
+// When a turn ends, an ask still open has no request waiting on it, so it
+// expires. A decision kept for a resumed session that never asked again is let
+// go, so a later turn can't pick it up.
+export async function closeTurnAsks(client: pg.PoolClient, sessionId: string) {
+  await client.query(`update asks set status = 'expired' where session_id = $1 and status = 'open'`, [sessionId])
+  await client.query(`update asks set request_ended_at = null where session_id = $1 and status = 'answered' and request_ended_at is not null`, [sessionId])
+}
+
+// Keys in a stable order, so two inputs compare equal however they were stored.
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, inner]) => [key, canonical(inner)]))
+}
+
+// Two requests ask for the same thing when their inputs match, apart from the
+// description Claude writes for a person, which it words afresh each time.
+function sameInput(a: unknown, b: unknown): boolean {
+  const plain = (input: unknown): unknown => (typeof input === 'object' && input !== null && !Array.isArray(input)
+    ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'description'))
+    : input)
+  return JSON.stringify(canonical(plain(a))) === JSON.stringify(canonical(plain(b)))
+}
+
+type Answer = { decision: Decision; message: string | null }
+
+// A resumed session asked again for a tool whose ask ended with its machine. The
+// same ask takes the new request, so no second card opens, and a decision a
+// person already made reaches the session at once. False when nothing matches.
+export async function takeOverEndedAsk(
+  client: pg.PoolClient, session: { id: string; team_id: string; instance_id: string }, toolUseId: string | null, body: AskBody,
+): Promise<boolean> {
+  const ended = await many<AskTarget & { status: string; answer: Answer | null; answered_by: string | null }>(client,
+    `select a.id, a.session_id, a.payload, a.status, a.answer, a.answered_by, s.team_id, s.instance_id
+     from asks a join sessions s on s.id = a.session_id
+     where a.session_id = $1 and a.request_ended_at is not null and a.status in ('open', 'answered')
+     order by a.created_at for update of a`, [session.id])
+  const input = scrub(body.input)
+  const match = ended.find((ask) => ask.payload.toolName === body.toolName && sameInput(ask.payload.input, input))
+  if (!match) return false
+  await client.query(
+    `update asks set payload = payload || jsonb_build_object('requestId', $2::text), tool_use_id = $3, request_ended_at = null where id = $1`,
+    [match.id, body.requestId, toolUseId])
+  if (match.status === 'answered' && match.answer) {
+    await recordAnswer(client, { ...match, payload: { ...match.payload, requestId: body.requestId } }, {
+      decision: match.answer.decision, message: match.answer.message, authorId: match.answered_by,
+      clientId: `answer:${match.id}:${body.requestId}`, requestId: body.requestId,
+    })
+  }
+  return true
+}
+
 const RESTARTED = 'The machine restarted in the middle of this turn.'
 const STOPPED_FIRST = 'The machine restarted in the middle of this turn, and a person had asked to stop it, so it was not resumed.'
+const ANSWER_LOST = 'The machine restarted before this answer reached the request it was for. The decision is kept on the ask, and reaches the session when it asks again.'
 
 // A tool call the record shows with no result. `text` is the call's readable
 // part, such as the tool's name and its command.
 type OpenCall = { toolUseId: string; text: string }
+// An approval the resumed session has to ask for again, with the decision a
+// person made, or null while it waits for one.
+type AskAgain = { toolName: string; input: unknown; decision: Decision | null }
+type Denied = { toolName: string; input: unknown; message: string | null }
+
+const requestLine = (ask: { toolName: string; input: unknown }) => `- ${ask.toolName} with input ${JSON.stringify(ask.input)}.`
 
 // What a resumed session is told: that it was cut off, which calls may or may
-// not have run, and every message it had not finished answering.
-export function continuation(messages: string[], calls: OpenCall[]): string {
+// not have run, which approvals to ask for again, what a person denied, and every
+// message it had not finished answering.
+export function continuation(messages: string[], open: { calls: OpenCall[]; askAgain: AskAgain[]; denied: Denied[] }): string {
   const parts = ['This session was resumed after its machine stopped in the middle of your turn. What you did before the stop is in this conversation, but the last part of it may be missing.']
-  if (calls.length) {
+  if (open.calls.length) {
     parts.push(`These tool calls were still running when the machine stopped. Their results were never recorded, so each may or may not have taken effect. Check before you run any of them again.\n${
-      calls.map((call) => `- ${call.text} (call ${call.toolUseId})`).join('\n')}`)
+      open.calls.map((call) => `- ${call.text} (call ${call.toolUseId})`).join('\n')}`)
+  }
+  if (open.askAgain.length) {
+    parts.push(`These requests for approval ended when the machine stopped, before they ran. Call the tool again with exactly the same input, and the answer reaches you then.\n${
+      open.askAgain.map((ask) => `${requestLine(ask)} ${ask.decision === null ? 'It is still waiting for a person.' : 'A person allowed it.'}`).join('\n')}`)
+  }
+  if (open.denied.length) {
+    parts.push(`A person denied these while the machine was stopped. Do not run them.\n${
+      open.denied.map((ask) => `${requestLine(ask)}${ask.message ? ` They said: ${ask.message}` : ''}`).join('\n')}`)
   }
   parts.push(messages.length === 1
     ? `Finish the turn. The message you were answering:\n\n${messages.join('')}`
@@ -52,11 +121,46 @@ export function continuation(messages: string[], calls: OpenCall[]): string {
   return parts.join('\n\n')
 }
 
-// Called by a machine that has just started. Commands it held that are not
-// messages go back in the queue. Each session it was answering messages in is
-// interrupted: ended when a person asked to stop it meanwhile, and otherwise
-// returned to be resumed, with every unfinished message and every tool call
-// left without a result.
+// Sorts what a session's cut-off turn left open, from the record since `from`,
+// the user event of its first unfinished message. An approval whose decision may
+// have reached the harness is not asked for again, since its call may have run.
+async function openThreads(client: pg.PoolClient, sessionId: string, from: number) {
+  const asks = await many<{
+    id: string; status: 'open' | 'answered'; tool_use_id: string | null; payload: AskBody; answer: Answer | null
+    request_ended_at: string | null; reached: boolean
+  }>(client,
+    `select a.id, a.status, a.tool_use_id, a.payload, a.answer, a.request_ended_at,
+       exists (select 1 from commands c where c.session_id = a.session_id and c.kind = 'answer'
+               and c.payload->>'requestId' = a.payload->>'requestId' and c.status in ('claimed', 'done')) as reached
+     from asks a
+     where a.session_id = $1 and a.kind = 'tool_approval' and a.status in ('open', 'answered')
+       and not exists (select 1 from events r where r.session_id = a.session_id and r.kind = 'tool_result' and r.tool_use_id = a.tool_use_id)
+     order by a.created_at for update of a`, [sessionId])
+  const carried = asks.filter((ask) => ask.status === 'open' || ask.request_ended_at !== null
+    || (!ask.reached && ask.answer !== null && ['allow', 'always'].includes(ask.answer.decision)))
+  const denied = asks.filter((ask) => !carried.includes(ask) && ask.request_ended_at === null && !ask.reached && ask.answer !== null)
+  await client.query(`update asks set request_ended_at = coalesce(request_ended_at, now()) where id = any($1)`, [carried.map((ask) => ask.id)])
+  // A call's text is how a person reads it. The tool's name stands in, for display, when a harness wrote none.
+  const calls = await many<OpenCall>(client,
+    `select c.tool_use_id as "toolUseId", coalesce(c.text, c.tool_name) as text from events c
+     where c.session_id = $1 and c.seq > $2 and c.kind = 'tool_call' and c.tool_use_id is not null
+       and not exists (select 1 from events r where r.session_id = c.session_id and r.kind = 'tool_result' and r.tool_use_id = c.tool_use_id)
+     order by c.seq`, [sessionId, from])
+  const asked = new Set([...carried, ...denied].map((ask) => ask.tool_use_id))
+  return {
+    calls: calls.filter((call) => !asked.has(call.toolUseId)),
+    askAgain: carried.map((ask): AskAgain => ({ toolName: ask.payload.toolName ?? 'a tool', input: ask.payload.input ?? {}, decision: ask.answer?.decision ?? null })),
+    denied: denied.map((ask): Denied => ({ toolName: ask.payload.toolName ?? 'a tool', input: ask.payload.input ?? {}, message: ask.answer?.message ?? null })),
+    askIds: [...carried, ...denied].map((ask) => ask.id),
+  }
+}
+
+// Called by a machine that has just started. Each session it was answering
+// messages in is interrupted: ended when a person asked to stop it meanwhile,
+// and otherwise returned to be resumed, with every unfinished message and
+// everything the turn left open. Answers on their way to its dead processes
+// fail, keeping their decisions on the asks, and its other commands go back in
+// the queue.
 export async function recoverMachine(client: pg.PoolClient, instanceId: string): Promise<Recovery> {
   const sessions = await many<{ id: string; status: SessionStatus; harness_session_id: string | null }>(client,
     `select s.id, s.status, s.harness_session_id from sessions s
@@ -83,23 +187,18 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
         events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_FIRST, body: { subtype: 'interrupted', reason: STOPPED_FIRST, messages: ids } }],
         status: 'idle',
       })
+      await closeTurnAsks(client, session.id)
       ended += ids.length
       continue
     }
     const seqs = messages.map((message) => message.seq)
     if (seqs.some((seq) => seq === null)) throw new Error(`a message in session ${session.id} has no user event in the record`)
-    const from = Math.min(...seqs.map(Number))
-    // A call's text is how a person reads it. The tool's name stands in, for display, when a harness wrote none.
-    const calls = await many<OpenCall>(client,
-      `select c.tool_use_id as "toolUseId", coalesce(c.text, c.tool_name) as text from events c
-       where c.session_id = $1 and c.seq > $2 and c.kind = 'tool_call' and c.tool_use_id is not null
-         and not exists (select 1 from events r where r.session_id = c.session_id and r.kind = 'tool_result' and r.tool_use_id = c.tool_use_id)
-       order by c.seq`, [session.id, from])
-    const text = continuation(messages.map((message) => message.payload.text), calls)
+    const open = await openThreads(client, session.id, Math.min(...seqs.map(Number)))
+    const text = continuation(messages.map((message) => message.payload.text), open)
     await appendEvents(client, session.id, {
       events: [
         { clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: RESTARTED,
-          body: { subtype: 'interrupted', reason: RESTARTED, messages: ids, toolUseIds: calls.map((call) => call.toolUseId) } },
+          body: { subtype: 'interrupted', reason: RESTARTED, messages: ids, toolUseIds: open.calls.map((call) => call.toolUseId), askIds: open.askIds } },
         { clientId: `resume:${randomUUID()}`, kind: 'user', text, body: { text, resumes: ids } },
       ],
       status: 'lost',
@@ -111,6 +210,9 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
       covers: ids,
     })
   }
+  await client.query(
+    `update commands set status = 'failed', error = $2, done_at = now() where instance_id = $1 and kind = 'answer' and status in ('queued', 'claimed')`,
+    [instanceId, ANSWER_LOST])
   const { rowCount } = await client.query(
     `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed' and kind <> 'message'`, [instanceId])
   return { requeued: rowCount ?? 0, resumed, ended }

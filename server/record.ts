@@ -13,7 +13,7 @@ import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
-import { endMessages } from './durability.ts'
+import { closeTurnAsks, endMessages, takeOverEndedAsk } from './durability.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -78,6 +78,7 @@ export async function appendEvents(
      where id = $1`,
     [sessionId, seq, turnsEnded.length, batch.status ?? null, batch.harnessSessionId ?? null, cost])
   await endMessages(client, sessionId, batch)
+  if (turnsEnded.length) await closeTurnAsks(client, sessionId)
   if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
     const conversationId = session.conversation_id
     const room = await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [conversationId])
@@ -96,7 +97,7 @@ export async function appendEvents(
   return seqs
 }
 
-type AskBody = { requestId: string; toolName?: string; input?: Record<string, unknown>; description?: string }
+export type AskBody = { requestId: string; toolName?: string; input?: Record<string, unknown>; description?: string }
 
 // What a standing rule matches against: the command for Bash, the path for file tools.
 function askSubject(toolName: string | undefined, input: Record<string, unknown> | undefined): string {
@@ -116,6 +117,7 @@ function rulePattern(toolName: string | undefined, input: Record<string, unknown
 // otherwise the ask waits for a person.
 async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent) {
   const body = event.body as AskBody
+  if (await takeOverEndedAsk(client, session, event.toolUseId ?? null, body)) return
   const ask = await one<{ id: string }>(client, 'the new ask',
     `insert into asks (team_id, kind, session_id, conversation_id, tool_use_id, payload)
      values ($1, 'tool_approval', $2, $3, $4, $5) returning id`,
@@ -131,19 +133,44 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
 
 export type Decision = 'allow' | 'deny' | 'always' | 'never'
 
+const behaviorOf = (decision: Decision): AnswerPayload['behavior'] => (decision === 'allow' || decision === 'always' ? 'allow' : 'deny')
+
+// An ask and where its session runs.
+export type AskTarget = { id: string; session_id: string; team_id: string; instance_id: string; payload: AskBody }
+
+// Records a decision as an answer event in the ask's session. Given the harness
+// request it answers, it also sends the decision to the session's machine; with
+// none, the request ended with its machine and the decision waits on the ask.
+export async function recordAnswer(client: pg.PoolClient, ask: AskTarget, answer: {
+  decision: Decision; message: string | null; authorId: string | null; clientId: string; requestId: string | null
+}) {
+  const { decision, message, authorId, clientId, requestId } = answer
+  const [seq] = await appendEvents(client, ask.session_id, {
+    events: [{
+      clientId, kind: 'answer', text: `${decision} ${ask.payload.toolName ?? ''}`.trim(),
+      body: { askId: ask.id, requestId: requestId ?? ask.payload.requestId, decision, message, delivered: requestId !== null },
+    }],
+    status: requestId === null ? undefined : 'running',
+  }, authorId)
+  if (requestId === null) return
+  const event = await one<{ id: string }>(client, 'the answer event',
+    'select id from events where session_id = $1 and seq = $2', [ask.session_id, seq])
+  const payload: AnswerPayload = { requestId, behavior: behaviorOf(decision), updatedInput: ask.payload.input, message: message ?? undefined }
+  await client.query(
+    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id) values ($1, $2, $3, 'answer', $4, $5)`,
+    [ask.team_id, ask.instance_id, ask.session_id, JSON.stringify(payload), event.id])
+}
+
 // Records a person's answer (or a standing rule's), makes "always" and "never"
 // into rules, and sends the answer to the machine running the session.
 export async function answerAsk(
-  client: pg.PoolClient, askId: string, person: Person | null, decision: Decision | 'allow' | 'deny', message?: string,
+  client: pg.PoolClient, askId: string, person: Person | null, decision: Decision, message?: string,
 ) {
-  const ask = await maybe<{
-    id: string; status: string; session_id: string; payload: AskBody; instance_id: string; agent_id: string; team_id: string
-  }>(client,
-    `select a.id, a.status, a.session_id, a.payload, s.instance_id, s.agent_id, s.team_id
+  const ask = await maybe<AskTarget & { status: string; agent_id: string; request_ended_at: string | null }>(client,
+    `select a.id, a.status, a.session_id, a.payload, a.request_ended_at, s.instance_id, s.agent_id, s.team_id
      from asks a join sessions s on s.id = a.session_id where a.id = $1 for update of a`, [askId])
   if (!ask) throw new HttpError(404, 'no such ask')
   if (ask.status !== 'open') throw new HttpError(409, 'this ask is already answered')
-  const behavior = decision === 'allow' || decision === 'always' ? 'allow' : 'deny'
   await client.query(
     `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
     [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
@@ -152,21 +179,12 @@ export async function answerAsk(
       `insert into approval_rules (team_id, instance_id, agent_id, tool_name, pattern, decision, created_by)
        values ($1, $2, $3, $4, $5, $6, $7)`,
       [ask.team_id, ask.instance_id, ask.agent_id, ask.payload.toolName ?? '',
-        rulePattern(ask.payload.toolName, ask.payload.input), behavior, person?.id ?? null])
+        rulePattern(ask.payload.toolName, ask.payload.input), behaviorOf(decision), person?.id ?? null])
   }
-  const [seq] = await appendEvents(client, ask.session_id, {
-    events: [{
-      clientId: `answer:${askId}`, kind: 'answer', text: `${decision} ${ask.payload.toolName ?? ''}`.trim(),
-      body: { askId, requestId: ask.payload.requestId, decision, message: message ?? null },
-    }],
-    status: 'running',
-  }, person?.id ?? null)
-  const event = await one<{ id: string }>(client, 'the answer event',
-    'select id from events where session_id = $1 and seq = $2', [ask.session_id, seq])
-  const payload: AnswerPayload = { requestId: ask.payload.requestId, behavior, updatedInput: ask.payload.input, message }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id) values ($1, $2, $3, 'answer', $4, $5)`,
-    [ask.team_id, ask.instance_id, ask.session_id, JSON.stringify(payload), event.id])
+  await recordAnswer(client, ask, {
+    decision, message: message ?? null, authorId: person?.id ?? null, clientId: `answer:${askId}`,
+    requestId: ask.request_ended_at ? null : ask.payload.requestId,
+  })
 }
 
 // Asks the session's machine to stop the current turn.
