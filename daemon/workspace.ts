@@ -65,6 +65,8 @@ export function workspaces(home: string, api: string, token: string) {
   // fails with its error, so the agent never starts in a half-cloned repo.
   const setups = new Map<string, Promise<unknown>>()
   const settingUp = new Set<string>()
+  // Sessions whose workspace's setup has not been claimed yet.
+  const waiting = new Map<string, (() => void)[]>()
 
   return {
     dir,
@@ -76,10 +78,19 @@ export function workspaces(home: string, api: string, token: string) {
       settingUp.add(payload.workspaceId)
       const settled = () => { settingUp.delete(payload.workspaceId) }
       void work.then(settled, settled)
+      for (const wake of waiting.get(payload.workspaceId) ?? []) wake()
+      waiting.delete(payload.workspaceId)
       return work
     },
 
+    // The API writes a workspace's setup before the first message there, in one
+    // transaction, but a daemon catching up on its queue can claim the two in
+    // either order. A message whose workspace this machine has neither set up
+    // nor started setting up waits for that setup, which is always on its way.
     async ready(workspaceId: string) {
+      if (!setups.has(workspaceId) && !existsSync(dir(workspaceId))) {
+        await new Promise<void>((resolve) => { waiting.set(workspaceId, [...(waiting.get(workspaceId) ?? []), resolve]) })
+      }
       await setups.get(workspaceId)
     },
 
