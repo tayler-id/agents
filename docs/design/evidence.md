@@ -23,7 +23,7 @@ A run ends early, and asks nobody, when there is nothing new to read, when no ca
 
 ## The improve run
 
-Improve keeps its shape: study, score, pull request, shepherd, merge. Three things change.
+Improve keeps its shape: study, score, pull request, shepherd, merge. Three things change, and two stages join it.
 
 - The study reports findings too: the session and step of each problem it bases the change on, the exact words, and what went wrong. A new `record` stage checks them the same way.
 - `score` splits the change into hunks. Each hunk cites the study's checked findings, and a change with none is refused before any replay.
@@ -41,7 +41,7 @@ The pull request and the gate list the cited quotes, so the reasons a person rea
 
 ## Typed shapes
 
-The zod schemas live once in `shared/evidence.ts`, and the types are `z.infer` of them. Ids are branded, so a finding's id cannot go where a candidate's belongs. The tables store findings and hunks as flat rows, and their check constraints hold the same rules the unions below spell out.
+Everything that crosses a boundary, what a model reports, a JSON column, an API body, is a zod schema in `shared/evidence.ts`, and its type is `z.infer` of it. Ids are branded, so a finding's id cannot go where a candidate's belongs. The tables store findings and hunks as flat rows. Their check constraints hold the rules the unions below spell out, and `server/evidence.ts` builds each finding through the same union before it stores one.
 
 ### Findings
 
@@ -87,7 +87,7 @@ type StudyFinding = { kind: FindingKind; session: string; step: number; quote: s
 
 ### Candidates
 
-A candidate is a correction no rule covers, with the gap findings that carry it. It persists across runs. Code computes its counts and its route from its live findings.
+A candidate is a correction no rule covers, with the gap findings that carry it. It persists across runs as a row that is open, merged into another, or closed once a hunk for it was kept. Code computes an open candidate's counts and route from its live findings each time.
 
 ```ts
 type Counts = { sessions: number; people: number; bySource: Record<Source, number> }
@@ -96,10 +96,10 @@ type Route =
   | { kind: 'check' }                                        // a lint rule, type or check could catch it
   | { kind: 'skill'; trigger: string }                       // narrow, with a clear trigger
   | { kind: 'instructions' }                                 // what is left
-type Candidate = {
+type Candidate = {                                           // an open candidate, as code counts it
   id: CandidateId; agentId: AgentId; correction: string
-  status: 'open' | 'merged' | 'closed'; mergedInto: CandidateId | null
-  counts: Counts; route: Route; ready: boolean               // ready once counts.sessions >= 2
+  findings: FindingId[]; counts: Counts; route: Route
+  ready: boolean                                             // once counts.sessions >= 2
 }
 ```
 
@@ -164,7 +164,7 @@ Migration `0012_evidence.sql` adds five tables. `docs/data-model.md` has their c
 
 ## Rules code enforces
 
-Each rule has a named constant in the code, with its reason, and a check that was seen failing.
+Each rule has a check that was seen failing, and each number in them is a named constant with its reason.
 
 1. **A quote must be in its event.** The cited event's stored text must contain the quote, after collapsing runs of whitespace on both sides. A quote under 12 characters is dropped, since it matches too easily to tie a finding to what was said.
 2. **Each event is read once.** `session_reads` holds how far each session was read, so a long DM is read in parts, and a re-run reads only what is new. The transcript shows two steps read before, marked as context, and a finding citing a step outside the ones this run read is dropped.
@@ -191,7 +191,9 @@ Coach reuses improve's way of scoring: the proposal waits in `scoring` while rep
 - **Unrelated cases.** Up to 2 recent sessions with nothing behind the change, replayed at their last message from a person.
 - **Each case twice.** Once with the current instructions, skills and profile, once with every text hunk applied. Check hunks change no text, so they are not replayed.
 - **How a replay runs.** A replay is a task with `source = 'replay'`, its own empty workspace on the agent's home machine and a fresh session. Its one message is the conversation before the replay point, then the message to answer. It runs with no plugins, a $0.50 budget and 15 minutes. It reads nothing from the team record, since the record holds the correction it is meant to do without, and any tool it asks to use is denied, since a replay never waits on a person.
-- **The judge.** It sees each reply under a shuffled label. For a case behind the change it answers `fixed` or `still`. For an unrelated case it answers `ok` or `worse`, against the reply the person accepted. A reply that never came counts as `still` or `worse`.
+- **The judge.** It sees each reply under a shuffled label. For a case behind the change it answers `fixed` or `still`. For an unrelated case it answers `ok` or `worse`, against the reply the person accepted. A reply that never came counts as `still` or `worse`. A reply the judge leaves out means the change was not shown to win.
+- **A retry starts over.** When a person retries the replay stage after a hand-off, the proposal's earlier replays stop and go before new ones start.
+- **They count.** A replay's cost counts toward the coach run's spend cap.
 
 ## Decisions
 
@@ -227,9 +229,9 @@ Settling a coach proposal checks each kept hunk still applies: the rule it chang
 | Check | What it covers | Runs against |
 |---|---|---|
 | `test/step20.ts` | findings, reading once, clean evidence, candidates, counts, expiry, merges, routes | the test database, calling the server's code |
-| `test/step20a.ts` | hunks, floors, the cap, the budget, server diffs, the memory, the replay rule, settling | the test database, calling the server's code |
-| `test/step20b.ts` | a coach run end to end, from people's DMs to an applied change | the API, the daemon and the stand-in for Claude |
+| `test/step20a.ts` | hunks, floors, routes, the cap, the budget, server diffs, the memory, deciding and settling, and a retried replay stage | the test database, calling the server's code |
+| `test/step20b.ts` | a coach run end to end, from people's DMs through replays and the judge to an applied change, and a change that loses its replays | the API, the daemon and the stand-in for Claude |
 | `test/step20c.ts` | an improve run citing findings, and a turned-down change held back | the API, the daemon, the forge and the stand-in |
-| `test/step20d.ts` | the proposal page: hunks, quotes, counts, scores and per-hunk decisions | a browser on the app |
+| `test/step20d.ts` | the proposal page: hunks, quotes, counts, scores and per-hunk decisions, at phone width too | three browsers on the app |
 
-How each check was seen failing goes in `docs/design/evidence-resume.md` as it happens.
+`test/step9.ts` and `test/step9b.ts` also check that improve's change cites the reminder from each past run. How each check was seen failing is in `docs/design/evidence-resume.md`.
