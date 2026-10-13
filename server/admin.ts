@@ -1,6 +1,6 @@
-// Run on the server host. Adds teams, people, instances and agents, and puts a
-// repo under the coding framework with a policy and its owner. A team's first
-// login is its admin, who can then invite everyone else from the app.
+// Run on the server host. Adds teams, people, instances and agents, puts a repo
+// under the coding framework with a policy and its owner, and connects GitHub. A
+// team's first login is its admin, who can then invite everyone else from the app.
 //   node --env-file=.env server/admin.ts add-team <team> <first login>
 //   node --env-file=.env server/admin.ts add-person <team> <login>
 //   node --env-file=.env server/admin.ts set-role <team> <login> <admin|member>
@@ -9,6 +9,9 @@
 //   node --env-file=.env server/admin.ts forge-login <login> <forge user>
 //   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
 //   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
+//   pbpaste | node --env-file=.env server/admin.ts github <organization or account>
+// github reads the token from standard input, so it never shows in the process
+// list or the shell history, and saves it in ~/.agents-app/github.json.
 
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -18,6 +21,7 @@ import { sha256 } from './auth.ts'
 import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
 import { STATUS } from '../shared/framework.ts'
 import { POLICY } from '../shared/policy.ts'
+import { connectGithub } from './github.ts'
 
 // Records a new version of the policy, points the repo at it with its owner,
 // and protects the repo's default branch on the forge to match.
@@ -53,6 +57,12 @@ async function addPerson(team: string, login: string, role: 'admin' | 'member') 
   if (!rowCount) throw new Error(`no team ${team}`)
 }
 
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk)
+  return Buffer.concat(chunks).toString('utf8').trim()
+}
+
 const USAGE = [
   'add-team <team> <login>',
   'add-person <team> <login>',
@@ -62,6 +72,7 @@ const USAGE = [
   'forge-login <login> <forge user>',
   'set-policy <team> <repo clone url> <policy.json> <owner login>',
   'add-lesson <team> <rule> <incident>',
+  'github <organization or account> (the token on standard input)',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
@@ -112,6 +123,8 @@ try {
     const { rowCount } = await pool.query('insert into lessons (team_id, rule, incident) select id, $2, $3 from teams where name = $1', [team, rule, incident])
     if (!rowCount) throw new Error(`no team ${team ?? ''}`)
     console.log(`added a written lesson to ${team}. It becomes enforced once it names what holds it.`)
+  } else if (command === 'github' && args.length === 1) {
+    console.log(JSON.stringify(await connectGithub(await readStdin(), first)))
   } else {
     console.error(`usage: ${USAGE}`)
     process.exitCode = 2
