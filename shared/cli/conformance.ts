@@ -13,6 +13,8 @@ export type Conformance = {
   invoke: string
   // The first word of each command, which help and an unknown command must list.
   commands: string[]
+  // Flags that only say where a command acts and take a value, such as --instance.
+  context: string[]
   cases: {
     read: string[]
     list: string[]
@@ -106,10 +108,12 @@ export async function conformance(spec: Conformance): Promise<RuleResult[]> {
   const outsideJson = await json(spec.cases.untrusted)
   rule('text from outside is fenced and named as untrusted', outside.stdout.includes('--- untrusted ') && outside.stdout.includes('--- end of untrusted ') && (outsideJson.out?.untrusted.length ?? 0) > 0, shown(outside))
 
-  const repeats = envelopes.flatMap(({ args, out }) => {
-    const ran = [spec.invoke, ...args].join(' ')
-    return out.help.filter((h) => h.includes(`\`${ran}\``)).map((h) => `${args.join(' ')}: ${h}`)
-  })
+  // A next step naming the same command, with or without where it acts, repeats it.
+  const strip = (words: string[]) => words.filter((w, i) => !spec.context.includes(w) && !spec.context.includes(words[i - 1] ?? '')).join(' ')
+  const commandsIn = (line: string) => [...line.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1]?.startsWith(`${spec.invoke} `) ? [m[1].replace(/["']/g, '').split(/\s+/).slice(1)] : []))
+  const repeats = envelopes.flatMap(({ args, out }) => out.help
+    .filter((h) => commandsIn(h).some((words) => strip(words) === strip(args)))
+    .map((h) => `${args.join(' ')}: ${h}`))
   rule('next steps never repeat the command just run', !repeats.length, repeats.join('; ') || 'none repeat')
   return results
 }

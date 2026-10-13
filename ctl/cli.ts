@@ -720,7 +720,7 @@ const doctorCommand = command({
     if (!report.ok) {
       return failed(`${failing.map((c) => c.name).join(', ')} failed`, { detail, help: [`Read the logs in ${relative(ROOT, state.evidence)}`, run(`down${at(state)}`, 'and up again if it does not recover')], data: report, log: state.evidence })
     }
-    return { kind: 'read', answer: `${state.name} is usable: ${String(report.checks.length)} checks pass`, detail, help: state.phase === 'ready' ? upHelp(state).slice(1) : [], data: report, log: state.evidence }
+    return { kind: 'read', answer: `${state.name} is usable: ${String(report.checks.length)} checks pass`, detail, help: state.phase === 'ready' ? upHelp(state) : [], data: report, log: state.evidence }
   },
 })
 

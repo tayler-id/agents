@@ -152,12 +152,29 @@ function parseFlags(flags: Flags, args: string[], help: string): Parsed {
 }
 
 // The commands a next step names, in backticks, as words.
-const named = (line: string, invoke: string) => [...line.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1]?.startsWith(`${invoke} `) ? [m[1].replace(/["']/g, '').split(/\s+/).join(' ')] : []))
+const named = (line: string, invoke: string) => [...line.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1]?.startsWith(`${invoke} `) ? [m[1].replace(/["']/g, '').split(/\s+/).slice(1)] : []))
 
-// Next steps never suggest the command that just ran, word for word.
-export function withoutSelf(help: string[], invoke: string, argv: string[]): string[] {
-  const ran = [invoke, ...argv.filter((a) => a !== '--json' && a !== '--full')].join(' ').split(/\s+/).join(' ')
-  return help.filter((line) => !named(line, invoke).includes(ran))
+// A command's words without the flags that only say where or how to print,
+// such as --instance or --json, so two runs of one command compare equal.
+function essence(words: string[], flags: Flags): string {
+  const out: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] ?? ''
+    const flag = word.startsWith('--') ? flags[word.slice(2)] : undefined
+    if (flag) {
+      if (flag.kind !== 'boolean') i++
+      continue
+    }
+    out.push(word)
+  }
+  return out.join(' ')
+}
+
+// Next steps never suggest the command that just ran.
+export function withoutSelf(cli: Cli, help: string[], argv: string[]): string[] {
+  const context = { ...cli.global, ...OWN, ...(cli.dryRun ? DRY_RUN : {}) }
+  const ran = essence(argv.join(' ').split(/\s+/), context)
+  return help.filter((line) => !named(line, cli.invoke).some((words) => essence(words, context) === ran))
 }
 
 const LIST_ROWS = 30
@@ -255,7 +272,7 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<{ code: ExitCo
     if (rest.includes('--help')) return { code: EXIT.done, output: helpOutput(commandHelp(cli, command), `${command.name} --help`), json, full: true }
     const { run, own, requested, dry } = prepared(cli, command, rest)
     const result = dry && cli.dryRun ? cli.dryRun(command, argv, own) : await run()
-    const output = envelope({ ...result, help: withoutSelf(result.help, cli.invoke, argv) }, command, command.name, requested, full)
+    const output = envelope({ ...result, help: withoutSelf(cli, result.help, argv) }, command, command.name, requested, full)
     cli.after?.(result, output, argv)
     return { code: output.code, output, json, full }
   } catch (error) {
