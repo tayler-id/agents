@@ -74,8 +74,10 @@ export class RfbClient {
   private readonly stream: Duplex
   private readonly reader: Reader
   private readonly framebuffer: Uint8Array
-  // Each FramebufferUpdateRequest gets one FramebufferUpdate, in order.
-  private readonly waiting: { resolve: (rects: Rect[]) => void; reject: (error: Error) => void }[] = []
+  // Everyone waiting for the next FramebufferUpdate. The server may answer
+  // several requests with one update, and every update leaves the framebuffer as
+  // current as the server has it, so each update answers all of them.
+  private waiting: { resolve: (rects: Rect[]) => void; reject: (error: Error) => void }[] = []
   private failure: Error | null = null
 
   private constructor(stream: Duplex, reader: Reader, width: number, height: number, name: string) {
@@ -112,6 +114,7 @@ export class RfbClient {
     encodings.writeInt32BE(ENCODING_RAW, 4)
     client.send(encodings)
     void client.listen()
+    await client.refresh(false)
     return client
   }
 
@@ -121,7 +124,8 @@ export class RfbClient {
   }
 
   // Asks for the screen, or only for what changed since the last update, and
-  // resolves with the rectangles the update covered once they are applied.
+  // resolves with the rectangles the next update covered once they are applied.
+  // An incremental request gets no answer until something on the screen changes.
   refresh(incremental: boolean): Promise<Rect[]> {
     if (this.failure) return Promise.reject(this.failure)
     const request = Buffer.alloc(10)
@@ -133,6 +137,16 @@ export class RfbClient {
       this.waiting.push({ resolve, reject })
       this.send(request)
     })
+  }
+
+  // Waits until the screen has stopped changing: no update for quietMs, or
+  // maxMs at most, for a screen that keeps moving, such as a loading spinner.
+  async settle(quietMs: number, maxMs: number) {
+    const deadline = Date.now() + maxMs
+    while (Date.now() < deadline) {
+      const quiet = new Promise<'quiet'>((resolve) => { setTimeout(() => { resolve('quiet') }, quietMs) })
+      if (await Promise.race([this.refresh(true), quiet]) === 'quiet') return
+    }
   }
 
   // A copy of the screen as last updated.
@@ -160,7 +174,7 @@ export class RfbClient {
         const type = (await this.reader.read(1)).readUInt8(0)
         if (type === ServerMessage.framebufferUpdate) {
           const rects = await this.readUpdate()
-          this.waiting.shift()?.resolve(rects)
+          for (const waiting of this.waiting.splice(0)) waiting.resolve(rects)
         } else if (type === ServerMessage.bell) {
           // A bell carries nothing more.
         } else if (type === ServerMessage.serverCutText) {

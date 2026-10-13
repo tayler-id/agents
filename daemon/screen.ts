@@ -18,10 +18,17 @@ import { BadAction, plan, type Pointer, type Step } from './actions.ts'
 import { RfbClient } from './rfb.ts'
 import { encodePng } from './png.ts'
 
-// The pause after an action before its screenshot: long enough for a page to
-// repaint and a click's navigation to start, short enough that a run of actions
-// stays quick.
-const SETTLE_MS = 500
+// A screenshot waits for the screen to stop changing. The browser finishes a
+// page some time after its own tools say the page has loaded: in a box, a
+// screenshot taken straight after browser_navigate showed the old page and a
+// spinner. Paints come in bursts a frame or two apart, so 200 ms without one is
+// a settled screen, and a caret blinking every 500 ms doesn't hold it up. A
+// screen that keeps moving, such as a video, is taken as it is after 3 s.
+const QUIET_MS = 200
+const MAX_SETTLE_MS = 3_000
+// After an action, the screen's change can start a moment later, as a click's
+// repaint does. Waiting for quiet starts after this.
+const ACTION_REACTS_MS = 100
 // An action request is a little JSON. This stops a bad caller from holding the
 // daemon's memory.
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -118,7 +125,7 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
     running = abort
     try {
       await execute(client, steps.steps, abort.signal)
-      if (steps.settle) await sleep(SETTLE_MS, undefined, { signal: abort.signal })
+      if (steps.settle) await sleep(ACTION_REACTS_MS, undefined, { signal: abort.signal })
     } catch (error) {
       // A person took over mid-action. setControl has already let go of the keys.
       if (abort.signal.aborted) throw new Refused(control)
@@ -126,7 +133,7 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
     } finally {
       running = null
     }
-    await client.refresh(false)
+    await client.settle(QUIET_MS, MAX_SETTLE_MS)
     const { width, height } = desktop.size
     return {
       shot: { png: encodePng(width, height, client.frame()).toString('base64'), width, height },
