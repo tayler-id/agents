@@ -100,6 +100,15 @@ Onboarding, in `server/migrations/0005_onboarding.sql`. The design is in `docs/d
 - **`instances.personal` and `instances.start_error`.** A personal box belongs to one person for good. Runs never claim it, the box limit does not count it, and it is never stopped for being idle. Each person has at most one. `start_error` says why its container did not start.
 - **Every team has an admin.** `people.role` existed but nothing set it. The migration makes the earliest person of each team that has no admin into one.
 
+Projects, in `server/migrations/0006_projects.sql`. The design is in `docs/design/projects.md`.
+
+- **`projects`, new.** A team's work on one thing: a name, a description, its room (`conversation_id`), who made it and when, and `archived_at`. A name is unique in a team among projects not archived. Everyone on the team sees every project.
+- **`repo_requests`, new.** A repo the app was asked to make on GitHub for a project: the organization or account it goes under, its name and description, `creating`, `done` or `failed`, GitHub's reason when it failed, and the `repos` row once made. The app writes it before asking GitHub, so a crash or a refusal never leaves a repo nobody knows about, and trying again adopts a repo an earlier try made. A repo is asked for once per team.
+- **`repos.project_id`.** The project a repo belongs to, or none. A repo belongs to at most one project.
+- **`repos.polled_at`.** When the runner last asked GitHub about the repo's issues. GitHub can't reach this server with webhooks, so new issues are found by polling, and a restart carries on from here.
+- **`tasks.project_id`.** The project a task belongs to. Its runs and documents follow it, so they need no column of their own.
+- **`conversations.project_id`.** The project a room belongs to. Only a room can have one.
+
 The work layer, in `server/migrations/0007_workflow.sql`. The design is in `docs/design/workflow.md`.
 
 - **`file_changes`, new.** One row per file that differs from the base branch in one of a task workspace's repos. It holds the status (added, modified or deleted), the line counts, whether the file is binary or too large to show, its content now and its diff against the base, both scrubbed on the machine. It is the workspace's current state, so a row goes once its file stops differing. The task page lists these as Changes and opens each one beside the task.
