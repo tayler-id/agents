@@ -300,6 +300,21 @@ try {
   check(posted.status === 200 && [member, invitee, github].every((login) => String(prompt?.text).includes(login)) && !String(prompt?.text).includes(owner),
     `the room's agent is told who is in the room, the added teammates among them (${posted.status})`)
 
+  // A key that expires after it was saved stops the Tailscale page without calling Tailscale.
+  const briefKey = `tskey-api-k${id}BRIEF-${randomBytes(12).toString('hex')}`
+  tailscale.useKey(briefKey, 3 / 86_400)
+  const savedBrief = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key: briefKey, expires: null })
+  const briefEnds = Date.parse(tailscale.state.keyExpires)
+  await within(10, async () => Date.now() > briefEnds)
+  const callsBefore = tailscale.state.calls.length
+  const lapsed = await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/users')
+  check(savedBrief.status === 200 && lapsed.status === 409 && /expired on/.test(lapsed.json?.error) && /Settings, then Keys/.test(lapsed.json?.error)
+    && tailscale.state.calls.length === callsBefore,
+  `a key that expires after it was saved stops the tailnet routes, which say how to make a new one, without calling Tailscale (${lapsed.status} ${lapsed.text})`)
+  tailscale.useKey(key, 30)
+  const keyBack = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key, expires: null })
+  if (keyBack.status !== 200) throw new Error(`could not put the long-lived key back: ${keyBack.text}`)
+
   // Tailscale off, and set by halves.
   const off = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: undefined, AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-off'))
   apis.push(off)
