@@ -76,6 +76,21 @@ export function verifySignature(body: Buffer, signature: string | undefined, sec
 
 export type Issue = { number: number; title: string; body: string; html_url: string; state: string; user?: { login: string } }
 export type PullRequest = { number: number; html_url: string; state: string; merged: boolean }
+export type OpenPullRequest = { number: number; title: string; url: string; branch: string }
+
+// What the runner and the app ask of a forge, this Mac's Gitea or GitHub
+// (server/github.ts). Each call takes the repo's owner/name path.
+export type Forge = {
+  openIssues(repo: string): Promise<Issue[]>
+  issue(repo: string, n: number): Promise<Issue>
+  comment(repo: string, n: number, body: string): Promise<unknown>
+  closeIssue(repo: string, n: number): Promise<unknown>
+  openPullRequest(repo: string, head: string, base: string, title: string, body: string): Promise<PullRequest>
+  pullRequest(repo: string, n: number): Promise<PullRequest>
+  merge(repo: string, n: number): Promise<PullRequest>
+  openPullRequests(repo: string): Promise<OpenPullRequest[]>
+  branches(repo: string): Promise<string[]>
+}
 
 // What the coding framework reads of a pull request, parsed from the forge's answer.
 const PULL = z.object({
@@ -118,6 +133,11 @@ export const forge = {
     if (!pr.merged) await call('POST', `/repos/${repo}/pulls/${n}/merge`, { Do: 'merge', delete_branch_after_merge: true })
     return call<PullRequest>('GET', `/repos/${repo}/pulls/${n}`)
   },
+  async openPullRequests(repo: string): Promise<OpenPullRequest[]> {
+    const open = await call<{ number: number; title: string; html_url: string; head: { ref: string } }[]>('GET', `/repos/${repo}/pulls?state=open&limit=50`)
+    return open.map((pr) => ({ number: pr.number, title: pr.title, url: pr.html_url, branch: pr.head.ref }))
+  },
+  branches: async (repo: string) => (await call<{ name: string }[]>('GET', `/repos/${repo}/branches?limit=50`)).map((b) => b.name),
   // The files in a folder on a branch, each with git's blob id for its content.
   async files(repo: string, dir: string, ref: string): Promise<{ path: string; sha: string; content: string }[]> {
     const entries = await call<{ type: string; path: string; sha: string }[]>('GET', `/repos/${repo}/contents/${dir}?ref=${ref}`)
