@@ -62,6 +62,8 @@ const personShapes: Record<string, PersonShape> = {
     requireAdmin(p)
     return { table: 'join_requests', where: `status = 'waiting'`, params: [] }
   },
+  // A person's own Claude sign-ins, with the link their box made. Nobody else sees them.
+  claude_logins: async (p) => ({ table: 'claude_logins', where: 'person_id = $1', params: [p.id] }),
   agents: async (p) => ({ table: 'agents', where: 'team_id = $1 and archived_at is null', params: [p.team_id] }),
   conversations: async (p) => ({
     table: 'conversations',
@@ -136,6 +138,10 @@ const personShapes: Record<string, PersonShape> = {
 const instanceShapes: Record<string, InstanceShape> = {
   // A machine's queue: the commands waiting for it.
   commands: async (i) => ({ table: 'commands', where: `instance_id = $1 and status = 'queued'`, params: [i.id] }),
+  // The Claude sign-ins this box's owner has under way on it.
+  claude_logins: async (i) => ({
+    table: 'claude_logins', where: `instance_id = $1 and status in ('starting', 'waiting_for_code', 'checking')`, params: [i.id],
+  }),
 }
 
 // Streams one shape request through to Electric with the server's own filter.

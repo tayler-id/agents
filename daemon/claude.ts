@@ -9,12 +9,15 @@ import type { Harness, HarnessSession, HarnessStart } from './harness.ts'
 
 // Set by a parent Claude Code session. A daemon started from inside one must not
 // make its sessions look like that session's children.
-const PARENT_SESSION_ENV = [
+export const PARENT_SESSION_ENV = [
   'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'CLAUDE_PLUGIN_DATA',
   'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION',
   'CLAUDE_CODE_SESSION_ATTENDED',
 ]
+
+// The Claude CLI this machine runs. Checks name a stand-in.
+export const CLAUDE_BIN = process.env.AGENTS_CLAUDE_BIN ?? 'claude'
 
 // Progress counters and command lists. They stay in the raw lines but make no event.
 const SKIPPED_SYSTEM = new Set(['thinking_tokens', 'commands_changed'])
@@ -175,7 +178,9 @@ class ClaudeSession implements HarnessSession {
     if (options.maxBudgetUsd) args.push('--max-budget-usd', options.maxBudgetUsd.toFixed(2))
     const env = { ...process.env }
     for (const name of PARENT_SESSION_ENV) delete env[name]
-    this.child = spawn(process.env.AGENTS_CLAUDE_BIN ?? 'claude', args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    // A box's owner signed in from the app. Their token wins over any team-wide one.
+    if (options.oauthToken !== null) env.CLAUDE_CODE_OAUTH_TOKEN = options.oauthToken
+    this.child = spawn(CLAUDE_BIN, args, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
     this.child.on('close', () => { this.alive = false })
     this.child.stdin.on('error', () => {})
     this.child.stderr.setEncoding('utf8').on('data', (chunk: string) => {

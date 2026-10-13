@@ -15,6 +15,8 @@ export type HarnessStart = {
   allowedTools: string[]
   // Stops the session once it has cost this much, in US dollars.
   maxBudgetUsd?: number
+  // The Claude token this machine's owner signed in with from the app, or null to use the machine's own login.
+  oauthToken: string | null
 }
 
 export interface HarnessSession {

@@ -6,7 +6,7 @@
 //   node --env-file=.env --env-file=.env.test test/step12.ts
 
 import { execFileSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +19,7 @@ const PORTS = { machines: 7920, people: 7921, streams: 7922 }
 const TAILSCALE_PORT = 7923
 const OFF_PORTS = { machines: 7924, people: 7925, streams: 7926 }
 const PEOPLE = `http://127.0.0.1:${PORTS.people}`
+const OFF_MACHINES = `http://127.0.0.1:${OFF_PORTS.machines}`
 const OFF_PEOPLE = `http://127.0.0.1:${OFF_PORTS.people}`
 
 const id = randomBytes(4).toString('hex')
@@ -265,6 +266,70 @@ try {
   check(offStatus.json?.state === 'off' && offInvite.status === 200 && offInvite.json.link === null && offInvite.json.invite.tailscale_invite_id === null
     && offResend.status === 409 && /not connected/.test(offResend.json?.error),
   `without Tailscale settings, Tailscale is off and invites are made in the app only (${offStatus.text} ${offInvite.status})`)
+
+  // The Claude sign-in relay, with the check as the box's daemon. It runs against
+  // the API whose runner is off, once the main API has stopped, since a runner
+  // gives a box it tries to start a new token.
+  api.child.kill('SIGTERM')
+  await api.exited
+  const boxToken = `machine_${randomBytes(24).toString('base64url')}`
+  await db.query('update instances set token_sha256 = $2 where id = $1', [ownBoxId, createHash('sha256').update(boxToken).digest('hex')])
+  const { token: otherToken } = JSON.parse(node('server/admin.ts', 'add-instance', team, `other-${id}`, 'mac', owner)) as { token: string }
+  const asBox = async (token: string, path: string, body: unknown = {}) => {
+    const res = await fetch(`${OFF_MACHINES}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const text = await res.text()
+    return { status: res.status, text, json: text ? JSON.parse(text) : null }
+  }
+  const boxShape = async (token: string) => (await fetch(`${OFF_MACHINES}/v1/shape/claude_logins?offset=-1`, { headers: { authorization: `Bearer ${token}` } })).text()
+  const signInRow = async (loginId: string) => row('select status, url, note, valid_until::text as valid_until from claude_logins where id = $1', [loginId])
+  const started = await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')
+  const loginId: string = must(started.json?.loginId, 'the new sign-in')
+  check((await signInRow(loginId))?.status === 'starting' && await within(10, async () => (await boxShape(boxToken)).includes(loginId))
+    && !(await boxShape(otherToken)).includes(loginId), 'a sign-in starts on the person\'s own box, and only that box is asked to run it')
+  const state = randomBytes(12).toString('hex')
+  const signInLink = `https://claude.com/cai/oauth/authorize?code=true&scope=user%3Ainference&state=${state}`
+  const fromOther = await asBox(otherToken, `/v1/instance/claude-logins/${loginId}/link`, { url: signInLink })
+  const plain = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: 'http://claude.com/plain' })
+  check(fromOther.status === 404 && plain.status === 400,
+    `another machine cannot post the link, and a link must be https (${fromOther.status} ${fromOther.text}, ${plain.status} ${plain.text})`)
+  const linked = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: signInLink })
+  const ownView = await within(10, async () => (await shapeRows(OFF_PEOPLE, invitee, 'claude_logins')).rows.some((r) => r.id === loginId && r.url === signInLink))
+  check(linked.status === 200 && (await signInRow(loginId))?.status === 'waiting_for_code' && ownView
+    && !(await shapeRows(OFF_PEOPLE, member, 'claude_logins')).rows.some((r) => r.id === loginId),
+  'the link the box posts reaches its owner, and nobody else')
+  const code = `code${randomBytes(9).toString('hex')}#${state}`
+  const stateless = await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${loginId}/code`, { code: 'codewithoutstate' })
+  check(stateless.status === 400 && /including the part after #/.test(stateless.json?.error)
+    && (await asPerson(OFF_PEOPLE, member, 'POST', `/v1/claude-logins/${loginId}/code`, { code })).status === 404,
+  'a code needs its part after #, and nobody but the owner can send one')
+  const sentCode = await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${loginId}/code`, { code })
+  check(sentCode.status === 200 && !sentCode.text.includes(code) && (await signInRow(loginId))?.status === 'checking'
+    && (await asBox(otherToken, `/v1/instance/claude-logins/${loginId}/code`)).status === 404,
+  'the person sends their code, the sign-in is checking, and no other machine can take the code')
+  const taken = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/code`)
+  const again = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/code`)
+  const back = await signInRow(loginId)
+  check(taken.status === 200 && taken.json?.code === code && again.status === 410 && back?.status === 'waiting_for_code'
+    && back.note === 'The server restarted before your box got your code. Paste it again.',
+  'the box takes the code once; asked again, the code is gone and the person is asked to paste it again')
+  await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${loginId}/code`, { code })
+  await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/code`)
+  const finished = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/done`, { validDays: 365 })
+  const signedIn = await signInRow(loginId)
+  const until = Date.parse(String(signedIn?.valid_until).replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'))
+  check(finished.status === 200 && signedIn?.status === 'signed_in' && signedIn.note === null && Math.abs(until - (Date.now() + 365 * 86_400_000)) < 600_000,
+    'the box reports it signed in, and the sign-in lasts as long as the CLI said')
+  const first = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a second sign-in')
+  const second = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a third sign-in')
+  const failed = await asBox(boxToken, `/v1/instance/claude-logins/${second}/failed`, { reason: 'OAuth error: Failed to exchange authorization code for access token.' })
+  check((await signInRow(first))?.status === 'cancelled' && failed.status === 200 && (await signInRow(second))?.note === 'OAuth error: Failed to exchange authorization code for access token.'
+    && (await signInRow(loginId))?.status === 'signed_in', 'starting again cancels the open sign-in, a failure keeps the CLI\'s reason, and an earlier sign-in stays signed in')
+  const third = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a fourth sign-in')
+  check((await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${third}/cancel`)).status === 200 && (await signInRow(third))?.status === 'cancelled',
+    'the person can cancel a sign-in')
+  const codeInDb = await foundInDatabase(db, code)
+  check(codeInDb.length === 0 && !off.text().includes(code), `the code is in no table and no log${codeInDb.length ? ` (found in ${codeInDb.join(', ')})` : ''}`)
+
   off.child.kill('SIGTERM')
   const half = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: tailscale.url(TAILSCALE_PORT), AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-half'))
   apis.push(half)
