@@ -134,6 +134,23 @@ const personShapes: Record<string, PersonShape> = {
     table: 'artifact_versions', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
   }),
+  // The tasks blocking one task, or, given `blocker`, the tasks it blocks that the person may see.
+  task_blocks: async (p, args) => {
+    if (args.has('blocker')) {
+      const blocker = arg(args, 'blocker')
+      if (!(await canSeeTask(p, blocker))) throw new HttpError(404, 'no such task')
+      return { table: 'task_blocks', where: `blocker_id = $1 and blocked_id in (select id from tasks where ${VISIBLE_TASK})`, params: [blocker, p.id] }
+    }
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_blocks', where: 'blocked_id = $1', params: [taskId] }
+  },
+  // A task's hold, current or lapsed.
+  task_holds: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_holds', where: 'task_id = $1', params: [taskId] }
+  },
   // A task's repos, for editing a draft.
   task_repos: async (p, args) => {
     const taskId = arg(args, 'task')

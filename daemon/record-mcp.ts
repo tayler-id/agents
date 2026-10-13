@@ -1,12 +1,13 @@
 // The team-record tools every agent session gets: search everything the team's
-// people and agents have said and done, read one session, and see what is
-// happening now. Claude starts this as an MCP server over stdio. It reads the
+// people and agents have said and done, read one session, see what is happening
+// now and what is ready to start. Claude starts this as an MCP server over stdio. It reads the
 // record through the API, as the session it serves.
 // Env: AGENTS_API, AGENTS_TOKEN, AGENTS_SESSION (set by the daemon in the session's MCP config).
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { ReadyAnswer } from '../shared/work.ts'
 
 const API = process.env.AGENTS_API ?? 'http://127.0.0.1:7700'
 const TOKEN = process.env.AGENTS_TOKEN ?? ''
@@ -69,6 +70,21 @@ server.registerTool('read_session', {
   }>(`/v1/record/sessions/${session_id}`, { from: from_step ?? 1, limit: limit ?? 60 })
   const head = `Session ${session_id}: ${session.agent}${session.person ? ` for ${session.person}` : ''}, ${session.status}, ${session.turns} turns, started ${when(session.created_at)}`
   return text([head, ...events.map((e) => `${e.seq}. ${e.kind}${e.tool_name ? ` ${e.tool_name}` : ''}: ${e.text}`)].join('\n'))
+})
+
+server.registerTool('ready_tasks', {
+  title: 'Tasks ready to start',
+  description: "See the team's queued tasks that nothing blocks or holds, most urgent and then oldest first, "
+    + 'and the held tasks with why they wait and until when.',
+  inputSchema: {},
+}, async () => {
+  const { ready, held } = ReadyAnswer.parse(await get<unknown>('/v1/record/ready', {}))
+  return text([
+    ready.length ? `Ready to start, in order:\n${ready.map((t, i) => `${i + 1}. ${t.title} · priority ${t.priority}`
+      + `${t.agent ? ` · for ${t.agent}` : ''} · task ${t.id} · written ${when(t.created_at)}`).join('\n')}` : 'Nothing is ready to start.',
+    held.length ? `Held:\n${held.map((t) => `- ${t.title} · ${t.state} · ${t.kind}: ${t.reason}${t.until ? ` · until ${t.until}` : ''}`
+      + `${t.held_by ? ` · held by ${t.held_by}` : ''} · task ${t.id}`).join('\n')}` : 'Nothing is held.',
+  ].join('\n\n'))
 })
 
 server.registerTool('recent_activity', {

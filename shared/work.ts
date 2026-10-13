@@ -4,7 +4,6 @@
 
 import { z } from 'zod'
 import { AgentId, ArtifactId, ConversationId, FileChangeId, MessageId, PersonId, PushId, RepoId, TaskId, WorkspaceId } from './ids.ts'
-import type { SessionStatus } from './types.ts'
 
 // A pull request's title is the task's title, so both share the forge's limit.
 const TITLE_MAX = 255
@@ -35,29 +34,96 @@ export const NewTask = TaskFields.extend({
 })
 export type NewTask = z.infer<typeof NewTask>
 
-// A draft task is written now and started later. Its state follows from its
-// one session: the draft status until it starts, and archived once discarded.
-export const DRAFT_STATES = ['draft', 'started', 'discarded'] as const
-export type DraftState = (typeof DRAFT_STATES)[number]
+// A task's state, from what is stored. A draft is queued: written, not started.
+// A started task is active until someone marks it done. A discarded draft is
+// archived.
+export const TASK_STATES = ['queued', 'active', 'done', 'discarded'] as const
+export type TaskState = (typeof TASK_STATES)[number]
 
-export const DraftAction = z.enum(['edit', 'start', 'discard'])
-export type DraftAction = z.infer<typeof DraftAction>
+// A queued task carries its draft, the session that starts when it does.
+export type StateOf<D> = { state: 'queued'; draft: D } | { state: Exclude<TaskState, 'queued'>; draft: null }
 
-// What a person can do to a draft, the state each needs, and the state it leaves.
-export const DRAFT_ACTIONS: Record<DraftAction, { from: DraftState; to: DraftState }> = {
-  edit: { from: 'draft', to: 'draft' },
-  start: { from: 'draft', to: 'started' },
-  discard: { from: 'draft', to: 'discarded' },
+export function taskState<D>(task: { archived: boolean; done: boolean; draft: D | null }): StateOf<D> {
+  if (task.archived) return { state: 'discarded', draft: null }
+  if (task.done) return { state: 'done', draft: null }
+  return task.draft === null ? { state: 'active', draft: null } : { state: 'queued', draft: task.draft }
+}
+
+export const TaskAction = z.enum(['edit', 'start', 'discard', 'done', 'reopen', 'prioritize', 'block', 'unblock', 'hold', 'unhold'])
+export type TaskAction = z.infer<typeof TaskAction>
+
+// Each action, the states it may start from and the state it leaves the task in.
+// Marking a done task done, or reopening one that is not done, changes nothing,
+// and the command says so. Reopening a task returns it to where it was, queued
+// if it never started, so its `to` is `reopened`.
+export const TASK_ACTIONS: Record<TaskAction, { from: readonly TaskState[]; to: TaskState | 'same' | 'reopened' }> = {
+  edit: { from: ['queued'], to: 'queued' },
+  start: { from: ['queued'], to: 'active' },
+  discard: { from: ['queued'], to: 'discarded' },
+  done: { from: ['queued', 'active', 'done'], to: 'done' },
+  reopen: { from: ['queued', 'active', 'done'], to: 'reopened' },
+  prioritize: { from: ['queued', 'active'], to: 'same' },
+  block: { from: ['queued', 'active'], to: 'same' },
+  unblock: { from: ['queued', 'active', 'done'], to: 'same' },
+  hold: { from: ['queued', 'active'], to: 'same' },
+  unhold: { from: ['queued', 'active', 'done'], to: 'same' },
 }
 
 // A row of the task_repos shape: one of a task's repos, for editing a draft.
 export const TaskRepoRow = z.object({ task_id: TaskId, repo_id: RepoId, is_primary: z.boolean() })
 export type TaskRepoRow = z.infer<typeof TaskRepoRow>
 
-export function draftState(session: { status: SessionStatus; archived: boolean }): DraftState {
-  if (session.status !== 'draft') return 'started'
-  return session.archived ? 'discarded' : 'draft'
-}
+// The order of work: what blocks a task, what holds it, and what is ready.
+
+// What every command that changes the order of work answers. `already` is true
+// when there was nothing to change, so running a command twice is safe.
+export const Outcome = z.object({ already: z.boolean() })
+export type Outcome = z.infer<typeof Outcome>
+
+// A reason a person reads in a list, so one line.
+const LINE_MAX = 200
+const Line = z.string().trim().min(1).max(LINE_MAX).regex(/^[^\r\n]*$/, 'a reason is one line')
+
+export const PRIORITIES = [0, 1, 2, 3, 4] as const
+// 0 is the most urgent. A new task is in the middle.
+export const DEFAULT_PRIORITY = 2
+export const Priority = z.number().int().min(0).max(4)
+
+// What a held task waits on: a person's decision, something outside the team,
+// load on people or machines, a choice to park it, or a later date.
+export const HOLD_KINDS = ['decision', 'external', 'load', 'parked', 'future'] as const
+export const HoldKind = z.enum(HOLD_KINDS)
+export type HoldKind = z.infer<typeof HoldKind>
+
+// POST /v1/tasks/:id/blockers: the task that blocks this one, and why.
+export const BlockAsk = z.object({ blockerId: TaskId, reason: Line.nullable() })
+export type BlockAsk = z.infer<typeof BlockAsk>
+// POST /v1/tasks/:id/hold. The hold lapses on its until date, a YYYY-MM-DD.
+export const HoldAsk = z.object({ kind: HoldKind, reason: Line, until: z.iso.date().nullable() })
+export type HoldAsk = z.infer<typeof HoldAsk>
+// POST /v1/tasks/:id/priority.
+export const PriorityAsk = z.object({ priority: Priority })
+
+// A row of the task_blocks shape: one edge touching a task.
+export const TaskBlockRow = z.object({ blocked_id: TaskId, blocker_id: TaskId, reason: z.string().nullable(), created_at: z.string() })
+export type TaskBlockRow = z.infer<typeof TaskBlockRow>
+// A row of the task_holds shape: a task's hold, current or lapsed.
+export const TaskHoldRow = z.object({
+  task_id: TaskId, kind: HoldKind, reason: z.string(), until: z.string().nullable(), held_by: PersonId.nullable(), created_at: z.string(),
+})
+export type TaskHoldRow = z.infer<typeof TaskHoldRow>
+
+// The ready query's answer: queued tasks nothing blocks or holds, most urgent
+// and then oldest first, and beside them the held tasks with why.
+export const ReadyTask = z.object({ id: TaskId, title: z.string(), priority: Priority, agent: z.string().nullable(), created_at: z.string() })
+export type ReadyTask = z.infer<typeof ReadyTask>
+export const HeldTask = z.object({
+  id: TaskId, title: z.string(), state: z.enum(['queued', 'active']), kind: HoldKind, reason: z.string(),
+  until: z.iso.date().nullable(), held_by: z.string().nullable(),
+})
+export type HeldTask = z.infer<typeof HeldTask>
+export const ReadyAnswer = z.object({ ready: z.array(ReadyTask), held: z.array(HeldTask) })
+export type ReadyAnswer = z.infer<typeof ReadyAnswer>
 
 // Changes. A machine reports each file that differs from the base branch in a
 // workspace's repos, and the app shows them.

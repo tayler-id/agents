@@ -36,7 +36,8 @@ import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
 import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
-import { ChangesPost, DraftAction, NewComment, NewTask, PullRequestAsk, TaskFields } from '../shared/work.ts'
+import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, TaskFields } from '../shared/work.ts'
+import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -128,6 +129,12 @@ const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/agents\/([^/]+)$/, async (req, [name], url) => {
     const { teamId } = await agentScope(req, url)
     return agentProfile(teamId, decodeURIComponent(name))
+  }],
+
+  // What is ready to start, and what is held, among the team's shared tasks.
+  ['machines', 'GET', /^\/v1\/record\/ready$/, async (req, _params, url) => {
+    const { teamId } = await agentScope(req, url)
+    return readyAnswer(pool, teamId, null)
   }],
 
   ['machines', 'GET', /^\/v1\/record\/recent$/, async (req, _params, url) => {
@@ -308,6 +315,51 @@ const routes: Route[] = [
     return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
   }],
 
+  // The order of work. Each command answers whether there was anything to change.
+  ['people', 'GET', /^\/v1\/tasks\/ready$/, async (req) => {
+    const person = await personFrom(req)
+    return readyAnswer(pool, person.team_id, person.id)
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/(done|reopen|unhold)$`), async (req, [id, verb]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const action = parsed(TaskAction.extract(['done', 'reopen', 'unhold']), verb)
+    switch (action) {
+      case 'done': return tx((client) => markDone(client, person, taskId))
+      case 'reopen': return tx((client) => reopen(client, person, taskId))
+      case 'unhold': return tx((client) => unhold(client, person, taskId))
+    }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/hold$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(HoldAsk, await readJson(req))
+    return tx((client) => hold(client, person, taskId, ask))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/priority$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const { priority } = parsed(PriorityAsk, await readJson(req))
+    return tx((client) => prioritize(client, person, taskId, priority))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/blockers$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(BlockAsk, await readJson(req))
+    return tx((client) => block(client, person, taskId, ask))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/blockers/${UUID}/remove$`), async (req, [id, blocker]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const blockerId = parsed(TaskId, blocker)
+    return tx((client) => unblock(client, person, taskId, blockerId))
+  }],
+
   // Push the task's branches and open a pull request for each repo with commits.
   ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/pull-requests$`), async (req, [id]) => {
     const person = await personFrom(req)
@@ -321,7 +373,7 @@ const routes: Route[] = [
     const person = await personFrom(req)
     const taskId = parsed(TaskId, id)
     const body = await readJson(req)
-    const action = parsed(DraftAction, verb)
+    const action = parsed(TaskAction.extract(['edit', 'start', 'discard']), verb)
     switch (action) {
       case 'start':
         return tx((client) => startDraft(client, person, taskId))
