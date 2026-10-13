@@ -152,8 +152,10 @@ async function run(engine: string) {
       `${engine}: a newcomer whose box could not start reads that in the welcome steps`)
     await newcomer.getByRole('button', { name: 'Set up your box' }).click()
     check(await visible(newcomer, 'section[aria-label="Your box"] .box-state', 15, /It could not start/)
-      && await visible(newcomer, 'section[aria-label="Your box"] p', 15, /Docker said: .*(No such image|Unable to find image)/),
-    `${engine}: their box page says the box could not start, and what Docker said`)
+      && await visible(newcomer, 'section[aria-label="Your box"] p', 15, /Docker said: .*(No such image|Unable to find image)/)
+      && await visible(newcomer, '[aria-label="Claude sign-in"] p', 15, /once your box is running/)
+      && !(await newcomer.getByRole('button', { name: 'Sign in to Claude' }).count()),
+    `${engine}: their box page says the box could not start and what Docker said, and offers no sign-in until it runs`)
     await newcomer.screenshot({ path: join(SHOTS, `${engine}-box-failed-light.png`), fullPage: true })
 
     // A login with no invite waits, and one click lets them in.

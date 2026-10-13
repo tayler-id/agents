@@ -31,7 +31,7 @@ export function Waiting({ me, onJoined }: { me: Extract<MeView, { kind: 'waiting
 }
 
 // What a person's own box is doing, in a few words.
-export function boxState(box: Instance): string {
+export function boxState(box: Instance): 'ready' | 'starting' | 'could not start' {
   if (box.start_error) return 'could not start'
   return box.status === 'online' ? 'ready' : 'starting'
 }

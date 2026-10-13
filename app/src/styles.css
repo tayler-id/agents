@@ -282,6 +282,8 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 .steps .glyph { width: 1.2em; flex-shrink: 0; text-align: center; color: var(--muted); }
 .steps li.done .glyph { color: var(--text); }
 .box-state { display: flex; align-items: baseline; }
+/* Docker's words can hold a long image name with no spaces, which a phone would scroll sideways for. */
+.box-reason { overflow-wrap: anywhere; }
 .sign-in { display: grid; gap: 8px; max-width: 620px; }
 .note-line .glyph { margin-right: 6px; }
 

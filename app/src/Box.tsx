@@ -97,7 +97,12 @@ function BoxState({ box }: { box: Instance }) {
         <span className={`dot ${state === 'ready' ? 'online' : state === 'starting' ? 'starting' : 'failed'}`} aria-hidden="true" />
         {state === 'ready' ? 'Ready.' : state === 'starting' ? 'Starting. This takes under a minute.' : 'It could not start.'}
       </p>
-      {box.start_error && <p className="small">Docker said: {box.start_error} An admin can look at the server.</p>}
+      {box.start_error && (
+        <>
+          <p className="small box-reason">Docker said: <code>{box.start_error}</code></p>
+          <p className="small muted">The server keeps trying to start it. An admin can look at the server.</p>
+        </>
+      )}
     </>
   )
 }
@@ -127,11 +132,16 @@ function ClaudeSignIn({ box, login }: { box: Instance; login: ClaudeLoginRow | n
     })
   }
   const cancel = () => (login ? run(() => api.cancelClaudeLogin(login.id)) : Promise.resolve())
+  // A sign-in runs on the box, so one that could not start has nothing to run it.
+  const stopped = boxState(box) === 'could not start'
   return (
     <>
       <h2 className="kicker section">Claude</h2>
       <div className="sign-in" aria-label="Claude sign-in">
-        {(!login || login.status === 'cancelled') && (
+        {(!login || login.status === 'cancelled') && stopped && (
+          <p>Agents on your box run on your own Claude account. You can sign in once your box is running.</p>
+        )}
+        {(!login || login.status === 'cancelled') && !stopped && (
           <>
             <p>Agents on your box run on your own Claude account. Sign in once, and the sign-in lasts a year.</p>
             <p><button type="button" className="primary" disabled={busy} onClick={act(start)}>Sign in to Claude</button></p>
@@ -139,7 +149,7 @@ function ClaudeSignIn({ box, login }: { box: Instance; login: ClaudeLoginRow | n
         )}
         {login?.status === 'starting' && (
           <>
-            <p role="status">Getting a sign-in link from your box{box.status === 'online' ? '' : ', which is still starting'}.</p>
+            <p role="status">Getting a sign-in link from your box{box.status === 'online' ? '' : stopped ? ', once it starts' : ', which is still starting'}.</p>
             <p><button type="button" className="link small" onClick={act(cancel)}>Cancel</button></p>
           </>
         )}
