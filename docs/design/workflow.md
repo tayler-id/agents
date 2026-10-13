@@ -19,7 +19,7 @@ What happened on the live server on 2026-10-13 shaped part of it. Tayler started
 - Start saves what the form holds, then the task gets its workspace and the agent its first message, the same as a task started at once.
 - Discard sets `archived_at` on the task and its session, so they leave every list.
 
-Edit, start and discard lock the task row and check its state against the lifecycle table in `shared/work.ts`. Two people pressing Start at once start it once, and the second gets "this task has already started".
+Edit, start and discard lock the task row and check its state against the lifecycle table in `shared/work.ts`. Starting a draft a second time gets "this task has already started". The lock is what keeps two people pressing Start at the same moment from starting it twice, and no check presses them at the same moment.
 
 **Routes.**
 
@@ -55,12 +55,12 @@ One transition table in `shared/work.ts` holds every action and the states it ma
 
 **Blocking edges.** `task_blocks` holds one row per edge: the blocked task, the task blocking it, an optional one-line reason, who added it and when. A task is blocked while any task blocking it is neither done nor discarded.
 
-- Adding an edge needs both tasks to be the team's and visible to the person. It refuses an edge from a task to itself, and one that would close a cycle. A recursive query finds the cycle under a per-team advisory lock, so two people can't close one between them.
+- Adding an edge needs both tasks to be the team's and visible to the person. It refuses an edge from a task to itself, and one that would close a cycle. A recursive query finds the cycle under a per-team advisory lock, which keeps two people from closing one between them. No check adds two edges at the same moment.
 - Discarding a task that still blocks a queued or active task is refused, and the refusal names what it blocks.
 
 **Holds.** `task_holds` holds at most one hold per task: its kind, a one-line reason, an optional until date, who held it and when.
 
-- The kinds are `decision` (waiting on a person's decision), `external`, `load`, `parked` and `future`.
+- The kinds are `decision`, for a person's decision, and `external`, `load`, `parked` and `future`.
 - A hold with an until date lapses on that date, by the database's date, and the task can be ready again. A lapsed hold stays recorded until someone lifts it or holds the task again.
 - A hold can pause queued or active work. A done or discarded task takes none.
 
@@ -99,7 +99,7 @@ An action from a state it can't start from, such as holding a done task, is a 40
 - The daemon copies the agent's index and stages the working tree into the copy with `git add --all`, so it sees new, changed and deleted files without touching the agent's own index. It reads statuses and blob ids with `git diff --cached --raw`, line counts with `--numstat`, and each file's unified diff with `git diff --cached -- <path>`. Content comes from git's blobs, so a symlink is never followed out of the repo.
 - Only repos cloned through the API's git proxy count. A repo the agent cloned itself is not one of the task's.
 - A file's hash is its old blob, its new blob and its status. The daemon sends content and diff only for files whose hash changed since it last sent them, and the facts of every changed file, so the API drops rows for files that no longer differ. If the API lacks content for a file, its answer names the file, and the daemon sends it again.
-- It sends after a tool result or a turn's end (at most once every 2 seconds), after a setup, check or push in the workspace, and for every workspace on the machine when the daemon starts. So a task from before this change, like the README task, shows its changes once the new daemon runs.
+- It sends after a tool result or a turn's end (at most once every 2 seconds), after a setup, check or push in the workspace, and for every workspace on the machine when the daemon starts. That last one is meant to show the changes of a task from before this change, like the README task, once the new daemon runs. No check restarts a daemon, and the live server has not been tried.
 
 **Limits.** `CHANGE_LIMITS` in `shared/work.ts`:
 
@@ -127,7 +127,7 @@ Documents in the `task` folder open in the same kind of panel. Their Diff tab sh
 
 **States.** `pushing`, then `done`, or `failed` with the reason. A new push can start once the last one has ended.
 
-**How it runs.** The route writes the row and a `push` command in one transaction. The daemon commits anything uncommitted as the task's agent, pushes `task/<slug>` for every repo, and reports each repo's commit and how many commits it is ahead of its base. The runner's loop finishes pushes whose command has ended (`server/pulls.ts`). It locks the row, asks the forge for each pull request through `forge.openPullRequest`, which finds an open one for the branch before making one, records the links, and marks the row done. So a retry or a second runner never opens two. The forge is called only through the forge interface in `server/forge.ts`.
+**How it runs.** The route writes the row and a `push` command in one transaction. The daemon commits anything uncommitted as the task's agent, pushes `task/<slug>` for every repo, and reports each repo's commit and how many commits it is ahead of its base. The runner's loop finishes pushes whose command has ended (`server/pulls.ts`). It locks the row, asks the forge for each pull request through `forge.openPullRequest`, which finds an open one for the branch before making one, records the links, and marks the row done. Asking again opens no second pull request, which step14 checks. The row lock is what keeps two runners from opening two, and no check runs two. The forge is called only through the forge interface in `server/forge.ts`.
 
 **Route.** `POST /v1/tasks/:id/pull-requests`, with an optional title and description. It refuses while the agent is working, while a push is in flight, when the workspace is not ready, and when the task has no repo.
 
@@ -223,10 +223,15 @@ Each check was seen failing with the thing it guards broken, then passing after 
 ## Not done
 
 - **The pipeline has not run for real.** step14 runs it with the stand-in for Claude and on this Mac. It needs an agent named `builder` on a box, boxes need a Claude token, and Tayler publishes it.
-- **The probe of what still asks** used Claude Code 2.1.296. The checks only see the flags the daemon passes, so a new Claude Code version that changes what `acceptEdits` covers would pass them.
+- **The probe of what still asks** used Claude Code 2.1.296 on this Mac. No box has run a session with real Claude. The checks only see the flags the daemon passes, so a new Claude Code version that changes what `acceptEdits` covers would pass them.
 - **A pull request's state** is what we recorded when it opened. One merged or closed on the forge by hand still shows open here. That needs the forge to report back, which belongs with the GitHub forge.
 - **Only the Gitea forge was exercised.** The GitHub forge is on another branch. Pull requests go through the same `forge.openPullRequest` interface, untested there.
-- **Not checked by any test:** Try again after a failed push, a second push after more changes, the palette's arrow keys, and holding a task until a date from the app.
+- **Built but not checked by any test:**
+  - Try again after a failed push, a second push after more changes, and the pull request route's refusals while a push is in flight, before the workspace is ready and for a task with no repo.
+  - The flags a pipeline stage's session starts with, and the research, plan and implement pipeline driven from the app. step14c drives a simpler pipeline's gate there.
+  - Changes sent when a daemon starts, a file too large to show, a post past its budget with the API asking for the rest, and a submodule.
+  - In the palette, the arrow keys, finding anything but a task, Cmd+K from inside a field, Ctrl+K left to a field on a Mac, single keys with a modifier held or during composition, and the single-key choice surviving a reload.
+  - Holding a task until a date from the app.
 - **Changes are current state only.** Earlier states of an unpushed file are not kept.
 - **A draft can show as a started task for a moment,** with "Starting…" and a message box, until its session reaches the page. A screenshot caught it on a phone opened right after the draft was made.
 

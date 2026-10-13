@@ -273,7 +273,7 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### Pull requests from a task (`server/pulls.ts`, the `pushes` table)
 
-- **Solves now.** Open pull request pushes the task branch of each changed repo and opens a pull request for each repo with commits past its base, in the agent's name. They show on the task, and stay there once nothing differs. Asking again pushes the new work to the same pull requests.
+- **Solves now.** Open pull request pushes the task branch of each changed repo and opens a pull request for each repo with commits past its base, in the agent's name. They show on the task, and stay there once nothing differs. Asking again opens no second pull request.
 - **Helps later.** Any forge behind `forge.openPullRequest` works the same way. Only Gitea has been tried.
 
 ### Writing without asking (`server/permissions.ts`)
@@ -293,7 +293,7 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### The command palette (`app/src/Palette.tsx`)
 
-- **Solves now.** Cmd+K on a Mac, Ctrl+K elsewhere, finds any agent, conversation, task, run, pipeline or document, and c and r start a new task or room outside a field. Single keys can be turned off.
+- **Solves now.** Cmd+K on a Mac, Ctrl+K elsewhere, opens a search over agents, conversations, tasks, runs, pipelines and documents, beside the actions New task, New room and New agent. Outside a field, c starts a new task and r a new room, and single keys can be turned off. step14c finds a task and runs an action by keyboard alone.
 - **Helps later.** New actions join the palette without new buttons.
 
 ### The step 14 checks (`test/step14.ts`, `test/step14b.ts`, `test/step14c.ts`)
