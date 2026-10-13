@@ -5,9 +5,10 @@ import { useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { act, api, messageOf, useParsedSnapshot, useSnapshot, type Agent, type Person, type Task } from './data.ts'
 import { RepoPicker } from './RepoPicker.tsx'
-import { TaskRepoRow } from '../../shared/work.ts'
+import { TaskOrder } from './Order.tsx'
+import { TaskRepoRow, type TaskState } from '../../shared/work.ts'
 
-export function DraftView({ task }: { task: Task }) {
+export function DraftView({ task, state }: { task: Task; state: TaskState }) {
   const { rows: repos, loaded, error } = useParsedSnapshot(TaskRepoRow, 'task_repos', { task: task.id }, 15000)
   const { rows: people } = useSnapshot<Person>('people', {}, 30000)
   const author = people.find((p) => p.id === task.owner_id)?.login
@@ -24,6 +25,7 @@ export function DraftView({ task }: { task: Task }) {
         {error ? <p className="error small" role="alert">{error}</p>
           : !loaded ? <p className="muted small">Loading the draft…</p>
             : <DraftForm task={task} repoIds={[...repos].sort((a, b) => Number(b.is_primary) - Number(a.is_primary)).map((r) => r.repo_id)} />}
+        <TaskOrder task={task} state={state} />
       </div>
     </section>
   )

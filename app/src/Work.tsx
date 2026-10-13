@@ -8,6 +8,8 @@ import { Markdown } from './Markdown.tsx'
 import { Changes, PullRequests } from './Changes.tsx'
 import { DraftView } from './Draft.tsx'
 import { RepoPicker } from './RepoPicker.tsx'
+import { TaskOrder } from './Order.tsx'
+import { taskState } from '../../shared/work.ts'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -121,7 +123,8 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
-  if (session?.status === 'draft') return <DraftView task={task} />
+  const { state } = taskState({ archived: false, done: task.done_at !== null, draft: session?.status === 'draft' ? session : null })
+  if (session?.status === 'draft') return <DraftView task={task} state={state} />
   const agent = agents.find((a) => a.id === task.agent_id)
   const documents = artifacts.filter((a) => a.kind === 'document')
   const send = async (event: SyntheticEvent) => {
@@ -140,7 +143,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         <div>
           <p className="kicker">Task</p>
           <h1>{task.title}</h1>
-          <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}</p>
+          <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}{state === 'done' ? ' · done' : ''}</p>
         </div>
         <div className="head-actions">
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
@@ -150,6 +153,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
       <div className="page-body">
         {session ? <Transcript session={session} agentName={agent?.name ?? 'Agent'} /> : <p className="muted small">Starting…</p>}
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
+        <TaskOrder task={task} state={state} />
         <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
           <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} />
         </Changes>

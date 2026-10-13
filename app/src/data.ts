@@ -9,7 +9,7 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
-import type { NewComment, NewTask, PullRequestAsk, TaskFields } from '../../shared/work.ts'
+import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type TaskFields } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 
 export type Me = MemberView
@@ -56,7 +56,7 @@ export type Pipeline = Row & {
 export type PipelineVersion = Row & { id: string; pipeline_id: string; git_sha: string; source: string; error: string | null; created_at: string }
 export type Task = Row & {
   id: string; slug: string; title: string; instructions: string; owner_id: string | null; agent_id: string | null; conversation_id: string | null
-  source: string | null; created_at: string
+  source: string | null; priority: number; done_at: string | null; created_at: string
 }
 export type Run = Row & {
   id: string; pipeline_version_id: string; task_id: string; trigger: string; status: string; stage: string | null
@@ -301,6 +301,15 @@ export const api = {
   openPullRequests: (taskId: string, ask: PullRequestAsk) => request<{ pushId: PushId }>('POST', `/v1/tasks/${taskId}/pull-requests`, ask),
   versionDiff: (artifactId: ArtifactId | string, version: number) =>
     request<{ diff: string }>('GET', `/v1/artifacts/${artifactId}/versions/${version}/diff`),
+  // The order of work. Each answer says whether there was anything to change.
+  ready: async () => ReadyAnswer.parse(await request<unknown>('GET', '/v1/tasks/ready')),
+  prioritize: async (taskId: string, priority: number) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/priority`, { priority })),
+  markDone: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/done`, {})),
+  reopen: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/reopen`, {})),
+  block: async (taskId: string, ask: BlockAsk) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/blockers`, ask)),
+  unblock: async (taskId: string, blockerId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/blockers/${blockerId}/remove`, {})),
+  hold: async (taskId: string, ask: HoldAsk) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/hold`, ask)),
+  unhold: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/unhold`, {})),
   messageSession: (sessionId: string, text: string) => request('POST', `/v1/sessions/${sessionId}/messages`, { text }),
   addComment: (artifactId: string, body: z.input<typeof NewComment>) =>
     request<{ commentId: string }>('POST', `/v1/artifacts/${artifactId}/comments`, body),

@@ -9,6 +9,7 @@ import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
 import { BoxPage, GettingStarted } from './Box.tsx'
 import { FilePanel } from './FilePanel.tsx'
 import { Palette, paletteKey, useShortcuts } from './Palette.tsx'
+import { ReadyLists } from './Order.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -283,6 +284,8 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
         ))}
         {!myTasks.length && <li className="muted small empty">No tasks yet</li>}
       </ul>
+
+      <ReadyLists openTask={route.task} />
 
       <h2 className="kicker">Pipelines</h2>
       <ul className="list" aria-label="Pipelines">

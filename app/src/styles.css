@@ -376,6 +376,19 @@ dialog.palette::backdrop { background: rgba(20, 20, 18, 0.35); }
 .palette-foot .check { display: inline-flex; gap: 6px; align-items: center; }
 kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 
+.order { display: grid; gap: 6px; }
+.order h3 { margin: 6px 0 0; }
+.order-line, .hold-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.order-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.form.inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: none; }
+.form.inline-form input:not([type]) { flex: 1 1 12ch; min-width: 0; }
+.order select, .order input[type="date"] {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; min-width: 0; max-width: 100%;
+}
+.order select:focus, .order input:focus { outline: none; border-color: var(--text); }
+.row.stacked { display: grid; gap: 1px; }
+.row.stacked > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 @media (max-width: 760px) {
   .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }
   dialog.palette { margin-top: 8vh; }
