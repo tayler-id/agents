@@ -158,15 +158,19 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     const draftPhone = await phoneOf(alice)
     const otherDraft = await call(alice, '/v1/tasks', { title: `Phone draft (${engine})`, instructions: '', agentId: ids.writer, repoIds: [ids.repo], draft: true }) as { taskId: string }
     await draftPhone.goto(`/#/t/${otherDraft.taskId}`)
-    await visible(draftPhone, 'section[aria-label="Order of work"]', 15)
-    check(await noSideScroll(draftPhone), `${engine}: at phone width the draft page fits without sideways scrolling`)
+    // A task page shows before its sessions load, so wait for the draft's own form.
+    const draftShown = await visible(draftPhone, 'form[aria-label="Edit the draft"]', 15) && await visible(draftPhone, 'section[aria-label="Order of work"]', 5)
+    check(draftShown && await noSideScroll(draftPhone), `${engine}: at phone width the draft page fits without sideways scrolling`)
     await draftPhone.screenshot({ path: join(SHOTS, `${engine}-draft-phone.png`), fullPage: true })
 
     // The order of work: B waits on A, A is held and lifted, then done.
     const a = (await call(alice, '/v1/tasks', { title: `Base work (${engine})`, instructions: '', agentId: ids.writer, draft: true }) as { taskId: string }).taskId
     const b = (await call(alice, '/v1/tasks', { title: `Stacked work (${engine})`, instructions: '', agentId: ids.writer, draft: true }) as { taskId: string }).taskId
     const ready = page.getByRole('list', { name: 'Ready' })
+    // The order of work shows before a draft's session loads, and again once it has.
+    const draftForm = page.getByRole('form', { name: 'Edit the draft' })
     await page.goto(`/#/t/${b}`)
+    await draftForm.waitFor()
     const order = page.getByRole('region', { name: 'Order of work' })
     await order.waitFor()
     await visible(page, `section[aria-label="Order of work"] option`, 15, new RegExp(`Base work \\(${engine}\\)`))
@@ -179,6 +183,7 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
       && await gone(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Stacked work \\(${engine}\\)`)),
     `${engine}: Ready lists the base work and not the work waiting on it`)
     await page.goto(`/#/t/${a}`)
+    await draftForm.waitFor()
     await order.waitFor()
     await order.getByLabel('Waiting on', { exact: true }).selectOption({ label: 'Waiting on a decision' })
     await order.getByLabel('Reason', { exact: true }).fill('Waiting on Tayler')
@@ -237,6 +242,7 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     check(third && await visible(page, 'form[aria-label="New room"]', 10), `${engine}: the palette's actions work from the keyboard`)
 
     await page.goto(`/#/t/${b}`)
+    await draftForm.waitFor()
     await page.getByLabel('Why (optional)').waitFor()
     await page.getByLabel('Why (optional)').fill('c')
     await page.keyboard.press('r')
@@ -334,6 +340,12 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     check(await visible(page, 'section[aria-label="Pull requests"] a', 15, /Pull request #7/)
       && await page.getByRole('form', { name: 'Open a pull request' }).count() === 0,
     `${engine}: a task's pull request shows when nothing differs from the base, with no form to open another`)
+    await page.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-light.png`) })
+    const keptPhone = await phoneOf(alice)
+    await keptPhone.goto(`/#/t/${notes.taskId}`)
+    await visible(keptPhone, 'section[aria-label="Pull requests"] a', 15)
+    check(await noSideScroll(keptPhone), `${engine}: at phone width the task and its pull request fit without sideways scrolling`)
+    await keptPhone.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-phone.png`), fullPage: true })
 
     // A run's page: its changes, and a gate whose buttons say what they do.
     const { runId } = await call(alice, `/v1/pipelines/${ids.pipeline}/runs`, { title: `CHANGELOGRUN (${engine})`, body: '', repoId: ids.repo }) as { runId: string }
