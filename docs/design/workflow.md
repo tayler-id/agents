@@ -131,7 +131,7 @@ Documents in the `task` folder open in the same kind of panel. Their Diff tab sh
 
 **Route.** `POST /v1/tasks/:id/pull-requests`, with an optional title and description. It refuses while the agent is working, while a push is in flight, when the workspace is not ready, and when the task has no repo.
 
-**What each person sees.** Open pull request below Changes, with the title and description to edit if they want. While it runs, "Pushing the branch and opening the pull request". Then each pull request as a link with its state, or the reason it failed. The button reads Update pull request once one is open, and Try again after a failure.
+**What each person sees.** Open pull request below Changes, with the title and description to edit if they want. While it runs, "Pushing the branch and opening the pull request". Then each pull request as a link with its state, or the reason it failed. The button reads Update pull request once one is open, and Try again after a failure. The pull requests stay on the task once nothing differs from the base, and the form only shows while something does.
 
 ## Writing without asking
 
@@ -216,9 +216,9 @@ Run each with `node --env-file=.env --env-file=.env.test test/<file>`.
 
 - `test/step14.ts`, ports 7960 to 7962, against the API, daemon, forge and runner, with the stand-in for Claude in `test/fake-claude.ts`. It covers drafts, a task with two repos and twin folder names, a message claimed before its workspace's setup, changes (scrubbed on the machine, modified, deleted, binary, taken back out, not resent when unchanged, refused from another team's machine), pull requests per repo, the order of work and the agents' `ready_tasks` tool, the flags each kind of session starts with, the research, plan and implement pipeline end to end against a test repo, the version diff, and the documents shape.
 - `test/step14b.ts`, ports 7965 to 7967, the README scenario in Chromium, Firefox and WebKit, at desktop and phone width, with an accessibility scan. A task asks for a README in a test repo. The person sees README.md in Changes, opens it rendered, sees its diff, clicks Open pull request, and sees the pull request on the task.
-- `test/step14c.ts`, ports 7970 to 7972, the other views in the three browsers at both widths: a draft saved, edited by a teammate and started, the order of work, the palette by keyboard alone, pinned comments, and a run's Changes and labeled gate.
+- `test/step14c.ts`, ports 7970 to 7972, the other views in the three browsers at both widths: a draft saved, edited by a teammate and started, the order of work, the palette by keyboard alone, pinned comments, a pull request that stays once nothing differs, and a run's Changes and labeled gate.
 
-Each check in step14 and step14b was seen failing with the thing it guards broken, then passing after a byte-for-byte restore. The commit messages that add the checks list the breaks. step14c passes in all three browsers and has not been seen failing yet.
+Each check was seen failing with the thing it guards broken, then passing after a byte-for-byte restore. The commit messages that add step14 and step14b list their breaks, and `docs/build-log.md` describes step14c's.
 
 ## Not done
 

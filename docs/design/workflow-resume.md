@@ -17,7 +17,7 @@ Each part, with the commits that built it and the commits that check it.
 - **Tasks over several repos.** `task_repos` rows, kept by `server/checkout.ts`. The daemon clones each repo into its own folder (`cloneAll` in `daemon/workspace.ts`), with twin folder names told apart. Built in c0cb70c and 2b2ba57, with the repo picker in c054432.
 - **Changes against the base, per repo.** The daemon lists every created, changed and deleted file against the base with a temporary index, scrubs file contents on the machine, and skips sending a file that hasn't changed (`daemon/changes.ts`). The server keeps them in `file_changes` (`server/changes.ts`). Built in 22f5fed. Checked in df5be9b.
 - **Viewer and diff.** The Changes list, and a side panel that renders markdown, shows code with line numbers and highlighting, and has a Diff tab against the base. Task folder documents open in the same kind of panel. `app/src/Changes.tsx`, `FilePanel.tsx`, `Code.tsx`, `highlight.ts`. Built in 7f8eadf. Checked in 73cf4a4 (`test/step14b.ts`).
-- **Pull requests from a task.** One button asks for a push of each changed repo. The runner's tick opens the pull request through `forge.openPullRequest` and records it in `pushes` (`server/pulls.ts`). Built in 8ab6686 and 7f8eadf. Checked in 7400a53 and 73cf4a4.
+- **Pull requests from a task.** One button asks for a push of each changed repo. The runner's tick opens the pull request through `forge.openPullRequest` and records it in `pushes` (`server/pulls.ts`). Built in 8ab6686 and 7f8eadf. Checked in 7400a53 and 73cf4a4. de8a980 keeps them on the task once nothing differs from the base, a bug step14c found.
 - **Writing without asking.** Task sessions change files in their workspace without an approval. Commands still ask unless the session runs in a box. `server/permissions.ts` and the daemon's flags. Built in 29864c4. Checked in 31189f9.
 - **Research, plan and implement pipeline.** `pipelines/research-plan-implement.ts`, with typed stages, named gate buttons and comments in the run context (`shared/pipeline.ts`). Built in 443851d, d05bf04 and 32cae16. Checked end to end with the stand-in for Claude in 96880a1. It has never run with real Claude or on a box.
 - **Comments pinned to text.** A comment keeps its quote and which match of it it means (403736f). The app marks the quote in place and jumps to it (492f450, `app/src/quotes.ts`). The diff between two versions of a document (038695e, checked in 534b54b).
@@ -36,31 +36,19 @@ Run each from the worktree with `node --env-file=.env --env-file=.env.test test/
 
 After the rebase all three passed: step14 "all passed (test teams and repos removed)", step14b "all passed (test team and repo removed)", step14c "all passed (test team and repos removed)" with 108 checks.
 
-step14 and step14b have been seen failing under breaks and passing again after a byte-for-byte restore. The breaks are listed in the commit messages of df5be9b, 7400a53, 31189f9, 96880a1, 534b54b, efff9c6 and 73cf4a4. step14c has not been seen failing yet.
+Every check has been seen failing under breaks and passing again after a byte-for-byte restore. The step14 and step14b breaks are listed in the commit messages of df5be9b, 7400a53, 31189f9, 96880a1, 534b54b, efff9c6 and 73cf4a4. step14c was broken in eight Chromium runs with 42 breaks, described in `docs/build-log.md` under "The work layer". Breaking it found two weak checks (30f3611), a race in the check (594e7f6) and a bug in the app (de8a980). 3292e82 made its phone test catch sideways scroll inside a page, and added checks for clicking marked text and for focus after the palette closes.
+
+A failed run keeps its team and Gitea repos. Remove them by deleting the team row named in the last line from `agents_test`, and the `flow-ux-<id>` and `flow-uxpipes-<id>` repos from Gitea.
 
 ## In progress
 
-1. Tightening step14c before breaking it:
-   - its phone-width test also fails when a page's own scroll box scrolls sideways, as main's step 4b does
-   - a check that clicking marked text in the document makes its comment the current one
-   - a check that Escape gives focus back to where it was
-2. Then breaking step14c to see each check fail, in Chromium runs of several breaks each, restoring with `git checkout -- <file>` after each. The plan:
-   1. Remove the draft marker in the sidebar (`App.tsx`), unlabel the hold's date field (`Order.tsx`), hide an edge's reason (`Order.tsx`), fade the Held rows below contrast (`styles.css`), unlabel the palette's field (`Palette.tsx`), drop `typingIn(event.target)` from the shortcut guard and make `r` open a new task (`Palette.tsx`), drop "Nothing matches." (`Palette.tsx`), make Use selection fill a wrong quote (`Document.tsx`), give the tabs another role (`Code.tsx`), render a changed markdown file as code (`FilePanel.tsx`), widen a change's path past a phone (`styles.css`), and ignore gate labels (`Asks.tsx`).
-   2. Ignore edges in the ready query (`server/order.ts`), make the priority select and Lift hold do nothing and hide the Held list (`Order.tsx`), unselect every palette option, send the New room action elsewhere and ignore the single-key switch (`Palette.tsx`), store occurrence 0, skip the darker mark and the "is not in version" note (`Document.tsx`), widen the palette and the quote field past a phone (`styles.css`), and remove Changes from the run page (`Run.tsx`).
-   3. Widen the inline order forms past a phone (`styles.css`), make Mark done do nothing (`Order.tsx`), and make Cmd+K answer another key (`Palette.tsx`).
-   4. Make Save draft start the task (`Work.tsx`).
-   5. Hide the draft form's "Saved." and send the old title (`Draft.tsx`), and keep the palette open after Enter (`Palette.tsx`).
-   6. Make the labeled approve button reject (`Asks.tsx`) and throw an error on the page once (`Order.tsx`).
-
-   Each break should turn its own check red. A failed run keeps its team and Gitea repos. Remove them by deleting the team row named in the last line from `agents_test`, and the `flow-ux-<id>` and `flow-uxpipes-<id>` repos from Gitea.
+The final runs of step14c and step14b in all three engines, on the code after de8a980. Then the docs commit for `docs/what-each-part-does.md` and `docs/build-log.md`, which are written.
 
 ## Next steps
 
-1. Finish step14c as above, restore, run it in all three engines, and record the breaks in its commit message.
-2. Add entries to `docs/what-each-part-does.md` in the "Solves now / Helps later" form for each part under Done.
-3. Add a section to `docs/build-log.md`: what was built, how it was checked, the breaks, the bug found in 186efe6, and what is not done.
-4. Run `npm run typecheck`, `npm run lint`, `node test/names.ts`, step14, step14b and step14c in three engines. Paste their final lines into the report.
-5. Report to the coordinator.
+1. Commit the docs once the final runs pass.
+2. Run `npm run typecheck`, `npm run lint`, `node test/names.ts` and step14. Paste their final lines and the browser checks' final lines into the report.
+3. Report to the coordinator.
 
 ## Open questions for Tayler
 
@@ -82,4 +70,4 @@ step14 and step14b have been seen failing under breaks and passing again after a
 - Don't edit `eslint.config.js`, `tsconfig*.json`, `test/names.ts`, `test/step0.ts`, `test/all.ts`, `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `pipelines/app-change.ts`, `ops/` or anything in `.claude/`. Don't add check scripts to `package.json`. Never edit a migration that main already has.
 - The sandbox refuses a shell command that mixes git with other commands. Run each git command on its own.
 - Commit messages end with a blank line and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Other agents change `server/forge.ts`, `server/tasks.ts` and `app/src/Work.tsx`. This branch leaves `server/forge.ts` alone and uses only `forge.openPullRequest` and the exported `repoPath`. In `server/tasks.ts` it changed `startTask` (repo ids and the draft flag, with the workspace and session setup moved to `server/launch.ts`), the imports, the `permissions` in `sendToSession`'s payload, and `addComment`'s anchor. In `app/src/Work.tsx` it changed the New task form (repo picker, Save draft), the task view (draft branch, order of work, Changes and pull requests, documents only under "Made by this task", done in the header), and the imports.
+- Other agents change `server/forge.ts`, `server/tasks.ts` and `app/src/Work.tsx`. This branch leaves `server/forge.ts` alone and uses only `forge.openPullRequest` and the exported `repoPath`. In `server/tasks.ts` it changed `startTask` (repo ids and the draft flag, with the workspace and session setup moved to `server/launch.ts`), the imports, the `permissions` in `sendToSession`'s payload, and `addComment`'s anchor. In `app/src/Work.tsx` it changed the New task form (repo picker, Save draft), the task view (draft branch, order of work, Changes with the pull requests passed in as a function of whether anything changed, documents only under "Made by this task", done in the header), and the imports.
