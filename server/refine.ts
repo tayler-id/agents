@@ -17,8 +17,8 @@ import { recordVersion } from './pipelines.ts'
 import { agentKit, appendEvents } from './record.ts'
 import { memoryBlock } from './agents.ts'
 import { nameIn, pickSessions, recordFindings, recordStudyFindings, sentence } from './evidence.ts'
-import { editInstructions, proposeHunks, settleHunks, writePrompt } from './hunks.ts'
-import { JudgeReport, Picked, RuleHash, type RunScore, type SessionScore, type Verdict } from '../shared/evidence.ts'
+import { editInstructions, insertHunks, planPipelineHunks, proposeHunks, settleHunks, writePrompt } from './hunks.ts'
+import { FindingId, JudgeReport, Picked, RuleHash, type RunScore, type SessionScore, type Verdict } from '../shared/evidence.ts'
 import { AgentId, PipelineId, ProposalId, type RunId, type TeamId } from '../shared/ids.ts'
 import type { Pipeline, Report, Stage } from '../shared/pipeline.ts'
 import type { AgentSkill, MessagePayload } from '../shared/types.ts'
@@ -43,8 +43,25 @@ export async function candidateFrom(client: pg.PoolClient, teamId: string, repo:
   if (!pipeline?.current_version_id) throw new Error(`there is no current version of ${name} to compare with`)
   const { versionId, error } = await recordVersion(teamId, repo.repoId, name, file.path, file.content, false)
   if (error) throw new Error(`the changed ${file.path} does not load: ${error}`)
-  return { pipelineId: pipeline.id, name, baseVersionId: pipeline.current_version_id, candidateVersionId: versionId,
-    diff: diffText(pipeline.source ?? '', file.content, file.path) }
+  const source = pipeline.source ?? ''
+  return { pipelineId: PipelineId.parse(pipeline.id), name, baseVersionId: pipeline.current_version_id, candidateVersionId: versionId,
+    path: file.path, before: source, after: file.content, diff: diffText(source, file.content, file.path) }
+}
+
+// Improve's change as a proposal waiting to be scored, its hunks citing the
+// findings the run's record stage kept. Returns why it is refused instead.
+export async function proposePipelineChange(client: pg.PoolClient, run: { id: RunId; teamId: TeamId }, rows: StageRow[], pipeline: Pipeline,
+  candidate: Awaited<ReturnType<typeof candidateFrom>>, summary: string): Promise<{ refused: string } | { proposal: ProposalId }> {
+  const recorded = lastAction(rows, pipeline, 'record_findings')
+  const findings = recorded ? Recorded.parse(recorded.data).kept : []
+  const planned = await planPipelineHunks(client, { pipelineId: candidate.pipelineId, before: candidate.before, after: candidate.after, path: candidate.path, findings })
+  if ('refused' in planned) return planned
+  const proposal = ProposalId.parse((await one<{ id: string }>(client, 'the new proposal',
+    `insert into proposals (team_id, target, pipeline_id, base_version_id, candidate_version_id, diff, summary, status, run_id)
+     values ($1, 'pipeline', $2, $3, $4, $5, $6, 'scoring', $7) returning id`,
+    [run.teamId, candidate.pipelineId, candidate.baseVersionId, candidate.candidateVersionId, candidate.diff, summary, run.id])).id)
+  await insertHunks(client, run.teamId, proposal, planned.hunks)
+  return { proposal }
 }
 
 // Starts replays of the pipeline's latest finished runs, each once with the
@@ -119,6 +136,7 @@ export type ActionResult = { outcome: string; summary: string; data?: Record<str
 
 const PickData = z.object({ agentId: AgentId, agentName: z.string(), picked: z.array(Picked), prompt: z.string() })
 const ProposalData = z.object({ proposal: ProposalId })
+const Recorded = z.object({ kept: z.array(FindingId) })
 
 // The latest row of a stage that finished, picked by what the stage is.
 function latest(rows: StageRow[], pipeline: Pipeline, is: (stage: Stage) => boolean): StageRow | undefined {

@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, type Db } from './db.ts'
-import { diffText } from './diff.ts'
+import { diffHunks, diffText } from './diff.ts'
 import { candidatesOf, countsLine, countsOf, EVIDENCE_DAYS, FLOOR, routeLine, ruleTallies, sentence, unitsOf, type Dropped, type Unit } from './evidence.ts'
 import { writeMemory } from './agents.ts'
 import { HttpError, type Person } from './record.ts'
@@ -81,12 +81,15 @@ type LiveFinding = {
   occasion: string; source: Source; person_id: string | null; login: string | null; quote: string; seq: number; session_id: string; note: string | null
 }
 
-async function liveFindings(db: Db, agentId: AgentId): Promise<Map<string, LiveFinding>> {
+type Subject = { agentId: AgentId } | { pipelineId: PipelineId }
+
+async function liveFindings(db: Db, subject: Subject): Promise<Map<string, LiveFinding>> {
   const rows = await many<Omit<LiveFinding, 'id' | 'kind' | 'source'> & { id: string; kind: string; source: string }>(db,
     `select f.id, f.kind, f.rule_hash, f.rule_text, f.candidate_id, f.occasion, f.source, f.person_id, p.login, f.quote, f.seq::int,
        f.session_id, f.note
      from session_findings f left join people p on p.id = f.person_id
-     where f.agent_id = $1 and f.seen_at > now() - make_interval(days => $2)`, [agentId, EVIDENCE_DAYS])
+     where ${'agentId' in subject ? 'f.agent_id' : 'f.pipeline_id'} = $1 and f.seen_at > now() - make_interval(days => $2)`,
+    ['agentId' in subject ? subject.agentId : subject.pipelineId, EVIDENCE_DAYS])
   return new Map(rows.map((r) => [r.id, { ...r, id: FindingId.parse(r.id), kind: FindingKind.parse(r.kind), source: Source.parse(r.source) }]))
 }
 
@@ -105,7 +108,7 @@ type Planned = {
 // The hunk the team turned down that this one repeats, as a reason, or null. A
 // hunk repeats one when it has the same scope, target and content hash, shares a
 // finding with it, and no more occasions back it.
-export async function turnedDown(db: Db, scope: { agentId: AgentId } | { pipelineId: PipelineId }, hunk: {
+export async function turnedDown(db: Db, scope: Subject, hunk: {
   target: HunkTarget; skillName: string | null; personId: PersonId | null; contentHash: string; findingIds: string[]; occasions: number
 }): Promise<string | null> {
   const found = await maybe<{ reason: string; at: string; login: string | null; occasions: number }>(db,
@@ -248,7 +251,7 @@ export async function proposeHunks(client: pg.PoolClient, input: {
     'select name, description, content from skills where agent_id = $1', [input.agentId])).map((s) => [s.name, s]))
   const context = {
     teamId: input.teamId, agentId: input.agentId, agentName: agent.name, instructions: agent.instructions, units: unitsOf(agent.instructions),
-    skills, live: await liveFindings(client, input.agentId),
+    skills, live: await liveFindings(client, { agentId: input.agentId }),
     ready: new Map((await candidatesOf(client, input.agentId)).filter((c) => c.ready).map((c) => [String(c.id), c])), touched: new Set<string>(), anchored: new Set<string>(),
   }
   const refused: Dropped[] = []
@@ -277,20 +280,47 @@ export async function proposeHunks(client: pg.PoolClient, input: {
   const proposal = await one<{ id: string }>(client, 'the new proposal',
     `insert into proposals (team_id, target, agent_id, diff, summary, status, run_id) values ($1, 'agent', $2, $3, $4, 'scoring', $5) returning id`,
     [input.teamId, input.agentId, planned.map((h) => h.diff || `check: ${h.after}`).join('\n\n'), input.summary, input.runId])
-  for (const [n, h] of planned.entries()) {
-    await client.query(
-      `insert into proposal_hunks (team_id, proposal_id, n, target, op, rule_hash, skill_name, skill_description, person_id,
-         before, after, diff, content_hash, finding_ids, occasions, counts, evidence)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-      [input.teamId, proposal.id, n + 1, h.target, h.op, h.ruleHash, h.skill?.name ?? null, h.skill?.description ?? null, h.personId,
-        h.before, h.after, h.diff, contentHash(h.before), h.findings.map((f) => f.id), h.counts.sessions, JSON.stringify(h.counts),
-        JSON.stringify(h.findings.map(quoteOf))])
-  }
+  await insertHunks(client, input.teamId, ProposalId.parse(proposal.id), planned)
   const kept = planned.map((h, i) => `- Hunk ${i + 1}, ${h.op} to ${h.target}: ${countsLine(h.counts)}.`)
   return {
     proposalId: ProposalId.parse(proposal.id), kept: planned.length, refused,
     summary: [`Proposed ${planned.length} hunk${planned.length === 1 ? '' : 's'}, refused ${refused.length}.`, ...kept, ...lines].join('\n'),
   }
+}
+
+export async function insertHunks(client: pg.PoolClient, teamId: TeamId, proposalId: ProposalId, planned: Planned[]) {
+  for (const [n, h] of planned.entries()) {
+    await client.query(
+      `insert into proposal_hunks (team_id, proposal_id, n, target, op, rule_hash, skill_name, skill_description, person_id,
+         before, after, diff, content_hash, finding_ids, occasions, counts, evidence)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [teamId, proposalId, n + 1, h.target, h.op, h.ruleHash, h.skill?.name ?? null, h.skill?.description ?? null, h.personId,
+        h.before, h.after, h.diff, contentHash(h.before), h.findings.map((f) => f.id), h.counts.sessions, JSON.stringify(h.counts),
+        JSON.stringify(h.findings.map(quoteOf))])
+  }
+}
+
+// Improve's change to a pipeline file, split into the hunks the diff shows. The
+// change was scored whole, so every hunk cites every finding the study kept.
+// Returns why the change is refused: it cites no checked finding, or one of its
+// hunks repeats one the team turned down on the same evidence.
+export async function planPipelineHunks(client: pg.PoolClient, input: {
+  pipelineId: PipelineId; before: string; after: string; path: string; findings: FindingId[]
+}): Promise<{ refused: string } | { hunks: Planned[] }> {
+  const live = await liveFindings(client, { pipelineId: input.pipelineId })
+  const findings = input.findings.flatMap((id) => live.get(id) ?? [])
+  if (!findings.length) return { refused: 'the study cited no checked findings, so the change rests on nothing' }
+  const counts = countsOf(findings.map((f) => ({ occasion: f.occasion, source: f.source, personId: f.person_id })))
+  const hunks: Planned[] = []
+  for (const h of diffHunks(input.before, input.after, input.path)) {
+    const op: HunkOp = !h.removed ? 'add' : !h.added ? 'delete' : 'change'
+    const memory = await turnedDown(client, { pipelineId: input.pipelineId }, {
+      target: 'pipeline', skillName: null, personId: null, contentHash: contentHash(h.before), findingIds: findings.map((f) => f.id), occasions: counts.sessions,
+    })
+    if (memory) return { refused: memory }
+    hunks.push({ target: 'pipeline', op, ruleHash: null, skill: null, personId: null, edit: null, before: h.before, after: h.after, diff: h.diff, findings, candidates: [], counts })
+  }
+  return hunks.length ? { hunks } : { refused: 'the change leaves the file as it was' }
 }
 
 // A person keeps or turns down one hunk of a coach proposal at its gate. A
@@ -407,7 +437,7 @@ export async function writePrompt(db: Db, agentId: AgentId): Promise<string> {
   const agent = await one<{ name: string; instructions: string }>(db, `agent ${agentId}`, 'select name, instructions from agents where id = $1', [agentId])
   const skills = await many<{ name: string; description: string }>(db, 'select name, description from skills where agent_id = $1 order by name', [agentId])
   const tallies = await ruleTallies(db, agentId)
-  const live = await liveFindings(db, agentId)
+  const live = await liveFindings(db, { agentId })
   const finding = (id: FindingId) => {
     const f = live.get(id)
     return f ? `  finding ${f.id} · ${f.kind} · session ${f.session_id} step ${f.seq} · ${f.login ?? f.source} · "${f.quote}"` : ''

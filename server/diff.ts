@@ -26,7 +26,7 @@ function gitDiff(before: string, after: string, name: string, context: number): 
 // A unified diff of two texts, with three lines of context.
 export const diffText = (before: string, after: string, name: string): string => gitDiff(before, after, name, 3)
 
-export type DiffHunk = { before: string; after: string; diff: string }
+export type DiffHunk = { before: string; after: string; diff: string; removed: number; added: number }
 
 // Each separate change between two texts: the lines it removes, the lines it
 // adds, and its own diff with no context lines.
@@ -36,7 +36,10 @@ export function diffHunks(before: string, after: string, name: string): DiffHunk
   const close = () => {
     if (!current) return
     const { head, removed, added } = current
-    hunks.push({ before: removed.join('\n'), after: added.join('\n'), diff: [head, ...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join('\n') })
+    hunks.push({
+      before: removed.join('\n'), after: added.join('\n'), removed: removed.length, added: added.length,
+      diff: [head, ...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join('\n'),
+    })
   }
   for (const line of gitDiff(before, after, name, 0).split('\n')) {
     if (line.startsWith('@@')) {

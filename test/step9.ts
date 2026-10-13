@@ -147,6 +147,16 @@ try {
     'each past run needed a reminder at triage')
   const prsBefore = (await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${SHOP}/pulls?state=all&limit=50`)).length
 
+  // Each study cites the step of each past run where triage needed its reminder.
+  const nudges = await all<{ session_id: string; seq: number }>(
+    `select e.session_id, e.seq::int from events e join run_stages s on s.session_id = e.session_id
+     where s.run_id = any($1) and e.kind = 'user' and e.text like 'You ended your turn without calling report_result%' order by e.id`, [past])
+  const findings = nudges.map((n) => ({ kind: 'ignored', session: n.session_id, step: n.seq, quote: 'You ended your turn without calling report_result', note: 'Triage needed a reminder to report.' }))
+  for (const step of [...SCENARIO.Improve['changed,nothing'], ...SCENARIO.Shuffle['changed,nothing'], ...SCENARIO.Broken['changed,nothing']]) {
+    Object.assign(step, { data: { findings } })
+  }
+  writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
+
   // The improve pipeline proposes a clearer triage prompt.
   const { runId: improve } = await post(`/v1/pipelines/${(await pipeline('improve')).id}/runs`, { title: 'Improve bug-fix', body: 'Make bug-fix runs need fewer reminders.', repoId: await repoId(PIPES) })
   const reachedGate = await within(400, async () => (await openAsk(improve))?.kind === 'gate')

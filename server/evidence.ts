@@ -492,8 +492,12 @@ export async function recordStudyFindings(client: pg.PoolClient, input: {
       subject: { pipelineId: input.pipelineId }, kind: finding.kind, note: finding.note,
     }))
   }
-  const runs = new Set((await many<{ occasion: string }>(client, 'select occasion from session_findings where id = any($1)', [kept])).map((r) => r.occasion))
+  // The quotes code checked, which are the reasons a person reads for the change.
+  const quotes = await many<{ occasion: string; seq: number; quote: string; note: string }>(client,
+    'select occasion, seq::int, quote, note from session_findings where id = any($1) order by occasion, seq', [kept])
+  const runs = new Set(quotes.map((q) => q.occasion))
   const summary = [`Kept ${kept.length} finding${kept.length === 1 ? '' : 's'} from ${runs.size} run${runs.size === 1 ? '' : 's'} of ${pipeline.name}, and dropped ${dropped.length}.`,
+    ...quotes.map((q) => `- Run ${q.occasion.slice(0, 8)}, step ${q.seq}: "${q.quote}" ${sentence(q.note)}`),
     ...dropped.map((d) => `- Dropped: ${sentence(d.reason)}`)].join('\n')
   return { kept, dropped, ready: kept.length > 0, summary }
 }

@@ -74,8 +74,11 @@ export type CheckStage<S extends string = string> = Common<S> & { kind: 'check';
 // - merge_pull_request: merges it, and marks the run's proposal approved.
 // - close_issue: comments on the report's issue and closes it.
 // - score_change: pushes the task branch, takes the one pipeline file it changed
-//   as a candidate version, replays past runs of that pipeline with the candidate
-//   and with the current version, and writes a proposal with both scores.
+//   as a candidate version, and splits the change into hunks citing the findings
+//   the run recorded. Refused when it cites none, or repeats a hunk the team
+//   turned down on the same evidence. Otherwise replays past runs of that
+//   pipeline with the candidate and with the current version, and writes a
+//   proposal with both scores.
 // - pick_sessions: picks the sessions of the agent named in the report that have
 //   events nobody has read, and writes them out for the next stage.
 // - record_findings: keeps the findings the last agent stage reported whose
@@ -91,7 +94,7 @@ export const ACTION_OUTCOMES = {
   open_pull_request: ['done', 'failed'],
   merge_pull_request: ['done', 'failed'],
   close_issue: ['done', 'failed'],
-  score_change: ['better', 'not_better', 'failed'],
+  score_change: ['better', 'not_better', 'refused', 'failed'],
   pick_sessions: ['picked', 'none', 'failed'],
   record_findings: ['ready', 'waiting', 'failed'],
   propose_hunks: ['proposed', 'refused', 'failed'],

@@ -162,7 +162,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### The improve pipeline (`pipelines/improve.ts`)
 
-- **Solves now.** An agent reads how a pipeline's runs went (the `pipeline_history` tool), changes that pipeline's file once, and the change is scored. Only a change that scores better becomes a pull request on the pipelines repo, with both scores, and reaches the shepherd. Approving merges it, and the merged file becomes the current version.
+- **Solves now.** An agent reads how a pipeline's runs went (the `pipeline_history` tool), changes that pipeline's file once, and reports the steps of those runs the change rests on. Code keeps only the quotes it finds in their steps, from runs of that pipeline other than replays. The change is split into hunks citing those findings, and refused before any replay when it cites none, or repeats a hunk the shepherd turned down on the same evidence. Otherwise it is scored, and only a change that scores better becomes a pull request on the pipelines repo, with both scores and the checked quotes, and reaches the shepherd. Approving merges it, and the merged file becomes the current version. Either way the decision is recorded on every hunk. `test/step20c.ts` and `test/step9.ts` cover it.
 - **Helps later.** It can run on a schedule, so pipelines keep getting better while nobody is watching.
 
 ### The coach pipeline (`pipelines/coach.ts`, `server/evidence.ts`, `server/hunks.ts`, `server/refine.ts`)

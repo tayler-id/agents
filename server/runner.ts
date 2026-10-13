@@ -14,7 +14,7 @@ import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
-  advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
+  advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, proposePipelineChange, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
   type ActionResult,
 } from './refine.ts'
 import { expireTurns } from './rooms.ts'
@@ -516,7 +516,7 @@ async function poll(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: R
     await setRow(client, row, { status: 'done', outcome: 'failed', summary: `The push failed: ${command.error ?? 'no reason given'}`, ended: true })
     return true
   }
-  if (stage.action === 'score_change') return startScoring(client, run, rows, row)
+  if (stage.action === 'score_change') return startScoring(client, run, pipeline, rows, row)
   if (stage.action === 'open_pull_request') return openPullRequest(client, run, stage, rows, row, command)
   return false
 }
@@ -574,21 +574,26 @@ async function pollAgent(client: pg.PoolClient, run: Run, stage: Stage, row: Row
 }
 
 // The change is pushed. Take it as a candidate and replay past runs with it.
-async function startScoring(client: pg.PoolClient, run: Run, rows: Row[], row: Row): Promise<boolean> {
+// A change with no checked evidence behind it, or one repeating a hunk the team
+// turned down, is refused before any replay. A savepoint keeps a failure from
+// leaving half the replays queued.
+async function startScoring(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: Row[], row: Row): Promise<boolean> {
   const task = await taskOf(client, run)
   const repo = await repoOf(client, run)
   const study = [...rows].reverse().find((r) => r.kind === 'agent' && r.status === 'done')
+  await client.query('savepoint scoring')
   try {
     const candidate = await candidateFrom(client, run.team_id, repo, branchOf(run, task))
-    const proposal = await one<{ id: string }>(client, 'the new proposal',
-      `insert into proposals (team_id, target, pipeline_id, base_version_id, candidate_version_id, diff, summary, status, run_id)
-       values ($1, 'pipeline', $2, $3, $4, $5, $6, 'scoring', $7) returning id`,
-      [run.team_id, candidate.pipelineId, candidate.baseVersionId, candidate.candidateVersionId, candidate.diff, study?.summary ?? '', run.id])
-    const replayed = await startReplays(client, run.team_id, proposal.id, candidate.pipelineId, [candidate.candidateVersionId, candidate.baseVersionId])
+    const proposed = await proposePipelineChange(client, { id: RunId.parse(run.id), teamId: TeamId.parse(run.team_id) }, rows, pipeline, candidate, study?.summary ?? '')
+    if ('refused' in proposed) {
+      await setRow(client, row, { status: 'done', outcome: 'refused', summary: `Refused the change: ${proposed.refused}`, ended: true })
+      return true
+    }
+    const replayed = await startReplays(client, run.team_id, proposed.proposal, candidate.pipelineId, [candidate.candidateVersionId, candidate.baseVersionId])
     if (!replayed) throw new Error(`${candidate.name} has no finished runs to replay yet`)
-    await setRow(client, row, { data: { phase: 'scoring', proposal: proposal.id, pipeline: candidate.name, replays: replayed } })
+    await setRow(client, row, { data: { phase: 'scoring', proposal: proposed.proposal, pipeline: candidate.name, replays: replayed } })
   } catch (error) {
-    await client.query(`update proposals set status = 'failed' where run_id = $1 and status = 'scoring'`, [run.id])
+    await client.query('rollback to savepoint scoring')
     await setRow(client, row, { status: 'done', outcome: 'failed', summary: messageOf(error), ended: true })
   }
   return true
