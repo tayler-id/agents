@@ -7,7 +7,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -326,6 +326,36 @@ try {
     await pushed(nothing.pushId)
     const failed = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [nothing.pushId])
     check(failed?.status === 'failed' && failed.error?.includes('nothing to open'), `a task with no changes opens no pull request, and says why: ${failed?.error ?? 'no error'}`)
+  })
+
+  await section('writing without asking', async () => {
+    const starts = () => readFileSync(join(home, 'claude-args.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { cwd: string; args: string[] })
+    const flag = (args: string[], name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
+    const tools = (args: string[]) => (flag(args, '--allowedTools') ?? '').split(',')
+    const startedIn = (folder: string) => starts().find((s) => s.cwd.startsWith(folder))
+
+    const task = startedIn(join(home, 'workspaces'))
+    check(task && flag(task.args, '--permission-mode') === 'acceptEdits' && !tools(task.args).includes('Bash'),
+      "a task's session on a Mac changes files in its workspace without asking, and still asks before commands")
+
+    const { conversationId } = await post('/v1/conversations', { kind: 'dm', agent: 'writer' })
+    await post(`/v1/conversations/${conversationId}/messages`, { text: 'Hello there.' })
+    await within(30, async () => startedIn(join(home, 'agents')))
+    const dm = startedIn(join(home, 'agents'))
+    check(dm && flag(dm.args, '--permission-mode') === undefined && !tools(dm.args).includes('Bash'),
+      "a conversation's session asks before writes and commands, as before")
+
+    // An instance of the box kind, whose daemon runs here rather than in a container.
+    const { token: boxToken } = JSON.parse(node('server/admin.ts', 'add-instance', team, `flow-box-${id}`, 'box', alice))
+    const { agentId: boxer } = JSON.parse(node('server/admin.ts', 'add-agent', team, 'boxer', `flow-box-${id}`, '', 'You work on a box.'))
+    const boxHome = join(home, 'box')
+    mkdirSync(boxHome)
+    startDaemon(boxToken, boxHome)
+    await post('/v1/tasks', { title: 'On the box', instructions: 'Nothing to do.', agentId: boxer, repoIds: [shopRepo] })
+    await within(60, async () => startedIn(join(boxHome, 'workspaces')))
+    const box = startedIn(join(boxHome, 'workspaces'))
+    check(box && flag(box.args, '--permission-mode') === 'acceptEdits' && tools(box.args).includes('Bash'),
+      "a task's session on a box runs commands without asking too")
   })
 } catch (error) {
   failures.push((error as Error).message)
