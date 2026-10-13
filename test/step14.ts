@@ -7,7 +7,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -29,10 +29,35 @@ const org = forgeConfig().org
 // Only the daemon knows it, so finding it scrubbed proves the machine scrubbed it.
 const SECRET = `flow-${randomBytes(12).toString('hex')}`
 
+const PIPES = `flow-pipes-${id}`
+const RPI = join(ROOT, 'pipelines/research-plan-implement.ts')
+const TENOFF_TEST = `const test = require('node:test')
+const assert = require('node:assert')
+const { discount } = require('../checkout.js')
+
+test('TENOFF never goes below zero', () => assert.strictEqual(discount(5, 'TENOFF'), 0))
+`
+
 const SCENARIO = {
   turns: [
     { match: 'Draft one, edited', write: { [`${SHOP}/README.md`]: `# Shop\n\nCheckout math. The token is ${SECRET}.\n`, [`${SERVICE}/notes.txt`]: 'Notes\n' }, reply: 'Wrote the README and the notes.' },
   ],
+  // The research, plan and implement pipeline's stages, by their outcomes.
+  RPIFLOW: {
+    researched: [
+      { outcome: 'researched', summary: 'The discount is in checkout.js.', write: { 'task/research.md': '# Research\n\nThe discount lives in checkout.js.\n\nTENOFF subtracts ten, even from less than ten.\n' } },
+      { outcome: 'researched', summary: 'Named the function.', write: { 'task/research.md': '# Research\n\nThe discount lives in checkout.js, in discount().\n\nTENOFF subtracts ten, even from less than ten.\n' } },
+    ],
+    planned: [{ outcome: 'planned', summary: 'Clamp TENOFF at zero.', data: { test_command: 'node --test test/tenoff.test.js' }, write: { 'task/plan.md': '# Plan\n\n1. Add a test that TENOFF never goes below zero.\n2. Clamp the result at zero.\n' } }],
+    'implemented,stuck': [
+      { outcome: 'implemented', summary: 'First try.', write: { [`${SHOP}/test/tenoff.test.js`]: TENOFF_TEST }, replace: { [`${SHOP}/checkout.js`]: ['amount - 10', 'amount - 9'] } },
+      { outcome: 'implemented', summary: 'TENOFF now stops at zero.', replace: { [`${SHOP}/checkout.js`]: ['amount - 9', 'Math.max(0, amount - 10)'] } },
+    ],
+  },
+  // Research that edits the code, every time.
+  RPITOUCH: {
+    researched: [{ outcome: 'researched', write: { 'task/research.md': '# Research\n', [`${SHOP}/oops.txt`]: 'changed during research\n' } }],
+  },
 }
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
@@ -147,6 +172,15 @@ try {
   // A slow setup in the first repo. An agent that started before setup ended would
   // write into the second repo's folder before its clone, and the clone would fail.
   await db.query(`update repos set setup_command = 'sleep 2' where id = $1`, [serviceRepo])
+  // The pipelines repo, read when the API starts, with the new pipeline on the agents' own machine.
+  const rpi = existsSync(RPI) ? readFileSync(RPI, 'utf8').replace("runsOn: 'box'", "runsOn: 'home'") : null
+  check(rpi?.includes("runsOn: 'home'"), 'the research, plan and implement pipeline file exists')
+  await forgeAdmin.ensureRepo(PIPES, {
+    'shared/pipeline.ts': readFileSync(join(ROOT, 'shared/pipeline.ts'), 'utf8'),
+    ...(rpi ? { 'pipelines/research-plan-implement.ts': rpi } : {}),
+  }, 'step 14 pipelines', false)
+  await repoIdOf(PIPES)
+  node('server/admin.ts', 'add-agent', team, 'builder', `flow-mac-${id}`, '', 'You build features in phases.')
 
   writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
   children.push(spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
@@ -227,6 +261,27 @@ try {
       `select c.payload from commands c join workspaces w on c.payload->>'workspaceId' = w.id::text where w.task_id = $1 and c.kind = 'setup_workspace'`, [twins.taskId])
     const names = twinSetup?.payload.repos.map((r) => r.name).sort().join(' ')
     check(names === [`${org}-${SHOP}`, `flow-twin-${id}-${SHOP}`].sort().join(' '), `two repos with one name each take their owner in their folder: ${names ?? 'no setup'}`)
+  })
+
+  await section('a message claimed before its setup', async () => {
+    // The API writes a workspace's setup and its first message in one transaction,
+    // and a daemon catching up on its queue claimed them the other way round. The
+    // check plays the API here so the message is claimed first every time.
+    const mac = must(await one<{ id: string }>('select id from instances where name = $1', [`flow-mac-${id}`]), 'the mac').id
+    const { taskId } = await post('/v1/tasks', { title: 'In order', instructions: '', agentId: writer, repoIds: [shopRepo], draft: true })
+    const session = must(await one<{ id: string }>('select id from sessions where task_id = $1', [taskId]), 'the session').id
+    const workspace = must(await one<{ id: string }>(`insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`,
+      [teamId, taskId, mac]), 'the workspace').id
+    await db.query(`update sessions set workspace_id = $2, status = 'starting' where id = $1`, [session, workspace])
+    const payload = { permissions: { workspaceWrites: true, commands: false }, text: 'Look at the shop.', agentId: writer, harness: 'claude', model: null, instructions: '', harnessSessionId: null, workspaceId: workspace }
+    const message = must(await one<{ id: string }>(`insert into commands (team_id, instance_id, session_id, kind, payload) values ($1, $2, $3, 'message', $4) returning id`,
+      [teamId, mac, session, JSON.stringify(payload)]), 'the message').id
+    const claimed = await within(20, async () => (await one<{ status: string }>('select status from commands where id = $1', [message]))?.status !== 'queued')
+    await db.query(`insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'setup_workspace', $3)`,
+      [teamId, mac, JSON.stringify({ workspaceId: workspace, repos: [{ repoId: shopRepo, name: SHOP, branch: 'task/in-order', base: 'main', setup: null }] })])
+    const ran = await within(60, async () => (await one<{ status: string }>('select status from commands where id = $1', [message]))?.status === 'done')
+    const failed = await one<{ error: string | null }>('select error from commands where id = $1', [message])
+    check(claimed && ran, `a message claimed before its workspace's setup waits for it, then runs${failed?.error ? `: ${failed.error}` : ''}`)
   })
 
   await section('changes', async () => {
@@ -357,6 +412,83 @@ try {
     check(box && flag(box.args, '--permission-mode') === 'acceptEdits' && tools(box.args).includes('Bash'),
       "a task's session on a box runs commands without asking too")
   })
+
+  await section('research, plan and implement', async () => {
+    type Ask = { id: string; kind: string; payload: { stage?: string; question: string; labels: { approve: string; reject: string } | null } }
+    const openAsk = (runId: string) => one<Ask>(`select id, kind, payload from asks where run_id = $1 and status = 'open' order by created_at desc limit 1`, [runId])
+    // The run's next open ask at that stage, other than the one just answered.
+    const askAt = async (runId: string, stage: string, after?: string) => {
+      await within(120, async () => {
+        const ask = await openAsk(runId)
+        return ask?.payload.stage === stage && ask.id !== after
+      })
+      const ask = await openAsk(runId)
+      return ask?.payload.stage === stage && ask.id !== after ? ask : undefined
+    }
+    const stagesOf = (runId: string) => all<{ stage: string; outcome: string | null; summary: string | null }>(
+      'select stage, outcome, summary from run_stages where run_id = $1 order by n', [runId])
+    const documentOf = (runId: string, path: string) => one<{ id: string; current_version: number }>(
+      'select id, current_version from artifacts where task_id = (select task_id from runs where id = $1) and path = $2', [runId, path])
+
+    await within(60, async () => (await one(`select 1 from pipelines where team_id = $1 and name = 'research-plan-implement' and current_version_id is not null`, [teamId])))
+    const pipeline = await one<{ id: string; error: string | null }>(
+      `select p.id, v.error from pipelines p join pipeline_versions v on v.id = p.current_version_id where p.team_id = $1 and p.name = 'research-plan-implement'`, [teamId])
+    check(pipeline && pipeline.error === null, 'the pipeline loads from its file and is current')
+    const pipelineId = must(pipeline, 'the pipeline').id
+
+    const { runId } = await post(`/v1/pipelines/${pipelineId}/runs`, { title: 'RPIFLOW: TENOFF goes below zero', body: 'A $5 order with TENOFF comes to -$5.00.', repoId: shopRepo })
+    const first = await askAt(runId, 'review_research')
+    const research = await documentOf(runId, 'research.md')
+    check(first?.kind === 'gate' && first.payload.labels?.approve === 'Approve research' && first.payload.labels.reject === 'Send back' && research?.current_version === 1,
+      'the research reaches its gate with research.md, and the buttons say what they do')
+
+    const doc = must(research, 'research.md')
+    const { commentId } = await post(`/v1/artifacts/${doc.id}/comments`, { version: 1, text: 'Which function?', quote: 'checkout.js', occurrence: 0 })
+    const anchor = await one<{ anchor: unknown }>('select anchor from comments where id = $1', [commentId])
+    const unplaced = await as(alice, `/v1/artifacts/${doc.id}/comments`, { version: 1, text: 'Somewhere.', occurrence: 2 })
+    check(JSON.stringify(anchor?.anchor) === JSON.stringify({ quote: 'checkout.js', occurrence: 0 }) && unplaced.status === 400,
+      'a comment keeps its quote and which match it means, and one that places no quote is refused')
+
+    await post(`/v1/asks/${must(first, 'the research gate').id}/answer`, { decision: 'reject', message: 'Name the function too.' })
+    const second = await askAt(runId, 'review_research', first?.id)
+    const prompts = await all<{ text: string }>(
+      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' limit 1) order by e.seq`, [runId])
+    check(second && prompts[1]?.text.includes('Name the function too.') && prompts[1].text.includes('- On "checkout.js": Which function?')
+      && (await documentOf(runId, 'research.md'))?.current_version === 2,
+    'sending research back gives the agent the note and each comment with its quote, and it writes a second version')
+
+    await post(`/v1/asks/${must(second, 'the second research gate').id}/answer`, { decision: 'approve' })
+    const planGate = await askAt(runId, 'review_plan')
+    check(planGate && (await documentOf(runId, 'plan.md'))?.current_version === 1, 'the plan reaches its gate with plan.md')
+    await post(`/v1/asks/${must(planGate, 'the plan gate').id}/answer`, { decision: 'approve' })
+    const changeGate = await askAt(runId, 'review_change')
+    check(changeGate?.payload.question.includes('ready for review') && changeGate.payload.labels?.approve === 'Merge', 'the implementation, once verified, reaches its review')
+    await post(`/v1/asks/${must(changeGate, 'the change gate').id}/answer`, { decision: 'approve' })
+    await within(60, async () => (await one<{ status: string }>('select status from runs where id = $1', [runId]))?.status === 'done')
+    const stages = await stagesOf(runId)
+    check(stages.map((s) => s.stage).join(' ') === 'research research_untouched review_research research research_untouched review_research plan plan_untouched review_plan implement verify implement verify open_pr review_change merge'
+      && stages.filter((s) => s.stage === 'verify').map((s) => s.outcome).join(' ') === 'fails passes',
+    `the run went through each phase, with a send-back and a failed verification: ${stages.map((s) => `${s.stage}:${s.outcome ?? ''}`).join(' ')}`)
+    const main = await forgeAdmin.call<{ content: string }>('GET', `/repos/${org}/${SHOP}/contents/checkout.js?ref=main`)
+    check(Buffer.from(main.content, 'base64').toString().includes('Math.max(0, amount - 10)'), 'the approved change is merged on the forge')
+
+    const docs = await shapeRows(amir, 'documents')
+    const strangers = await shapeRows(outsider, 'documents')
+    check(docs.rows.some((d) => d.path === 'research.md') && docs.rows.some((d) => d.path === 'plan.md') && docs.rows.every((d) => !('content' in d))
+      && strangers.status === 200 && !strangers.rows.some((d) => d.path === 'research.md'),
+    "a teammate's documents list has the run's documents without contents, and another team's has none of them")
+
+    const touch = await post(`/v1/pipelines/${pipelineId}/runs`, { title: 'RPITOUCH: research that edits', body: 'Look, do not touch.', repoId: shopRepo })
+    await within(120, async () => (await openAsk(touch.runId))?.kind === 'question')
+    const handoff = await openAsk(touch.runId)
+    const touched = (await stagesOf(touch.runId)).filter((s) => s.stage === 'research_untouched')
+    const retry = await one<{ text: string }>(
+      `select e.text from events e where e.kind = 'user' and e.session_id = (select session_id from run_stages where run_id = $1 and stage = 'research' limit 1) order by e.seq offset 1 limit 1`, [touch.runId])
+    check(handoff?.payload.question.includes('research has run 3 times') && touched.length === 3 && touched.every((s) => s.outcome === 'fails' && s.summary?.includes('oops.txt'))
+      && retry?.text.includes('The runner found changes'),
+    'research that changes code fails the runner\'s check, goes back to the agent, and reaches a person after three tries')
+    if (handoff) await post(`/v1/asks/${handoff.id}/answer`, { decision: 'stop' })
+  })
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)
@@ -365,7 +497,7 @@ try {
   await sleep(1000)
   if (!failures.length) {
     await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
-    for (const repo of [SHOP, SERVICE]) await forgeAdmin.call('DELETE', `/repos/${org}/${repo}`).catch(() => undefined)
+    for (const repo of [SHOP, SERVICE, PIPES]) await forgeAdmin.call('DELETE', `/repos/${org}/${repo}`).catch(() => undefined)
   }
   await db.end().catch(() => undefined)
 }
