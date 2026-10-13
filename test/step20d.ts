@@ -177,6 +177,7 @@ try {
     check(await serious(page) === 0, 'chromium: the proposal page has no serious accessibility problems')
 
     // Turning the hunk down needs a reason.
+    check(await visible(page, 'li.hunk .decide', 10), 'at the gate a person can keep or turn down each hunk')
     const turnDown = hunk.getByRole('button', { name: 'Turn down' })
     check(await turnDown.isDisabled(), 'turning a hunk down waits for a reason')
     await hunk.getByLabel('Why, for hunk 1').fill('We write American English.')
@@ -187,10 +188,16 @@ try {
        where pr.run_id = $1`, [runId])
     check(decided?.decision === 'rejected' && decided.reason === 'We write American English.' && decided.login === aliceLogin, 'the decision is stored on the hunk')
 
-    // The page fits a phone.
+    // The page fits a phone: nothing scrolls sideways, and every part of the
+    // proposal ends inside the screen. A diff and a table scroll inside themselves.
     await page.setViewportSize({ width: 390, height: 844 })
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-    check(overflow <= 0, `at phone width the page is no wider than the screen: ${overflow}px over`)
+    const fits = await page.evaluate(() => {
+      const body = document.querySelector('.page-body')
+      const inside = (selector: string) => [...document.querySelectorAll(selector)].every((el) => el.getBoundingClientRect().right <= window.innerWidth + 1)
+      return document.documentElement.scrollWidth <= window.innerWidth && (!body || body.scrollWidth <= body.clientWidth + 1)
+        && ['section.proposal', 'li.hunk', '.quotes', '.decide', '.decision'].every(inside)
+    })
+    check(fits, 'at phone width the page is no wider than the screen')
     await page.screenshot({ path: join(SHOTS, 'chromium-hunks-phone.png'), fullPage: true })
     await page.setViewportSize({ width: 1280, height: 900 })
 
