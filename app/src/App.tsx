@@ -218,6 +218,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const runTasks = new Set(runs.map((r) => r.task_id))
   const myTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
     .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6)
+  const drafts = new Set(taskSessions.filter((s) => s.status === 'draft').map((s) => s.task_id))
   return (
     <nav className="sidebar" aria-label="Workspace">
       <div className="team">
@@ -274,6 +275,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
           <li key={t.id}>
             <button type="button" className={`row${t.id === route.task ? ' selected' : ''}`} onClick={() => go({ task: t.id })}>
               <span>{t.title}</span>
+              {drafts.has(t.id) && <span className="muted small">draft</span>}
             </button>
           </li>
         ))}

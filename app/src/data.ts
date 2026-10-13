@@ -9,8 +9,8 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
-import type { PullRequestAsk } from '../../shared/work.ts'
-import type { ArtifactId, PushId } from '../../shared/ids.ts'
+import type { NewTask, PullRequestAsk, TaskFields } from '../../shared/work.ts'
+import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 
 export type Me = MemberView
 
@@ -53,7 +53,10 @@ export type Pipeline = Row & {
   conversation_id: string | null; shepherd_id: string | null
 }
 export type PipelineVersion = Row & { id: string; pipeline_id: string; git_sha: string; source: string; error: string | null; created_at: string }
-export type Task = Row & { id: string; slug: string; title: string; instructions: string; agent_id: string | null; conversation_id: string | null; source: string | null; created_at: string }
+export type Task = Row & {
+  id: string; slug: string; title: string; instructions: string; owner_id: string | null; agent_id: string | null; conversation_id: string | null
+  source: string | null; created_at: string
+}
 export type Run = Row & {
   id: string; pipeline_version_id: string; task_id: string; trigger: string; status: string; stage: string | null
   note: string | null; cost_usd: string | null; created_at: string; started_at: string | null; ended_at: string | null
@@ -280,8 +283,10 @@ export const api = {
   saveTemplate: (agentId: string, name: string) => request<{ slug: string; version: number }>('POST', `/v1/agents/${agentId}/templates`, { name }),
   createRoom: (name: string, people: string[], agents: string[]) =>
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents }),
-  startTask: (body: { title: string; instructions: string; agentId: string; repoId?: string; conversationId?: string; messageId?: string }) =>
-    request<{ taskId: string; sessionId: string }>('POST', '/v1/tasks', body),
+  startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),
+  editDraft: (taskId: string, fields: z.input<typeof TaskFields>) => request('POST', `/v1/tasks/${taskId}/edit`, fields),
+  startDraft: (taskId: string) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', `/v1/tasks/${taskId}/start`, {}),
+  discardDraft: (taskId: string) => request('POST', `/v1/tasks/${taskId}/discard`, {}),
   openPullRequests: (taskId: string, ask: PullRequestAsk) => request<{ pushId: PushId }>('POST', `/v1/tasks/${taskId}/pull-requests`, ask),
   versionDiff: (artifactId: ArtifactId | string, version: number) =>
     request<{ diff: string }>('GET', `/v1/artifacts/${artifactId}/versions/${version}/diff`),

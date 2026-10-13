@@ -2,10 +2,12 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import {
-  act, api, byNumber, clock, repoName, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Repo, type Session, type Task,
+  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 import { Changes, PullRequests } from './Changes.tsx'
+import { DraftView } from './Draft.tsx'
+import { RepoPicker } from './RepoPicker.tsx'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -54,28 +56,31 @@ export function NewRoom({ me }: { me: { person: { id: string } } }) {
   )
 }
 
-// Work for an agent outside any pipeline: it gets a workspace, with a repo if you pick one.
+// Work for an agent outside any pipeline: it gets a workspace, with a clone of
+// each repo you pick. Saved as a draft, it waits for someone to start it.
 export function NewTask() {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
-  const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
   const [agent, setAgent] = useState('')
-  const [repo, setRepo] = useState('')
+  const [repoIds, setRepoIds] = useState<string[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const submit = async (event: SyntheticEvent) => {
-    event.preventDefault()
+  const create = async (draft: boolean) => {
     setBusy(true)
     try {
       const agentId = agent || agents[0]?.id
       if (!agentId) throw new Error('Pick an agent first.')
-      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoId: repo || undefined })
+      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoIds, draft })
       go({ task: taskId })
     } catch (e) {
       setError((e as Error).message)
       setBusy(false)
     }
+  }
+  const submit = async (event: SyntheticEvent) => {
+    event.preventDefault()
+    await create(false)
   }
   return (
     <section className="page" aria-label="New task">
@@ -90,13 +95,10 @@ export function NewTask() {
           <select id="task-agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-          <label htmlFor="task-repo">Repo</label>
-          <select id="task-repo" value={repo} onChange={(e) => setRepo(e.target.value)}>
-            <option value="">None</option>
-            {repos.map((r) => <option key={r.id} value={r.id}>{repoName(r.remote_url)}</option>)}
-          </select>
+          <RepoPicker value={repoIds} onChange={setRepoIds} />
           <div className="actions">
             <button className="primary" type="submit" disabled={busy || !title.trim() || !agents.length}>Start task</button>
+            <button type="button" disabled={busy || !title.trim() || !agents.length} onClick={act(() => create(true))}>Save draft</button>
             {error && <p className="error small" role="alert">{error}</p>}
           </div>
         </form>
@@ -119,6 +121,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
+  if (session?.status === 'draft') return <DraftView task={task} />
   const agent = agents.find((a) => a.id === task.agent_id)
   const documents = artifacts.filter((a) => a.kind === 'document')
   const send = async (event: SyntheticEvent) => {
