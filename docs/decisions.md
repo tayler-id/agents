@@ -179,7 +179,7 @@ Tayler went with the coordinator's picks on all of these.
   - fixtures, evidence capture, and visual compare and baseline
   
   The browser driver sits behind one interface, so a second driver can slot in.
-- **Status.** Being built. The baseline screenshots and the check that breaks each feature are not built yet, whatever its design doc says. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
+- **Status.** Being built. `test/step17.ts` checks the tool, and `test/step17-breaks.ts` breaks what each of its checks guards and watches the check fail. Baseline screenshots are captured but not committed: the name guard reads PNG bytes as text, and Tayler's approval is needed to skip binary files there. The steps that need real Claude have not run. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
 
 ### How our CLIs talk to agents
 
@@ -192,7 +192,7 @@ Tayler went with the coordinator's picks on all of these.
   - Exit codes: 0 done, 1 failed and safe to retry, 2 usage, 3 refused with nothing changed.
   - `--json` works everywhere.
   - With no arguments, a command prints a dashboard.
-- **Implementation.** `agentsctl` now, and `agents-git` when it starts. A shared library for these conventions is under evaluation.
+- **Implementation.** `shared/cli/`, a library with the envelope, exit codes, errors, command definitions that generate help and refuse unknown flags, the dispatcher, and a conformance check any CLI can run. `agentsctl` is built on it, and `agents-git` will be.
 - **Status.** In progress.
 
 ### Parallel agents, worktrees and landing
