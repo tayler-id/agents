@@ -64,9 +64,15 @@ A review on a different model asked for fixes before merging. The branch is reba
 
 Also worth doing: a timeout on forge calls, an expiry for a stuck push, `sendToSession` out of the import cycle, the script name in step14's header, and this note out of `docs/` at landing.
 
+Done so far, each with its check seen failing first: 2 (4e1539e), 5 (dbf0bce), 4, 7 and the stuck push expiry (e65e3ca), 3 (d1ea0e3), 6 (6f9940c), `sendToSession` (4e1539e) and the script name (c1589cf). The full step14 run after them passed every new check. Two fixes the screenshots showed: the sidebar's marks cut off beside long titles (33a15bb) and a new hold shown as lapsed (26827b4). A flaky research lookup in step14 is fixed (a81f356).
+
 ## Next steps
 
-Work through the list above in order, committing each fix with its check, then report as before.
+1. Item 1's failing run: undo main's aad82a8 and this branch's push error scrub, see the leak checks fail, restore.
+2. Item 8: break the named step14 checks in two runs, record them, and list in the build log which checks were never broken.
+3. Item 9: main's checks, with the lock for step7.
+4. Leave the forge timeout to the forge's owner, since forge.ts is another branch's, and say so.
+5. Move this note out of `docs/`, update the build log, run everything, and report.
 
 ## Open questions for Tayler
 
