@@ -1,12 +1,14 @@
 // A draft task: written now, started later. Anyone on the team can change it,
-// start it, or discard it. Starting saves what the form holds first.
+// start it, or discard it. Starting saves what the form holds first, when the
+// person changed it.
 
 import { useState, type SyntheticEvent } from 'react'
+import type { z } from 'zod'
 import { go } from './App.tsx'
 import { act, api, messageOf, useParsedSnapshot, useSnapshot, type Agent, type Person, type Task } from './data.ts'
 import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
-import { TaskRepoRow, type TaskState } from '../../shared/work.ts'
+import { TaskRepoRow, type DraftEdit, type TaskState } from '../../shared/work.ts'
 
 export function DraftView({ task, state }: { task: Task; state: TaskState }) {
   const { rows: repos, loaded, error } = useParsedSnapshot(TaskRepoRow, 'task_repos', { task: task.id }, 15000)
@@ -31,9 +33,15 @@ export function DraftView({ task, state }: { task: Task; state: TaskState }) {
   )
 }
 
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((value, i) => value === b[i])
+
 // The form starts from the draft as saved, so it mounts once the draft's repos load.
 function DraftForm({ task, repoIds: saved }: { task: Task; repoIds: string[] }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
+  // The draft as this form loaded or last saved it. A save sends it, and the server
+  // refuses one when a teammate has changed the draft since.
+  const [loaded, setLoaded] = useState<z.input<typeof DraftEdit>['loaded']>(() => (
+    { title: task.title, instructions: task.instructions, agentId: task.agent_id, repoIds: saved }))
   const [title, setTitle] = useState(task.title)
   const [instructions, setInstructions] = useState(task.instructions)
   const [agent, setAgent] = useState(task.agent_id ?? '')
@@ -58,15 +66,19 @@ function DraftForm({ task, repoIds: saved }: { task: Task; repoIds: string[] }) 
       setBusy(false)
     }
   }
+  const touched = title !== loaded.title || instructions !== loaded.instructions || agentId !== loaded.agentId || !sameList(repoIds, loaded.repoIds)
   const save = (event: SyntheticEvent) => {
     event.preventDefault()
     return run(async () => {
-      await api.editDraft(task.id, fields())
+      const saving = fields()
+      await api.editDraft(task.id, { ...saving, loaded })
+      setLoaded(saving)
       setStatus('Saved.')
     })
   }
+  // An untouched form starts the draft as it is now, which may hold a teammate's newer edit.
   const start = () => run(async () => {
-    await api.editDraft(task.id, fields())
+    if (touched) await api.editDraft(task.id, { ...fields(), loaded })
     await api.startDraft(task.id)
   })
   const discard = () => run(async () => {

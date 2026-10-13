@@ -5,12 +5,12 @@
 // answer an ask. shared/work.ts holds the lifecycle: which action needs which state.
 
 import type pg from 'pg'
-import { maybe, one } from './db.ts'
+import { many, maybe, one } from './db.ts'
 import { HttpError, type Person } from './record.ts'
 import { setTaskRepos } from './checkout.ts'
 import { launchTask } from './launch.ts'
 import { lockedTask, refuseIfBlocking } from './order.ts'
-import type { TaskFields } from '../shared/work.ts'
+import type { DraftEdit, TaskFields } from '../shared/work.ts'
 import type { AgentId, SessionId, TaskId } from '../shared/ids.ts'
 
 type HomedAgent = { id: AgentId; home_instance_id: string; harness: 'claude' | 'codex'; model: string | null }
@@ -43,8 +43,21 @@ async function draftOf(client: pg.PoolClient, person: Person, taskId: TaskId, ac
   return task.draft
 }
 
-export async function editDraft(client: pg.PoolClient, person: Person, taskId: TaskId, fields: TaskFields) {
+// The repos match when the primary does and the rest are the same set.
+const sameRepos = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a[0] === b[0] && [...a.slice(1)].sort().join() === [...b.slice(1)].sort().join()
+
+export async function editDraft(client: pg.PoolClient, person: Person, taskId: TaskId, edit: DraftEdit) {
   const session = await draftOf(client, person, taskId, 'edit')
+  const now = await one<{ title: string; instructions: string; agent_id: AgentId | null }>(client, 'the draft',
+    'select title, instructions, agent_id from tasks where id = $1', [taskId])
+  const repoIds = (await many<{ repo_id: string }>(client,
+    'select repo_id from task_repos where task_id = $1 order by is_primary desc, repo_id', [taskId])).map((r) => r.repo_id)
+  const { loaded } = edit
+  if (now.title !== loaded.title || now.instructions !== loaded.instructions || now.agent_id !== loaded.agentId || !sameRepos(repoIds, loaded.repoIds)) {
+    throw new HttpError(409, 'this draft changed since you opened it. Reload it to see the changes, then make yours again.')
+  }
+  const fields: TaskFields = edit
   const agent = await homedAgent(client, person, fields.agentId)
   await client.query('update tasks set title = $2, instructions = $3, agent_id = $4 where id = $1',
     [taskId, fields.title, fields.instructions, agent.id])

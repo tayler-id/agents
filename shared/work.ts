@@ -34,6 +34,12 @@ export const NewTask = TaskFields.extend({
 })
 export type NewTask = z.infer<typeof NewTask>
 
+// POST /v1/tasks/:id/edit. `loaded` is the draft as the person's form loaded it,
+// so a save over a teammate's newer edit is refused instead of undoing it. A
+// draft whose agent was removed loads with none.
+export const DraftEdit = TaskFields.extend({ loaded: TaskFields.extend({ agentId: AgentId.nullable() }) })
+export type DraftEdit = z.infer<typeof DraftEdit>
+
 // A task's state, from what is stored. A draft is queued: written, not started.
 // A started task is active until someone marks it done. A discarded draft is
 // archived.

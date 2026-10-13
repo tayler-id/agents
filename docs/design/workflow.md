@@ -15,8 +15,8 @@ What happened on the live server on 2026-10-13 shaped part of it. Tayler started
 **Actions.**
 
 - Save draft makes the task and its draft session, on the agent's home machine.
-- Edit changes the task, its repos, and the session's agent and machine.
-- Start saves what the form holds, then the task gets its workspace and the agent its first message, the same as a task started at once.
+- Edit changes the task, its repos, and the session's agent and machine. It carries the draft as the person's form loaded it, and the API refuses it with "this draft changed since you opened it" when a teammate saved since.
+- Start saves the form first only if the person changed it, so an untouched form starts the draft as it stands, with any teammate's edit. Then the task gets its workspace and the agent its first message, the same as a task started at once.
 - Discard sets `archived_at` on the task and its session, so they leave every list.
 
 Edit, start and discard lock the task row and check its state against the lifecycle table in `shared/work.ts`. Starting a draft a second time gets "this task has already started". The lock is what keeps two people pressing Start at the same moment from starting it twice, and no check presses them at the same moment.

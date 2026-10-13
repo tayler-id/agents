@@ -36,7 +36,7 @@ import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
 import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
-import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, TaskFields } from '../shared/work.ts'
+import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
@@ -381,8 +381,8 @@ const routes: Route[] = [
         await tx((client) => discardDraft(client, person, taskId))
         return { ok: true }
       case 'edit': {
-        const fields = parsed(TaskFields, body)
-        await tx((client) => editDraft(client, person, taskId, fields))
+        const edit = parsed(DraftEdit, body)
+        await tx((client) => editDraft(client, person, taskId, edit))
         return { ok: true }
       }
     }

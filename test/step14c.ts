@@ -154,15 +154,24 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     await edit.getByLabel('What needs doing?').fill(`Ready to start (${engine})`)
     await edit.getByRole('button', { name: 'Save draft' }).click()
     check(await visible(teammate, '[role="status"]', 10, /Saved/), `${engine}: a teammate edits the draft and saves it`)
-    await edit.getByRole('button', { name: 'Start task' }).click()
-    check(await visible(teammate, '.page-head .kicker', 20, /^Task$/) && await visible(teammate, '.task-messages li.message.agent', 60, /Started on it/),
-      `${engine}: the teammate starts it, and the agent answers`)
+    // Alice's form still shows the draft as she saved it. Untouched, it starts the draft as Amir left it.
+    await page.getByRole('form', { name: 'Edit the draft' }).getByRole('button', { name: 'Start task' }).click()
+    check(await visible(page, '.page-head .kicker', 20, /^Task$/) && await visible(page, '.task-messages li.message.agent', 60, /Started on it/),
+      `${engine}: starting from an untouched form keeps a teammate's edit, and the agent answers it`)
     const otherDraft = await call(alice, '/v1/tasks', { title: `Phone draft (${engine})`, instructions: '', agentId: ids.writer, repoIds: [ids.repo], draft: true }) as { taskId: string }
     const draftPhone = await phoneOf(alice, `/#/t/${otherDraft.taskId}`)
     // A task page shows before its sessions load, so wait for the draft's own form.
     const draftShown = await visible(draftPhone, 'form[aria-label="Edit the draft"]', 15) && await visible(draftPhone, 'section[aria-label="Order of work"]', 5)
     check(draftShown && await noSideScroll(draftPhone), `${engine}: at phone width the draft page fits without sideways scrolling`)
     await draftPhone.screenshot({ path: join(SHOTS, `${engine}-draft-phone.png`), fullPage: true })
+    const opened = { title: `Phone draft (${engine})`, instructions: '', agentId: ids.writer, repoIds: [ids.repo] }
+    await call(amir, `/v1/tasks/${otherDraft.taskId}/edit`, { ...opened, title: `Phone draft by Amir (${engine})`, loaded: opened })
+    const phoneForm = draftPhone.getByRole('form', { name: 'Edit the draft' })
+    await phoneForm.getByLabel('What needs doing?').fill(`Phone draft by Alice (${engine})`)
+    await phoneForm.getByRole('button', { name: 'Save draft' }).click()
+    check(await visible(draftPhone, 'form[aria-label="Edit the draft"] [role="alert"]', 10, /changed since you opened it/)
+      && (await one<{ title: string }>('select title from tasks where id = $1', [otherDraft.taskId]))?.title === `Phone draft by Amir (${engine})`,
+    `${engine}: saving a form loaded before a teammate's edit says the draft changed, and saves nothing`)
 
     // The order of work: B waits on A, A is held and lifted, then done.
     const a = (await call(alice, '/v1/tasks', { title: `Base work (${engine})`, instructions: '', agentId: ids.writer, draft: true }) as { taskId: string }).taskId

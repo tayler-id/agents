@@ -9,7 +9,7 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
-import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type TaskFields } from '../../shared/work.ts'
+import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 
 export type Me = MemberView
@@ -295,7 +295,7 @@ export const api = {
   createRoom: (name: string, people: string[], agents: string[]) =>
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents }),
   startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),
-  editDraft: (taskId: string, fields: z.input<typeof TaskFields>) => request('POST', `/v1/tasks/${taskId}/edit`, fields),
+  editDraft: (taskId: string, edit: z.input<typeof DraftEdit>) => request('POST', `/v1/tasks/${taskId}/edit`, edit),
   startDraft: (taskId: string) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', `/v1/tasks/${taskId}/start`, {}),
   discardDraft: (taskId: string) => request('POST', `/v1/tasks/${taskId}/discard`, {}),
   openPullRequests: (taskId: string, ask: PullRequestAsk) => request<{ pushId: PushId }>('POST', `/v1/tasks/${taskId}/pull-requests`, ask),
