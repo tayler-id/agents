@@ -208,6 +208,9 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
       await page.keyboard.press('ControlOrMeta+k')
       return within(5, () => page.evaluate(() => document.activeElement?.getAttribute('role') === 'combobox'))
     }
+    // The dialog closes at once, and the app lets it go when the close event arrives,
+    // a moment later. A Cmd+K before then would close it again.
+    const closed = () => page.locator('dialog.palette').waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false)
     const palette = page.getByRole('dialog', { name: 'Go to' })
     check(await openPalette() && await visible(page, 'dialog.palette[open]', 5),
       `${engine}: ${process.platform === 'darwin' ? 'Cmd' : 'Ctrl'}+K opens the palette with focus in its field`)
@@ -216,7 +219,7 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     await page.screenshot({ path: join(SHOTS, `${engine}-palette-light.png`) })
     check(await serious(page) === 0, `${engine}: the open palette has no serious accessibility problems`)
     await page.keyboard.press('Enter')
-    check(await gone(page, 'dialog.palette[open]', 5) && await within(10, async () => page.url().includes(`/t/${b}`)), `${engine}: Enter opens the task and closes the palette`)
+    check(await closed() && await within(10, async () => page.url().includes(`/t/${b}`)), `${engine}: Enter opens the task and closes the palette`)
     const focused = () => page.evaluate(() => {
       const element = document.activeElement
       return element ? `${element.tagName} ${element.getAttribute('aria-label') ?? ''}` : ''
@@ -226,7 +229,7 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     await page.keyboard.type('nothing matches this')
     const empty = await visible(page, 'dialog.palette', 5, /Nothing matches/)
     await page.keyboard.press('Escape')
-    check(empty && await gone(page, 'dialog.palette[open]', 5), `${engine}: the palette says when nothing matches, and Escape closes it`)
+    check(empty && await closed(), `${engine}: the palette says when nothing matches, and Escape closes it`)
     check(reopened && before.startsWith('MAIN') && await focused() === before, `${engine}: closing the palette gives focus back to where it was (${before})`)
     const third = await openPalette()
     await page.keyboard.type('new room')
@@ -246,6 +249,7 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     await openPalette()
     await palette.getByLabel('Single-key shortcuts').uncheck()
     await page.keyboard.press('Escape')
+    await closed()
     await page.locator('h1').click()
     await page.keyboard.press('c')
     check(await within(3, async () => page.url().includes('/n/room')), `${engine}: single-key shortcuts can be turned off`)
