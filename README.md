@@ -48,12 +48,14 @@ Put it in place of the `provision: []` line in `~/.colima/default/colima.yaml`, 
 The server Mac is `agents-server` on the tailnet. The API is published to it with:
 
 ```sh
-tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
+sudo /opt/homebrew/opt/tailscale/bin/tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
 ```
 
-People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which only tailscale serve points at, so a person's identity always comes from Tailscale. In userspace mode tailscaled hands a tailnet peer's connection for any other port to the same port on this Mac's loopback, where a TCP people port would let the peer name anyone. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
+Pointing serve at a Unix socket needs root, so `sudo` asks for your password.
 
-The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. `docs/design/people-port.md` gives the rule, and `test/step19b.ts` checks the filter the server enforces.
+People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which only tailscale serve points at. In userspace mode tailscaled hands a tailnet peer's connection for any other port to the same port on this Mac's loopback, where a TCP people port would let the peer name anyone, and a socket file is out of its reach. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
+
+The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. That includes tailscaled's own proxy on 1055, through which a peer would reach serve as this Mac and be taken for its owner, so a person's identity also rests on the policy. `docs/design/people-port.md` gives the rule, and `test/live-tailnet.ts` checks the filter the server enforces. It runs on its own, not in `npm run check`.
 
 A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
 

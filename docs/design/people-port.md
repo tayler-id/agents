@@ -1,6 +1,6 @@
 # The people port
 
-How a person's identity reaches the API, why a tailnet peer could forge it on 2026-10-13, and the fix. The resume note for this work is `people-port-resume.md`.
+How a person's identity reaches the API, why a tailnet peer could forge it on 2026-10-13, and the fix.
 
 ## The hole
 
@@ -15,7 +15,7 @@ These facts come from the source of Tailscale 1.104.1 at commit `9a522a9`, the b
 - **Every port goes to loopback.** In userspace mode tailscaled terminates tailnet connections in its own network stack. For a TCP connection to the node's own Tailscale address, IPv4 or IPv6, it first offers the port to serve, Tailscale SSH, the web client and the peer API. Any port none of them claims is dialed at `127.0.0.1` on the same port, and the bytes are copied both ways (`wgengine/netstack/netstack.go`, `acceptTCP` and `forwardTCP`). UDP does the same (`forwardUDP`). So every service on this Mac that listens on loopback is a tailnet service.
 - **The tailnet policy is the only gate in front of that.** The policy compiles into a packet filter that tailscaled applies to packets from WireGuard before its network stack sees them (`net/tstun/wrap.go`, `filterPacketInboundFromWireGuard`). The peer API is let through and checks access itself. The filter this node holds today lets every tailnet address reach every port over TCP, UDP and ICMP. That is the default allow-all policy.
 - **The node's own traffic skips the filter.** A connection tailscaled makes to its own address, such as one through the outbound proxy on 127.0.0.1:1055, is handed back inside its network stack and never passes the packet filter (`outboundQueueForPacket`, `injectLoopback`).
-- **What answered on 2026-10-13.** A connect through the proxy on 1055 to the node's own name reached ports 80, 7710, 7700, 4437, 5433, 3000, 3001, 3002, 1055, 5432 and several unrelated development servers. A port with nothing listening did not answer.
+- **What answered on 2026-10-13.** A connect through the proxy on 1055 to the node's own name reached ports 80, 7710, 7700, 4437, 5433, 3000, 3001, 3002, 1055, 5432 and several unrelated development servers. A port with nothing listening did not answer. No other device was on the tailnet, so no real peer has connected to this node, and every tailnet connection in this work came from this Mac through 1055.
 
 What a tailnet peer can reach today because of this. Each port answered a connect. What a peer gets on 1055, 4437 and 5432 comes from the code and config, and was not tried with a request.
 
@@ -33,9 +33,9 @@ What a tailnet peer can reach today because of this. Each port answered a connec
 
 ## What Tailscale offers
 
-- **Serve** proxies HTTP to a backend and deletes any `Tailscale-User-Login`, `Tailscale-User-Name` or `Tailscale-User-Profile-Pic` header the client sent before setting its own from a whois lookup of the source address (`ipn/ipnlocal/serve.go`, `addTailscaleIdentityHeaders`). A tagged source gets no identity headers. The backend can be a TCP address or, in this version, a Unix socket written `unix:/path`. Serve can also forward raw TCP, with no identity and an optional PROXY protocol header.
+- **Serve** proxies HTTP to a backend and deletes any `Tailscale-User-Login`, `Tailscale-User-Name` or `Tailscale-User-Profile-Pic` header the client sent before setting its own from a whois lookup of the source address (`ipn/ipnlocal/serve.go`, `addTailscaleIdentityHeaders`). A tagged source gets no identity headers. The backend can be a TCP address or, in this version, a Unix socket written `unix:/path`. On the macOS tailscaled used here, only root, or the operator able to run `sudo tailscale`, may point serve at a Unix socket (`ipn/localapi/serve.go`, `authorizeServeConfigForGOOSAndUserContext`). tailscaled checks the second case by running `sudo --list` itself, with no terminal to ask for a password, so unless sudo needs no password the command has to run as `sudo tailscale`. This is from the code, not tried, since trying it would change serve. The CLI does not check that the socket exists. Serve can also forward raw TCP, with no identity and an optional PROXY protocol header.
 - **Local whois** (`/localapi/v0/whois`) maps a tailnet address to its node and owner. For a loopback port that netstack forwarded, it maps the port back to the peer. Serve's own backend connections are not registered (a TODO in `tcpHandlerForServeTCP`), so whois cannot tell the API that a connection came from serve.
-- **The tailnet policy** limits which sources reach which ports, enforced on this node as above.
+- **The tailnet policy** limits which sources reach which ports, enforced on this node as above. A policy change can reach the node as a new filter without a new netmap (`UpdatePacketFilter`). `/localapi/v0/debug-packet-filter-matches` then still returns the filter of the last full netmap, while the read-only `debug?action=current-netmap` returns the filter tailscaled enforces.
 - **Other serve targets.** Files, folders and fixed text, none of which apply here.
 
 ## The choice
@@ -45,11 +45,11 @@ Two parts, because the people port and the rest of loopback fail for one reason 
 1. **The API serves people only on a Unix socket, and serve proxies to it.** Netstack forwards tailnet connections only to TCP and UDP ports on `127.0.0.1`, never to a socket file, so no tailnet peer can reach the people listener whatever the policy says. The socket sits in `~/.agents-app`, which only Tayler's user can open, and tailscaled runs as that user. Nothing in the API trusts the header on any other listener. This is the code on this branch.
 2. **The tailnet policy lets peers reach the server node only on TCP 80, where serve answers, and TCP 7700, the machine port.** That closes the outbound proxy, the stream server, Postgres, Electric, the forge and every unrelated loopback service in one rule, which this node enforces before any of them sees a packet. Machines on teammates' computers keep reaching 7700. Tayler applies this in the admin console.
 
-Part 1 holds even if part 2 is widened later, so the identity boundary does not rest on the policy. Part 2 is still needed for every service that cannot move off TCP, and for the proxy on 1055, which turns a peer into the server node itself.
+Part 1 holds even if part 2 is widened later, so a direct connection can never name a person. Port 1055 still depends on part 2. A peer that reaches it reaches serve as the server node, which serve labels as Tayler, so person identity rests on the policy there until the node is tagged or the proxy goes.
 
 ### Rejected
 
-- **The policy alone.** One rule closes every port, but the identity boundary would rest on a setting that lives outside the repo, starts as allow-all, and silently reopens 7710 the day anyone widens a grant. The socket costs one listener change and makes that impossible.
+- **The policy alone.** One rule closes every port, but the people listener would then rest on a setting that lives outside the repo, starts as allow-all, and silently reopens 7710 the day anyone widens a grant. The socket costs one listener change and makes that impossible.
 - **The API asks local whois about each connection.** Whois resolves only connections that netstack forwarded. A serve connection resolves to nothing, so the API would have to read "unknown" as "came from serve". That fails open the day a Tailscale release changes what it registers, and it adds a LocalAPI client to every people request.
 - **A secret in serve's proxy path, or the PROXY protocol.** A path secret is a bearer token that sits in the serve config and in access logs. A PROXY protocol header can be written by any peer that connects directly. Neither is checked by the operating system the way a socket file is.
 - **Running Tailscale in TUN mode.** Loopback-only services would stop being reachable, but services bound to all interfaces, seven of them on this Mac on 2026-10-13, would become reachable instead, so the policy would still be needed. tailscaled would also have to run as root from a launch daemon.
@@ -61,20 +61,24 @@ Part 1 holds even if part 2 is widened later, so the identity boundary does not 
 
 ### Code on this branch
 
-- `server/api.ts` reads `AGENTS_PEOPLE_SOCKET`, an absolute path, and refuses to start without it. The people listener binds that socket and nothing else, before the machine port opens. A socket file left by an API that stopped is replaced. One that still accepts connections belongs to a running API, so a second API refuses to start rather than take people's traffic. The socket is mode 600, and its folder is made owner-only if it does not exist yet.
+- `server/api.ts` reads `AGENTS_PEOPLE_SOCKET`, an absolute path, and refuses to start without it. The people listener binds that socket and nothing else, before the machine port opens.
+  - It makes the socket's folder 700 if it does not exist, then refuses unless this user owns the folder and nobody else can write to it.
+  - A socket file left by an API that stopped is replaced. A file that is not a socket is left alone, and the API stops. A socket that still accepts connections belongs to a running API, so a second API refuses to start rather than take people's traffic.
+  - It binds under umask 077, so the socket is never open to others, and then sets it to 600.
 - `test/people.ts` stands in for serve in checks. It forwards a loopback port to the API's socket, so fetch and browsers in checks reach the people listener as they reached 7710 before. The check still picks each request's login, as it did.
 - Every check that starts an API gives it a socket in its own folder.
 
 ### Checks
 
-- `test/step19.ts` runs this branch's API on ports 8060 to 8065 with a socket in a temporary folder. On main's API all four of its lines fail: there is no socket, a TCP port takes the login it is sent, a second API starts anyway, and no socket comes back after a restart. On this branch all four pass. Breaking this branch's refusal of a second API and its replacement of a stale socket, to watch those two lines fail against this code, was blocked by the permission classifier as weakening security. Those two were seen failing only against main's API.
-- `test/step19b.ts` reads the live server and its tailnet node, and sends only GET requests, naming a login that matches no person. On 2026-10-13 four of its lines failed on the live system: the filter on each address lets peers reach every port, port 7710 looked the made-up login up, and serve proxies to TCP 7710. The app through serve and the machine port's answer passed. Its policy lines were also fed the proposed filter through a stand-in for tailscaled's local API, and passed. They failed on filters that added UDP, left out IPv6, opened a port range, or left out 7700. The rest of it can only pass once the live steps are applied.
+- `test/step19.ts` runs this branch's API on ports 8060 to 8077. Its eight lines cover a request on the socket, the 700 folder and 600 socket, no TCP port taking a login, a second API, a stale socket, an unset or empty setting, a file at the path that is not a socket, and a folder others can write to. All eight failed against main's API. On this branch each of the six guards behind them was removed in turn, and each time only its own line went red, then passed again once restored from git. They were the second-API refusal, the stale-socket replacement, the chmod, the setting check, the not-a-socket refusal and the folder check. Without the chmod the socket came out 700, not 755, which shows the umask at work.
+- `test/step2b.ts` now checks that a container cannot reach tailscaled's proxy on 1055, instead of the people port, which no longer listens. Each of its "cannot reach" lines first needs the port to be listening on this Mac. It went red when aimed at a port with nothing on it, and when its containers ran on the VM's own network, which the box firewall does not filter.
+- `test/live-tailnet.ts` reads the live server and its tailnet node, and sends only GET requests across the tailnet, naming a login that matches no person. It reads the filter from `current-netmap`. It is not named as a step, so `npm run check` skips it, since it can only pass after the live steps, and those come after landing. On 2026-10-13 four of its lines failed on the live system: the filter on each address lets peers reach every port, port 7710 looked the made-up login up, and serve proxies to TCP 7710. The app through serve and the machine port's answer passed. Its policy lines were also fed filters through a stand-in for tailscaled's local API whose `debug-packet-filter-matches` held the opposite filter. They passed the proposed filter and failed allow-all, so they read the live filter. They also failed filters that added UDP, left out IPv6, opened a port range, or left out 7700.
 
 ### Live steps
 
 For the coordinator to run once Tayler approves. Nothing here was applied by this branch. The policy and the code are independent, and the policy closes the most, so it goes first.
 
-1. **The tailnet policy.** In the admin console's access controls, remove the rule that lets everyone reach everything, a grant of `"ip": ["*"]` from `"*"` to `"*"` or an ACL of `"dst": ["*:*"]`, and add the grant below. `tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" ip` prints the two addresses. Keep anything else the policy holds.
+1. **The tailnet policy.** In the admin console's access controls, remove the rule that lets everyone reach everything, a grant of `"ip": ["*"]` from `"*"` to `"*"` or an ACL of `"dst": ["*:*"]`. Add the hosts, the grant and the tests below, and keep anything else the policy holds. `tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" ip` prints the two addresses.
 
    ```json
    "hosts": {
@@ -83,22 +87,33 @@ For the coordinator to run once Tayler approves. Nothing here was applied by thi
    },
    "grants": [
      { "src": ["autogroup:member"], "dst": ["agents-server", "agents-server-v6"], "ip": ["tcp:80", "tcp:7700"] }
+   ],
+   "tests": [
+     {
+       "src": "<a member's login>",
+       "proto": "tcp",
+       "accept": ["agents-server:80", "agents-server:7700"],
+       "deny": ["agents-server:7710", "agents-server:1055", "agents-server:4437", "agents-server:5432",
+                "agents-server:5433", "agents-server:3000", "agents-server:3001", "agents-server:3002"]
+     }
    ]
    ```
 
-   If the editor refuses an IPv6 address under `hosts`, put both addresses in the grant's `dst` directly. Then run `node --env-file=.env --env-file=.env.test test/step19b.ts` in `~/Projects/agents`. Its two policy lines pass once the server has the new filter.
+   Tailscale runs the tests on every change to the policy and rejects a change that fails them, so a later edit that reopens one of those ports is refused. If the editor refuses an IPv6 address under `hosts`, put both addresses in the grant's `dst` directly, and the IPv4 address in the tests. If it refuses the tests block, leave it out and say so.
 2. **Settings, before the code lands.** Add `AGENTS_PEOPLE_SOCKET=/Users/<you>/.agents-app/people.sock` to `~/Projects/agents/.env`, so an API restarted at any point after landing finds it. The API on main ignores it. Add an empty `AGENTS_PEOPLE_SOCKET=` to `~/Projects/agents/.env.test` and to each worktree's `.env.test`, so a check that starts an API without its own socket stops instead of taking the live one.
 3. **Land the branch.** Branches that land after it need the change under "Other branches".
-4. **Restart the API** with `launchctl kickstart -k gui/$(id -u)/com.agents.api`. `~/.agents-app/api.log` then shows `people on /Users/<you>/.agents-app/people.sock` and `machines on 127.0.0.1:7700`. Until step 5, the app over the tailnet answers 502.
-5. **Point serve at the socket.** One command replaces the handler on port 80:
+4. **Point serve at the socket.** Serving a Unix socket needs root, so this asks for Tayler's password. The CLI does not check that the socket exists, so this goes before the restart, and the app over the tailnet answers 502 until step 5.
 
    ```sh
-   tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
+   sudo /opt/homebrew/opt/tailscale/bin/tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
    ```
 
-6. **Check.** `node --env-file=.env --env-file=.env.test test/step19b.ts` passes all its lines, and the desktop app on this Mac still opens as Tayler.
+5. **Restart the API** with `launchctl kickstart -k gui/$(id -u)/com.agents.api`. `~/.agents-app/api.log` then shows `people on /Users/<you>/.agents-app/people.sock` and `machines on 127.0.0.1:7700`.
+6. **Check, last.** In `~/Projects/agents`, `node --env-file=.env --env-file=.env.test test/live-tailnet.ts` passes all its lines, and the desktop app on this Mac still opens as Tayler.
 
-To undo: restore the previous policy from the admin console's history, revert the merge, restart the API, and point serve back at `http://127.0.0.1:7710`.
+To undo, each part on its own:
+- **The code.** `git revert -m 1 <the merge commit>` on main, restart the API, and point serve back with `tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 http://127.0.0.1:7710`, which needs no root.
+- **The policy.** Restore the previous version from the admin console's history.
 
 ### Other branches
 
@@ -106,15 +121,17 @@ Every branch has its own copy of the checks that start an API with `AGENTS_PEOPL
 
 ## Decisions for Tayler
 
-- **The policy.** Members' devices reach the server only on TCP 80 and 7700, Tayler's own devices included. Nothing that works today stops working, since no other device is on the tailnet and this Mac's own requests skip the filter. If Tayler wants his devices to reach more, such as Screen Sharing, that is another grant, and `test/step19b.ts` changes with it.
-- **The live steps** above: a policy change, an API restart, a serve change and two settings files.
+- **The policy.** Members' devices reach the server only on TCP 80 and 7700, Tayler's own devices included. Nothing that works today stops working, since no other device is on the tailnet and this Mac's own requests skip the filter. If Tayler wants his devices to reach more, such as Screen Sharing, that is another grant, and `test/live-tailnet.ts` and the policy's tests change with it.
+- **The live steps** above: a policy change, two settings files, a serve change that needs his password, and an API restart.
 - **Whether to tag the server node.** With a tag such as `tag:agents-server`, requests the server makes to itself through the proxy on 1055 carry no person, so that route stays closed even if the policy is widened later. Tagged nodes also skip key expiry, and this node's key expires on 2027-04-09 otherwise. The cost is that the desktop app on this Mac, which reaches serve through that proxy, would no longer be signed in as Tayler.
 - **Agents whose home is this Mac.** They run as Tayler's user, so they can open the people socket, as they could reach 7710 before.
-- **The coding standards.** The rule "A person's identity comes only from Tailscale on the people port" names the step 2 and step 2b checks. It should also name `test/step19.ts` and `test/step19b.ts`. The skill is a protected path.
+- **The coding standards.** The rule "A person's identity comes only from Tailscale on the people port" names the step 2 and step 2b checks. It should also name `test/step19.ts`, and `test/live-tailnet.ts` as the live proof. The skill is a protected path.
 
 ## What this does not cover
 
-- Real serve has not proxied to the socket yet, since that needs the serve change in the live steps. In checks, `test/people.ts` plays serve's part. Serve's proxy differs from its TCP one only in how it dials (`reverseProxy.getTransport`), and `test/step19b.ts` and the desktop app on this Mac try the real path in live step 6.
+- No real peer has connected to the server node. Every tailnet connection in this work came from this Mac through the proxy on 1055, which skips the packet filter, so the filter's effect on a peer is read from the filter itself, not tried.
+- Real serve has not proxied to the socket yet, since that needs the serve change in the live steps. In checks, `test/people.ts` plays serve's part. Serve's proxy differs from its TCP one only in how it dials (`reverseProxy.getTransport`), and `test/live-tailnet.ts` and the desktop app on this Mac try the real path in live step 6.
 - Any process running as Tayler's user on the server Mac can open the people socket and name any login, as it could reach 7710 before. That includes agents whose home is this Mac, since the daemon runs their sessions as Tayler. Running them as another user, or only in boxes, closes that.
+- The check that the socket's folder belongs to this user was tried only with a folder others can write to, since making one owned by another user needs root.
 - The stream server on 4437 has no access checks of its own. The policy keeps peers off it and the box firewall keeps containers off it, but any local process can still read or append to a session's stream.
 - The peer API stays reachable from every peer, as Tailscale designs it.
