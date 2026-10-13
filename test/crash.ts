@@ -8,9 +8,6 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import pg from 'pg'
-import { alive, descendants, killAll } from '../daemon/fence.ts'
-
-export { alive }
 export const ROOT = new URL('..', import.meta.url).pathname
 // How long a check waits for a turn to finish, with real Claude or the fake.
 export const TURN_SECONDS = 240
@@ -49,6 +46,42 @@ export class Check {
   async count(sql: string, params: unknown[] = []): Promise<number> {
     return Number((await this.db.query(sql, params)).rows[0].count)
   }
+}
+
+// The checks kill processes with their own code rather than the daemon's fencing,
+// which is part of what they test, and so they also run against main.
+export function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    // ESRCH: no such process.
+    return false
+  }
+}
+
+function killAll(pids: number[]) {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+// Every process below `pid`, read from ps before anything is killed.
+function descendants(pid: number): number[] {
+  const table = execFileSync('ps', ['-ww', '-eo', 'pid=,ppid='], { encoding: 'utf8' }).split('\n')
+    .map((line) => line.trim().split(/\s+/).map(Number)).filter((pair) => pair.length === 2)
+  const below: number[] = []
+  let frontier = [pid]
+  while (frontier.length) {
+    const next = table.filter(([, parent]) => frontier.includes(Number(parent))).map(([child]) => Number(child))
+    below.push(...next)
+    frontier = next
+  }
+  return below
 }
 
 export async function until(label: string, seconds: number, test: () => Promise<unknown>) {
