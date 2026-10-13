@@ -58,12 +58,14 @@ try {
   await say(`/v1/conversations/${conversationId}/messages`, { text: FIRST })
   const { id: sessionId } = await c.row('select id from sessions where conversation_id = $1', [conversationId])
   const turnsEnded = () => c.count(`select count(*) from events where session_id = $1 and kind = 'usage'`, [sessionId])
-  const openAsk = () => c.row(`select id from asks where session_id = $1 and status = 'open'`, [sessionId])
-  await until('the agent to ask to run the command', 120, openAsk)
-  const ask = await openAsk()
-  await say(`/v1/asks/${ask.id}/answer`, { decision: 'allow' })
-  // The command sleeps 8 seconds once the answer reaches it, so the follow-up
-  // reaches Claude while it runs.
+  // Claude runs a command it considers safe, such as this one, without asking.
+  // Should it ask, the person allows it.
+  await until('the agent to run the command', 120, async () => {
+    const ask = await c.row(`select id from asks where session_id = $1 and status = 'open'`, [sessionId])
+    if (ask) await say(`/v1/asks/${ask.id}/answer`, { decision: 'allow' })
+    return (await c.count(`select count(*) from events where session_id = $1 and kind = 'tool_call' and tool_name = 'Bash'`, [sessionId])) === 1
+  })
+  // The command sleeps 8 seconds, so the follow-up reaches Claude while it runs.
   await say(`/v1/conversations/${conversationId}/messages`, { text: SECOND })
   await until('the turn to end', TURN_SECONDS, async () => (await turnsEnded()) >= 1)
   await until('both messages to be answered or a second turn to start', 30, async () =>
