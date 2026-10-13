@@ -4,9 +4,9 @@
 // boxes included, reach it on a loopback port with a bearer token instead.
 
 import { randomUUID } from 'node:crypto'
-import { chmod, lstat, readFile, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, rm } from 'node:fs/promises'
 import { connect, type Server } from 'node:net'
-import { extname, normalize } from 'node:path'
+import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { instanceFrom, personFrom } from './auth.ts'
@@ -536,6 +536,8 @@ function accepts(path: string): Promise<boolean> {
 // refuses connections. A socket that accepts them belongs to a running API, and
 // taking it over would send people to this one instead, so that stops this one.
 async function listenForPeople(server: Server, path: string) {
+  // On a new server the folder may not exist yet. Made here, only its owner can open it.
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const existing = await lstat(path).catch((error: unknown) => {
     if (hasCode(error, 'ENOENT')) return null
     throw error

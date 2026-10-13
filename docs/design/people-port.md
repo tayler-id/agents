@@ -61,18 +61,56 @@ Part 1 holds even if part 2 is widened later, so the identity boundary does not 
 
 ### Code on this branch
 
-- `server/api.ts` reads `AGENTS_PEOPLE_SOCKET`, an absolute path, and refuses to start without it. The people listener binds that socket and nothing else. A socket file left by an API that stopped is replaced. One that still accepts connections belongs to a running API, so a second API refuses to start rather than take people's traffic.
+- `server/api.ts` reads `AGENTS_PEOPLE_SOCKET`, an absolute path, and refuses to start without it. The people listener binds that socket and nothing else, before the machine port opens. A socket file left by an API that stopped is replaced. One that still accepts connections belongs to a running API, so a second API refuses to start rather than take people's traffic. The socket is mode 600, and its folder is made owner-only if it does not exist yet.
 - `test/people.ts` stands in for serve in checks. It forwards a loopback port to the API's socket, so fetch and browsers in checks reach the people listener as they reached 7710 before. The check still picks each request's login, as it did.
 - Every check that starts an API gives it a socket in its own folder.
 
 ### Checks
 
-- `test/step19.ts` runs this branch's API on ports 8060 to 8065 with a socket in a temporary folder. It fails on main and passes here.
-- `test/step19b.ts` reads the live server and its tailnet node and sends only GET requests with made-up logins. It fails until the live steps below are applied.
+- `test/step19.ts` runs this branch's API on ports 8060 to 8065 with a socket in a temporary folder. On main's API all four of its lines fail: there is no socket, a TCP port takes the login it is sent, a second API starts anyway, and no socket comes back after a restart. On this branch all four pass.
+- `test/step19b.ts` reads the live server and its tailnet node, and sends only GET requests, naming a login that matches no person. On 2026-10-13 four of its lines failed on the live system: the filter on each address lets peers reach every port, port 7710 looked the made-up login up, and serve proxies to TCP 7710. The app through serve and the machine port's answer passed. Its policy lines were also fed the proposed filter through a stand-in for tailscaled's local API, and passed. They failed on filters that added UDP, left out IPv6, opened a port range, or left out 7700. The rest of it can only pass once the live steps are applied.
 
 ### Live steps
 
-For the coordinator to run once Tayler approves. Nothing here was applied by this branch.
+For the coordinator to run once Tayler approves. Nothing here was applied by this branch. The policy and the code are independent, and the policy closes the most, so it goes first.
+
+1. **The tailnet policy.** In the admin console's access controls, remove the rule that lets everyone reach everything, a grant of `"ip": ["*"]` from `"*"` to `"*"` or an ACL of `"dst": ["*:*"]`, and add the grant below. `tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" ip` prints the two addresses. Keep anything else the policy holds.
+
+   ```json
+   "hosts": {
+     "agents-server": "<the server's Tailscale IPv4 address>",
+     "agents-server-v6": "<the server's Tailscale IPv6 address>"
+   },
+   "grants": [
+     { "src": ["autogroup:member"], "dst": ["agents-server", "agents-server-v6"], "ip": ["tcp:80", "tcp:7700"] }
+   ]
+   ```
+
+   If the editor refuses an IPv6 address under `hosts`, put both addresses in the grant's `dst` directly. Then run `node --env-file=.env --env-file=.env.test test/step19b.ts` in `~/Projects/agents`. Its two policy lines pass once the server has the new filter.
+2. **Settings, before the code lands.** Add `AGENTS_PEOPLE_SOCKET=/Users/<you>/.agents-app/people.sock` to `~/Projects/agents/.env`, so an API restarted at any point after landing finds it. The API on main ignores it. Add an empty `AGENTS_PEOPLE_SOCKET=` to `~/Projects/agents/.env.test` and to each worktree's `.env.test`, so a check that starts an API without its own socket stops instead of taking the live one.
+3. **Land the branch**, after the other branches' checks have moved to the socket (below).
+4. **Restart the API** with `launchctl kickstart -k gui/$(id -u)/com.agents.api`. `~/.agents-app/api.log` then shows `people on /Users/<you>/.agents-app/people.sock` and `machines on 127.0.0.1:7700`. Until step 5, the app over the tailnet answers 502.
+5. **Point serve at the socket.** One command replaces the handler on port 80:
+
+   ```sh
+   tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
+   ```
+
+6. **Check.** `node --env-file=.env --env-file=.env.test test/step19b.ts` passes all its lines, and the desktop app on this Mac still opens as Tayler.
+
+To undo: restore the previous policy from the admin console's history, revert the merge, restart the API, and point serve back at `http://127.0.0.1:7710`.
+
+### Other branches
+
+Every branch has its own copy of the checks that start an API with `AGENTS_PEOPLE_PORT`, and most add new ones. After this lands, each such check needs the same three lines as here: import `servePeople`, set `AGENTS_PEOPLE_SOCKET` to a path in the check's own folder, and call `servePeople` on the port it used before. An API started without the setting stops at once and names it, so a missed check fails loudly. The AWS branch also listens for people on `127.0.0.1` itself, points serve at the people port, and checks that port in `health.ts` and `test/step11.ts`. Those move to the socket too. Its servers run Tailscale in kernel mode, where loopback is out of the tailnet's reach, but the socket keeps one design for both.
+
+## Decisions for Tayler
+
+- **The policy.** Members' devices reach the server only on TCP 80 and 7700, Tayler's own devices included. Nothing that works today stops working, since no other device is on the tailnet and this Mac's own requests skip the filter. If Tayler wants his devices to reach more, such as Screen Sharing, that is another grant, and `test/step19b.ts` changes with it.
+- **The live steps** above: a policy change, an API restart, a serve change and two settings files.
+- **Whether to tag the server node.** With a tag such as `tag:agents-server`, requests the server makes to itself through the proxy on 1055 carry no person, so that route stays closed even if the policy is widened later. Tagged nodes also skip key expiry, and this node's key expires on 2027-04-09 otherwise. The cost is that the desktop app on this Mac, which reaches serve through that proxy, would no longer be signed in as Tayler.
+- **Agents whose home is this Mac.** They run as Tayler's user, so they can open the people socket, as they could reach 7710 before.
+- **The coding standards.** The rule "A person's identity comes only from Tailscale on the people port" names the step 2 and step 2b checks. It should also name `test/step19.ts` and `test/step19b.ts`. The skill is a protected path.
 
 ## What this does not cover
 
