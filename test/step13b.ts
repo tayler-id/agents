@@ -11,7 +11,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
@@ -63,9 +63,14 @@ function check(ok: unknown, label: string) {
 }
 
 // The environment for a process this check starts: the check's own, never
-// GitHub's settings from it, plus the ones given.
+// GitHub's settings from it, plus the ones given. The Node running this check
+// comes first on the PATH, so a child started as `node`, such as the fake Claude,
+// runs on it rather than on whatever else the PATH holds.
 function envWith(extra: Record<string, string>): NodeJS.ProcessEnv {
-  return { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('AGENTS_GITHUB_'))), ...extra }
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('AGENTS_GITHUB_'))),
+    PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}`, ...extra,
+  }
 }
 
 const admin = (...args: string[]) => execFileSync(process.execPath, ['server/admin.ts', ...args], { cwd: ROOT, env: envWith({}), encoding: 'utf8' })
