@@ -55,3 +55,37 @@ create table pushes (
 );
 -- One push in flight per task.
 create unique index pushes_in_flight on pushes (task_id) where status = 'pushing';
+
+-- The order of work. A task's priority, 0 the most urgent and 4 the least, and
+-- when someone marked it done. A draft is a queued task, so with the draft
+-- status and archived_at these give every task its state.
+alter table tasks
+  add column priority smallint not null default 2 check (priority between 0 and 4),
+  add column done_at timestamptz;
+
+-- A task blocked by another of its team's tasks until that one is done. The API
+-- refuses an edge that would close a cycle.
+create table task_blocks (
+  team_id uuid not null references teams on delete cascade,
+  blocked_id uuid not null references tasks on delete cascade,
+  blocker_id uuid not null references tasks on delete cascade,
+  -- One line, or none.
+  reason text check (reason <> '' and reason !~ '[\r\n]'),
+  created_by uuid references people on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (blocked_id, blocker_id),
+  check (blocked_id <> blocker_id)
+);
+create index task_blocks_blocker on task_blocks (blocker_id);
+
+-- A task paused on purpose: what kind of wait, why in one line, and until when.
+-- The hold lapses on its until date, by the server's date.
+create table task_holds (
+  task_id uuid primary key references tasks on delete cascade,
+  team_id uuid not null references teams on delete cascade,
+  kind text not null check (kind in ('decision', 'external', 'load', 'parked', 'future')),
+  reason text not null check (reason <> '' and reason !~ '[\r\n]'),
+  until date,
+  held_by uuid references people on delete set null,
+  created_at timestamptz not null default now()
+);
