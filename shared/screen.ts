@@ -125,8 +125,10 @@ export const Heartbeat = z.object({ status: z.enum(['online', 'offline']), scree
 export type Heartbeat = z.infer<typeof Heartbeat>
 
 // A person taking over a screen or handing it back, from the session they were
-// looking at, if any.
+// looking at, if any, and the API's answer.
 export const ScreenMove = z.object({ sessionId: SessionId.nullable() })
+export const ScreenMoved = z.object({ control: ScreenControl })
+export type ScreenMoved = z.infer<typeof ScreenMoved>
 
 // Text frames to a person's Screen view. Binary frames are the screen itself.
 export const ToViewer = z.object({ type: z.literal('control'), control: ScreenControl })

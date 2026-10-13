@@ -2,7 +2,7 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import {
-  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Session, type Task,
+  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Instance, type Person, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 import { Changes, PullRequests } from './Changes.tsx'
@@ -112,14 +112,19 @@ export function NewTask() {
 }
 
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
-export function TaskView({ taskId, openSession, openFile }: { taskId: string; openSession: string | null; openFile: string | null }) {
+// A task whose session runs on a machine with a screen can open that screen beside it.
+export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }: {
+  taskId: string; openSession: string | null; openFile: string | null; screenOpen: boolean; onScreen: (instanceId: string, sessionId: string) => void
+}) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
   const { rows: sessions } = useRows<Session>('sessions', { of: 'tasks' })
   const { rows: asks } = useRows<Ask>('asks')
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
   const { rows: artifacts } = useSnapshot<Artifact>('artifacts', { task: taskId }, 4000)
+  const { rows: instances } = useSnapshot<Instance>('instances')
   const task = tasks.find((t) => t.id === taskId)
   const session = sessions.filter((s) => s.task_id === taskId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+  const screen = instances.find((i) => i.id === session?.instance_id && i.screen_width !== null)
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
@@ -146,6 +151,9 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
           <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}{state === 'done' ? ' · done' : ''}</p>
         </div>
         <div className="head-actions">
+          {session && screen && (screenOpen
+            ? <button type="button" className="ghost" onClick={() => go({ task: taskId })}>Hide screen</button>
+            : <button type="button" className="ghost" onClick={() => onScreen(screen.id, session.id)}>Screen</button>)}
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
           {session && inFlight(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>

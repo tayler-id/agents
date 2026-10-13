@@ -48,7 +48,7 @@ import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
 import { handBackScreen, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
-import { Heartbeat, ScreenMove } from '../shared/screen.ts'
+import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
   EndedMessages, EVENT_KINDS, SESSION_STATUSES,
@@ -569,7 +569,8 @@ const routes: Route[] = [
     const body = ScreenMove.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
     const move = action === 'take' ? takeScreen : handBackScreen
-    return { control: await move(person, instanceId, body.data.sessionId) }
+    const moved: ScreenMoved = { control: await move(person, instanceId, body.data.sessionId) }
+    return moved
   }],
 
   // A person keeps a box for themselves, or lets it go back to the pool. A

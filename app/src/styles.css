@@ -309,9 +309,17 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 .sign-in { display: grid; gap: 8px; max-width: 620px; }
 .note-line .glyph { margin-right: 6px; }
 
+/* A box's screen beside the work, with the wider share of the page. Who holds it
+   reads in the status line's weight, never in a colored edge. */
+.shell.with-screen { grid-template-columns: 260px minmax(300px, 1fr) minmax(0, 1.5fr); }
+.screen-status { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 10px 16px; }
+.screen-status.holding { font-weight: 600; }
+.screen-error { padding: 0 16px 8px; }
+.screen { flex: 1; min-height: 0; margin: 0 16px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); overflow: hidden; }
+
 /* Phone width: the sidebar opens over the conversation, the panel replaces it. */
 @media (max-width: 760px) {
-  .shell, .shell.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .shell, .shell.with-panel, .shell.with-screen { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
   .topbar-title { font-weight: 600; }
   .sidebar { display: none; }

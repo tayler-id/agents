@@ -324,10 +324,21 @@ async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex,
     }
     const screenId = audience === 'people' ? VIEWER_PATH.exec(path)?.[1] : undefined
     if (screenId) {
-      const person = await personFrom(req)
-      const screen = await watchable(person, screenId)
-      await loadControl(screen.id)
-      accept(peopleSockets, req, socket, head, (ws) => { watch(person, screen, ws) })
+      // A browser can't read the status of a refused upgrade, only a close
+      // reason, so a person who may not watch gets the socket closed with why.
+      const allowed = await (async () => {
+        const person = await personFrom(req)
+        const screen = await watchable(person, screenId)
+        await loadControl(screen.id)
+        return { person, screen }
+      })().catch((error: unknown) => {
+        if (error instanceof HttpError) return { refused: error.message }
+        throw error
+      })
+      accept(peopleSockets, req, socket, head, (ws) => {
+        if ('refused' in allowed) ws.close(ScreenClose.notAllowed, allowed.refused)
+        else watch(allowed.person, allowed.screen, ws)
+      })
       return
     }
     throw new HttpError(404, 'no such route')
