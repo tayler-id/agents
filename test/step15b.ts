@@ -77,12 +77,17 @@ async function serious(page: Page) {
   return found.length
 }
 
+// Measured against the page's own width. Under phone emulation Chromium widens
+// window.innerWidth to fit content that overflows, so it can't show overflow.
 async function noSideScroll(page: Page, selectors: string[]) {
-  return page.evaluate((list) => document.documentElement.scrollWidth <= window.innerWidth
-    && list.every((selector) => {
-      const el = document.querySelector(selector)
-      return !el || el.getBoundingClientRect().right <= window.innerWidth + 1
-    }), selectors)
+  return page.evaluate((list) => {
+    const width = document.documentElement.clientWidth
+    return document.documentElement.scrollWidth <= width
+      && list.every((selector) => {
+        const el = document.querySelector(selector)
+        return !el || el.getBoundingClientRect().right <= width + 1
+      })
+  }, selectors)
 }
 
 // The color of one of the box's pixels as the Screen view's canvas shows it,
@@ -217,7 +222,8 @@ async function runEngine(engine: string, taskId: string, sessionId: string, inst
     const phoneImage = await visible(phone, 'aside.panel img.document-image', 15)
     const imageFits = await noSideScroll(phone, ['aside.panel', 'img.document-image'])
     await phone.screenshot({ path: join(SHOTS, `${engine}-image-document-phone.png`) })
-    check(phoneLive && phoneFits && phoneImage && imageFits, `${engine}: at phone width the screen and the image fit without sideways scrolling`)
+    check(phoneLive && phoneFits && phoneImage && imageFits, `${engine}: at phone width the screen and the image fit without sideways scrolling `
+      + `(screen live ${phoneLive}, fits ${phoneFits}; image shown ${phoneImage}, fits ${imageFits})`)
 
     check(errors.length === 0, `${engine}: no page errors${errors.length ? ` (${errors.join('; ')})` : ''}`)
   } finally {
