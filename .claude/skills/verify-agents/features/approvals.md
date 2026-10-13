@@ -2,6 +2,25 @@
 
 Anything that waits on a person is an ask, shown as a card where the work is, and anyone on the team can answer it. An agent's gated tool waits for Allow once, Always allow, Deny or Never, and Always and Never become standing rules. A pipeline's gate asks for a decision, with links and an optional note. A stage that runs out of tries or gets stuck hands off to a person, who lets it try again or takes over.
 
+```json
+{
+  "id": "approvals",
+  "name": "Approvals and asks",
+  "paths": [
+    "app/src/Asks.tsx",
+    "server/record.ts",
+    "server/runner.ts",
+    "daemon/claude.ts"
+  ],
+  "checks": [
+    "test/step4a.ts",
+    "test/step4b.ts",
+    "test/step6.ts",
+    "test/step6b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `tool-ask`: an agent's gated tool waits as a Needs approval card in the conversation, naming the tool and the command.

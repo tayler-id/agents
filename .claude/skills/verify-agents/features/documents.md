@@ -2,6 +2,22 @@
 
 Files an agent writes in its task's `task` folder become documents the team reads beside the task or run, rendered as markdown, with every version kept. A person comments on a version, quoting the part they mean. A comment sent to the agent reaches the session that wrote the document, which revises it into a new version.
 
+```json
+{
+  "id": "documents",
+  "name": "Documents and comments",
+  "paths": [
+    "app/src/Document.tsx",
+    "server/tasks.ts",
+    "daemon/agentsd.ts"
+  ],
+  "checks": [
+    "test/step10.ts",
+    "test/step10b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `doc-list`: a task's or run's documents, each with its current version, under Made by this task (or run).

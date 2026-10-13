@@ -210,7 +210,7 @@ function newest(dir: string): number {
 // its own, closed again, so doctor starts nothing that outlives it.
 async function appUsable(state: ReadyState): Promise<{ ok: boolean; detail: string }> {
   const driver = playwrightDriver(state, async () => {})
-  const key: PageKey = { target: 'browser', engine: 'chromium', viewport: 'desktop', login: state.seed.owner.login }
+  const key: PageKey = { target: 'browser', engine: 'chromium', width: 'desktop', login: state.seed.owner.login }
   try {
     await driver.open(key)
     await driver.wait(key, { role: 'navigation', name: 'Workspace' }, false, USABLE_MS)

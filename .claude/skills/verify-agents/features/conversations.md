@@ -2,6 +2,28 @@
 
 A person talks with one agent in a DM, or with teammates and several agents in a room, where each agent takes a turn after a post. An @mention gives only that agent a turn. An agent that cannot start leaves a notice saying why, in place of the thinking indicator.
 
+```json
+{
+  "id": "conversations",
+  "name": "Conversations",
+  "paths": [
+    "app/src/Conversation.tsx",
+    "app/src/Work.tsx",
+    "app/src/live.ts",
+    "server/record.ts",
+    "server/rooms.ts",
+    "daemon/agentsd.ts"
+  ],
+  "checks": [
+    "test/step1.ts",
+    "test/step3.ts",
+    "test/step4b.ts",
+    "test/step10.ts",
+    "test/step10b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `dm-open`: open a DM from the sidebar's Agents list, or with Message on the agent's page.
@@ -40,7 +62,7 @@ Preconditions:
 - **Agents take turns, and a pass is not posted.** Run `bin/agentsctl browser fill --role textbox --name Message --value "What should we ship this week?"`, `bin/agentsctl browser press Enter --role textbox --name Message` and `bin/agentsctl browser wait --role strong --text checkout --within list:Messages --timeout 60`. fixer's reply shows, with "checkout" rendered bold. writer took its turn and passed, and its pass is not shown: `bin/agentsctl db "select t.outcome from turns t join agents a on a.id = t.agent_id join conversations c on c.id = t.conversation_id where c.team_id = {team} and c.name = 'launch' and a.name = 'writer' order by t.requested_at desc limit 1" --wait 60 --expect outcome=pass` and `bin/agentsctl browser count --role listitem --text PASS --within list:Messages --expect 0`. Capture it with `bin/agentsctl visual shot conversation-room --ready-role strong --ready-text checkout`.
 - **An @mention gives one agent the turn.** Run `bin/agentsctl browser fill --role textbox --name Message --value "@fixer can you take this one?"` and `bin/agentsctl browser press Enter --role textbox --name Message`. fixer answers and writer gets no turn: `bin/agentsctl db "select a.name from turns t join agents a on a.id = t.agent_id join conversations c on c.id = t.conversation_id where c.team_id = {team} and c.name = 'launch' order by t.requested_at desc limit 1" --wait 60 --expect name=fixer` and `bin/agentsctl browser count --role strong --text checkout --within list:Messages --expect 2 --timeout 60`.
 - **A teammate sees the room and posts.** As ben, open the room and post. Run `bin/agentsctl browser goto / --as ben`, `bin/agentsctl browser click --role button --name "# launch" --within list:Conversations --as ben`, `bin/agentsctl browser wait --role listitem --text "What should we ship this week?" --within list:Messages --as ben`, `bin/agentsctl browser fill --role textbox --name Message --value "Ben is here" --as ben` and `bin/agentsctl browser press Enter --role textbox --name Message --as ben`. Ada's open room shows ben's post without a reload: `bin/agentsctl browser wait --role listitem --text "Ben is here" --within list:Messages --timeout 30`.
-- **Check the room at phone width.** Run `bin/agentsctl browser goto / --viewport phone`, `bin/agentsctl browser click --role button --name Menu --viewport phone`, `bin/agentsctl browser click --role button --name "# launch" --within list:Conversations --viewport phone` and `bin/agentsctl browser overflow --viewport phone`. The room fits a phone without sideways scrolling.
+- **Check the room at phone width.** Run `bin/agentsctl browser goto / --width phone`, `bin/agentsctl browser click --role button --name Menu --width phone`, `bin/agentsctl browser click --role button --name "# launch" --within list:Conversations --width phone` and `bin/agentsctl browser overflow --width phone`. The room fits a phone without sideways scrolling.
 - **A stopped notice says why.** Give writer a plugin whose secret its machine lacks, then message it. Run `bin/agentsctl api POST "/v1/agents/$(bin/agentsctl db "select id from agents where team_id = {team} and name = 'writer'" --value)/plugins" --body "{\"name\":\"notes\",\"kind\":\"stdio\",\"config\":{\"command\":\"npx\",\"args\":[\"-y\",\"notes-mcp\"],\"env\":{\"NOTES_TOKEN\":{\"secret\":\"NOTES_TOKEN\"}}}}"`, `bin/agentsctl browser goto /`, `bin/agentsctl browser click --role button --name writer --within list:Agents`, `bin/agentsctl browser fill --role textbox --name Message --value "Are you there?"`, `bin/agentsctl browser press Enter --role textbox --name Message`, `bin/agentsctl browser wait --role listitem --text "no value for NOTES_TOKEN" --within list:Messages --timeout 30` and `bin/agentsctl browser wait --role listitem --text thinking --within list:Messages --gone`. The notice names the secret and where to set it, and writer no longer shows as thinking. Capture it with `bin/agentsctl visual shot conversation-stopped --ready-role listitem --ready-text "no value for NOTES_TOKEN"`.
 - **The notice clears when the agent runs again.** Remove the plugin and message writer again. Run `bin/agentsctl api POST "/v1/agents/$(bin/agentsctl db "select id from agents where team_id = {team} and name = 'writer'" --value)/plugins/notes/delete"`, `bin/agentsctl browser fill --role textbox --name Message --value "Try again."`, `bin/agentsctl browser press Enter --role textbox --name Message`, `bin/agentsctl browser wait --role listitem --text "fake reply" --within list:Messages --timeout 30` and `bin/agentsctl browser wait --role listitem --text "no value for NOTES_TOKEN" --within list:Messages --gone`. writer answers and the notice is gone.
 - **A working agent that cannot restart says why.** writer's session is running now. Give it the plugin again, so its next message restarts the session into the missing secret. Run `bin/agentsctl api POST "/v1/agents/$(bin/agentsctl db "select id from agents where team_id = {team} and name = 'writer'" --value)/plugins" --body "{\"name\":\"notes\",\"kind\":\"stdio\",\"config\":{\"command\":\"npx\",\"args\":[\"-y\",\"notes-mcp\"],\"env\":{\"NOTES_TOKEN\":{\"secret\":\"NOTES_TOKEN\"}}}}"`, `bin/agentsctl browser fill --role textbox --name Message --value "And now?"`, `bin/agentsctl browser press Enter --role textbox --name Message` and `bin/agentsctl browser wait --role listitem --text "no value for NOTES_TOKEN" --within list:Messages --timeout 30`. The notice comes back, and the session says it failed: `bin/agentsctl db "select s.status from sessions s join conversations c on c.id = s.conversation_id join agents a on a.id = s.agent_id where c.team_id = {team} and c.kind = 'dm' and a.name = 'writer'" --expect status=failed`.

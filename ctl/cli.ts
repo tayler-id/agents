@@ -16,12 +16,13 @@ import { call, Caller, Door, Method } from './api.ts'
 import { actions, nextPath, record } from './evidence.ts'
 import { doctor, down, list, ready, resolve, up } from './instance.ts'
 import { isOurs } from './procs.ts'
-import { Engine, Role, Viewport, type Found, type Handle, type Op, type Target } from './protocol.ts'
+import { ENGINE, WIDTH } from '../shared/evidence.ts'
+import { Role, type Found, type Handle, type Op, type Target } from './protocol.ts'
 import { sessionCall, stopSessionServer } from './session-client.ts'
 import { addAgent, addBox, addPerson, AGENTS, seedExtraRepo } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
 import { baseline, compare } from './visual.ts'
-import { checkMap, guardMap, listMap, runMap } from './map.ts'
+import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
 import { CliError, EXIT, Json, Refused, UsageError, type Output } from './output.ts'
 
 type Result = {
@@ -101,7 +102,7 @@ function handleOf(values: z.infer<typeof HandleArgs>): Handle | undefined {
 
 const DriveArgs = Common.extend({
   ...HandleArgs.shape,
-  engine: Engine.default('chromium'), viewport: Viewport.default('desktop'), as: z.string().optional(),
+  engine: ENGINE.default('chromium'), width: WIDTH.default('desktop'), as: z.string().optional(),
   timeout: z.coerce.number().positive().default(DEFAULT_TIMEOUT_S),
   value: z.string().optional(), option: z.string().optional(), path: z.string().optional(), label: z.string().optional(),
   aria: z.boolean().optional(), gone: z.boolean().optional(), page: z.boolean().optional(),
@@ -109,7 +110,7 @@ const DriveArgs = Common.extend({
   'ready-role': Role.optional(), 'ready-name': z.string().optional(), 'ready-text': z.string().optional(),
 })
 const DRIVE_OPTIONS: Options = {
-  ...HANDLE_OPTIONS, engine: { type: 'string' }, viewport: { type: 'string' }, as: { type: 'string' }, timeout: { type: 'string' },
+  ...HANDLE_OPTIONS, engine: { type: 'string' }, width: { type: 'string' }, as: { type: 'string' }, timeout: { type: 'string' },
   value: { type: 'string' }, option: { type: 'string' }, path: { type: 'string' }, label: { type: 'string' },
   aria: { type: 'boolean' }, gone: { type: 'boolean' }, page: { type: 'boolean' }, expect: { type: 'string' }, max: { type: 'string' },
   'ready-role': { type: 'string' }, 'ready-name': { type: 'string' }, 'ready-text': { type: 'string' },
@@ -215,7 +216,7 @@ const driveCommand = (target: Target): Command => ({
     return async () => {
       const state = ready(values.instance)
       const reply = await sessionCall(state, {
-        target, engine: values.engine, viewport: values.viewport, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
+        target, engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
         op: opFor(name, values, word, state.evidence),
       })
       if (!reply.ok) {
@@ -446,7 +447,7 @@ const machineCommand: Command = {
   },
 }
 
-const VisualArgs = Common.extend({ from: z.string().optional(), reason: z.string().optional(), state: z.array(z.string()).optional(), baselines: z.string().optional() })
+const VisualArgs = Common.extend({ from: z.string().optional(), reason: z.string().optional(), view: z.array(z.string()).optional(), baselines: z.string().optional() })
 
 const visualCommand: Command = {
   parse: (args) => {
@@ -459,7 +460,7 @@ const visualCommand: Command = {
       return async () => {
         const state = ready(values.instance)
         const reply = await sessionCall(state, {
-          target: 'browser', engine: values.engine, viewport: values.viewport, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
+          target: 'browser', engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
           op: { op: 'visual', state: stateName, ready: readyHandle },
         })
         if (!reply.ok) return { ok: false, head: `error: visual shot ${stateName}: ${reply.error}`, help: driveHelp('browser', 'screenshot', null, reply.files[0] ?? null), files: reply.files, data: reply, evidence: state.evidence }
@@ -470,7 +471,7 @@ const visualCommand: Command = {
         }
       }
     }
-    const { values } = parse(rest, { from: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string', multiple: true }, baselines: { type: 'string' } }, VisualArgs)
+    const { values } = parse(rest, { from: { type: 'string' }, reason: { type: 'string' }, view: { type: 'string', multiple: true }, baselines: { type: 'string' } }, VisualArgs)
     // Another baselines folder, for a check that must leave the skill's alone.
     const baselines = values.baselines === undefined ? BASELINES_DIR : values.baselines.startsWith('/') ? values.baselines : join(ROOT, values.baselines)
     const evidenceOf = () => (values.from ? (values.from.startsWith('/') ? values.from : join(ROOT, values.from)) : resolve(values.instance).evidence)
@@ -479,11 +480,11 @@ const visualCommand: Command = {
         const evidence = evidenceOf()
         const result = compare(evidence, baselines)
         const bad = result.results.filter((r) => r.status !== 'same' && r.status !== 'within tolerance')
-        const lines = result.results.map((r) => `${bad.includes(r) ? 'FAIL' : 'pass'}  ${r.state} ${r.combo}: ${r.detail}${r.diff ? ` (diff ${relative(ROOT, r.diff)})` : ''}`)
+        const lines = result.results.map((r) => `${bad.includes(r) ? 'FAIL' : 'pass'}  ${r.view} ${r.engine}-${r.width}: ${r.detail}${r.diff ? ` (diff ${relative(ROOT, r.diff)})` : ''}`)
         if (result.notCaptured.length) lines.push(`not captured this run: ${result.notCaptured.join(', ')}`)
         const head = !result.results.length ? `error: visual compare: no captures in ${relative(ROOT, evidence)}`
           : result.ok ? `${String(result.results.length)} captures match their baselines` : `error: visual compare: ${String(bad.length)} of ${String(result.results.length)} captures differ`
-        const help = !result.results.length ? [run('map run all --visual', 'to take every capture'), run('visual shot <state>', 'for one view')]
+        const help = !result.results.length ? [run('map run all --visual', 'to take every capture'), run('visual shot <view>', 'for one view')]
           : result.ok ? [] : ['Open each diff: red marks what changed', run('visual baseline --reason "<why the view changed on purpose>"', 'only if the change is intended'), 'Otherwise it is a regression: reproduce it and report it']
         return { ok: result.ok, head, detail: lines.join('\n'), help, files: result.results.flatMap((r) => (r.diff ? [r.diff] : [])), data: result, evidence }
       }
@@ -493,7 +494,7 @@ const visualCommand: Command = {
       if (!reason) throw new UsageError('visual baseline needs --reason "<why the view changed on purpose>"')
       return async () => {
         const evidence = evidenceOf()
-        const { update, unchanged } = baseline(evidence, reason, values.state ?? [], baselines)
+        const { update, unchanged } = baseline(evidence, reason, values.view ?? [], baselines)
         const files = update?.files ?? []
         return {
           ok: true, already: update === null,
@@ -517,6 +518,15 @@ const mapCommand: Command = {
         return {
           ok: true, head: `${String(features.length)} features`, detail: features.map((f) => `${f.id}  ${f.title}  (${String(f.steps.length)} steps)`).join('\n'),
           help: [run('map run <feature>', 'to drive one'), run('map run all --visual', 'for the full sweep')], files: [], data: features,
+        }
+      }
+    }
+    if (action === 'export') {
+      return async () => {
+        const { file, map, already } = exportMap()
+        return {
+          ok: true, already, head: `ok: map export -> ${relative(ROOT, file)} lists ${String(map.features.length)} features`,
+          help: [run('map check', 'to confirm the map is whole')], files: already ? [] : [file], data: map,
         }
       }
     }
@@ -561,7 +571,7 @@ const mapCommand: Command = {
         return { ok: report.ok, head: report.ok ? `ok: map run -> every step live-ui-verified` : `error: map run: ${String(failed.length)} features failed`, detail: report.text, help, files: [report.file], data: report, evidence: state.evidence }
       }
     }
-    throw new UsageError('map takes list, check, guard or run')
+    throw new UsageError('map takes list, check, export, guard or run')
   },
 }
 
@@ -703,7 +713,7 @@ export const USAGE = `agentsctl: run and drive Agents for verification. Run from
   bin/agentsctl                       a dashboard: instances, their health, recent evidence, what to try next
   bin/agentsctl up [--instance <name>] [--port <first>] [--claude fake|real] [--pipelines] [--no-build]
   bin/agentsctl doctor | down [--keep-data] | list | evidence
-  bin/agentsctl browser <op> [--engine chromium|firefox|webkit] [--viewport desktop|phone] [--as ada|ben|<who>] [--timeout <s>]
+  bin/agentsctl browser <op> [--engine chromium|firefox|webkit] [--width desktop|phone] [--as ada|ben|<who>] [--timeout <s>]
       ops: goto <route> | click | fill --value | select --option|--value | check | uncheck | press <key> | type <text>
            wait [--gone] | text [--expect] | count [--expect] | snapshot --aria | screenshot [--page]
            console | network | trace start|stop | overflow | a11y | focus | tab-to | record start --label <what it shows> | record stop | close
@@ -715,8 +725,8 @@ export const USAGE = `agentsctl: run and drive Agents for verification. Run from
   bin/agentsctl seed person <who> | agent <name> | box <name> | repo <name> | task --title <title> [--agent <name>]
   bin/agentsctl secret set <NAME> --value <value> | secret unset <NAME>
   bin/agentsctl machine read <path in the machine's home> [--expect-text <text>] [--missing]
-  bin/agentsctl visual shot <state> [--ready-role <role> --ready-name <name>] | compare [--from <dir>] [--baselines <dir>] | baseline --reason <why> [--from <dir>] [--baselines <dir>]
-  bin/agentsctl map list | check | guard --base <git ref> | run <feature ...|all> [--visual] [--keep-going]
+  bin/agentsctl visual shot <view> [--ready-role <role> --ready-name <name>] | compare [--from <dir>] [--baselines <dir>] | baseline --reason <why> [--from <dir>] [--baselines <dir>]
+  bin/agentsctl map list | check | export | guard --base <git ref> | run <feature ...|all> [--visual] [--keep-going]
 
 Every command takes --instance <name> (the only running one by default), --json for one typed envelope,
 --full to show long output whole, and --dry-run, which checks the command line and the instance and runs nothing.
@@ -736,7 +746,7 @@ export function parseCommand(argv: string[]): () => Promise<Result> {
 // Commands with a second word, such as `browser click`.
 const TWO_WORDS = new Set(['browser', 'desktop', 'seed', 'secret', 'machine', 'visual', 'map'])
 // Commands that start no instance and need none.
-const NO_INSTANCE = new Set(['help', 'up', 'list', 'map list', 'map check', 'visual compare', 'visual baseline'])
+const NO_INSTANCE = new Set(['help', 'up', 'list', 'map list', 'map check', 'map export', 'visual compare', 'visual baseline'])
 
 // What a command would do, once its arguments have parsed. Runs nothing.
 function dryRun(argv: string[], command: string): Output {

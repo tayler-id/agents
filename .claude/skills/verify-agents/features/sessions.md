@@ -2,6 +2,24 @@
 
 Everything an agent does is a session in the team's shared record. A person opens Session details beside a conversation, task or run to see every step in order, live, and the sidebar's Running now lists the sessions at work. Agents read the same record through their team-record tools: they search what teammates' agents did and read their sessions.
 
+```json
+{
+  "id": "sessions",
+  "name": "Sessions and the record",
+  "paths": [
+    "app/src/Session.tsx",
+    "app/src/App.tsx",
+    "server/teamrecord.ts",
+    "daemon/record-mcp.ts"
+  ],
+  "checks": [
+    "test/step1.ts",
+    "test/step5.ts",
+    "test/step10.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `session-details`: Session details beside a conversation or a task lists every event, newest arriving live.

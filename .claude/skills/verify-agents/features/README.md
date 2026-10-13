@@ -47,11 +47,13 @@ Run the files top to bottom on one fresh instance: `bin/agentsctl map run all --
 
 ## Entry contract
 
-Each file starts with a `#` title and a paragraph on what a person can do. Then exactly four sections, in this order:
+Each file starts with a `#` title, a paragraph on what a person can do, and its map entry: one json code block holding its `id` (the file's name), its `name` (the title), the `paths` it lives in and the `checks` that show it works, in the shape `FEATURE` in `shared/evidence.ts` defines. Then exactly four sections, in this order:
 
 1. `Sub-features`: short ids, one line each.
 2. `How to get to it (user POV)`: every way a person reaches it.
 3. `Driving it with agentsctl`: `Preconditions:`, then labelled steps. Each step pairs the user's action with the exact commands and the result that proves it.
 4. `Gotchas`: what wastes a run or makes a result lie.
 
-`bin/agentsctl map check` fails when a file breaks this contract, when the index and the files disagree, or when a command does not parse.
+`features.json` beside the files holds every map entry in this index's order. The framework's gates read it, and `bin/agentsctl map export` writes it from the entries.
+
+`bin/agentsctl map check` fails when a file breaks this contract, when the index and the files disagree, when a command does not parse, when an entry names a path that does not exist, or when `features.json` differs from the entries.

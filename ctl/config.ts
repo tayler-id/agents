@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
+import { EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
 import { Refused } from './output.ts'
 
 export const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -21,6 +22,8 @@ export const EVIDENCE_DIR = join(VERIFY_DIR, 'evidence')
 export const SKILL_DIR = join(ROOT, '.claude', 'skills', 'verify-agents')
 export const FEATURES_DIR = join(SKILL_DIR, 'features')
 export const BASELINES_DIR = join(SKILL_DIR, 'baselines')
+// The latest run's evidence.json, at the one path the check host reads after a suite.
+export const LATEST_MANIFEST = join(VERIFY_DIR, EVIDENCE_MANIFEST_FILE)
 
 // The ports instances take, clear of the live API (7700, 7710, its streams on
 // 4437), the checks (7700 to 7999), Electric (3000, 3002) and the forge (3001).

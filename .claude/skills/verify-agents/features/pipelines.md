@@ -2,6 +2,26 @@
 
 A pipeline is a file in the team's pipelines repo that takes work from a report to a result through stages: an agent's turn, a check, an action on the forge, or a gate where a person decides. Its page shows each version with how its runs went, its runs, and a form to start one. A run's page shows each stage live, what the run made, and anything waiting on a person. bug-fix takes a bug report to a merged fix, or to a plan when the fix is big.
 
+```json
+{
+  "id": "pipelines",
+  "name": "Pipelines",
+  "paths": [
+    "app/src/Pipeline.tsx",
+    "app/src/Run.tsx",
+    "server/pipelines.ts",
+    "server/runner.ts",
+    "server/hooks.ts",
+    "pipelines/bug-fix.ts"
+  ],
+  "checks": [
+    "test/step6.ts",
+    "test/step6b.ts",
+    "test/step8.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `pipeline-page`: description, versions with their runs, done and stopped counts, recent runs, and the pipeline file.
@@ -37,7 +57,7 @@ Preconditions:
 - **Stages arrive live up to the gate.** Run `bin/agentsctl browser wait --role listitem --text confirm --within list:Stages --timeout 120` and `bin/agentsctl browser wait --role region --name "Needs a decision" --timeout 240`. The reproduction test was seen failing before the fix, and the suite passing after: `bin/agentsctl browser wait --role listitem --text fails --within list:Stages` and `bin/agentsctl db "select string_agg(rs.stage || '=' || coalesce(rs.outcome, rs.status), ',' order by rs.n) as path from run_stages rs join runs r on r.id = rs.run_id join tasks t on t.id = r.task_id where t.team_id = {team} and t.title = 'TENOFF goes negative'" --expect "path=triage=new,reproduce=easy,confirm=fails,fix=fixed,verify=passes,open_pr=done,shepherd=waiting"`.
 - **Approve, and the fix merges.** Run `bin/agentsctl browser click --role button --name Approve` and `bin/agentsctl browser wait --role paragraph --text "Fixed and merged." --timeout 120`. The run is done with its time and cost, and lists the merged pull request: `bin/agentsctl browser wait --role definition --text "$"` and `bin/agentsctl browser wait --role listitem --text merged --within "list:Made by this run"`. The record agrees: `bin/agentsctl db "select r.status, a.state from runs r join tasks t on t.id = r.task_id join artifacts a on a.task_id = t.id where t.team_id = {team} and t.title = 'TENOFF goes negative' and a.kind = 'link'" --expect status=done --expect state=merged`. Capture it with `bin/agentsctl visual shot run-done --ready-role paragraph --ready-text "Fixed and merged."`, then `bin/agentsctl browser a11y`.
 - **Open a stage's session.** Run `bin/agentsctl browser click --role button --name "Open session" --within listitem --within-text fixed` and `bin/agentsctl browser wait --role listitem --text "Tool · Edit" --within list:Events --timeout 15`. The fix stage's session opens beside the run, showing the agent's edit.
-- **Check the run page at phone width.** Run `bin/agentsctl browser goto "#/r/$(bin/agentsctl db "select r.id from runs r join tasks t on t.id = r.task_id where t.team_id = {team} and t.title = 'TENOFF goes negative'" --value)" --viewport phone` and `bin/agentsctl browser overflow --viewport phone`. The run fits a phone without sideways scrolling.
+- **Check the run page at phone width.** Run `bin/agentsctl browser goto "#/r/$(bin/agentsctl db "select r.id from runs r join tasks t on t.id = r.task_id where t.team_id = {team} and t.title = 'TENOFF goes negative'" --value)" --width phone` and `bin/agentsctl browser overflow --width phone`. The run fits a phone without sideways scrolling.
 - **The pipeline's room has the run's progress.** Run `bin/agentsctl browser goto /`, `bin/agentsctl browser click --role button --name "# bug-fix" --within list:Conversations` and `bin/agentsctl browser wait --role listitem --text "Finished: Fixed and merged." --within list:Messages --timeout 15`. The room shows the run's start, its gate question and its end. People cannot post there: `bin/agentsctl api POST "/v1/conversations/$(bin/agentsctl db "select id from conversations where team_id = {team} and kind = 'room' and name = 'bug-fix'" --value)/messages" --body "{\"text\":\"hello\"}" --expect 400 --expect-text "pipeline's room"`.
 - **A hard bug ends in a plan.** Run `bin/agentsctl browser click --role button --name bug-fix --within list:Pipelines`, `bin/agentsctl browser fill --role textbox --name "What should it work on?" --value "PLANME taxes are wrong"`, `bin/agentsctl browser fill --role textbox --name Details --value "Tax is off for every country but one."`, `bin/agentsctl browser click --role button --name Start --within "form:Start a run"`, `bin/agentsctl browser wait --role button --name plan.md --within "list:Made by this run" --timeout 120` and `bin/agentsctl browser click --role button --name plan.md`. The plan opens beside the run, rendered: `bin/agentsctl browser wait --role heading --name Plan --within complementary:Document`.
 - **Reject the plan with a note.** Run `bin/agentsctl browser wait --role region --name "Needs a decision" --timeout 60`, `bin/agentsctl browser fill --role textbox --name Note --value "Needs a design review first."`, `bin/agentsctl browser click --role button --name Reject` and `bin/agentsctl browser wait --role paragraph --text "rejected the plan" --timeout 60`. The run stops, and the note stays with the answer: `bin/agentsctl db "select a.answer->>'message' as note, r.status from asks a join runs r on r.id = a.run_id join tasks t on t.id = r.task_id where t.team_id = {team} and t.title = 'PLANME taxes are wrong' and a.kind = 'gate'" --expect "note=Needs a design review first." --expect status=failed`.

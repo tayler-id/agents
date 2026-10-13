@@ -2,6 +2,22 @@
 
 Flows that cross several features and surfaces. They prove the multiplayer promise: what one person or agent does reaches everyone else as it happens, on the web and on the desktop. Read the linked files for each surface's handles first.
 
+```json
+{
+  "id": "journeys",
+  "name": "Journeys",
+  "paths": [
+    "app/src/Conversation.tsx",
+    "app/src/Session.tsx",
+    "desktop/main.cjs"
+  ],
+  "checks": [
+    "test/step4b.ts",
+    "test/step4c.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `watch-teammate`: a teammate opens a conversation someone else started, sees the agent's work arrive live, and opens its session.

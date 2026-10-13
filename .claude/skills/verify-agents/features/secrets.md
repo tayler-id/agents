@@ -2,6 +2,22 @@
 
 An agent's plugins name the secrets they need, and the values stay on the machine that runs the agent, in its environment or `~/.agents-app/secrets.json`. The record keeps names, never values. An agent whose machine lacks a value stops and says which secret to set and where. Anything an agent says that contains a known secret reaches the record and every viewer as `[secret:NAME]`.
 
+```json
+{
+  "id": "secrets",
+  "name": "Secrets",
+  "paths": [
+    "daemon/agentsd.ts",
+    "shared/scrub.ts",
+    "server/agents.ts"
+  ],
+  "checks": [
+    "test/step10.ts",
+    "test/step10b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `secret-named`: a plugin's environment or headers name secrets; the team's list of secret names grows, and no value is stored.

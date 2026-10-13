@@ -2,6 +2,23 @@
 
 Pipelines propose changes rather than make them. The coach reads conversations for corrections people keep making and proposes new instructions or a skill for an agent. The improve pipeline changes another pipeline's file once and scores the change by replaying past runs with it and without it, and only a change that scores better reaches the shepherd, as a pull request with both scores. A proposal shows its summary, scores and diff, beside the gate that approves it.
 
+```json
+{
+  "id": "proposals",
+  "name": "Proposals",
+  "paths": [
+    "app/src/Proposal.tsx",
+    "server/refine.ts",
+    "pipelines/improve.ts",
+    "pipelines/coach.ts"
+  ],
+  "checks": [
+    "test/step9.ts",
+    "test/step9b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `proposal-instructions`: the coach proposes an agent's new instructions, with a diff; approving applies them.

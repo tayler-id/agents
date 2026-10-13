@@ -6,12 +6,13 @@
 //   node --env-file=.env --env-file=.env.test test/step17.ts
 
 import { execFile } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
+import { EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
 import { Output } from '../ctl/output.ts'
 import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
@@ -101,8 +102,8 @@ try {
   const image = shotFile && existsSync(shotFile) ? decode(readFileSync(shotFile)) : null
   check(image && image.width === 1280 && image.height === 820, 'screenshot writes a PNG of the 1280x820 page')
   check((await ctl(['browser', 'console'])).out.ok, 'console finds no page error or console error from the app')
-  await ctl(['browser', 'goto', '/', '--viewport', 'phone'])
-  check((await ctl(['browser', 'overflow', '--viewport', 'phone'])).out.ok, 'overflow finds no sideways scrolling at phone width')
+  await ctl(['browser', 'goto', '/', '--width', 'phone'])
+  check((await ctl(['browser', 'overflow', '--width', 'phone'])).out.ok, 'overflow finds no sideways scrolling at phone width')
   check((await ctl(['browser', 'a11y'])).out.ok, 'a11y finds no serious or critical violation on the DM')
   await ctl(['browser', 'network'])
   await ctl(['browser', 'click', '--role', 'button', '--name', 'Agent setup'])
@@ -142,6 +143,10 @@ try {
   const capture = await ctl(['visual', 'shot', 'dm', '--ready-role', 'listitem', '--ready-text', 'fake reply'])
   const captured = Found.safeParse(capture.out.data)
   check(capture.out.ok && captured.success && captured.data.files.length === 6 && captured.data.files.every((f) => existsSync(f)), 'visual shot captures the view in three engines at two widths, each checked')
+  const manifests = [join(state.evidence, EVIDENCE_MANIFEST_FILE), join(ROOT, '.scratch', 'verify', EVIDENCE_MANIFEST_FILE)].map((file) => EVIDENCE_MANIFEST.safeParse(existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null))
+  check(manifests.every((m) => m.success && m.data.shots.filter((s) => s.view === 'dm').length === 6
+    && m.data.shots.every((s) => createHash('sha256').update(readFileSync(join(ROOT, s.path))).digest('hex') === s.sha256)),
+    'the run\'s evidence.json, and its copy where the check host reads it, list the six captures with each file\'s sha256')
   const noReason = await ctl(['visual', 'baseline', '--baselines', baselines])
   check(noReason.code === 2, 'visual baseline without a reason is refused as a usage error')
   await ctl(['visual', 'baseline', '--reason', 'step 17 makes its own baselines', '--baselines', baselines])
@@ -154,7 +159,7 @@ try {
   await ctl(['visual', 'shot', 'dm', '--ready-role', 'listitem', '--ready-text', 'A change the baseline does not have'])
   const changed = await ctl(['visual', 'compare', '--baselines', baselines])
   const diff = CompareResult.safeParse(changed.out.data)
-  const desktopDiff = diff.success ? diff.data.results.find((r) => r.combo === 'chromium-desktop') : undefined
+  const desktopDiff = diff.success ? diff.data.results.find((r) => r.engine === 'chromium' && r.width === 'desktop') : undefined
   check(changed.code === 1 && desktopDiff?.status === 'different' && desktopDiff.regions.length > 0 && desktopDiff.diff && existsSync(desktopDiff.diff),
     'visual compare fails on a changed view, naming the region and writing a diff image')
   rmSync(baselines, { recursive: true, force: true })

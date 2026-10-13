@@ -4,6 +4,7 @@
 
 import type { Page } from '@playwright/test'
 import { z } from 'zod'
+import { ENGINE, WIDTH } from '../shared/evidence.ts'
 
 // ARIA roles Playwright finds elements by. The list is checked against
 // Playwright's own type, so a role it does not know fails to compile.
@@ -22,12 +23,6 @@ export const Role = z.enum(ROLES, {
 })
 export type Role = z.infer<typeof Role>
 
-export const Engine = z.enum(['chromium', 'firefox', 'webkit'])
-export type Engine = z.infer<typeof Engine>
-export const ENGINES = Engine.options
-export const Viewport = z.enum(['desktop', 'phone'])
-export type Viewport = z.infer<typeof Viewport>
-export const VIEWPORTS = Viewport.options
 export const Target = z.enum(['browser', 'desktop'])
 export type Target = z.infer<typeof Target>
 
@@ -76,14 +71,14 @@ export type Op = z.infer<typeof Op>
 export type OpName = Op['op']
 
 export const SessionRequest = z.object({
-  target: Target, engine: Engine, viewport: Viewport, login: z.string(), timeoutMs: z.number().int().positive(), op: Op,
+  target: Target, engine: ENGINE, width: WIDTH, login: z.string(), timeoutMs: z.number().int().positive(), op: Op,
 })
 export type SessionRequest = z.infer<typeof SessionRequest>
 
 export const Violation = z.object({ id: z.string(), impact: z.string(), help: z.string(), nodes: z.number().int(), target: z.string() })
 export const Offender = z.object({ element: z.string(), right: z.number() })
 export const Capture = z.object({
-  engine: Engine, viewport: Viewport, file: z.string(),
+  engine: ENGINE, width: WIDTH, file: z.string(),
   violations: z.array(Violation), overflow: z.boolean(), errors: z.array(z.string()),
 })
 export type Capture = z.infer<typeof Capture>

@@ -2,6 +2,23 @@
 
 Anyone on the team sets up an agent from its page: its title, model and instructions, the skills it knows, the plugins (MCP servers) it may use, routines it runs on a schedule, and what it remembers. A template saves an agent's whole setup, and a new agent can start from it.
 
+```json
+{
+  "id": "agents",
+  "name": "Agents",
+  "paths": [
+    "app/src/AgentPage.tsx",
+    "server/agents.ts",
+    "server/routines.ts",
+    "daemon/agentfiles.ts"
+  ],
+  "checks": [
+    "test/step10.ts",
+    "test/step10b.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `agent-new`: New agent from the sidebar, blank, with a name, its machine, a title and instructions.

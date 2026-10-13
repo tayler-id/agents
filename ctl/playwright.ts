@@ -13,11 +13,12 @@ import {
 import { AxeBuilder } from '@axe-core/playwright'
 import { childEnv, ROOT } from './config.ts'
 import { describe, type Driver, type NetworkEntry, type PageKey } from './driver.ts'
-import type { Engine, Handle, Viewport } from './protocol.ts'
+import type { Engine, Width } from '../shared/evidence.ts'
+import type { Handle } from './protocol.ts'
 import type { ReadyState } from './state.ts'
 import { VOLATILE } from './visual.ts'
 
-const SIZES: Record<Viewport, { width: number; height: number }> = { desktop: { width: 1280, height: 820 }, phone: { width: 390, height: 844 } }
+const SIZES: Record<Width, { width: number; height: number }> = { desktop: { width: 1280, height: 820 }, phone: { width: 390, height: 844 } }
 // Over the tailnet the app is plain HTTP on a name that is not localhost, so
 // browsers withhold secure-page APIs such as crypto.randomUUID. Chromium and
 // Firefox reach the instance by a made-up name to match. WebKit cannot map a
@@ -81,7 +82,7 @@ async function loaded(page: Page, timeoutMs: number) {
   await workspace.first().waitFor({ state: 'visible', timeout: timeoutMs })
 }
 
-const keyOf = (key: PageKey) => (key.target === 'desktop' ? `desktop|${key.viewport}|${key.login}` : `browser|${key.engine}|${key.viewport}|${key.login}`)
+const keyOf = (key: PageKey) => (key.target === 'desktop' ? `desktop|${key.width}|${key.login}` : `browser|${key.engine}|${key.width}|${key.login}`)
 
 // `launched` runs after each browser or app starts, so the session can record its processes.
 export function playwrightDriver(state: ReadyState, launched: () => Promise<void>): Driver {
@@ -123,11 +124,11 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       await launched()
     }
     // Firefox has no mobile mode, so its phone view is only the narrow window.
-    const mobile = key.viewport === 'phone' && key.engine !== 'firefox'
+    const mobile = key.width === 'phone' && key.engine !== 'firefox'
     const context = await browser.newContext({
-      baseURL: origin(key.engine), extraHTTPHeaders: { 'tailscale-user-login': key.login }, viewport: SIZES[key.viewport],
+      baseURL: origin(key.engine), extraHTTPHeaders: { 'tailscale-user-login': key.login }, viewport: SIZES[key.width],
       isMobile: mobile, hasTouch: mobile, locale: 'en-US', timezoneId: 'UTC',
-      ...(recording ? { recordVideo: { dir: recording.dir, size: SIZES[key.viewport] } } : {}),
+      ...(recording ? { recordVideo: { dir: recording.dir, size: SIZES[key.width] } } : {}),
     })
     const holder: Holder = { page: await context.newPage(), context, app: null, errors: [], reads: new Set(), network: [], recording, tracing: false }
     watch(holder)
@@ -144,11 +145,11 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       args: [`--host-resolver-rules=MAP ${INSECURE_HOST} 127.0.0.1`, `--user-data-dir=${join(home, 'profile')}`, join(ROOT, 'desktop', 'main.cjs')],
       cwd: ROOT,
       env: childEnv({ HOME: home, AGENTS_SERVER: origin('chromium'), AGENTS_DEV_LOGIN: key.login, AGENTS_PROXY: '' }),
-      ...(recording ? { recordVideo: { dir: recording.dir, size: SIZES[key.viewport] } } : {}),
+      ...(recording ? { recordVideo: { dir: recording.dir, size: SIZES[key.width] } } : {}),
     })
     await launched()
     const page = await app.firstWindow()
-    await app.evaluate(({ BrowserWindow }, s) => { BrowserWindow.getAllWindows()[0]?.setContentSize(s.width, s.height) }, SIZES[key.viewport])
+    await app.evaluate(({ BrowserWindow }, s) => { BrowserWindow.getAllWindows()[0]?.setContentSize(s.width, s.height) }, SIZES[key.width])
     const holder: Holder = { page, context: app.context(), app, errors: [], reads: new Set(), network: [], recording, tracing: false }
     watch(holder)
     await loaded(page, DESKTOP_START_MS)

@@ -37,7 +37,7 @@ async function send(state: InstanceState, message: SessionRequest): Promise<Sess
   return SessionReply.parse(JSON.parse(await post(socketOf(state), JSON.stringify(message))))
 }
 
-const PING: SessionRequest = { target: 'browser', engine: 'chromium', viewport: 'desktop', login: '', timeoutMs: 1000, op: { op: 'ping' } }
+const PING: SessionRequest = { target: 'browser', engine: 'chromium', width: 'desktop', login: '', timeoutMs: 1000, op: { op: 'ping' } }
 
 async function answers(state: InstanceState): Promise<boolean> {
   if (!existsSync(socketOf(state))) return false

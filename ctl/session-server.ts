@@ -58,7 +58,7 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
     setTimeout(() => { void shutdown(0) }, 0)
     return said('the session is closing its browsers')
   }
-  const key: PageKey = { target: request.target, engine: request.engine, viewport: request.viewport, login: request.login }
+  const key: PageKey = { target: request.target, engine: request.engine, width: request.width, login: request.login }
   try {
     if (op.op === 'close') {
       await driver.close(key)
@@ -80,7 +80,7 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
       const found: Found = {
         url: driver.url(key), pass: !problems.length, files: captures.map((c) => c.file), captures,
         summary: `captured ${op.state} at ${new URL(driver.url(key)).hash || '#/'} in ${String(captures.length)} engine and width pairs`
-          + (problems.length ? `. Problems: ${problems.map((c) => `${c.engine}-${c.viewport}: ${[
+          + (problems.length ? `. Problems: ${problems.map((c) => `${c.engine}-${c.width}: ${[
             ...c.violations.map((v) => `${v.impact} ${v.id}`), ...(c.overflow ? ['sideways scrolling'] : []), ...c.errors].join(', ')}`).join('; ')}`
             : ', each with no accessibility violation, no console error, and no sideways scrolling at phone width'),
       }

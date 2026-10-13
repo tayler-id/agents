@@ -74,7 +74,7 @@ bin/agentsctl browser click --role button --name Remove --within listitem --with
 - An element is `--role` with `--name` (its exact accessible name) or `--text` (text inside it). `--within role:name` scopes it to a named container, and `--within <role> --within-text <text>` to one without a name, such as a list item.
 - `wait`, `text --expect` and `count --expect` wait up to `--timeout` seconds (15 by default) for what they look for. `wait --gone` waits for it to go.
 - `--as ben` drives as ben in a page of his own, and `--as <who>` as anyone `seed person <who>` added. `--as stranger` is a login on no team.
-- `--engine firefox|webkit` and `--viewport phone` pick the browser and width. Each pairing is a page of its own.
+- `--engine firefox|webkit` and `--width phone` pick the browser and width. Each pairing is a page of its own.
 - `bin/agentsctl browser reset` closes the whole session when a page is stuck. The next command opens a fresh one.
 
 ### The desktop app
@@ -119,7 +119,7 @@ Everything an instance does is kept in `.scratch/verify/evidence/<instance>-<whe
 - `aria/`, `screens/`, `api/`, `db/` and `network/` captures, numbered in the order taken
 - `failures/`, a screenshot of the page each time a drive fails
 - `videos/` from `browser record`, `traces/` from `browser trace`
-- `visual/` captures and `visual-diff/` from `visual compare`
+- `visual/` captures, `evidence.json` listing each capture's view, engine, width, path and sha256, and `visual-diff/` from `visual compare`. The latest run's `evidence.json` is also copied to `.scratch/verify/evidence.json`, where the framework's check host reads it. Its shape is `EVIDENCE_MANIFEST` in `shared/evidence.ts`.
 - `map/` reports from `map run`, and `instance.json`, the final state, after `down`
 
 `bin/agentsctl evidence` prints the folder and its failed actions. A proof has the user's action and the state it left, with the side effect read back from the record or the machine, never only the final screen. Drive the real path: a fake belongs only at a real boundary, which here is the Claude harness.
@@ -148,7 +148,7 @@ Recording starts the page afresh at the same address. The video lands in `videos
 
 ## Visual regression and the UX pass
 
-`map run all --visual` drives every feature and, at each key state, runs `visual shot <state>`, which captures the view in Chromium, Firefox and WebKit at desktop (1280 by 820) and phone (390 by 844) width. Each capture loads afresh, waits until no read is in flight and two shots in a row match, and replaces text that changes between runs (times, durations, version ids, dates) with fixed values. Each capture is also checked: no serious or critical axe violation, no page or console error, and no sideways scrolling at phone width.
+`map run all --visual` drives every feature and, at each key view, runs `visual shot <view>`, which captures the view in Chromium, Firefox and WebKit at desktop (1280 by 820) and phone (390 by 844) width. Each capture loads afresh, waits until no read is in flight and two shots in a row match, and replaces text that changes between runs (times, durations, version ids, dates) with fixed values. Each capture is also checked: no serious or critical axe violation, no page or console error, and no sideways scrolling at phone width.
 
 ```sh
 bin/agentsctl down && bin/agentsctl up --pipelines --instance visual
@@ -156,17 +156,17 @@ bin/agentsctl map run all --visual --keep-going
 bin/agentsctl visual compare
 ```
 
-`visual compare` diffs each capture with `baselines/<engine>-<viewport>/<state>.png`. A pixel counts as changed when a channel moves by more than 8, and a capture fails when more than 0.02% of its pixels changed. A failure names each changed region as size and position and writes a diff image with the change in red. Baselines show the team and logins, so take captures on an instance named `visual`.
+`visual compare` diffs each capture the run's `evidence.json` lists with `baselines/<engine>-<width>/<view>.png`, after checking the capture still has the sha256 the manifest recorded. A pixel counts as changed when a channel moves by more than 8, and a capture fails when more than 0.02% of its pixels changed. A failure names each changed region as size and position and writes a diff image with the change in red. Baselines show the team and logins, so take captures on an instance named `visual`.
 
 Baselines change only on purpose, never to make a run pass:
 
 ```sh
-bin/agentsctl visual baseline --reason "<why the view changed on purpose>" [--state <state>]
+bin/agentsctl visual baseline --reason "<why the view changed on purpose>" [--view <view>]
 ```
 
 It copies the run's captures over the baselines and logs the reason, the files and the run in `baselines/updates.jsonl`.
 
-The UX pass also lives in each feature's steps: `browser a11y` (axe, failing on serious and critical), `browser console` (page errors and console errors since the last check), `browser network` (any failed request since the last look), `browser overflow --viewport phone` (sideways scrolling), and keyboard-only paths with `browser tab-to`, `press` and `type`.
+The UX pass also lives in each feature's steps: `browser a11y` (axe, failing on serious and critical), `browser console` (page errors and console errors since the last check), `browser network` (any failed request since the last look), `browser overflow --width phone` (sideways scrolling), and keyboard-only paths with `browser tab-to`, `press` and `type`.
 
 ## The feature map
 

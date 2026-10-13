@@ -2,6 +2,21 @@
 
 The sidebar's Machines list shows each machine on the team: the Macs that run agents and the boxes, Docker containers that run the daemon for unattended work. A person claims a free box to keep it, and releases it to give it back. A box a run holds says so, and one a teammate holds names them.
 
+```json
+{
+  "id": "machines",
+  "name": "Machines and boxes",
+  "paths": [
+    "server/boxes.ts",
+    "app/src/App.tsx"
+  ],
+  "checks": [
+    "test/step2b.ts",
+    "test/step7.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `machine-list`: each machine with a status dot and whether it is online.

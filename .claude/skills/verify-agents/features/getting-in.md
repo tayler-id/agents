@@ -2,6 +2,25 @@
 
 A teammate opens the app over Tailscale and is already signed in: the server knows them by the login Tailscale passes. A login that is on no team sees why it cannot open the app. Machines use a door of their own that refuses any person's identity. The desktop app opens the same team.
 
+```json
+{
+  "id": "getting-in",
+  "name": "Getting in",
+  "paths": [
+    "server/auth.ts",
+    "server/access.ts",
+    "server/admin.ts",
+    "app/src/App.tsx",
+    "desktop/main.cjs"
+  ],
+  "checks": [
+    "test/step2.ts",
+    "test/step2b.ts",
+    "test/step4c.ts"
+  ]
+}
+```
+
 ## Sub-features
 
 - `in-identity`: the people door knows a person by the login Tailscale sets, and the app opens on their team.
@@ -23,7 +42,7 @@ Preconditions:
 - An instance from `bin/agentsctl up`, passing `bin/agentsctl doctor`.
 
 - **Open the app as yourself.** Open the home page as ada. Run `bin/agentsctl browser goto /` and `bin/agentsctl browser text --role navigation --name Workspace --expect "$(bin/agentsctl db "select name from teams where id = {team}" --value)"`. The sidebar names the team, and the main area asks you to pick an agent. Capture it with `bin/agentsctl visual shot home --ready-role heading --ready-name "Pick an agent to talk to"`.
-- **Check the first view.** Run `bin/agentsctl browser a11y`, `bin/agentsctl browser console`, `bin/agentsctl browser goto / --viewport phone` and `bin/agentsctl browser overflow --viewport phone`. No accessibility violation, no console error, and no sideways scrolling at phone width.
+- **Check the first view.** Run `bin/agentsctl browser a11y`, `bin/agentsctl browser console`, `bin/agentsctl browser goto / --width phone` and `bin/agentsctl browser overflow --width phone`. No accessibility violation, no console error, and no sideways scrolling at phone width.
 - **A login on no team is turned away.** Open the app as someone the server has never seen. Run `bin/agentsctl browser goto / --as stranger`, `bin/agentsctl browser wait --role heading --name "Can't open the app" --as stranger` and `bin/agentsctl browser text --role main --as stranger --expect "is not on a team"`. The page says the login is not on a team and to ask a teammate. Capture it with `bin/agentsctl visual shot getting-in-blocked --as stranger --ready-role heading --ready-name "Can't open the app"`.
 - **A teammate the admin adds gets in.** Add cy the way an admin does, then open the app as cy. Run `bin/agentsctl seed person cy`, `bin/agentsctl browser goto / --as cy` and `bin/agentsctl browser text --role navigation --name Workspace --as cy --expect "cy-"`. The sidebar shows cy's login under the team. Then `bin/agentsctl db "select count(*)::int as n from people where team_id = {team} and login like 'cy-%'" --expect n=1`.
 - **The machine door refuses a person.** Send a person's login to the machine port. Run `bin/agentsctl api GET /v1/me --as person --door machines --expect 400 --expect-text "people connect through Tailscale"`. The API answers 400 and says people come through Tailscale.

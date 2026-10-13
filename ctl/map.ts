@@ -15,11 +15,11 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
+import { featureEntryOf, FEATURE_MAP, FEATURE_MAP_FILE, VERDICT, type Feature as MapEntry, type FeatureMap, type Verdict } from '../shared/evidence.ts'
 import { FEATURES_DIR, ROOT } from './config.ts'
 import { nextPath } from './evidence.ts'
 import type { Output } from './output.ts'
 import type { ReadyState } from './state.ts'
-import { Verdict } from './verdict.ts'
 
 const exec = promisify(execFile)
 
@@ -115,16 +115,24 @@ async function expand(word: Word, fill: (words: Word[]) => Promise<string>): Pro
 }
 
 export type Step = { label: string; real: boolean; pipelines: boolean; commands: string[] }
-export type Feature = {
-  id: string; file: string; title: string; sections: string[]
+// A feature file read as text, before its map entry.
+export type FeatureFile = {
+  file: string; title: string; sections: string[]
   subFeatures: string[]; needs: { pipelines: boolean; real: boolean }; preconditions: string[]; steps: Step[]
 }
+// A feature file with its map entry, which names it.
+export type Feature = FeatureFile & { id: string; entry: MapEntry }
 
 const codeSpans = (text: string) => [...text.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]))
 
 export const readFeature = (file: string): Feature => parseFeature(readFileSync(file, 'utf8'), file)
 
 export function parseFeature(text: string, file: string): Feature {
+  const entry = featureEntryOf(text, file)
+  return { ...parseFeatureFile(text, file), id: entry.id, entry }
+}
+
+export function parseFeatureFile(text: string, file: string): FeatureFile {
   const lines = text.split('\n')
   const title = lines.find((l) => l.startsWith('# '))?.slice(2).trim() ?? ''
   const sections = lines.filter((l) => l.startsWith('## ')).map((l) => l.slice(3).trim())
@@ -155,7 +163,6 @@ export function parseFeature(text: string, file: string): Feature {
   const preconditions = all.filter((b) => !b.startsWith('**'))
   const ups = preconditions.flatMap(codeSpans).filter((c) => c.startsWith(`${AGENTSCTL} up`))
   return {
-    id: file.split('/').at(-1)?.replace(/\.md$/, '') ?? file,
     file, title, sections,
     subFeatures: bullets(body('Sub-features')),
     needs: { pipelines: ups.some((c) => c.includes('--pipelines')), real: ups.some((c) => c.includes('--claude real')) },
@@ -190,9 +197,21 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
       problems.push(`${where}: ${argv.join(' ')}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''}`)
     }
   }
+  const entries = new Map<string, MapEntry>()
   for (const f of [...present].sort()) {
-    const feature = readFeature(join(FEATURES_DIR, f))
+    const text = readFileSync(join(FEATURES_DIR, f), 'utf8')
+    const feature = parseFeatureFile(text, f)
     if (!feature.title) problems.push(`${f} has no # title`)
+    try {
+      const entry = featureEntryOf(text, f)
+      const stem = f.replace(/\.md$/, '')
+      if (entry.id !== stem) problems.push(`${f}: its map entry's id is ${entry.id}, and it must be ${stem}, the file's name`)
+      if (entry.name !== feature.title) problems.push(`${f}: its map entry's name is "${entry.name}", and it must be the title, "${feature.title}"`)
+      for (const path of [...entry.paths, ...entry.checks]) if (!existsSync(join(ROOT, path))) problems.push(`${f}: its map entry names ${path}, which does not exist`)
+      entries.set(f, entry)
+    } catch (error) {
+      problems.push(error instanceof Error ? error.message : String(error))
+    }
     if (feature.sections.join('|') !== SECTIONS.join('|')) problems.push(`${f} has sections ${feature.sections.join(', ')}; it needs exactly ${SECTIONS.join(', ')}`)
     if (!feature.subFeatures.length) problems.push(`${f} lists no sub-features`)
     if (!feature.preconditions.length) problems.push(`${f} has no preconditions`)
@@ -214,10 +233,30 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
       }
     }
   }
+  // features.json must be the entries, in the index's order, as map export writes them.
+  const inOrder = [...listed].flatMap((f) => entries.get(f) ?? [])
+  const mapFile = join(FEATURES_DIR, FEATURE_MAP_FILE)
+  if (!existsSync(mapFile)) problems.push(`${relative(ROOT, mapFile)} is missing. Run bin/agentsctl map export`)
+  else if (inOrder.length === listed.size && readFileSync(mapFile, 'utf8') !== mapText({ features: inOrder })) {
+    problems.push(`${relative(ROOT, mapFile)} differs from the feature files' map entries. Run bin/agentsctl map export`)
+  }
   return problems
 }
 
-// A step's verdict on the ladder in verdict.ts, or `not run` when an earlier step
+// features.json as map export writes it, so a check can compare it byte for byte.
+const mapText = (map: FeatureMap) => `${JSON.stringify(FEATURE_MAP.parse(map), null, 2)}\n`
+
+// Writes features.json from the feature files' map entries, in the index's order.
+export function exportMap(): { file: string; map: FeatureMap; already: boolean } {
+  const map = FEATURE_MAP.parse({ features: listMap().map((f) => f.entry) })
+  const file = join(FEATURES_DIR, FEATURE_MAP_FILE)
+  const text = mapText(map)
+  const already = existsSync(file) && readFileSync(file, 'utf8') === text
+  if (!already) writeFileSync(file, text)
+  return { file, map, already }
+}
+
+// A step's verdict on the ladder in shared/evidence.ts, or `not run` when an earlier step
 // failed and this one depends on what that one left.
 // The commands in a step that assert something: they wait for a state, compare
 // text or a count, check a view, or read a side effect back. Editing the map
@@ -226,7 +265,7 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
 const ASSERTS = /^bin\/agentsctl (?:(?:browser|desktop) (?:wait|text|count|a11y|console|network|overflow)|machine read|visual shot)\b|^bin\/agentsctl (?:db|api) .*--expect/
 
 function assertions(text: string, file: string): string[] {
-  return parseFeature(text, file).steps.flatMap((step) => step.commands.filter((c) => ASSERTS.test(c)).map((c) => `"${step.label}": ${c}`))
+  return parseFeatureFile(text, file).steps.flatMap((step) => step.commands.filter((c) => ASSERTS.test(c)).map((c) => `"${step.label}": ${c}`))
 }
 
 // Every assertion the feature map had at `base` that it no longer has, by file.
@@ -266,7 +305,7 @@ export const StepReport = z.object({
 })
 export type StepReport = z.infer<typeof StepReport>
 export const FeatureReport = z.object({
-  id: z.string(), title: z.string(), verdict: Verdict, verified: z.number().int(), steps: z.array(StepReport),
+  id: z.string(), title: z.string(), verdict: VERDICT, verified: z.number().int(), steps: z.array(StepReport),
 })
 export type FeatureReport = z.infer<typeof FeatureReport>
 export const MapReport = z.object({
