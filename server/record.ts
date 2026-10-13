@@ -12,6 +12,7 @@ import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, Messa
 import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
+import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -309,7 +310,7 @@ export async function sendPersonMessage(
     'select id from events where session_id = $1 and seq = $2', [session.id, seq])
 
   const payload: MessagePayload = {
-    text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
+    permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
   await client.query(

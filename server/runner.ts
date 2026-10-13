@@ -16,6 +16,7 @@ import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes
 import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
 import { expireTurns } from './rooms.ts'
 import { finishPushes } from './pulls.ts'
+import { workspacePermissions } from './permissions.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -322,7 +323,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     })
     if (seq === undefined) throw new Error(`the prompt for ${row.stage} was not recorded`)
     const payload: MessagePayload = {
-      text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
+      permissions: await workspacePermissions(client, workspace.instance_id), text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
       harnessSessionId: session.harness_session_id, workspaceId: workspace.id,
       stage: { outcomes, allow: stage.allow ?? [], maxBudgetUsd: Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost },
     }

@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, appendMessage, conversationSession, HttpError } from './record.ts'
+import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 export async function sendRoutine(client: pg.PoolClient, routineId: string) {
@@ -32,7 +33,7 @@ export async function sendRoutine(client: pg.PoolClient, routineId: string) {
     events: [{ clientId: `message:${message.id}`, kind: 'user', text, body: { text, messageId: message.id, routineId: routine.id } }],
   })
   const payload: MessagePayload = {
-    text, agentId: routine.agent_id, harness: routine.harness, model: routine.model, instructions: routine.instructions,
+    permissions: CONVERSATION_PERMISSIONS, text, agentId: routine.agent_id, harness: routine.harness, model: routine.model, instructions: routine.instructions,
     harnessSessionId: session.harness_session_id, ...(await agentKit(client, routine.agent_id, [])),
   }
   await client.query(

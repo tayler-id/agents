@@ -175,6 +175,8 @@ class ClaudeSession implements HarnessSession {
     if (options.instructions) args.push('--append-system-prompt', options.instructions)
     if (options.mcpConfig) args.push('--mcp-config', options.mcpConfig)
     if (options.allowedTools.length) args.push('--allowedTools', options.allowedTools.join(','))
+    // Claude Code still asks before writes in .git and .claude, and outside cwd.
+    if (options.acceptEdits) args.push('--permission-mode', 'acceptEdits')
     if (options.maxBudgetUsd) args.push('--max-budget-usd', options.maxBudgetUsd.toFixed(2))
     const env = { ...process.env }
     for (const name of PARENT_SESSION_ENV) delete env[name]

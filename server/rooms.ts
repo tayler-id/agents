@@ -7,6 +7,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, conversationSession, HttpError, type Person } from './record.ts'
+import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import type { MessagePayload } from '../shared/types.ts'
 import { PersonId, type ConversationId, type Login } from '../shared/onboarding.ts'
 
@@ -112,7 +113,7 @@ export async function nextTurn(client: pg.PoolClient, roomId: string) {
   const people = (await client.query<{ person_id: string }>(
     'select person_id from conversation_members where conversation_id = $1 and person_id is not null', [roomId])).rows.map((r) => r.person_id)
   const payload: MessagePayload = {
-    text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
+    permissions: CONVERSATION_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, people)),
   }
   await client.query(

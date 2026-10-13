@@ -12,6 +12,7 @@ import { agentKit, appendEvents, appendMessage, HttpError, scrub, type Person } 
 import { setTaskRepos } from './checkout.ts'
 import { draftSession } from './drafts.ts'
 import { launchTask } from './launch.ts'
+import { CONVERSATION_PERMISSIONS, workspacePermissions } from './permissions.ts'
 import { TaskId } from '../shared/ids.ts'
 import type { NewTask } from '../shared/work.ts'
 import type { MessagePayload } from '../shared/types.ts'
@@ -56,6 +57,7 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
     events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text, body: { text } }],
   }, person.id)
   const payload: MessagePayload = {
+    permissions: session.workspace_id ? await workspacePermissions(client, session.instance_id) : CONVERSATION_PERMISSIONS,
     text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: session.workspace_id ?? undefined, ...(await agentKit(client, agent.id, [person.id])),
   }

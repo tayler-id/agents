@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import type { Command, EventBatch, MessagePayload, StageSpec } from '../shared/types.ts'
+import { Permissions, type Command, type EventBatch, type MessagePayload, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
@@ -84,7 +84,7 @@ const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length 
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
-const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins])
+const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions])
 const ws = workspaces(HOME, config.api, config.token)
 let stopping = false
 
@@ -230,11 +230,14 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
   if (payload.skills) writeSkills(cwd, payload.skills)
+  const permissions = Permissions.parse(payload.permissions)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
-    allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
+    allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : []),
+      ...(permissions.commands ? ['Bash'] : [])],
+    acceptEdits: permissions.workspaceWrites,
     maxBudgetUsd: stage?.maxBudgetUsd,
     oauthToken: ownClaudeToken(HOME),
   })

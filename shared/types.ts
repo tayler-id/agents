@@ -42,8 +42,15 @@ export type EventBatch = {
   harnessSessionId?: string
 }
 
+// What a session may do without asking a person, beyond the tools it is given.
+// The server decides from where the session runs: in a task's workspace the
+// agent may change files inside it, and on a box it may also run commands.
+export const Permissions = z.object({ workspaceWrites: z.boolean(), commands: z.boolean() })
+export type Permissions = z.infer<typeof Permissions>
+
 // What a daemon needs to hand a person's message to an agent's harness.
 export type MessagePayload = {
+  permissions: Permissions
   text: string
   agentId: string
   harness: 'claude' | 'codex'
