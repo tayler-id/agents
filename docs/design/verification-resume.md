@@ -16,20 +16,19 @@ A note for whoever picks this up, kept current with each commit. The design is i
 - `a9dd5c9` step17 checks every command family and runs the conformance check. Its first full run passed all 59 checks, with 22 processes found before down and none alive after.
 - `71ac854` step17 runs by section (`--only web,visual`), and `test/step17-breaks.ts` holds 43 breaks.
 - `db7b32e` README section on agentsctl, an entry in `docs/what-each-part-does.md`, and the skill's description of the library's answers.
+- `81c6420` `docs/decisions.md` says where the verification tool and the CLI library stand.
+- `9c44775` All 43 breaks turn their check red. The first run of all of them turned 40 red, and the three misses each taught something: the overflow check measured against `window.innerWidth`, which Chromium's phone mode widens to fit content that is too wide, so it now measures against `documentElement.clientWidth`; step17 tried `machine read --missing` only on an absent file, so it now also checks a present one fails; and the stderr break itself was broken, a line starting with a parenthesis that joined the line above. Rerun, all three went red, and a full step17 then passed all 59 checks with every file restored.
 
 `npm run typecheck`, `npm run lint` and `node test/names.ts` pass on each of those commits.
 
 ## In progress
 
-`node test/step17-breaks.ts` is running all 43 breaks, each on the sections holding its check. The first eight turned their checks red. Results go to `.scratch/verify/breaks/results.json`. A killed run restores its files when it next starts. While it runs, edit nothing under `ctl/`, `shared/cli/`, `app/src/` or the feature files, since a break restores them from its own copy.
+A sweep on an instance named `visual`: `map run all --visual --keep-going`, writing to `.scratch/verify/evidence/visual-20261013T204650Z/`. It reruns the features fixed since the first sweep and takes the captures for the baselines. Then, in order:
 
-Then, in order:
-
-1. A full `node test/step17.ts`, green with every file restored.
-2. A sweep on an instance named `visual`: `up --pipelines --instance visual`, `map run all --visual --keep-going`. It reruns the features fixed since the first sweep and takes the captures. Look at the captures, run a second sweep, and compare it with the first to measure noise.
-3. Two recorded reproductions each of bugs 2 and 3 below, through the UI, on that instance.
-4. A build-log section: the sweeps' verdicts, the bugs, the breaks, the captures and their size.
-5. Rebase on main, rerun the checks, update this note, and report.
+1. Look at the captures, then a second sweep on a fresh `visual` instance, compared with the first, to measure noise.
+2. Two recorded reproductions each of bugs 2 and 3 below, through the UI.
+3. A build-log section: the sweeps' verdicts, the bugs, the breaks, the captures and their size. A draft is easy to write from this note.
+4. Rebase on main, rerun typecheck, lint, the name guard and step17, update this note, and report.
 
 ## The first full sweep
 
