@@ -7,7 +7,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, pool, tx } from './db.ts'
 import { canSeeTask } from './access.ts'
-import { HttpError, type Person } from './record.ts'
+import { HttpError, scrub, type Person } from './record.ts'
 import { checkoutsOf } from './checkout.ts'
 import { forge, repoPath } from './forge.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -17,6 +17,18 @@ import type { PushId, TaskId } from '../shared/ids.ts'
 
 // While a session is in one of these, its agent may still be changing files.
 const WORKING: SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
+// A machine that goes away mid-push never reports the push, which would block
+// every later one. A push still running after this long is marked failed.
+const PUSH_EXPIRY_MINUTES = 15
+
+// The commit each repo's branch was last pushed at from this workspace, which the
+// next push expects the forge to still hold.
+export async function leasesOf(client: pg.PoolClient, workspaceId: string): Promise<Map<string, string>> {
+  const last = await maybe<{ result: unknown }>(client,
+    `select result from commands where kind = 'push' and status = 'done' and payload->>'workspaceId' = $1 order by done_at desc limit 1`, [workspaceId])
+  if (!last) return new Map()
+  return new Map(PushResult.parse(last.result).pushed.map((p) => [p.repoId, p.commit]))
+}
 
 export async function askForPullRequests(client: pg.PoolClient, person: Person, taskId: TaskId, ask: PullRequestAsk): Promise<{ pushId: PushId }> {
   if (!(await canSeeTask(person, taskId))) throw new HttpError(404, 'no such task')
@@ -31,9 +43,17 @@ export async function askForPullRequests(client: pg.PoolClient, person: Person, 
   }
   const repos = await checkoutsOf(client, taskId, `task/${task.slug}`)
   if (!repos.length) throw new HttpError(409, 'this task has no repo to open a pull request on')
+  await client.query(
+    `update pushes p set status = 'failed', error = $2, finished_at = now()
+     where p.task_id = $1 and p.status = 'pushing' and p.created_at < now() - make_interval(mins => $3)
+       and not exists (select 1 from commands c where c.id = p.command_id and c.status in ('done', 'failed'))`,
+    [taskId, `The machine did not finish the push within ${PUSH_EXPIRY_MINUTES} minutes.`, PUSH_EXPIRY_MINUTES])
+  // What a person types reaches the forge, the commit and the record, so it is scrubbed first.
+  const [title, body] = [scrub(ask.title), scrub(ask.body)]
+  const leases = await leasesOf(client, workspace.id)
   const payload: PushPayload = {
-    workspaceId: workspace.id, message: ask.title, author: task.agent,
-    repos: repos.map((r) => ({ repoId: r.repoId, name: r.name, branch: r.branch, base: r.base })),
+    workspaceId: workspace.id, message: title, author: task.agent,
+    repos: repos.map((r) => ({ repoId: r.repoId, name: r.name, branch: r.branch, base: r.base, lease: leases.get(r.repoId) ?? null })),
   }
   const command = await one<{ id: string }>(client, 'the push command',
     `insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'push', $3) returning id`,
@@ -41,7 +61,7 @@ export async function askForPullRequests(client: pg.PoolClient, person: Person, 
   const push = await maybe<{ id: PushId }>(client,
     `insert into pushes (team_id, task_id, workspace_id, command_id, requested_by, title, body) values ($1, $2, $3, $4, $5, $6, $7)
      on conflict (task_id) where status = 'pushing' do nothing returning id`,
-    [workspace.team_id, taskId, workspace.id, command.id, person.id, ask.title, ask.body])
+    [workspace.team_id, taskId, workspace.id, command.id, person.id, title, body])
   if (!push) throw new HttpError(409, 'a push for this task is already under way')
   return { pushId: push.id }
 }
@@ -55,7 +75,7 @@ type Ending = { status: 'done' } | { status: 'failed'; error: string }
 async function end(client: pg.PoolClient, push: Push, ending: Ending) {
   if (!canMove(push.status, ending.status)) throw new Error(`a push cannot go from ${push.status} to ${ending.status}`)
   await client.query('update pushes set status = $2, error = $3, finished_at = now() where id = $1 and status = $4',
-    [push.id, ending.status, ending.status === 'failed' ? ending.error : null, push.status])
+    [push.id, ending.status, ending.status === 'failed' ? scrub(ending.error) : null, push.status])
 }
 
 // A push whose command has ended: open its pull requests, or say why not. The

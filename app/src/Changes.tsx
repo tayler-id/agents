@@ -59,12 +59,13 @@ export function Changes({ taskId, openId, onOpen, children }: {
 }
 
 // Opening the task's pull requests: the push, then one pull request per repo with
-// commits past its base. Asking again pushes the new work to the same ones.
+// commits past its base. Asking again pushes the new work to the same ones, whose
+// title and description stay as they were, so the form only offers them for a new one.
 export function PullRequests({ task, working, links, changed }: { task: Task; working: boolean; links: Artifact[]; changed: boolean }) {
   const { rows: pushes, error: unread } = useParsedSnapshot(PushRow, 'pushes', { task: task.id }, 2000)
   const latest = [...pushes].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const [title, setTitle] = useState(task.title)
-  const [body, setBody] = useState(task.instructions)
+  const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pushing = latest?.status === 'pushing'
@@ -92,13 +93,15 @@ export function PullRequests({ task, working, links, changed }: { task: Task; wo
       {latest?.status === 'failed' && <p className="error small" role="alert">{latest.error}</p>}
       {unread && <p className="error small" role="alert">{unread}</p>}
       {changed && <form className="form" onSubmit={act(open)} aria-label="Open a pull request">
-        <details className="add">
-          <summary className="small">Title and description</summary>
-          <label htmlFor={`pr-title-${task.id}`}>Title</label>
-          <input id={`pr-title-${task.id}`} value={title} onChange={(e) => setTitle(e.target.value)} />
-          <label htmlFor={`pr-body-${task.id}`}>Description</label>
-          <textarea id={`pr-body-${task.id}`} rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
-        </details>
+        {!links.length && (
+          <details className="add">
+            <summary className="small">Title and description</summary>
+            <label htmlFor={`pr-title-${task.id}`}>Title</label>
+            <input id={`pr-title-${task.id}`} value={title} onChange={(e) => setTitle(e.target.value)} />
+            <label htmlFor={`pr-body-${task.id}`}>Description</label>
+            <textarea id={`pr-body-${task.id}`} rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
+          </details>
+        )}
         <div className="actions">
           <button type="submit" className="primary" disabled={working || pushing || busy || !title.trim()}>
             {links.length ? 'Update pull request' : latest?.status === 'failed' ? 'Try again' : 'Open pull request'}

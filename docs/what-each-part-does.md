@@ -273,7 +273,7 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### Pull requests from a task (`server/pulls.ts`, the `pushes` table)
 
-- **Solves now.** Open pull request pushes the task branch of each changed repo and opens a pull request for each repo with commits past its base, in the agent's name. They show on the task, and stay there once nothing differs. Asking again opens no second pull request.
+- **Solves now.** Open pull request pushes the task branch of every task repo and opens a pull request for each one with commits past its base, in the agent's name. A push never overwrites a commit someone added on the forge since the last one. They show on the task, and stay there once nothing differs. Asking again opens no second pull request.
 - **Helps later.** Any forge behind `forge.openPullRequest` works the same way. Only Gitea has been tried.
 
 ### Writing without asking (`server/permissions.ts`)

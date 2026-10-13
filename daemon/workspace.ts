@@ -118,7 +118,8 @@ export function workspaces(home: string, api: string, token: string) {
         if (await git(path, 'status', '--porcelain')) {
           await git(path, '-c', `user.name=${author}`, '-c', `user.email=${author}@agents.local`, 'commit', '--quiet', '-m', message)
         }
-        await git(path, 'push', '--quiet', '--force', 'origin', `HEAD:refs/heads/${repo.branch}`)
+        // The agent may rewrite its branch, but a commit someone added on the forge since this workspace last pushed is never pushed over.
+        await git(path, 'push', '--quiet', `--force-with-lease=refs/heads/${repo.branch}:${repo.lease ?? ''}`, 'origin', `HEAD:refs/heads/${repo.branch}`)
         const ahead = Number(await git(path, 'rev-list', '--count', `origin/${repo.base}..HEAD`))
         if (!Number.isInteger(ahead)) throw new Error(`git did not count the commits of ${repo.name} past ${repo.base}`)
         pushed.push({ repoId: repo.repoId, commit: await git(path, 'rev-parse', 'HEAD'), ahead })

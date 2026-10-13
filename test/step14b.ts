@@ -108,6 +108,7 @@ async function run(engine: string) {
     const form = page.getByRole('form', { name: 'New task' })
     await form.waitFor()
     await form.getByLabel('What needs doing?').fill(title)
+    await form.getByLabel('Details').fill('Say what the shop does and how to run its tests.')
     await form.getByLabel(`${org}/${REPO}`).check()
     await form.getByRole('button', { name: 'Start task' }).click()
     check(await visible(page, '.page-head h1', 15, /Create a README/) && await visible(page, '.task-messages li.message.agent', 60, /Wrote README\.md/),
@@ -154,10 +155,16 @@ async function run(engine: string) {
       `${engine}: clicking Open pull request puts the pull request on the task`)
     const taskId = page.url().split('/t/')[1]?.split('/')[0] ?? ''
     const slug = (await one<{ slug: string }>('select slug from tasks where id = $1', [taskId]))?.slug
-    const pulls = await forgeAdmin.call<{ number: number; head: { ref: string } }[]>('GET', `/repos/${org}/${REPO}/pulls?state=open`)
+    const pulls = await forgeAdmin.call<{ number: number; body: string; head: { ref: string } }[]>('GET', `/repos/${org}/${REPO}/pulls?state=open`)
     const pull = pulls.find((p) => p.head.ref === `task/${slug ?? ''}`)
     const files = pull ? await forgeAdmin.call<{ filename: string }[]>('GET', `/repos/${org}/${REPO}/pulls/${pull.number}/files`) : []
     check(files.some((f) => f.filename === 'README.md'), `${engine}: the forge has the pull request with README.md`)
+    // Nobody wrote a description, so the task's first message to the agent stays off the forge.
+    check(pull?.body === '', `${engine}: a pull request with no description typed gets none: ${JSON.stringify(pull?.body ?? null).slice(0, 80)}`)
+    const update = page.getByRole('form', { name: 'Open a pull request' })
+    check(await visible(page, 'form[aria-label="Open a pull request"] button', 10, /^Update pull request$/)
+      && await update.getByText('Title and description').count() === 0,
+    `${engine}: once a pull request is open, the form updates it and no longer offers a title and description it would not use`)
     await page.screenshot({ path: join(SHOTS, `${engine}-task-pull-request-light.png`), fullPage: true })
 
     const taskUrl = page.url()

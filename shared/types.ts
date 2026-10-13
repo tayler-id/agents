@@ -90,9 +90,12 @@ export type ExecPayload = { workspaceId: string; repo: string; command: string; 
 export type ExecResult = { exitCode: number | null; output: string; timedOut: boolean }
 
 // Commits whatever changed in the workspace's repos, pushes each task branch,
-// and counts the commits each holds past its base branch.
+// and counts the commits each holds past its base branch. `lease` is the commit
+// this workspace last pushed the branch at, which the forge must still hold, so a
+// commit added there since is never pushed over. It is null before the first
+// push, when the branch must not exist yet.
 export type PushPayload = {
-  workspaceId: string; repos: { repoId: string; name: string; branch: string; base: string }[]; message: string; author: string
+  workspaceId: string; repos: { repoId: string; name: string; branch: string; base: string; lease: string | null }[]; message: string; author: string
 }
 // The server reads a push's result back from its command's JSON column, so it is parsed.
 export const PushResult = z.object({
