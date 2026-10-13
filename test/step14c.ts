@@ -197,11 +197,20 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     await order.waitFor()
     await order.getByLabel('Waiting on', { exact: true }).selectOption({ label: 'Waiting on a decision' })
     await order.getByLabel('Reason', { exact: true }).fill('Waiting on Tayler')
+    // Watch the order section from the click on, for any moment the new hold reads as lapsed.
+    await page.evaluate(() => {
+      new MutationObserver(() => {
+        if (document.querySelector('section[aria-label="Order of work"] .hold-line')?.textContent.includes('lapsed')) document.body.dataset.lapsedSeen = 'yes'
+      }).observe(document.body, { subtree: true, childList: true, characterData: true })
+    })
     await order.getByRole('button', { name: 'Hold', exact: true }).click()
     check(await visible(page, 'nav ul[aria-label="Held"] button', 15, new RegExp(`Base work \\(${engine}\\).*Waiting on a decision: Waiting on Tayler`))
       && await gone(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Base work \\(${engine}\\)`)),
     `${engine}: a held task leaves Ready and shows under Held with its reason`)
     await page.screenshot({ path: join(SHOTS, `${engine}-order-held-light.png`), fullPage: true })
+    check(await visible(page, 'section[aria-label="Order of work"] .hold-line', 10, /Waiting on Tayler/)
+      && await page.evaluate(() => document.body.dataset.lapsedSeen !== 'yes'),
+    `${engine}: a hold with no end date never shows as lapsed, even while the page catches up`)
     // A long title gives way to the marks beside it, such as draft, which stay inside the sidebar.
     check(await page.evaluate(() => {
       const sidebar = document.querySelector('nav.sidebar')

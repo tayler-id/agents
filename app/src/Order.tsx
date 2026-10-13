@@ -25,10 +25,11 @@ const PRIORITY_LABELS: Record<(typeof PRIORITIES)[number], string> = {
   0: '0, most urgent', 1: '1', 2: '2', 3: '3', 4: '4, least urgent',
 }
 
-// The ready query, read again every few seconds. Its last good answer stays
-// while a read fails, and the failure says why.
-export function useReady(): { answer: ReadyAnswer | null; error: string } {
+// The ready query, read again every few seconds, and at once on reload(). Its last
+// good answer stays while a read fails, and the failure says why.
+export function useReady(): { answer: ReadyAnswer | null; error: string; reload: () => void } {
   const [state, setState] = useState<{ answer: ReadyAnswer | null; error: string }>({ answer: null, error: '' })
+  const [asked, setAsked] = useState(0)
   useEffect(() => {
     let stopped = false
     const load = async () => {
@@ -45,8 +46,8 @@ export function useReady(): { answer: ReadyAnswer | null; error: string } {
       stopped = true
       clearInterval(timer)
     }
-  }, [])
-  return state
+  }, [asked])
+  return { ...state, reload: () => { setAsked((n) => n + 1) } }
 }
 
 export function ReadyLists({ openTask }: { openTask: string | null }) {
@@ -93,7 +94,7 @@ export function TaskOrder({ task, state }: { task: Task; state: TaskState }) {
   const { rows: waitsOn, error: unreadWaits } = useParsedSnapshot(TaskBlockRow, 'task_blocks', { task: task.id }, 2000)
   const { rows: blocks, error: unreadBlocks } = useParsedSnapshot(TaskBlockRow, 'task_blocks', { blocker: task.id }, 2000)
   const { rows: holds, error: unreadHold } = useParsedSnapshot(TaskHoldRow, 'task_holds', { task: task.id }, 2000)
-  const { answer } = useReady()
+  const { answer, reload } = useReady()
   const [blocker, setBlocker] = useState('')
   const [why, setWhy] = useState('')
   const [kind, setKind] = useState<HoldKind>('decision')
@@ -105,13 +106,16 @@ export function TaskOrder({ task, state }: { task: Task; state: TaskState }) {
   const titleOf = (taskId: string) => tasks.find((t) => t.id === taskId)?.title ?? 'a task you cannot see'
   const hold = holds[0]
   // The server's date decides when a hold lapses, so the ready query says whether it is current.
-  const holding = Boolean(answer?.held.some((t) => t.id === task.id))
+  // A hold with no end date never lapses. One with a date lapses by the server's
+  // date, which the ready query reports.
+  const lapsed = hold?.until !== undefined && hold.until !== null && answer !== null && !answer.held.some((t) => t.id === task.id)
   const open = state === 'queued' || state === 'active'
   const run = async (command: () => Promise<Outcome>) => {
     setNote('')
     setError('')
     try {
       setNote(said(await command()))
+      reload()
     } catch (e) {
       setError(messageOf(e))
     }
@@ -182,11 +186,11 @@ export function TaskOrder({ task, state }: { task: Task; state: TaskState }) {
       {hold && (
         <p className="hold-line">
           <span>{HOLD_LABELS[hold.kind]}: {hold.reason}{hold.until ? `, until ${hold.until}` : ''}</span>
-          {!holding && <span className="muted small">lapsed</span>}
+          {lapsed && <span className="muted small">lapsed</span>}
           <button type="button" className="link small" onClick={act(() => run(() => api.unhold(task.id)))}>Lift hold</button>
         </p>
       )}
-      {open && (!hold || !holding) && (
+      {open && (!hold || lapsed) && (
         <form className="form inline-form" onSubmit={act(holdIt)} aria-label="Hold this task">
           <label htmlFor={`kind-${task.id}`} className="sr-only">Waiting on</label>
           <select id={`kind-${task.id}`} value={kind} onChange={(e) => setKind(HoldKind.parse(e.target.value))}>
