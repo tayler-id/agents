@@ -1,10 +1,13 @@
 // Machines clone and push through the API, as themselves. The API checks that the
-// repo is their team's and forwards to the forge with the factory's credentials,
-// so forge tokens never leave the server. On a repo with a policy, a machine
-// may push only to the task branches of its own workspaces. Any other ref is
-// refused here and recorded, so the run whose machine tried it stops, and the
-// forge's branch protection refuses a push to main again. A repo without a
-// policy takes pushes to any branch, as before the framework.
+// repo is their team's and forwards to the repo's forge, this Mac's Gitea or
+// GitHub, with the server's credentials, so forge tokens never leave the server.
+// Machines never push to a repo's default branch. Changes reach it through pull
+// requests, even on GitHub plans that can't protect a private repo's branches.
+// On a repo with a policy, a machine may also push only to the task branches of
+// its own workspaces. Any other ref is refused here and recorded, so the run
+// whose machine tried it stops, and the forge's branch protection refuses a push
+// to main again. A repo without a policy takes pushes to any branch but the
+// default one.
 
 import { createGunzip } from 'node:zlib'
 import { Readable } from 'node:stream'
@@ -12,7 +15,8 @@ import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { instanceFrom } from './auth.ts'
 import { many, maybe, pool } from './db.ts'
-import { gitUpstream } from './forge.ts'
+import { ForgeError } from './forge.ts'
+import { gitUpstreamFor } from './repos.ts'
 import { HttpError } from './record.ts'
 
 export const GIT_PATH = /^\/v1\/git\/([0-9a-f-]{36})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/
@@ -90,8 +94,8 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
   const instance = await instanceFrom(req)
   const [, repoId, rest] = GIT_PATH.exec(url.pathname) ?? []
   if (!repoId || !rest) throw new HttpError(404, 'no such git path')
-  const repo = await maybe<{ remote_url: string; policy_id: string | null }>(pool,
-    'select remote_url, policy_id from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
+  const repo = await maybe<{ remote_url: string; policy_id: string | null; default_branch: string }>(pool,
+    'select remote_url, policy_id, default_branch from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
   if (!repo) throw new HttpError(404, 'no such repo')
   const headers: Record<string, string> = {}
   for (const name of FORWARDED) {
@@ -99,21 +103,33 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
     if (typeof value === 'string') headers[name] = value
   }
   let body: Readable = req
-  if (req.method === 'POST' && rest === 'git-receive-pack' && repo.policy_id !== null) {
+  if (req.method === 'POST' && rest === 'git-receive-pack') {
     // A gzipped push is unzipped here, to read its commands, and sent on plain.
     const plain = plainBody(req, req.headers['content-encoding'])
     delete headers['content-encoding']
     const { refs, stream } = await readCommands(plain)
-    const own = await ownBranches(instance.id)
-    const refused = refs.filter((ref) => !own.has(ref))
-    if (refused.length) {
-      await pool.query('insert into refused_pushes (team_id, instance_id, repo_id, refs) values ($1, $2, $3, $4)',
-        [instance.team_id, instance.id, repoId, refused])
-      throw new HttpError(403, `on a repo with a policy a machine pushes only to its own task branches, so ${refused.join(', ')} was refused. Changes reach main only through a pull request the owner approves.`)
+    if (repo.policy_id !== null) {
+      const own = await ownBranches(instance.id)
+      const refused = refs.filter((ref) => !own.has(ref))
+      if (refused.length) {
+        await pool.query('insert into refused_pushes (team_id, instance_id, repo_id, refs) values ($1, $2, $3, $4)',
+          [instance.team_id, instance.id, repoId, refused])
+        throw new HttpError(403, `on a repo with a policy a machine pushes only to its own task branches, so ${refused.join(', ')} was refused. Changes reach main only through a pull request the owner approves.`)
+      }
+    }
+    if (refs.includes(`refs/heads/${repo.default_branch}`)) {
+      throw new HttpError(403, `machines push task branches, never ${repo.default_branch}. Changes reach ${repo.default_branch} through pull requests.`)
     }
     body = stream
   }
-  const upstream = gitUpstream(repo.remote_url)
+  let upstream: { url: string; authorization: string }
+  try {
+    upstream = gitUpstreamFor(repo.remote_url)
+  } catch (error) {
+    // GitHub is not connected: say so, rather than fail as the server's own fault.
+    if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
+    throw error
+  }
   headers.authorization = upstream.authorization
   const response = await fetch(`${upstream.url}/${rest}${url.search}`, {
     method: req.method,
