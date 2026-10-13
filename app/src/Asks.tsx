@@ -45,6 +45,9 @@ export function AskCard({ ask }: { ask: Ask }) {
   }
 
   const options = ask.payload.options ?? []
+  // A gate may name its buttons for what they do, such as Send back.
+  const { labels } = ask.payload
+  const labelOf = (option: string) => ((option === 'approve' || option === 'reject') && labels ? labels[option] : OPTION_LABELS[option] ?? option)
   return (
     <section className="ask-card" aria-label={ask.kind === 'gate' ? 'Needs a decision' : 'Needs a person'}>
       <p className="kicker"><span aria-hidden="true">⏸</span> {ask.kind === 'gate' ? 'Needs a decision' : 'Needs a person'}</p>
@@ -61,7 +64,7 @@ export function AskCard({ ask }: { ask: Ask }) {
       <div className="actions">
         {options.map((option, i) => (
           <button type="button" key={option} className={i === 0 ? 'primary' : undefined} disabled={busy} onClick={act(() => answer(option))}>
-            {OPTION_LABELS[option] ?? option}
+            {labelOf(option)}
           </button>
         ))}
       </div>

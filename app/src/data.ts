@@ -42,8 +42,9 @@ export type Ask = Row & {
   id: string; session_id: string | null; run_id: string | null; conversation_id: string | null; kind: string; status: string
   payload: {
     toolName?: string; input?: Record<string, unknown>; description?: string
-    // A pipeline's gate or hand-off.
+    // A pipeline's gate or hand-off. A gate's labels name its approve and reject buttons.
     question?: string; options?: string[]; stage?: string; links?: { title: string; url: string }[]
+    labels?: { approve: string; reject: string } | null
   }
   created_at: string
 }
