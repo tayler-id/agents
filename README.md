@@ -23,6 +23,7 @@ docker compose up -d --wait postgres
 docker compose exec -T postgres createdb -U agents agents_test
 docker compose up -d --wait
 npm install
+npm run app:build
 npm run migrate
 node --env-file=.env server/admin.ts add-team <team> <your Tailscale login>
 node --env-file=.env server/admin.ts add-instance <team> <instance name> mac <your login>
@@ -30,7 +31,17 @@ node --env-file=.env server/admin.ts add-agent <team> <agent name> <instance nam
 npm run api
 ```
 
-`add-instance` prints the instance token once. The API applies any new migrations when it starts. To keep everything running across reboots, run `ops/install-launch-agents.sh` once. It starts colima at login, Tailscale in userspace mode, the API, and this Mac's daemon.
+`add-instance` prints the instance token once. The API applies any new migrations when it starts, and serves the app that `npm run app:build` built. Without that build it answers every page with a 404. To keep everything running across reboots, run `ops/install-launch-agents.sh` once. It starts colima at login, Tailscale in userspace mode, the API, and this Mac's daemon.
+
+### The box firewall
+
+Containers must reach this Mac only on the machine port, never the people port. `ops/box-firewall.sh` enforces that inside the colima VM, and colima runs it at every start once it is in colima's provision steps. After the first `colima start`, print the block:
+
+```sh
+{ printf 'provision:\n  - mode: system\n    script: |\n'; sed 's/^/      /' ops/box-firewall.sh; }
+```
+
+Put it in place of the `provision: []` line in `~/.colima/default/colima.yaml`, then run `colima restart`. `npm run check:step2b` confirms from a container that only the machine port answers.
 
 ## Connect over Tailscale
 
@@ -40,7 +51,7 @@ The server Mac is `agents-server` on the tailnet. The API is published to it wit
 tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 http://127.0.0.1:7710
 ```
 
-The API listens on two ports. People use 7710, which only tailscale serve points at, so a person's identity always comes from Tailscale. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run: `ops/box-firewall.sh` runs in the colima VM at every start.
+The API listens on two ports. People use 7710, which only tailscale serve points at, so a person's identity always comes from Tailscale. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
 
 A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
 
