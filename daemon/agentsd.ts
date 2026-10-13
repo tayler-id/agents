@@ -218,8 +218,9 @@ async function handle(command: Command) {
     const result = await apply(command)
     await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
   } catch (error) {
-    console.error(`command ${command.id} failed:`, (error as Error).message)
-    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'failed', error: (error as Error).message })
+    const message = scrub(error instanceof Error ? error.message : String(error))
+    console.error(`command ${command.id} failed:`, message)
+    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'failed', error: message })
       .catch(() => {})
   }
 }

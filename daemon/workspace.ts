@@ -18,9 +18,11 @@ export type Workspaces = ReturnType<typeof workspaces>
 
 export function workspaces(home: string, api: string, token: string) {
   const dir = (workspaceId: string) => join(home, 'workspaces', workspaceId)
-  const auth = ['-c', `http.extraHeader=Authorization: Bearer ${token}`]
+  // The token reaches git through its environment, never its arguments, because a
+  // failed command's message repeats its arguments and the record keeps that message.
+  const gitEnv = { ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` }
   const git = async (cwd: string, ...args: string[]) =>
-    (await run('git', [...auth, ...args], { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim()
+    (await run('git', args, { cwd, env: gitEnv, maxBuffer: 16 * 1024 * 1024 })).stdout.trim()
   const sh = (cwd: string, command: string, timeoutSec: number) => new Promise<ExecResult>((resolve) => {
     const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1' } })
     let output = ''

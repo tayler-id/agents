@@ -218,7 +218,7 @@ const routes: [Audience, string, RegExp, Handler][] = [
     const body = await readJson(req)
     if (body.status !== 'done' && body.status !== 'failed') throw new HttpError(400, 'status must be done or failed')
     await tx(async (client) => {
-      const error = optionalText(body.error, 'error') ?? null
+      const error = scrub(optionalText(body.error, 'error') ?? null)
       const command = await maybe<{ kind: string; session_id: string | null; payload: { workspaceId?: string; repos?: { repoId: string; branch: string }[] } }>(client,
         `update commands set status = $3, error = $4, result = $5, done_at = now()
          where id = $1 and instance_id = $2 and status = 'claimed' returning kind, session_id, payload`,

@@ -11,6 +11,7 @@ const PATTERNS: [string, RegExp][] = [
   ['slack', /\bxox[abprs]-[A-Za-z0-9-]{10,}/g],
   ['aws', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
   ['tailscale', /\btskey-[a-z]+-[A-Za-z0-9-]{16,}/g],
+  ['machine-token', /\bmachine_[A-Za-z0-9_-]{20,}/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
 ]
 

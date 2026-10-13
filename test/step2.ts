@@ -5,7 +5,7 @@
 //   npm run check:step2
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, isControlMessage, ShapeStream, type Message, type Offset, type Row } from '@electric-sql/client'
 import pg from 'pg'
 import { must } from './must.ts'
+import { workspaces } from '../daemon/workspace.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7791
@@ -196,6 +197,23 @@ try {
   check(await sessions.until('the new room session', () => sessions.inserts.some((r) => r.conversation_id === room && r.agent_id === helper.id))
     && await taskSessions.until('the new task session', () => taskSessions.inserts.some((r) => r.task_id === taskId && r.agent_id === helper.id)),
   'a session that starts after the view opened arrives whole, for a new room and for a new task')
+
+  // A command's error goes into the record, so it must never carry the machine's token.
+  const failedClone = await workspaces(mkdtempSync(join(tmpdir(), 'agents-step2-git-')), 'http://127.0.0.1:9', token)
+    .setup({ workspaceId: randomUUID(), repos: [{ repoId: randomUUID(), name: 'shop', branch: 'task', base: 'main', setup: null }] })
+    .then(() => '', (error: unknown) => (error instanceof Error ? error.message : String(error)))
+  check(failedClone !== '' && !failedClone.includes(token), "a failed git command's error never carries the machine's token")
+  const queued = [...queue.rows.values()][0]?.id
+  const secondId = must(typeof queued === 'string' ? queued : undefined, 'a second queued command')
+  const machine = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+  const claimedSecond = await fetch(`${API}/v1/instance/commands/${secondId}/claim`, { method: 'POST', headers: machine, body: '{}' })
+  const failedCommand = await fetch(`${API}/v1/instance/commands/${secondId}`, {
+    method: 'POST', headers: machine, body: JSON.stringify({ status: 'failed', error: `the forge refused Authorization: Bearer ${token}` }),
+  })
+  const savedError = (await db.query<{ error: string | null }>('select error from commands where id = $1', [secondId])).rows[0]?.error ?? ''
+  const eventsWithToken = (await db.query<{ n: number }>(`select count(*)::int as n from events where position($1 in coalesce(text, '')) > 0`, [token])).rows[0]?.n
+  check(claimedSecond.ok && failedCommand.ok && savedError !== '' && !savedError.includes(token) && eventsWithToken === 0,
+    "a failed command's error reaches the record without the machine's token")
 
   // Postgres drops every connection when it restarts. The API keeps serving, and its runner listens again.
   const ours = `select count(*)::int as n from pg_stat_activity where application_name = $1 and query ilike 'listen%'`
