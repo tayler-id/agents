@@ -6,6 +6,7 @@ My multiplayer rebuild of an agent app. People and agents talk in conversations 
 - The data model: `docs/data-model.md` (it links the shared working doc)
 - The plan and what was built: `docs/build-plan.md`, `docs/build-log.md`
 - What each part does: `docs/what-each-part-does.md`
+- Every decision, what it is for, how it works and where it stands: `docs/decisions.md`
 - The coding standards: the `coding-standards` skill in `.claude/skills/`
 - The teardown of the app we studied: `research/teardown.md`
 
