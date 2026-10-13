@@ -30,6 +30,7 @@ import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
 import { forgeFor, reposOverview, type RepoOnForge } from './repos.ts'
 import { connectGithub, githubStatus } from './github.ts'
+import { startGithubWorker } from './github-worker.ts'
 import { addRepoToProject, createProject, retryRepoRequest } from './projects.ts'
 import { AddRepoBody, ConnectGithubBody, NewProjectBody, ProjectId, RepoRequestId } from '../shared/projects.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
@@ -782,5 +783,8 @@ if (import.meta.main) {
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
   createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
-  if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
+  if (process.env.AGENTS_RUNNER !== 'off') {
+    runner = startRunner()
+    startGithubWorker()
+  }
 }

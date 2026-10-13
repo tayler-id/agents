@@ -35,7 +35,7 @@ A task belongs to the project it was started in, and works only in that project'
 
 A repo request is `creating`, `done` or `failed`.
 
-- **creating.** The app is asking GitHub. A request left in `creating`, for instance by an API restart in the middle of one, is picked up again by the GitHub worker after 30 seconds.
+- **creating.** The app is asking GitHub. A request left in `creating` for 30 seconds, for instance by an API restart in the middle of one, is tried again on the GitHub worker's next round.
 - **done.** The repo is on GitHub and in the team's `repos`, and the request points at it.
 - **failed.** GitHub said no, or could not be reached. The request keeps GitHub's reason, such as an expired token or a token that may not create repos, and Try again on the project page sets it back to `creating`.
 

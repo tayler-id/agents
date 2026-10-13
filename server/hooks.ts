@@ -107,6 +107,15 @@ export async function startIssueRuns(repo: RepoOnForge & { id: string; team_id: 
   return runs
 }
 
+// Whether any of the team's pipelines starts from forge issues, so the GitHub
+// worker asks GitHub only for the teams that need it.
+export async function wantsIssues(teamId: string): Promise<boolean> {
+  for (const row of await currentPipelines(teamId)) {
+    if ((await loadSource(row.source)).pipeline?.triggers.some((t) => t.kind === 'forge')) return true
+  }
+  return false
+}
+
 // A pipeline's own webhook: {title, body, repo, id?}. repo is the forge path, such
 // as team/shop. An id makes a repeated delivery start only one run.
 export async function pipelineHook(pipelineId: string, body: Buffer, headers: IncomingHttpHeaders): Promise<{ runs: string[] }> {
