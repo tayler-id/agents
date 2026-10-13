@@ -11,7 +11,7 @@ import { ELECTRIC_PROTOCOL_QUERY_PARAMS } from '@electric-sql/client'
 import { instanceFrom, personFrom, type Instance } from './auth.ts'
 import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VISIBLE_TASK } from './access.ts'
 import { maybe, pool } from './db.ts'
-import type { Audience } from './api.ts'
+import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
