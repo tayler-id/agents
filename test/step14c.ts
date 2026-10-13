@@ -121,14 +121,16 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
   const amir = `amir-flowux-${engine}-${id}@local`
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
-  const open = async (login: string, options: Record<string, unknown> = {}) => {
+  // A page opens at its own address. A draft's phone page opened at / and then sent
+  // to the draft's hash once stayed on the home view in WebKit.
+  const open = async (login: string, options: Record<string, unknown> = {}, path = '/') => {
     const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': login }, viewport: { width: 1280, height: 820 }, ...options })
     const page = await context.newPage()
     page.on('pageerror', (error) => errors.push(`${login}: ${error.message}`))
-    await page.goto('/')
+    await page.goto(path)
     return page
   }
-  const phoneOf = (login: string) => open(login, { viewport: { width: 390, height: 844 }, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
+  const phoneOf = (login: string, path = '/') => open(login, { viewport: { width: 390, height: 844 }, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' }, path)
   try {
     const page = await open(alice)
 
@@ -145,8 +147,7 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     await page.screenshot({ path: join(SHOTS, `${engine}-draft-light.png`), fullPage: true })
     check(await serious(page) === 0, `${engine}: the draft page has no serious accessibility problems`)
     const draftUrl = page.url()
-    const teammate = await open(amir)
-    await teammate.goto(draftUrl)
+    const teammate = await open(amir, {}, draftUrl)
     const edit = teammate.getByRole('form', { name: 'Edit the draft' })
     await edit.waitFor()
     await edit.getByLabel('What needs doing?').fill(`Ready to start (${engine})`)
@@ -155,9 +156,8 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     await edit.getByRole('button', { name: 'Start task' }).click()
     check(await visible(teammate, '.page-head .kicker', 20, /^Task$/) && await visible(teammate, '.task-messages li.message.agent', 60, /Started on it/),
       `${engine}: the teammate starts it, and the agent answers`)
-    const draftPhone = await phoneOf(alice)
     const otherDraft = await call(alice, '/v1/tasks', { title: `Phone draft (${engine})`, instructions: '', agentId: ids.writer, repoIds: [ids.repo], draft: true }) as { taskId: string }
-    await draftPhone.goto(`/#/t/${otherDraft.taskId}`)
+    const draftPhone = await phoneOf(alice, `/#/t/${otherDraft.taskId}`)
     // A task page shows before its sessions load, so wait for the draft's own form.
     const draftShown = await visible(draftPhone, 'form[aria-label="Edit the draft"]', 15) && await visible(draftPhone, 'section[aria-label="Order of work"]', 5)
     check(draftShown && await noSideScroll(draftPhone), `${engine}: at phone width the draft page fits without sideways scrolling`)
@@ -325,8 +325,7 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     if (spot) await page.mouse.click(spot.x, spot.y)
     check(spot && await visible(page, 'aside[aria-label="Document"] .comment.active', 10, /This line repeats the first/),
       `${engine}: clicking marked text in the document makes its comment the current one`)
-    const docPhone = await phoneOf(alice)
-    await docPhone.goto(page.url())
+    const docPhone = await phoneOf(alice, page.url())
     await visible(docPhone, 'aside[aria-label="Document"] .comment .quote', 20)
     check(await noSideScroll(docPhone), `${engine}: at phone width the document and its comments fit without sideways scrolling`)
     await docPhone.screenshot({ path: join(SHOTS, `${engine}-pinned-comment-phone.png`) })
@@ -340,12 +339,13 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     check(await visible(page, 'section[aria-label="Pull requests"] a', 15, /Pull request #7/)
       && await page.getByRole('form', { name: 'Open a pull request' }).count() === 0,
     `${engine}: a task's pull request shows when nothing differs from the base, with no form to open another`)
+    await page.locator('section[aria-label="Pull requests"]').scrollIntoViewIfNeeded()
     await page.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-light.png`) })
-    const keptPhone = await phoneOf(alice)
-    await keptPhone.goto(`/#/t/${notes.taskId}`)
+    const keptPhone = await phoneOf(alice, `/#/t/${notes.taskId}`)
     await visible(keptPhone, 'section[aria-label="Pull requests"] a', 15)
     check(await noSideScroll(keptPhone), `${engine}: at phone width the task and its pull request fit without sideways scrolling`)
-    await keptPhone.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-phone.png`), fullPage: true })
+    await keptPhone.locator('section[aria-label="Pull requests"]').scrollIntoViewIfNeeded()
+    await keptPhone.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-phone.png`) })
 
     // A run's page: its changes, and a gate whose buttons say what they do.
     const { runId } = await call(alice, `/v1/pipelines/${ids.pipeline}/runs`, { title: `CHANGELOGRUN (${engine})`, body: '', repoId: ids.repo }) as { runId: string }
@@ -357,8 +357,7 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     check(await visible(page, 'aside[aria-label="File"] .markdown h3', 15, /Changelog/), `${engine}: a run's changed file opens beside it`)
     await page.screenshot({ path: join(SHOTS, `${engine}-run-gate-light.png`) })
     check(await serious(page) === 0, `${engine}: the run page with its gate and a file open has no serious accessibility problems`)
-    const runPhone = await phoneOf(alice)
-    await runPhone.goto(`/#/r/${runId}`)
+    const runPhone = await phoneOf(alice, `/#/r/${runId}`)
     await visible(runPhone, 'section.ask-card button', 30, /Ship it/)
     check(await noSideScroll(runPhone), `${engine}: at phone width the run page fits without sideways scrolling`)
     await runPhone.screenshot({ path: join(SHOTS, `${engine}-run-gate-phone.png`), fullPage: true })
