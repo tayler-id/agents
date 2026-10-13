@@ -1,10 +1,17 @@
-// Turns an agent's screen action into the pointer events, key events and pauses
-// that perform it. Everything is checked first, coordinates and key names
-// alike, so a bad action sends nothing to the screen.
+// Turns an agent's screen action into the pointer events, key events, pauses
+// and pastes that perform it. Everything is checked first, coordinates and key
+// names alike, so a bad action sends nothing to the screen.
 //
 // Keys are named as xdotool names them, as in Claude's computer-use tool, so
-// "ctrl+shift+t" holds Control and Shift while it presses t. The box's Xvnc maps
-// any keysym missing from its keymap on demand, so any Unicode character types.
+// "ctrl+shift+t" holds Control and Shift while it presses t.
+//
+// Text is typed key by key when it is printable ASCII, which the box's US keymap
+// holds, and pasted from the clipboard otherwise. For any other character Xvnc
+// has to add a key to the keymap, and the browser often reads the key press
+// before the new keymap and drops the character. Typed key by key, 9 of 18
+// strings of accented, Greek, Cyrillic, CJK and emoji text arrived whole in a
+// box. Pasted, with each paste waiting for the clipboard and the app as
+// desktop.ts describes, 90 of 90 did.
 
 import { Button } from '../shared/rfb.ts'
 import type { ComputerAction, ScreenSize } from '../shared/screen.ts'
@@ -19,6 +26,11 @@ export type Step =
   | { kind: 'pointer'; pointer: Pointer }
   | { kind: 'key'; keysym: number; down: boolean }
   | { kind: 'wait'; ms: number }
+  // Puts text on the clipboard, for the ctrl+v that follows.
+  | { kind: 'clipboard'; text: string }
+  // Waits until the app has asked for the pasted text, so the next key or paste
+  // can't overtake it.
+  | { kind: 'pasted' }
 
 export type Plan = { steps: Step[]; pointer: Pointer; settle: boolean }
 
@@ -49,18 +61,36 @@ const NAMED_KEYS: Record<string, number> = {
 // F1 to F12 are consecutive keysyms.
 const F1 = 0xffbe
 const FUNCTION_KEYS = 12
-// Keysyms outside Latin-1 are the character's code point plus this.
+// A character's Unicode keysym is its code point plus this.
 const UNICODE_KEYSYM = 0x01000000
+const CONTROL = 0xffe3
+const V = 0x76
 
-// The keysym for one character. Printable ASCII and Latin-1 keysyms equal their
-// code point.
+// Whether a character is on the box's US keymap: printable ASCII, newline and tab.
+const onKeymap = (char: string) => char === '\n' || char === '\t' || /^[\x20-\x7e]$/.test(char)
+
+// The keysym for one character. Printable ASCII keysyms equal their code
+// points. Any other character's is its Unicode keysym, which Xvnc adds to the
+// keymap when it first sees it.
 export function charKeysym(char: string): number {
   if (char === '\n') return RETURN
   if (char === '\t') return TAB
   const code = char.codePointAt(0)
   if (code === undefined) throw new BadAction('an empty string has no key')
-  if ((code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff)) return code
+  if (code >= 0x20 && code <= 0x7e) return code
   return UNICODE_KEYSYM + code
+}
+
+// The text as runs to type and runs to paste, in order.
+function runsOf(text: string): { paste: boolean; text: string }[] {
+  const runs: { paste: boolean; text: string }[] = []
+  for (const char of text) {
+    const paste = !onKeymap(char)
+    const last = runs.at(-1)
+    if (last && last.paste === paste) last.text += char
+    else runs.push({ paste, text: char })
+  }
+  return runs
 }
 
 function keyKeysym(name: string): number {
@@ -176,11 +206,22 @@ export function plan(action: ComputerAction, from: Pointer, size: ScreenSize): P
       break
     }
     case 'type':
-      for (const char of action.text) {
-        const keysym = charKeysym(char)
-        key(keysym, true)
-        key(keysym, false)
-        pause(TYPE_GAP_MS)
+      for (const run of runsOf(action.text)) {
+        if (run.paste) {
+          steps.push({ kind: 'clipboard', text: run.text })
+          key(CONTROL, true)
+          key(V, true)
+          key(V, false)
+          key(CONTROL, false)
+          steps.push({ kind: 'pasted' })
+          continue
+        }
+        for (const char of run.text) {
+          const keysym = charKeysym(char)
+          key(keysym, true)
+          key(keysym, false)
+          pause(TYPE_GAP_MS)
+        }
       }
       break
     case 'key':

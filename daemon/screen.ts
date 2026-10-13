@@ -13,7 +13,7 @@ import {
 import { keyEvent, pointerEvent } from '../shared/rfb.ts'
 import { messageOf } from '../shared/errors.ts'
 import { parseJson } from '../shared/json.ts'
-import type { Desktop } from './desktop.ts'
+import type { ClipboardOffer, Desktop } from './desktop.ts'
 import { BadAction, plan, type Pointer, type Step } from './actions.ts'
 import { RfbClient } from './rfb.ts'
 import { encodePng } from './png.ts'
@@ -68,6 +68,7 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
   }
 
   async function execute(client: RfbClient, steps: Step[], signal: AbortSignal) {
+    let offer: ClipboardOffer | null = null
     for (const step of steps) {
       if (signal.aborted) throw new Refused(control)
       switch (step.kind) {
@@ -82,6 +83,16 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
           break
         case 'wait':
           await sleep(step.ms, undefined, { signal })
+          break
+        case 'clipboard':
+          offer = await desktop.offerClipboard(step.text)
+          break
+        case 'pasted':
+          if (!offer) throw new Error('a paste was planned with nothing on the clipboard')
+          // When nothing asked for the text, no field had focus. The screenshot
+          // after the action shows the agent so.
+          await offer.taken()
+          offer = null
           break
       }
     }

@@ -12,10 +12,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The desktop. TigerVNC's Xvnc is the X display and the VNC server in one
-# process, matchbox gives each window the whole screen, and tini reaps the
-# browser's child processes, which the daemon as process 1 would leave behind.
+# process, matchbox gives each window the whole screen, xclip puts text the agent
+# types outside ASCII on the clipboard to paste, and tini reaps the browser's
+# child processes, which the daemon as process 1 would leave behind.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini tigervnc-standalone-server matchbox-window-manager \
+ && apt-get install -y --no-install-recommends tini tigervnc-standalone-server matchbox-window-manager xclip \
  && rm -rf /var/lib/apt/lists/*
 # Playwright 1.64.0, the version package-lock.json pins, then each engine's
 # system libraries and browser, one layer each so each engine's cost shows:
