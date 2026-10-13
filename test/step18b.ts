@@ -1,10 +1,12 @@
 // Durability check 2, with the fake Claude. The agent appends a line to a file
 // with one Bash call, and the machine dies after the line is written and before
-// the call's result is saved. On restart the line is still there once: the turn
+// the call's result is saved. On restart the line is still there once. The turn
 // resumes in the same conversation, the resumed session is told that call may
 // have run, it checks before running it again, and the turn ends. Then only the
 // daemon dies while the agent is mid-call, and its Claude is stopped before the
-// turn resumes, so two processes never work one conversation.
+// turn resumes, so two processes never work one conversation. Last, the machine
+// dies mid-call and a person interrupts while it is down, so the restart ends
+// the turn instead of resuming it.
 //   node --env-file=.env --env-file=.env.test test/step18b.ts
 
 import { randomBytes } from 'node:crypto'
@@ -40,6 +42,7 @@ try {
     turns: [
       { match: 'LEDGER', append: { id: 'toolu_ledger', file: 'ledger.txt', line: 'entry-1', hangOnce: true, checkNamed: true }, reply: 'Appended entry-1.' },
       { match: 'DIARY', append: { id: 'toolu_diary', file: 'diary.txt', line: 'day-1', hangOnce: true, checkNamed: true }, reply: 'Appended day-1.' },
+      { match: 'JOURNAL', append: { id: 'toolu_journal', file: 'journal.txt', line: 'page-1', hangOnce: true, checkNamed: true }, reply: 'Appended page-1.' },
     ],
   }))
 
@@ -109,6 +112,25 @@ try {
   const toldOld = fakeLog(folder, 'received').filter((r) => r.pid === orphan && String(r.text).includes('toolu_diary'))
   c.check(toldOld.length === 0, 'only the new Claude was told to resume')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after only the daemon died' })
+
+  // Last, a person interrupts while the machine is down.
+  await say(`/v1/conversations/${conversationId}/messages`, { text: 'Do the JOURNAL task.' })
+  await until('the journal line and its call in the record', 60, async () =>
+    lines(join(folder, 'journal.txt')).length === 1 && (await called('toolu_journal')) === 1)
+  const third = c.children.at(-1)
+  if (!third) throw new Error('no daemon to kill')
+  await killMachine(third)
+  await say(`/v1/sessions/${sessionId}/interrupt`, {})
+  const startsBefore = fakeLog(folder, 'starts').length
+  c.start('daemon/agentsd.ts', daemonEnv)
+  const journal = await c.row(`select id from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [sessionId])
+  await until('the interrupted message to end', 60, async () => (await c.row('select status from commands where id = $1', [journal.id]))?.status === 'done')
+  const stopped = await c.row(`select text from events where session_id = $1 and kind = 'notice' and body->>'subtype' = 'interrupted' order by seq desc limit 1`, [sessionId])
+  const interrupts = await c.rows(`select status from commands where session_id = $1 and kind = 'interrupt'`, [sessionId])
+  c.check(/asked to stop/.test(String(stopped?.text)) && interrupts.map((i) => i.status).join() === 'done' && (await c.row('select status from sessions where id = $1', [sessionId]))?.status === 'idle',
+    'an interrupt sent while the machine was down ended the turn when it came back, and the record says why')
+  c.check(fakeLog(folder, 'starts').length === startsBefore && lines(join(folder, 'journal.txt')).length === 1, 'the interrupted turn was not resumed')
+  await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after an interrupt during the outage' })
 } catch (error) {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
