@@ -345,6 +345,11 @@ The design is `docs/design/computers.md`.
 - **Solves now.** Every session in a box gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first.
 - **Helps later.** The Mac helper in the design can serve the same tools through the same socket.
 
+### Watching and taking over a screen (`server/screens.ts`, `server/rfb-filter.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
+
+- **Solves now.** A person on the team watches a box's screen live through the people port, as their Tailscale login, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` is its state. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work.
+- **Helps later.** A Mac with the computer-use helper in the design can serve the same Screen view through the same tunnel.
+
 ### Checking their own work (`daemon/computer-guide.ts`)
 
 - **Solves now.** A session on a machine with a screen is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.

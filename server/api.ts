@@ -12,7 +12,7 @@ import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { instanceFrom, personFrom } from './auth.ts'
+import { checkAudience, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
@@ -47,6 +47,8 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
+import { handBackScreen, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { Heartbeat, ScreenMove } from '../shared/screen.ts'
 import {
   EndedMessages, EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
@@ -178,9 +180,16 @@ const routes: Route[] = [
 
   ['machines', 'POST', /^\/v1\/instance\/heartbeat$/, async (req) => {
     const instance = await instanceFrom(req)
-    const body = await readJson(req)
-    const status = body.status === 'offline' ? 'offline' : 'online'
-    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, status])
+    const body = Heartbeat.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, body.data.status])
+    // A machine with a desktop reports its screen's size, and one without reports null.
+    // Daemons from before screens, and a daemon going offline, leave it as it was.
+    const { screen } = body.data
+    if (screen !== undefined) {
+      await pool.query('update instances set screen_width = $2, screen_height = $3 where id = $1',
+        [instance.id, screen ? screen.width : null, screen ? screen.height : null])
+    }
     return { ok: true }
   }],
 
@@ -555,6 +564,16 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
+  // A person takes over a box's screen, or hands it back to the agents. The body
+  // names the session they were looking at, for the notice in its record.
+  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}/(take|hand-back)$`), async (req, [instanceId, action]) => {
+    const person = await personFrom(req)
+    const body = ScreenMove.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    const move = action === 'take' ? takeScreen : handBackScreen
+    return { control: await move(person, instanceId, body.data.sessionId) }
+  }],
+
   // A person keeps a box for themselves, or lets it go back to the pool. A
   // person's own box is never in the pool.
   ['people', 'POST', new RegExp(`^/v1/instances/${UUID}/(claim|release)$`), async (req, [instanceId, action]) => {
@@ -620,9 +639,7 @@ const JSON_TYPE = /^application\/json\s*(;|$)/i
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
-    if (audience === 'machines' && req.headers['tailscale-user-login']) {
-      throw new HttpError(400, 'people connect through Tailscale, not the machine port')
-    }
+    checkAudience(audience, req)
     if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
@@ -722,7 +739,7 @@ if (import.meta.main) {
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
-  await listenForPeople(createServer(serve('people')), people.data)
+  await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades('people')), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   // Closing the stream store gives back what its database holds, such as System V
@@ -734,6 +751,8 @@ if (import.meta.main) {
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
+  createServer(serve('machines')).on('upgrade', screenUpgrades('machines'))
+    .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
+  startScreenSweep()
   if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
 }

@@ -1022,10 +1022,10 @@ async function fireRoutines(teamIds: string[] | null) {
   }
 }
 
-// The teams this server runs pipelines, routines and boxes for. AGENTS_RUNNER_TEAMS
+// The teams this server runs pipelines, routines, boxes and screens for. AGENTS_RUNNER_TEAMS
 // names them, comma separated, so a check's server leaves other teams' work alone.
 // Unset, it is every team.
-async function scopedTeams(): Promise<string[] | null> {
+export async function scopedTeams(): Promise<string[] | null> {
   const names = process.env.AGENTS_RUNNER_TEAMS?.split(',').map((n) => n.trim()).filter(Boolean)
   if (!names?.length) return null
   return (await many<{ id: string }>(pool, 'select id from teams where name = any($1)', [names])).map((r) => r.id)

@@ -32,6 +32,7 @@ import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
 import { startDesktop, type Desktop } from './desktop.ts'
 import { startScreenService, type ScreenService } from './screen.ts'
+import { linkScreen, type ScreenLink } from './screen-link.ts'
 import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL } from './computer-guide.ts'
 
 const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
@@ -126,15 +127,17 @@ const desktop: Desktop | null = desktopConfig && startDesktop({
   size: desktopConfig.AGENTS_DESKTOP, runDir: SCREEN_DIR, profileDir: join(HOME, 'browser'), browsersPath: desktopConfig.PLAYWRIGHT_BROWSERS_PATH,
 })
 // Set once the desktop is up: the size the heartbeat reports, the service
-// sessions' `computer` servers talk to, and what those servers need.
-type Screen = { size: ScreenSize; service: ScreenService; socket: string; cdpUrl: string; browserMcp: string }
+// sessions' `computer` servers talk to, what those servers need, and the box's
+// link to the API, through which people watch and take over.
+type Screen = { size: ScreenSize; service: ScreenService; link: ScreenLink; socket: string; cdpUrl: string; browserMcp: string }
 let screen: Screen | null = null
 if (desktop && desktopConfig) {
   desktop.ready.then(() => {
     const socket = join(SCREEN_DIR, 'agent.sock')
+    const service = startScreenService({ desktop, socketPath: socket })
     screen = {
-      size: desktop.size, socket, cdpUrl: desktop.cdpUrl, browserMcp: desktopConfig.AGENTS_BROWSER_MCP,
-      service: startScreenService({ desktop, socketPath: socket }),
+      size: desktop.size, socket, cdpUrl: desktop.cdpUrl, browserMcp: desktopConfig.AGENTS_BROWSER_MCP, service,
+      link: linkScreen({ api: config.api, token: config.token, vncSocket: desktop.vncSocket, onControl: (control) => { service.setControl(control) } }),
     }
     console.log(`desktop up at ${desktop.size.width}x${desktop.size.height}`)
   }, (error: unknown) => {
@@ -665,6 +668,7 @@ async function shutdown() {
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)
+  screen?.link.stop()
   await screen?.service.stop()
   await desktop?.stop()
   await api('POST', '/v1/instance/heartbeat', { status: 'offline' }).catch(() => {})

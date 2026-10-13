@@ -52,7 +52,7 @@ const personShapes: Record<string, PersonShape> = {
   instances: async (p) => ({
     table: 'instances', where: 'team_id = $1', params: [p.team_id],
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
-      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error'],
+      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height'],
   }),
   invites: async (p) => {
     requireAdmin(p)
