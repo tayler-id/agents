@@ -331,6 +331,11 @@ The design is `docs/design/durability.md`.
 
 - **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
 
+## Verification (`bin/agentsctl`, `ctl/`, `shared/cli/`, `shared/evidence.ts`, `.claude/skills/verify-agents/`)
+
+- **Solves now.** An agent proves a change by running a private Agents and driving it the way a person does. `bin/agentsctl` starts one on its own ports and team against the test database, checks it is usable, drives the web app in Chromium, Firefox and WebKit and the desktop app by role and name, reads the record back, records video and traces, captures views for visual comparison, and stops everything it started while keeping the evidence. The feature map in `.claude/skills/verify-agents/features/` describes twelve features as runnable steps, and `map run` gives each step a verdict. `shared/cli/` is the command-line library it is built on: one output envelope, exit codes, help made from the command definitions, and a conformance check. `shared/evidence.ts` defines the evidence manifest and the feature map the framework's gates read.
+- **Helps later.** Pipelines can make and keep the same kind of skill for any repo (`docs/design/verification.md`), and other CLIs, such as agents-git, can share the library and pass the same conformance check.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.
