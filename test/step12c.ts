@@ -16,7 +16,7 @@
 //   node --env-file=.env --env-file=.env.test test/step12c.ts
 //   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step12c.ts
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { connect, createServer, type Socket } from 'node:net'
@@ -62,6 +62,12 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const node = (env: Record<string, string>, ...args: string[]) =>
   execFileSync(process.execPath, ['--env-file=.env', ...args], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env } })
 const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8' }).trim()
+// All a box logged. The daemon writes errors to stderr, which docker logs passes on as its own stderr.
+function boxLog(container: string): string {
+  const out = spawnSync('docker', ['logs', container], { encoding: 'utf8' })
+  if (out.status !== 0) throw new Error(`docker logs ${container} failed: ${out.stderr}`)
+  return out.stdout + out.stderr
+}
 
 // The boxes' way to the API. Shut, it hangs up on every new connection, and a
 // box's daemon keeps trying until it opens.
@@ -205,7 +211,7 @@ async function run(engine: string) {
 
     // The token went nowhere else.
     const inDb = await foundInDatabase(db, token)
-    check(inDb.length === 0 && !must(api, 'the API').text().includes(token) && !docker('logs', container).includes(token) && !sent.some((text) => text.includes(token)),
+    check(inDb.length === 0 && !must(api, 'the API').text().includes(token) && !boxLog(container).includes(token) && !sent.some((text) => text.includes(token)),
       `${engine}: the token is in no table, no API or box log, and no answer a browser got${inDb.length ? ` (found in ${inDb.join(', ')})` : ''}`)
     check(errors.length === 0, `${engine}: no page errors${errors.length ? ` (${errors.join('; ')})` : ''}`)
   } finally {
