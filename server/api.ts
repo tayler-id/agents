@@ -34,7 +34,8 @@ import { addComment, messageTaskSession, resolveComment, startTask } from './tas
 import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
-import { TaskId, WorkspaceId } from '../shared/ids.ts'
+import { versionDiff } from './versions.ts'
+import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
 import { ChangesPost, DraftAction, NewComment, NewTask, PullRequestAsk, TaskFields } from '../shared/work.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
@@ -347,6 +348,14 @@ const routes: Route[] = [
     const comment = parsed(NewComment, await readJson(req))
     const commentId = await tx((client) => addComment(client, person, artifactId, comment))
     return { commentId }
+  }],
+
+  // What changed in a document from the version before this one.
+  ['people', 'GET', new RegExp(`^/v1/artifacts/${UUID}/versions/([0-9]{1,9})/diff$`), async (req, [id, n]) => {
+    const person = await personFrom(req)
+    const artifactId = parsed(ArtifactId, id)
+    const version = parsed(z.coerce.number().int().min(2), n)
+    return { diff: await versionDiff(person, artifactId, version) }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/comments/${UUID}/resolve$`), async (req, [commentId]) => {
