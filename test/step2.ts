@@ -235,6 +235,12 @@ try {
   await sleep(3000)
   check(early.exitCode === null && earlyLog.includes('waiting for Postgres'), 'started before Postgres accepts connections, the API waits for it instead of exiting')
   early.kill('SIGTERM')
+
+  // A stopped API closes its stream store. Killed without that, the store's database
+  // left its System V semaphores behind on macOS, until none were left for new APIs.
+  api.kill('SIGTERM')
+  const exited = await new Promise<boolean>((resolve) => { api.once('exit', () => { resolve(true) }); setTimeout(() => { resolve(false) }, 8000) })
+  check(exited && api.exitCode === 0, 'an API asked to stop closes its stream store and exits cleanly')
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

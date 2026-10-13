@@ -511,10 +511,21 @@ async function migrateWhenReady(): Promise<string[]> {
   }
 }
 
+// How long a stopping API waits for the stream server to close before it exits anyway.
+const STOP_GRACE_MS = 5000
+
 if (import.meta.main) {
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
-  await startStreamServer()
+  const streams = await startStreamServer()
+  // Closing the stream store gives back what its database holds, such as System V
+  // semaphores on macOS. An API killed without closing it leaked a set every time.
+  const stop = () => {
+    setTimeout(() => { console.error('the stream server did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
+    streams.stop().then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the stream server: ${messageOf(error)}`); process.exit(1) })
+  }
+  process.once('SIGTERM', stop)
+  process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
   const people = Number(process.env.AGENTS_PEOPLE_PORT ?? 7710)
   // handle() catches every error itself, so its promise never rejects.
