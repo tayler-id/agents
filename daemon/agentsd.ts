@@ -374,7 +374,7 @@ function resume({ command, covers }: ResumeTurn) {
   try {
     startSession(command).send(command.payload.text, covers)
   } catch (error) {
-    const reason = messageOf(error)
+    const reason = scrub(messageOf(error))
     console.error(`resuming session ${command.sessionId}:`, reason)
     void post(command.sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: covers })
   }
