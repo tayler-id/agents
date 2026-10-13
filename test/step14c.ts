@@ -357,6 +357,15 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
     await keptPhone.locator('section[aria-label="Pull requests"]').scrollIntoViewIfNeeded()
     await keptPhone.screenshot({ path: join(SHOTS, `${engine}-pull-request-kept-phone.png`) })
 
+    // A repo with more files changed than the machine lists, as its post would record it.
+    const notesWorkspace = must(await one<{ id: string }>('select id from workspaces where task_id = $1', [notes.taskId]), 'the notes workspace').id
+    await db.query(`insert into unlisted_changes (workspace_id, repo_id, team_id, task_id, kind, reason) values ($1, $2, $3, $4, 'too_many', null)`,
+      [notesWorkspace, ids.repo, ids.team, notes.taskId])
+    check(await visible(page, 'section[aria-label="Changes"] p', 15, /More than 20,000 files changed, too many to list/),
+      `${engine}: a repo with too many changed files says so in Changes`)
+    await page.locator('section[aria-label="Changes"]').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(SHOTS, `${engine}-too-many-light.png`) })
+
     // A run's page: its changes, and a gate whose buttons say what they do.
     const { runId } = await call(alice, `/v1/pipelines/${ids.pipeline}/runs`, { title: `CHANGELOGRUN (${engine})`, body: '', repoId: ids.repo }) as { runId: string }
     await page.goto(`/#/r/${runId}`)

@@ -13,7 +13,7 @@ import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VI
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
-import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS } from '../shared/work.ts'
+import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -162,6 +162,12 @@ const personShapes: Record<string, PersonShape> = {
     const taskId = arg(args, 'task')
     if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
     return { table: 'file_changes', where: 'task_id = $1', params: [taskId], columns: FILE_CHANGE_COLUMNS }
+  },
+  // A task's repos whose changes are not listed, and why.
+  unlisted_changes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'unlisted_changes', where: 'task_id = $1', params: [taskId], columns: UNLISTED_CHANGE_COLUMNS }
   },
   file_change: async (p, args) => ({
     table: 'file_changes', where: 'id = $1', columns: FILE_CHANGE_DETAIL_COLUMNS,

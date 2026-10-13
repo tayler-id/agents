@@ -148,10 +148,14 @@ export const CHANGE_LIMITS = {
   // Characters of content and diffs in one post, well under the API's 20 MB body
   // limit. Files past it go in a later post, which the API asks for.
   post: 4_000_000,
-  // Files listed for one repo, and repos for one workspace.
+  // Files listed for one repo. Past this the machine stops counting and the app
+  // says there are too many, since staging that many on every turn takes minutes.
   files: 20_000,
+  // Repos in one workspace.
   repos: REPOS_MAX,
   path: 4096,
+  // Characters of why git could not read a repo, enough for its error lines.
+  reason: 2000,
 }
 
 const ChangeFacts = z.object({
@@ -175,11 +179,18 @@ export const ChangedFile = z.discriminatedUnion('sent', [
   'a text file has its content, unless it was deleted')
 export type ChangedFile = z.infer<typeof ChangedFile>
 
-export const RepoChanges = z.object({
-  repoId: RepoId,
-  baseCommit: z.string().regex(/^[0-9a-f]{40}$/, 'baseCommit must be a full commit id'),
-  files: z.array(ChangedFile).max(CHANGE_LIMITS.files),
-})
+// One repo of a machine's post: its changed files, or why they are not listed.
+// A repo with too many is never staged, and one git cannot read keeps its last list.
+export const RepoChanges = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('listed'),
+    repoId: RepoId,
+    baseCommit: z.string().regex(/^[0-9a-f]{40}$/, 'baseCommit must be a full commit id'),
+    files: z.array(ChangedFile).max(CHANGE_LIMITS.files),
+  }),
+  z.object({ state: z.literal('too_many'), repoId: RepoId }),
+  z.object({ state: z.literal('unreadable'), repoId: RepoId, reason: z.string().min(1).max(CHANGE_LIMITS.reason) }),
+])
 export type RepoChanges = z.infer<typeof RepoChanges>
 
 // POST /v1/workspaces/:id/changes, from the workspace's machine.
@@ -221,6 +232,16 @@ export const FileChangeDetail = z.discriminatedUnion('preview', [
   'a text file has its content, unless it was deleted')
 export type FileChangeDetail = z.infer<typeof FileChangeDetail>
 export const FILE_CHANGE_DETAIL_COLUMNS = [...FILE_CHANGE_COLUMNS, 'content', 'diff']
+
+const UnlistedFields = { task_id: TaskId, workspace_id: WorkspaceId, repo_id: RepoId, updated_at: z.string() }
+
+// A row of the unlisted_changes shape: a repo of the task whose changes are not listed, and why.
+export const UnlistedChangeRow = z.discriminatedUnion('kind', [
+  z.object({ ...UnlistedFields, kind: z.literal('too_many'), reason: z.null() }),
+  z.object({ ...UnlistedFields, kind: z.literal('unreadable'), reason: z.string() }),
+])
+export type UnlistedChangeRow = z.infer<typeof UnlistedChangeRow>
+export const UNLISTED_CHANGE_COLUMNS = [...Object.keys(UnlistedFields), 'kind', 'reason']
 
 // Pushes. A person asks for a task's branches to be pushed and pull requests
 // opened. Only a push in flight moves, and it moves once.

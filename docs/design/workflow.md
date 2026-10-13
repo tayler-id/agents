@@ -99,18 +99,19 @@ An action from a state it can't start from, such as holding a done task, is a 40
 - The daemon copies the agent's index and stages the working tree into the copy with `git add --all`, so it sees new, changed and deleted files without touching the agent's own index. It reads statuses and blob ids with `git diff --cached --raw`, line counts with `--numstat`, and each file's unified diff with `git diff --cached -- <path>`. Content comes from git's blobs, so a symlink is never followed out of the repo.
 - Only repos cloned through the API's git proxy count. A repo the agent cloned itself is not one of the task's.
 - A file's hash is its old blob, its new blob and its status. The daemon sends content and diff only for files whose hash changed since it last sent them, and the facts of every changed file, so the API drops rows for files that no longer differ. If the API lacks content for a file, its answer names the file, and the daemon sends it again.
-- It sends after a tool result or a turn's end (at most once every 2 seconds), after a setup, check or push in the workspace, and for every workspace on the machine when the daemon starts. That last one is meant to show the changes of a task from before this change, like the README task, once the new daemon runs. No check restarts a daemon, and the live server has not been tried.
+- It sends after a tool result or a turn's end (at most once every 2 seconds), after a setup, check or push in the workspace, and for every workspace on the machine when the daemon starts. Two scans run at once, and the rest wait their turn. That last one is meant to show the changes of a task from before this change, like the README task, once the new daemon runs. No check restarts a daemon, and the live server has not been tried.
 
 **Limits.** `CHANGE_LIMITS` in `shared/work.ts`:
 
 - A file whose content or diff is over 512 K characters is listed with its line counts and marked too large.
 - One post carries at most 4,000,000 characters of content and diffs. Files past that go as facts, and the API asks for them in the next post.
-- A repo lists at most 20,000 files.
-- A file git counts no lines in, which is how `--numstat` marks a binary file, is listed without content or diff. So is a submodule.
+- Before it stages anything, the daemon counts the repo's changed and new files, and stops counting past 20,000. A repo with more is sent as too many, its rows go, and the app says "More than 20,000 files changed, too many to list."
+- A file git counts no lines in, which is how `--numstat` marks a binary file, is listed without content or diff. So is a submodule, and so is a file with a NUL byte, which git misses after its first 8,000 bytes and Postgres cannot store as text.
+- A repo git fails to read, such as one with a file it cannot open, is sent as unreadable with git's own error lines. Its last list stays, the app shows the error above it, and the other repos are read as usual.
 
-**Shape.** `file_changes`, one row per changed file of a workspace, unique on workspace, repo and path. It holds the status (`added`, `modified` or `deleted`), the line counts, `preview` (`text`, `binary` or `too_large`), the content as it is now, the diff against the base, the base commit and the hash. Checks in the table tie content and diff to `preview`. The row is the workspace's current state, not history. Git keeps the history once the task pushes.
+**Shape.** `file_changes`, one row per changed file of a workspace, unique on workspace, repo and path. It holds the status (`added`, `modified` or `deleted`), the line counts, `preview` (`text`, `binary` or `too_large`), the content as it is now, the diff against the base, the base commit and the hash. Checks in the table tie content and diff to `preview`. The row is the workspace's current state, not history. Git keeps the history once the task pushes. `unlisted_changes` holds one row per repo whose changes are not listed, with its kind, `too_many` or `unreadable`, and for an unreadable one the scrubbed reason.
 
-**Reading.** Two shapes. `file_changes?task=` is the list without contents, which the task page reads. `file_change?id=` is one row with its content and diff, read while its panel is open.
+**Reading.** Three shapes. `file_changes?task=` is the list without contents, which the task page reads. `file_change?id=` is one row with its content and diff, read while its panel is open. `unlisted_changes?task=` names the repos whose changes are not listed.
 
 **What each person sees.** The task page has a Changes section, files grouped by repo, each with added, modified or deleted and its line counts. A run's page has the same section. Clicking a file opens a side panel beside the task with two tabs.
 
@@ -203,7 +204,7 @@ Every loop has the runner's cap of three tries, then a person decides. The gates
 
 Migration `0007_workflow.sql`:
 
-- `file_changes`, new, as above.
+- `file_changes` and `unlisted_changes`, new, as above.
 - `pushes`, new, as above.
 - `task_blocks` and `task_holds`, new, as above.
 - `tasks.priority` and `tasks.done_at`, new columns.
@@ -229,7 +230,7 @@ Each check was seen failing with the thing it guards broken, then passing after 
 - **Built but not checked by any test:**
   - Try again after a failed push, a second push after more changes, and the pull request route's refusals while a push is in flight, before the workspace is ready and for a task with no repo.
   - The flags a pipeline stage's session starts with, and the research, plan and implement pipeline driven from the app. step14c drives a simpler pipeline's gate there.
-  - Changes sent when a daemon starts, a file too large to show, a post past its budget with the API asking for the rest, and a submodule.
+  - Changes sent when a daemon starts, two scans at a time, a file too large to show, a post past its budget with the API asking for the rest, a submodule, and an unreadable repo's error in the app.
   - In the palette, the arrow keys, finding anything but a task, Cmd+K from inside a field, Ctrl+K left to a field on a Mac, single keys with a modifier held or during composition, and the single-key choice surviving a reload.
   - Holding a task until a date from the app.
 - **Changes are current state only.** Earlier states of an unpushed file are not kept.

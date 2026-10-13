@@ -159,6 +159,23 @@ const sentDocuments = new Map<string, string>()
 // A workspace's changes go at most this often while the agent works, since each
 // look stages the whole working tree.
 const CHANGES_EVERY_MS = 2000
+// Scans run this many at once, so a daemon starting with many workspaces does not
+// stage them all together. The rest wait their turn.
+const SCANS_AT_ONCE = 2
+let scanning = 0
+const waitingScans: (() => void)[] = []
+async function inScanSlot(work: () => Promise<void>) {
+  if (scanning < SCANS_AT_ONCE) scanning++
+  else await new Promise<void>((resolve) => { waitingScans.push(resolve) })
+  try {
+    await work()
+  } finally {
+    // A finished scan hands its slot straight to the next one waiting.
+    const next = waitingScans.shift()
+    if (next) next()
+    else scanning--
+  }
+}
 type Refresh = { busy: boolean; again: boolean; timer: NodeJS.Timeout | null; last: number }
 const refreshes = new Map<string, Refresh>()
 // For each workspace, the hash of each file the API has, by changeKey.
@@ -178,7 +195,7 @@ function refreshChanges(workspaceId: string) {
     state.timer = null
     state.busy = true
     state.last = Date.now()
-    void sendChanges(workspaceId)
+    void inScanSlot(() => sendChanges(workspaceId))
       .catch((error: unknown) => {
         // A workspace the API does not know as this machine's, such as one left
         // from a removed team, has nothing to report.
@@ -201,7 +218,11 @@ async function sendChanges(workspaceId: string) {
   if (!repos) return
   const reply = ChangesReply.parse(await api<unknown>('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
   const held = new Map<string, string>()
-  for (const repo of repos) for (const file of repo.files) held.set(changeKey(repo.repoId, file.path), file.hash)
+  for (const repo of repos) {
+    if (repo.state === 'listed') for (const file of repo.files) held.set(changeKey(repo.repoId, file.path), file.hash)
+    // The API keeps an unreadable repo's last list, so what it holds stays known.
+    if (repo.state === 'unreadable') for (const [key, hash] of sent) if (key.startsWith(changeKey(repo.repoId, ''))) held.set(key, hash)
+  }
   for (const file of reply.missing) held.delete(changeKey(file.repoId, file.path))
   sentChanges.set(workspaceId, held)
   if (reply.missing.length) refreshChanges(workspaceId)

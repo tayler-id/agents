@@ -34,6 +34,24 @@ create table file_changes (
 );
 create index file_changes_task on file_changes (task_id);
 
+-- A repo of a workspace whose changes the machine could not list: more files
+-- differ from the base than it lists, or git failed to read the repo. A repo with
+-- too many loses its file_changes rows; an unreadable one keeps its last list.
+-- The row goes once the repo is listed again.
+create table unlisted_changes (
+  workspace_id uuid not null references workspaces on delete cascade,
+  repo_id uuid not null references repos on delete cascade,
+  team_id uuid not null references teams on delete cascade,
+  task_id uuid not null references tasks on delete cascade,
+  kind text not null check (kind in ('too_many', 'unreadable')),
+  -- Why git failed, scrubbed on the machine and again by the API.
+  reason text,
+  updated_at timestamptz not null default now(),
+  primary key (workspace_id, repo_id),
+  check ((kind = 'unreadable') = (reason is not null))
+);
+create index unlisted_changes_task on unlisted_changes (task_id);
+
 -- A person asked for a task's branches to be pushed and its pull requests
 -- opened. The push command does the pushing, the runner opens the pull requests
 -- once it ends, and they become link artifacts on the task.

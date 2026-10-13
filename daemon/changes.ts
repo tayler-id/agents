@@ -3,13 +3,14 @@
 // changed and deleted files all show without touching the agent's own index.
 // Content comes from git's blobs, so a symlink is never followed out of the repo.
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { RepoId } from '../shared/ids.ts'
+import { messageOf } from '../shared/errors.ts'
 import { CHANGE_LIMITS, type ChangedFile, type ChangeStatus, type RepoChanges } from '../shared/work.ts'
 
 const run = promisify(execFile)
@@ -37,6 +38,35 @@ async function git(cwd: string, args: string[], index?: string): Promise<string>
   const { stdout } = await run('git', ['-c', 'core.fsmonitor=false', '--literal-pathspecs', ...args], { cwd, env, maxBuffer: GIT_OUTPUT_LIMIT })
   return stdout
 }
+
+// How many NUL-ended paths a git command lists, counting no further than
+// limit + 1, so a repo with a huge tree is never read in full.
+function countUpTo(cwd: string, args: string[], limit: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['-c', 'core.fsmonitor=false', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    let count = 0
+    let stopped = false
+    let errors = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      for (const byte of chunk) if (byte === 0) count++
+      if (count > limit && !stopped) {
+        stopped = true
+        child.kill('SIGTERM')
+      }
+    })
+    child.stderr.on('data', (chunk: Buffer) => { errors = (errors + chunk.toString('utf8')).slice(-CHANGE_LIMITS.reason) })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (stopped) resolve(limit + 1)
+      else if (code === 0) resolve(count)
+      else reject(new Error(errors.trim() || `git ${args.join(' ')} exited with ${String(code)}`))
+    })
+  })
+}
+
+// What a person reads of a git failure: its own lines, without the command execFile puts first.
+const reasonOf = (error: unknown) =>
+  messageOf(error).replace(/^Command failed: .*\n/, '').trim().slice(0, CHANGE_LIMITS.reason) || 'git gave no reason'
 
 // Where the task branch left its base: the branch it tracks, or the remote's default.
 async function baseCommit(path: string): Promise<string> {
@@ -79,6 +109,10 @@ function parseNumstat(out: string): Map<string, Counts> {
 // facts alone, as does one past the post's budget, which the API then asks for.
 async function repoChanges(path: string, repoId: RepoId, sent: ReadonlyMap<string, string>, budget: { left: number }): Promise<RepoChanges> {
   const base = await baseCommit(path)
+  // Counting writes nothing, unlike staging, so a repo past the limit is never staged.
+  const tracked = await countUpTo(path, ['diff', '--name-only', '--no-renames', '-z', base], CHANGE_LIMITS.files)
+  const untracked = tracked > CHANGE_LIMITS.files ? 0 : await countUpTo(path, ['ls-files', '--others', '--exclude-standard', '-z'], CHANGE_LIMITS.files - tracked)
+  if (tracked + untracked > CHANGE_LIMITS.files) return { state: 'too_many', repoId }
   const index = join(tmpdir(), `agents-index-${randomUUID()}`)
   try {
     const own = (await git(path, ['rev-parse', '--git-path', 'index'])).trim()
@@ -108,6 +142,11 @@ async function repoChanges(path: string, repoId: RepoId, sent: ReadonlyMap<strin
         continue
       }
       const content = entry.status === 'deleted' ? null : await git(path, ['cat-file', 'blob', entry.newBlob])
+      // git calls a file text when its first 8,000 bytes hold no NUL, and Postgres stores no NUL in text.
+      if (patch.includes('\0') || content?.includes('\0')) {
+        files.push({ ...facts, sent: 'binary' })
+        continue
+      }
       const cost = patch.length + (content === null ? 0 : content.length)
       if (cost > budget.left) {
         files.push({ ...facts, sent: 'facts' })
@@ -116,7 +155,7 @@ async function repoChanges(path: string, repoId: RepoId, sent: ReadonlyMap<strin
       budget.left -= cost
       files.push({ ...facts, sent: 'text', content, diff: patch })
     }
-    return { repoId, baseCommit: base, files }
+    return { state: 'listed', repoId, baseCommit: base, files }
   } finally {
     rmSync(index, { force: true })
   }
@@ -137,7 +176,8 @@ export async function workspaceChanges(root: string, sent: ReadonlyMap<string, s
     const repoId = RepoId.safeParse(ORIGIN.exec(origin.trim())?.[1])
     // A repo the agent cloned or made itself is not one of the task's.
     if (!repoId.success) continue
-    repos.push(await repoChanges(path, repoId.data, sent, budget))
+    // One repo git cannot read keeps its last list, and the others are still read.
+    repos.push(await repoChanges(path, repoId.data, sent, budget).catch((error: unknown): RepoChanges => ({ state: 'unreadable', repoId: repoId.data, reason: reasonOf(error) })))
   }
   return repos
 }

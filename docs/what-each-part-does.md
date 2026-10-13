@@ -263,7 +263,7 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### Changes (`daemon/changes.ts`, `server/changes.ts`, `app/src/Changes.tsx`)
 
-- **Solves now.** Every file the agent added, changed or deleted in each repo shows on the task, and on a run's page, with its line counts against the base branch. The daemon works them out on its own machine and scrubs them before they leave it, so the browser never reads a machine's files.
+- **Solves now.** Every file the agent added, changed or deleted in each repo shows on the task, and on a run's page, with its line counts against the base branch. A repo with more than 20,000 changed files says so instead of listing them, and one git cannot read shows git's error and its last list. The daemon works them out on its own machine and scrubs them before they leave it, so the browser never reads a machine's files.
 - **Helps later.** A person or a reviewing agent sees the whole change before any pull request exists.
 
 ### The file viewer (`app/src/FilePanel.tsx`, `app/src/Code.tsx`, `app/src/highlight.ts`)

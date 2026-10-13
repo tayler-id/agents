@@ -3,11 +3,13 @@
 
 import { useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { act, api, messageOf, repoName, useParsedSnapshot, useSnapshot, type Artifact, type Repo, type Task } from './data.ts'
-import { FileChangeRow, PushRow } from '../../shared/work.ts'
+import { CHANGE_LIMITS, FileChangeRow, PushRow, UnlistedChangeRow } from '../../shared/work.ts'
 
 const STATUS_WORDS = { added: 'added', modified: 'changed', deleted: 'deleted' } as const
 
 const lines = (n: number, what: string) => `${n} ${n === 1 ? 'line' : 'lines'} ${what}`
+
+type Group = { repoId: string; name: string; files: FileChangeRow[]; unlisted: UnlistedChangeRow | undefined }
 
 export function Changes({ taskId, openId, onOpen, children }: {
   taskId: string; openId: string | null; onOpen: (changeId: string) => void
@@ -15,42 +17,55 @@ export function Changes({ taskId, openId, onOpen, children }: {
   children?: (changed: boolean) => ReactNode
 }) {
   const { rows: files, error } = useParsedSnapshot(FileChangeRow, 'file_changes', { task: taskId }, 3000)
+  const { rows: unlisted, error: unreadList } = useParsedSnapshot(UnlistedChangeRow, 'unlisted_changes', { task: taskId }, 3000)
   const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   const groups = useMemo(() => {
-    const byRepo = new Map<string, FileChangeRow[]>()
-    for (const file of files) byRepo.set(file.repo_id, [...(byRepo.get(file.repo_id) ?? []), file])
-    return [...byRepo.entries()].map(([repoId, list]) => {
+    const repoIds = new Set([...files.map((f) => f.repo_id), ...unlisted.map((u) => u.repo_id)])
+    return [...repoIds].map((repoId): Group => {
       const repo = repos.find((r) => r.id === repoId)
-      return { repoId, name: repo ? repoName(repo.remote_url) : 'a repo', files: [...list].sort((a, b) => a.path.localeCompare(b.path)) }
+      return {
+        repoId, name: repo ? repoName(repo.remote_url) : 'a repo', unlisted: unlisted.find((u) => u.repo_id === repoId),
+        files: files.filter((f) => f.repo_id === repoId).sort((a, b) => a.path.localeCompare(b.path)),
+      }
     }).sort((a, b) => a.name.localeCompare(b.name))
-  }, [files, repos])
-  if (error) return <><p className="error small" role="alert">{error}</p>{children?.(false)}</>
-  if (!files.length) return children?.(false) ?? null
+  }, [files, unlisted, repos])
+  const failed = error ?? unreadList
+  if (failed) return <><p className="error small" role="alert">{failed}</p>{children?.(false)}</>
+  if (!groups.length) return children?.(false) ?? null
+  // A repo whose changes can't be listed may still have some, so its group counts as changed.
   return (
     <section className="changes" aria-label="Changes">
-      <h2 className="kicker section">Changes <span className="muted">· {files.length} {files.length === 1 ? 'file' : 'files'}</span></h2>
+      <h2 className="kicker section">Changes <span className="muted">· {files.length} {files.length === 1 ? 'file' : 'files'}{unlisted.length ? ' listed' : ''}</span></h2>
       {groups.map((group) => (
         <div key={group.repoId} className="change-group">
           <h3 className="repo-name small">{group.name}</h3>
-          <ul className="list" aria-label={`Changes in ${group.name}`}>
-            {group.files.map((file) => (
-              <li key={file.id}>
-                <button type="button" className={`row change${file.id === openId ? ' selected' : ''}`} aria-current={file.id === openId ? 'true' : undefined}
-                  onClick={() => onOpen(file.id)}>
-                  <span className="path">{file.path}</span>
-                  <span className="muted small">
-                    {STATUS_WORDS[file.status]}
-                    {file.preview === 'text' && (
-                      <>
-                        <span aria-hidden="true"> +{file.additions} −{file.deletions}</span>
-                        <span className="sr-only">, {lines(file.additions, 'added')}, {lines(file.deletions, 'removed')}</span>
-                      </>
-                    )}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          {group.unlisted?.kind === 'too_many' && (
+            <p className="muted small">More than {CHANGE_LIMITS.files.toLocaleString('en-US')} files changed, too many to list.</p>
+          )}
+          {group.unlisted?.kind === 'unreadable' && (
+            <p className="error small">Couldn't read the changes: {group.unlisted.reason}{group.files.length ? ' The list is the last one read.' : ''}</p>
+          )}
+          {!!group.files.length && (
+            <ul className="list" aria-label={`Changes in ${group.name}`}>
+              {group.files.map((file) => (
+                <li key={file.id}>
+                  <button type="button" className={`row change${file.id === openId ? ' selected' : ''}`} aria-current={file.id === openId ? 'true' : undefined}
+                    onClick={() => onOpen(file.id)}>
+                    <span className="path">{file.path}</span>
+                    <span className="muted small">
+                      {STATUS_WORDS[file.status]}
+                      {file.preview === 'text' && (
+                        <>
+                          <span aria-hidden="true"> +{file.additions} −{file.deletions}</span>
+                          <span className="sr-only">, {lines(file.additions, 'added')}, {lines(file.deletions, 'removed')}</span>
+                        </>
+                      )}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ))}
       {children?.(true)}

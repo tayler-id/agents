@@ -417,7 +417,7 @@ try {
     })
     const malformed = await fetch(`${API}/v1/workspaces/${workspace.id}/changes`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ repos: [{ repoId: shopRepo, files: [] }] }),
+      body: JSON.stringify({ repos: [{ state: 'listed', repoId: shopRepo, files: [] }] }),
     })
     check(foreign.status === 404 && malformed.status === 400 && (await malformed.text()).includes('baseCommit'),
       "another team's machine cannot post a workspace's changes, and a post missing its base is refused")
