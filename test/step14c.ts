@@ -116,7 +116,7 @@ async function call(login: string, path: string, body: unknown = {}) {
   return res.json()
 }
 
-async function run(engine: string, ids: { writer: string; repo: string; pipeline: string }) {
+async function run(engine: string, ids: { team: string; writer: string; repo: string; pipeline: string }) {
   const alice = `alice-flowux-${engine}-${id}@local`
   const amir = `amir-flowux-${engine}-${id}@local`
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
@@ -325,6 +325,16 @@ async function run(engine: string, ids: { writer: string; repo: string; pipeline
     check(await noSideScroll(docPhone), `${engine}: at phone width the document and its comments fit without sideways scrolling`)
     await docPhone.screenshot({ path: join(SHOTS, `${engine}-pinned-comment-phone.png`) })
 
+    // A pull request stays on its task once nothing differs from the base, as after
+    // the agent takes its change back out. The stand-in for Claude can't delete a
+    // file, so the check stores the link the runner makes for a pull request.
+    await db.query(`insert into artifacts (team_id, task_id, kind, title, url, state) values ($1, $2, 'link', $3, $4, 'open')`,
+      [ids.team, notes.taskId, `Pull request #7 on ${org}/${REPO}`, 'http://forge.invalid/pulls/7'])
+    await page.goto(`/#/t/${notes.taskId}`)
+    check(await visible(page, 'section[aria-label="Pull requests"] a', 15, /Pull request #7/)
+      && await page.getByRole('form', { name: 'Open a pull request' }).count() === 0,
+    `${engine}: a task's pull request shows when nothing differs from the base, with no form to open another`)
+
     // A run's page: its changes, and a gate whose buttons say what they do.
     const { runId } = await call(alice, `/v1/pipelines/${ids.pipeline}/runs`, { title: `CHANGELOGRUN (${engine})`, body: '', repoId: ids.repo }) as { runId: string }
     await page.goto(`/#/r/${runId}`)
@@ -388,7 +398,7 @@ try {
   await within(20, async () => (await one<{ status: string }>('select status from instances where name = $1', [`flow-mac-${id}`]))?.status === 'online')
   await within(60, async () => (await one('select 1 from pipelines where team_id = $1 and name = $2 and current_version_id is not null', [teamId, 'review'])))
   const pipeline = must(await one<{ id: string }>('select id from pipelines where team_id = $1 and name = $2', [teamId, 'review']), 'the review pipeline').id
-  for (const engine of engines) await run(engine, { writer, repo, pipeline })
+  for (const engine of engines) await run(engine, { team: teamId, writer, repo, pipeline })
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)

@@ -155,7 +155,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
         <TaskOrder task={task} state={state} />
         <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
-          <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} />
+          {(changed) => <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
         </Changes>
         {!!documents.length && (
           <>

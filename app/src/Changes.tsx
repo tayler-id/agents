@@ -10,7 +10,9 @@ const STATUS_WORDS = { added: 'added', modified: 'changed', deleted: 'deleted' }
 const lines = (n: number, what: string) => `${n} ${n === 1 ? 'line' : 'lines'} ${what}`
 
 export function Changes({ taskId, openId, onOpen, children }: {
-  taskId: string; openId: string | null; onOpen: (changeId: string) => void; children?: ReactNode
+  taskId: string; openId: string | null; onOpen: (changeId: string) => void
+  // What goes with the list, such as the task's pull requests, which stay when nothing differs any more.
+  children?: (changed: boolean) => ReactNode
 }) {
   const { rows: files, error } = useParsedSnapshot(FileChangeRow, 'file_changes', { task: taskId }, 3000)
   const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
@@ -22,8 +24,8 @@ export function Changes({ taskId, openId, onOpen, children }: {
       return { repoId, name: repo ? repoName(repo.remote_url) : 'a repo', files: [...list].sort((a, b) => a.path.localeCompare(b.path)) }
     }).sort((a, b) => a.name.localeCompare(b.name))
   }, [files, repos])
-  if (error) return <p className="error small" role="alert">{error}</p>
-  if (!files.length) return null
+  if (error) return <><p className="error small" role="alert">{error}</p>{children?.(false)}</>
+  if (!files.length) return children?.(false) ?? null
   return (
     <section className="changes" aria-label="Changes">
       <h2 className="kicker section">Changes <span className="muted">· {files.length} {files.length === 1 ? 'file' : 'files'}</span></h2>
@@ -51,14 +53,14 @@ export function Changes({ taskId, openId, onOpen, children }: {
           </ul>
         </div>
       ))}
-      {children}
+      {children?.(true)}
     </section>
   )
 }
 
 // Opening the task's pull requests: the push, then one pull request per repo with
 // commits past its base. Asking again pushes the new work to the same ones.
-export function PullRequests({ task, working, links }: { task: Task; working: boolean; links: Artifact[] }) {
+export function PullRequests({ task, working, links, changed }: { task: Task; working: boolean; links: Artifact[]; changed: boolean }) {
   const { rows: pushes, error: unread } = useParsedSnapshot(PushRow, 'pushes', { task: task.id }, 2000)
   const latest = [...pushes].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const [title, setTitle] = useState(task.title)
@@ -66,6 +68,7 @@ export function PullRequests({ task, working, links }: { task: Task; working: bo
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pushing = latest?.status === 'pushing'
+  if (!changed && !links.length) return null
   const open = async (event?: SyntheticEvent) => {
     event?.preventDefault()
     setBusy(true)
@@ -88,7 +91,7 @@ export function PullRequests({ task, working, links }: { task: Task; working: bo
       {pushing && <p className="muted small" role="status">Pushing the branch and opening the pull request…</p>}
       {latest?.status === 'failed' && <p className="error small" role="alert">{latest.error}</p>}
       {unread && <p className="error small" role="alert">{unread}</p>}
-      <form className="form" onSubmit={act(open)} aria-label="Open a pull request">
+      {changed && <form className="form" onSubmit={act(open)} aria-label="Open a pull request">
         <details className="add">
           <summary className="small">Title and description</summary>
           <label htmlFor={`pr-title-${task.id}`}>Title</label>
@@ -103,7 +106,7 @@ export function PullRequests({ task, working, links }: { task: Task; working: bo
           {working && <p className="muted small">The agent is working. Open the pull request when its turn ends.</p>}
           {error && <p className="error small" role="alert">{error}</p>}
         </div>
-      </form>
+      </form>}
     </section>
   )
 }
