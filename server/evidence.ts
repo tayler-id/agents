@@ -82,11 +82,11 @@ export function unitsOf(text: string): Unit[] {
 
 export const rulesOf = (text: string): Rule[] => unitsOf(text).map(({ hash, text: body }) => ({ hash, text: body }))
 
-// Why a quote does not show what was said at this event, or null when it does.
-export function quoteProblem(quote: string, eventText: string): string | null {
-  const said = collapse(quote)
+// Why a finding's quote does not show what was said at the step it cites, or null when it does.
+function quoteProblem(finding: { quote: string; session: string; step: number }, eventText: string): string | null {
+  const said = collapse(finding.quote)
   if (said.length < QUOTE_MIN) return `the quote is shorter than ${QUOTE_MIN} characters`
-  return collapse(eventText).includes(said) ? null : 'the quote is not in'
+  return collapse(eventText).includes(said) ? null : `the quote is not in step ${finding.step} of session ${finding.session}`
 }
 
 // The one name from `names` that is a whole word in the report's title, or else
@@ -281,9 +281,9 @@ export async function recordFindings(client: pg.PoolClient, input: {
     // Steps are numbered without gaps, so every step in the range read is there.
     const event = await citedEvent(client, finding.session, finding.step)
     if (!event) throw new Error(`session ${finding.session} has lost step ${finding.step}, which this run read`)
-    const problem = quoteProblem(finding.quote, event.text ?? '')
+    const problem = quoteProblem(finding, event.text ?? '')
     if (problem) {
-      drop(problem === 'the quote is not in' ? `the quote is not in step ${finding.step} of session ${finding.session}` : problem)
+      drop(problem)
       continue
     }
     const common = {
@@ -481,9 +481,9 @@ export async function recordStudyFindings(client: pg.PoolClient, input: {
       drop(`session ${finding.session} has no step ${finding.step}`)
       continue
     }
-    const problem = quoteProblem(finding.quote, event.text ?? '')
+    const problem = quoteProblem(finding, event.text ?? '')
     if (problem) {
-      drop(problem === 'the quote is not in' ? `the quote is not in step ${finding.step} of session ${finding.session}` : problem)
+      drop(problem)
       continue
     }
     kept.push(await insertFinding(client, {

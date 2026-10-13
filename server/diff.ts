@@ -14,7 +14,7 @@ function gitDiff(before: string, after: string, name: string, context: number): 
     return ''
   } catch (error) {
     // git exits 1 when the files differ, with the diff on stdout.
-    const stdout = (error as { stdout?: unknown }).stdout
+    const stdout = typeof error === 'object' && error !== null && 'stdout' in error ? error.stdout : undefined
     return (typeof stdout === 'string' ? stdout : '')
       .replace(/^diff --git a\/a b\/b\n(index [^\n]*\n)?/, '')
       .replace(/^--- a\/a$/m, `--- a/${name}`).replace(/^\+\+\+ b\/b$/m, `+++ b/${name}`)
