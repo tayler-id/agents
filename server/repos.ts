@@ -1,58 +1,63 @@
-// Where each repo lives, and how to reach it. A repo is on this Mac's Gitea or on
-// GitHub. The runner, the git proxy and the Repos page ask here, so nothing else
-// needs to know which forge holds a repo.
+// Where each repo lives, and how to reach it. repos.forge says whether a repo is
+// on this Mac's Gitea or on GitHub. The runner, the git proxy and the Repos page
+// ask here, so nothing else needs to know which forge holds a repo.
 
+import { z } from 'zod'
 import { many, pool } from './db.ts'
-import { forge, gitUpstream, repoPath, type Forge, type OpenPullRequest } from './forge.ts'
-import { explainGithub, github, githubStatus, githubUpstream, isGithubUrl, type GithubStatus } from './github.ts'
+import { forge, gitUpstream, repoPath, type Forge } from './forge.ts'
+import { explainGithub, github, githubStatus, githubUpstream } from './github.ts'
 import { messageOf } from '../shared/errors.ts'
+import type { ProjectId, RepoForge, RepoId, ReposOverview, RepoView } from '../shared/projects.ts'
 
-export type Where = 'github' | 'forge'
+// The columns a repo's forge is chosen by.
+export type RepoOnForge = { forge: RepoForge; remote_url: string }
 
-export const whereRepoLives = (remoteUrl: string): Where => (isGithubUrl(remoteUrl) ? 'github' : 'forge')
-
-export const forgeFor = (remoteUrl: string): Forge => (isGithubUrl(remoteUrl) ? github : forge)
-
-// The repo's git endpoint on its forge, and the credentials the proxy adds.
-export const gitUpstreamFor = (remoteUrl: string) => (isGithubUrl(remoteUrl) ? githubUpstream(remoteUrl) : gitUpstream(remoteUrl))
-
-// What the Repos page shows for one repo. The pull requests and task branches
-// come from its forge, or are null with the reason when the forge can't be read.
-export type RepoView = {
-  id: string; name: string; where: Where; webUrl: string; defaultBranch: string; projectId: string | null
-  pullRequests: OpenPullRequest[] | null; taskBranches: string[] | null; problem: string | null
+export function forgeFor(repo: RepoOnForge): Forge {
+  switch (repo.forge) {
+    case 'gitea': return forge
+    case 'github': return github
+  }
 }
 
-type ForgeView = Pick<RepoView, 'pullRequests' | 'taskBranches' | 'problem'>
+// The repo's git endpoint on its forge, and the credentials the proxy adds.
+export function gitUpstreamFor(repo: RepoOnForge): { url: string; authorization: string } {
+  switch (repo.forge) {
+    case 'gitea': return gitUpstream(repo.remote_url)
+    case 'github': return githubUpstream(repo.remote_url)
+  }
+}
 
-// Each forge's answer is kept a while, so however many people have the page
-// open, GitHub sees a couple of calls per repo every half minute.
-const CACHE_MS = Number(process.env.AGENTS_REPOS_CACHE_SEC ?? 30) * 1000
-const cache = new Map<string, { at: number; view: ForgeView }>()
+// How long the Repos page keeps a forge's answer, so however many people have it
+// open, each forge sees two calls per repo every half minute. GitHub allows
+// 5,000 calls an hour. Checks set it lower to see changes sooner.
+const CACHE_MS = z.coerce.number().positive().default(30).parse(process.env.AGENTS_REPOS_CACHE_SEC) * 1000
+const cache = new Map<string, { at: number; open: RepoView['open'] }>()
 
-async function forgeView(remoteUrl: string): Promise<ForgeView> {
-  const kept = cache.get(remoteUrl)
-  if (kept && Date.now() - kept.at < CACHE_MS) return kept.view
-  const path = repoPath(remoteUrl)
-  const host = forgeFor(remoteUrl)
-  let view: ForgeView
+// What is open on a repo, from its forge, or why the forge could not say.
+async function openOn(repo: RepoOnForge): Promise<RepoView['open']> {
+  const kept = cache.get(repo.remote_url)
+  if (kept && Date.now() - kept.at < CACHE_MS) return kept.open
+  const path = repoPath(repo.remote_url)
+  const host = forgeFor(repo)
+  let open: RepoView['open']
   try {
     const [pullRequests, branches] = await Promise.all([host.openPullRequests(path), host.branches(path)])
-    view = { pullRequests, taskBranches: branches.filter((b) => b.startsWith('task/')).sort(), problem: null }
+    open = { read: true, pullRequests, taskBranches: branches.filter((b) => b.startsWith('task/')).sort() }
   } catch (error) {
-    view = { pullRequests: null, taskBranches: null, problem: isGithubUrl(remoteUrl) ? explainGithub(error) : `Could not read this Mac's forge: ${messageOf(error)}` }
+    // The page lists the repo anyway and says why its forge could not be read.
+    open = { read: false, problem: repo.forge === 'github' ? explainGithub(error) : `This Mac's forge did not answer: ${messageOf(error)}` }
   }
-  cache.set(remoteUrl, { at: Date.now(), view })
-  return view
+  cache.set(repo.remote_url, { at: Date.now(), open })
+  return open
 }
 
 // Every repo of a team, oldest first, with what its forge says is open on it.
-export async function reposOverview(teamId: string): Promise<{ github: GithubStatus; repos: RepoView[] }> {
-  const rows = await many<{ id: string; remote_url: string; default_branch: string; project_id: string | null }>(pool,
-    'select id, remote_url, default_branch, project_id from repos where team_id = $1 order by created_at, id', [teamId])
-  const repos = await Promise.all(rows.map(async (r): Promise<RepoView> => ({
-    id: r.id, name: repoPath(r.remote_url), where: whereRepoLives(r.remote_url), webUrl: r.remote_url.replace(/\.git$/, ''),
-    defaultBranch: r.default_branch, projectId: r.project_id, ...(await forgeView(r.remote_url)),
+export async function reposOverview(teamId: string): Promise<ReposOverview> {
+  const rows = await many<RepoOnForge & { id: RepoId; default_branch: string; project_id: ProjectId | null }>(pool,
+    'select id, forge, remote_url, default_branch, project_id from repos where team_id = $1 order by created_at, id', [teamId])
+  const repos = await Promise.all(rows.map(async (row): Promise<RepoView> => ({
+    id: row.id, name: repoPath(row.remote_url), forge: row.forge, webUrl: row.remote_url.replace(/\.git$/, ''),
+    defaultBranch: row.default_branch, projectId: row.project_id, open: await openOn(row),
   })))
   return { github: githubStatus(), repos }
 }

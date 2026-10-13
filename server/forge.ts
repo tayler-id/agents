@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
+import type { OpenPullRequest } from '../shared/projects.ts'
 
 export type ForgeConfig = {
   // Where the API reaches the forge, and the address the forge reaches the API's machine port at.
@@ -76,10 +77,9 @@ export function verifySignature(body: Buffer, signature: string | undefined, sec
 
 export type Issue = { number: number; title: string; body: string; html_url: string; state: string; user?: { login: string } }
 export type PullRequest = { number: number; html_url: string; state: string; merged: boolean }
-export type OpenPullRequest = { number: number; title: string; url: string; branch: string }
 
-// What the runner and the app ask of a forge, this Mac's Gitea or GitHub
-// (server/github.ts). Each call takes the repo's owner/name path.
+// What the runner and the app ask of a forge, this Mac's Gitea or GitHub in
+// server/github.ts. Each call takes the repo's owner/name path.
 export type Forge = {
   openIssues(repo: string): Promise<Issue[]>
   issue(repo: string, n: number): Promise<Issue>
@@ -114,6 +114,13 @@ async function parsed<T>(schema: z.ZodType<T>, method: string, path: string, bod
   return schema.parse(await call<unknown>(method, path, body, token, sudo))
 }
 
+// Gitea's answers to the calls added for the Repos page, as much as the app reads.
+const GiteaPull = z.object({ number: z.number().int(), title: z.string(), html_url: z.string(), head: z.object({ ref: z.string() }) })
+const GiteaBranch = z.object({ name: z.string() })
+// Gitea's largest page by default, its MAX_RESPONSE_ITEMS setting. A repo's open
+// pull requests and branches fit in one.
+const GITEA_PAGE = 50
+
 export const forge = {
   openIssues: (repo: string) => call<Issue[]>('GET', `/repos/${repo}/issues?state=open&type=issues&limit=50`),
   issue: (repo: string, n: number) => call<Issue>('GET', `/repos/${repo}/issues/${n}`),
@@ -134,10 +141,11 @@ export const forge = {
     return call<PullRequest>('GET', `/repos/${repo}/pulls/${n}`)
   },
   async openPullRequests(repo: string): Promise<OpenPullRequest[]> {
-    const open = await call<{ number: number; title: string; html_url: string; head: { ref: string } }[]>('GET', `/repos/${repo}/pulls?state=open&limit=50`)
+    const open = z.array(GiteaPull).parse(await call<unknown>('GET', `/repos/${repo}/pulls?state=open&limit=${GITEA_PAGE}`))
     return open.map((pr) => ({ number: pr.number, title: pr.title, url: pr.html_url, branch: pr.head.ref }))
   },
-  branches: async (repo: string) => (await call<{ name: string }[]>('GET', `/repos/${repo}/branches?limit=50`)).map((b) => b.name),
+  branches: async (repo: string) =>
+    z.array(GiteaBranch).parse(await call<unknown>('GET', `/repos/${repo}/branches?limit=${GITEA_PAGE}`)).map((b) => b.name),
   // The files in a folder on a branch, each with git's blob id for its content.
   async files(repo: string, dir: string, ref: string): Promise<{ path: string; sha: string; content: string }[]> {
     const entries = await call<{ type: string; path: string; sha: string }[]>('GET', `/repos/${repo}/contents/${dir}?ref=${ref}`)

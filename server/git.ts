@@ -11,12 +11,11 @@
 
 import { createGunzip } from 'node:zlib'
 import { Readable } from 'node:stream'
-import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { instanceFrom } from './auth.ts'
 import { many, maybe, pool } from './db.ts'
 import { ForgeError } from './forge.ts'
-import { gitUpstreamFor } from './repos.ts'
+import { gitUpstreamFor, type RepoOnForge } from './repos.ts'
 import { HttpError } from './record.ts'
 
 export const GIT_PATH = /^\/v1\/git\/([0-9a-f-]{36})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/
@@ -90,12 +89,32 @@ async function ownBranches(instanceId: string): Promise<Set<string>> {
   return new Set(tasks.flatMap(({ slug }) => [`refs/heads/task/${slug}`, `refs/heads/replay/${slug}`]))
 }
 
+// A request's body, checked to be bytes as it arrives.
+async function* bytesOf(source: Readable): AsyncGenerator<Buffer> {
+  for await (const chunk of source) {
+    if (!Buffer.isBuffer(chunk)) throw new HttpError(400, 'a git request body must be bytes')
+    yield chunk
+  }
+}
+
+// Bytes as the web stream fetch takes for a request body.
+function webStream(chunks: AsyncIterable<Buffer>): ReadableStream<Uint8Array> {
+  const source = chunks[Symbol.asyncIterator]()
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await source.next()
+      if (next.done) controller.close()
+      else controller.enqueue(next.value)
+    },
+  })
+}
+
 export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: URL) {
   const instance = await instanceFrom(req)
   const [, repoId, rest] = GIT_PATH.exec(url.pathname) ?? []
   if (!repoId || !rest) throw new HttpError(404, 'no such git path')
-  const repo = await maybe<{ remote_url: string; policy_id: string | null; default_branch: string }>(pool,
-    'select remote_url, policy_id, default_branch from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
+  const repo = await maybe<RepoOnForge & { policy_id: string | null; default_branch: string }>(pool,
+    'select forge, remote_url, policy_id, default_branch from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
   if (!repo) throw new HttpError(404, 'no such repo')
   const headers: Record<string, string> = {}
   for (const name of FORWARDED) {
@@ -124,23 +143,22 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
   }
   let upstream: { url: string; authorization: string }
   try {
-    upstream = gitUpstreamFor(repo.remote_url)
+    upstream = gitUpstreamFor(repo)
   } catch (error) {
-    // GitHub is not connected: say so, rather than fail as the server's own fault.
+    // GitHub is not set up or not connected. The machine is told so, as a 503.
     if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
     throw error
   }
   headers.authorization = upstream.authorization
-  const response = await fetch(`${upstream.url}/${rest}${url.search}`, {
-    method: req.method,
-    headers,
-    body: req.method === 'GET' ? undefined : (Readable.toWeb(body) as ReadableStream),
-    duplex: 'half',
-  } as RequestInit)
+  // Node's fetch needs `duplex` to send a streamed body, and the DOM's RequestInit type has no field for it.
+  const init: RequestInit & { duplex: 'half' } = { method: req.method, headers, body: req.method === 'GET' ? undefined : webStream(bytesOf(body)), duplex: 'half' }
+  const response = await fetch(`${upstream.url}/${rest}${url.search}`, init)
   const out: Record<string, string> = {}
   response.headers.forEach((value, key) => { if (!DROPPED.includes(key)) out[key] = value })
   res.writeHead(response.status, out)
-  if (response.body) Readable.fromWeb(response.body as WebReadable).on('error', () => res.end()).pipe(res)
+  // A forge that drops the connection mid-answer leaves the machine a cut-off
+  // response, which git reports as a failed clone or push.
+  if (response.body) Readable.from(response.body, { objectMode: false }).on('error', () => res.end()).pipe(res)
   else res.end()
 }
 

@@ -28,7 +28,7 @@ import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
-import { forgeFor } from './repos.ts'
+import { forgeFor, type RepoOnForge } from './repos.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
@@ -496,12 +496,12 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/pipelines/${UUID}/runs$`), async (req, [pipelineId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    const repo = await maybe<{ remote_url: string }>(pool,
-      'select remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
+    const repo = await maybe<RepoOnForge>(pool,
+      'select forge, remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
     if (!repo) throw new HttpError(404, 'no such repo')
     const pipeline = await maybe(pool, 'select 1 from pipelines where id = $1 and team_id = $2', [pipelineId, person.team_id])
     if (!pipeline) throw new HttpError(404, 'no such pipeline')
-    const openIssues = (await forgeFor(repo.remote_url).openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
+    const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
     const runId = await tx((client) => startRun(client, {
       pipelineId, trigger: 'manual', repoId: body.repoId as string, openIssues, startedBy: person.id,
       report: { title: text(body.title, 'title'), body: typeof body.body === 'string' ? body.body : '', author: person.login },

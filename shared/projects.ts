@@ -1,0 +1,98 @@
+// Projects and repos as the server, the app and the checks see them. Each shape
+// is defined once, here, as a zod schema, and its type is inferred from it. The
+// design is in docs/design/projects.md.
+
+import { z } from 'zod'
+
+export const ProjectId = z.uuid().brand<'ProjectId'>()
+export type ProjectId = z.infer<typeof ProjectId>
+export const RepoRequestId = z.uuid().brand<'RepoRequestId'>()
+export type RepoRequestId = z.infer<typeof RepoRequestId>
+export const RepoId = z.uuid().brand<'RepoId'>()
+export type RepoId = z.infer<typeof RepoId>
+
+// The characters GitHub allows in a repo name. The migration checks the same.
+export const RepoName = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/, 'A repo name is letters, digits, dots, dashes and underscores.')
+export type RepoName = z.infer<typeof RepoName>
+// A GitHub organization or account name.
+export const GithubOwner = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'An organization or account name is letters, digits and dashes.')
+// Classic tokens are ghp_ and 36 characters, fine-grained ones github_pat_ and 82.
+export const GithubToken = z.string().regex(/^[A-Za-z0-9_]{20,255}$/, 'That does not look like a GitHub token.')
+
+export const PROJECT_NAME_MAX = 80
+// The repo a project's name makes: lowercase, with anything GitHub would refuse
+// turned into dashes.
+export function repoNameFor(projectName: string): string {
+  return projectName.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 100)
+}
+
+// Rows as Electric sends them, with times as Postgres writes them.
+export const ProjectRow = z.object({
+  id: ProjectId, team_id: z.uuid(), name: z.string(), description: z.string(), conversation_id: z.uuid().nullable(),
+  created_by: z.uuid().nullable(), archived_at: z.string().nullable(), created_at: z.string(),
+})
+export type ProjectRow = z.infer<typeof ProjectRow>
+
+// A repo request moves creating → done or failed, and failed → creating when
+// someone tries again. Only failed has an error, and only done a repo, which
+// is null again if that repo is removed later.
+export const REPO_REQUEST_MOVES = { creating: ['done', 'failed'], failed: ['creating'], done: [] } as const
+export type RepoRequestStatus = keyof typeof REPO_REQUEST_MOVES
+const requestRow = {
+  id: RepoRequestId, team_id: z.uuid(), project_id: ProjectId, owner: z.string(), name: RepoName, description: z.string(),
+  requested_by: z.uuid().nullable(), created_at: z.string(), updated_at: z.string(),
+}
+export const RepoRequestRow = z.discriminatedUnion('status', [
+  z.object({ ...requestRow, status: z.literal('creating'), error: z.null(), repo_id: z.null() }),
+  z.object({ ...requestRow, status: z.literal('done'), error: z.null(), repo_id: RepoId.nullable() }),
+  z.object({ ...requestRow, status: z.literal('failed'), error: z.string(), repo_id: z.null() }),
+])
+export type RepoRequestRow = z.infer<typeof RepoRequestRow>
+
+// Whether GitHub is set up on the server, and whether an admin connected it.
+// Never the token.
+export const GithubStatus = z.discriminatedUnion('state', [
+  // The server's settings leave GitHub off. `missing` names the settings to add.
+  z.object({ state: z.literal('off'), missing: z.array(z.string()) }),
+  z.object({ state: z.literal('disconnected') }),
+  z.object({ state: z.literal('connected'), login: z.string(), owner: z.string(), ownerKind: z.enum(['org', 'user']), savedAt: z.string() }),
+])
+export type GithubStatus = z.infer<typeof GithubStatus>
+
+// The forge that holds a repo, as repos.forge says: this Mac's Gitea, or GitHub.
+export const RepoForge = z.enum(['gitea', 'github'])
+export type RepoForge = z.infer<typeof RepoForge>
+
+export const OpenPullRequest = z.object({ number: z.number().int(), title: z.string(), url: z.string(), branch: z.string() })
+export type OpenPullRequest = z.infer<typeof OpenPullRequest>
+
+// One repo on the Repos page. What is open on it comes from its forge, which
+// may not answer, and then the page says why.
+export const RepoView = z.object({
+  id: RepoId, name: z.string(), forge: RepoForge, webUrl: z.string(), defaultBranch: z.string(), projectId: ProjectId.nullable(),
+  open: z.discriminatedUnion('read', [
+    z.object({ read: z.literal(true), pullRequests: z.array(OpenPullRequest), taskBranches: z.array(z.string()) }),
+    z.object({ read: z.literal(false), problem: z.string() }),
+  ]),
+})
+export type RepoView = z.infer<typeof RepoView>
+
+export const ReposOverview = z.object({ github: GithubStatus, repos: z.array(RepoView) })
+export type ReposOverview = z.infer<typeof ReposOverview>
+
+// Request bodies.
+export const NewProjectBody = z.object({
+  name: z.string().trim().min(1, 'A project needs a name.').max(PROJECT_NAME_MAX),
+  description: z.string().trim().max(300),
+  people: z.array(z.string()),
+  agents: z.array(z.string()),
+})
+export type NewProjectBody = z.infer<typeof NewProjectBody>
+// A GitHub repo by name, made if it does not exist, or a team repo that belongs to no project.
+export const AddRepoBody = z.union([z.object({ name: RepoName }), z.object({ repoId: RepoId })])
+export type AddRepoBody = z.infer<typeof AddRepoBody>
+export const ConnectGithubBody = z.object({ owner: GithubOwner, token: GithubToken })
+
+// Responses.
+export const NewProjectResult = z.object({ projectId: ProjectId, conversationId: z.uuid(), requestId: RepoRequestId })
+export const AddRepoResult = z.union([z.object({ requestId: RepoRequestId }), z.object({ repoId: RepoId })])
