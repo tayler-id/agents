@@ -87,6 +87,18 @@ node --env-file=.env ops/forge-setup.ts <team>
 
 It makes the `team/shop` repo, a small app with a known bug, and `team/pipelines`, where each file in `pipelines/` is one pipeline. Merging a change to a pipeline file makes it the current version. `bug-fix` takes a bug report to a reviewed pull request. `improve` changes another pipeline and scores the change on replays of past runs. `coach` turns corrections people keep making into new instructions for an agent. Pipelines need agents named `fixer` and `improver` on the team.
 
+## Projects and GitHub
+
+A project's repos live on GitHub, and pipelines stay on the local forge. Turn GitHub on with three lines in `.env`, then restart the API:
+
+```sh
+AGENTS_GITHUB_DIR=<the full path of ~/.agents-app/github, where tokens are kept>
+AGENTS_GITHUB_API=https://api.github.com
+AGENTS_GITHUB_GIT=https://github.com
+```
+
+`AGENTS_GITHUB_CLIENT_ID`, the client id of the Agents GitHub App, lets each person connect their own GitHub from the Repos page. Until that app is registered, an admin can set a stopgap token for the whole team with `pbpaste | node --env-file=.env server/admin.ts github-token <organization>`. `docs/design/projects.md` has the whole design.
+
 ## Boxes
 
 Boxes are Docker containers that run the daemon for unattended work, built from `box/Dockerfile`:

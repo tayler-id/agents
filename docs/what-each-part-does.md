@@ -331,6 +331,55 @@ The design is `docs/design/durability.md`.
 
 - **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
 
+## Projects and GitHub
+
+The design is in `docs/design/projects.md`.
+
+### Projects (`server/projects.ts`, `shared/projects.ts`, `0006_projects.sql`)
+
+- **Solves now.** A project groups a team's work on one thing: its repos, its room, and the tasks, runs, documents and rooms made in it. Making one makes its GitHub repo, with a README as the first commit, and its room with the chosen teammates and agents. A task started in a project works only in its repos, and a task or run on a project's repo joins that project. Every shape the server and the app share is a zod schema in `shared/projects.ts`, with branded ids.
+- **Helps later.** Anything that belongs to one piece of work, such as a spending cap or which pipelines run where, hangs off one row.
+
+### Repo requests (`repo_requests` table)
+
+- **Solves now.** The app writes down each repo it will ask GitHub for before it asks, so a crash or a refusal never leaves a repo nobody knows about. A failed request keeps GitHub's reason, and trying again adopts a repo an earlier try made.
+- **Helps later.** Anything else the app makes outside Postgres can follow the same steps: write the intent, act, record the result.
+
+### GitHub as a forge (`server/github.ts`, `server/repos.ts`)
+
+- **Solves now.** The runner, the hooks and the app reach GitHub with the same calls as this Mac's Gitea, so pipelines work on either. Each repo records its forge in `repos.forge`, and every answer from GitHub is parsed before anything reads it.
+- **Helps later.** Another forge is one more client behind the same calls.
+
+### Signing in to GitHub (`server/github-auth.ts`)
+
+- **Solves now.** Each person connects their own GitHub account by typing a code on GitHub's device page, with nothing to register. Their token stays in a mode 600 file on the server, renewed before it expires, and never reaches Postgres, a log, a machine or a browser. A repo's calls use the sign-in of whoever brought it into its project. An admin's personal access token is a stopgap until people sign in.
+- **Helps later.** A team's own GitHub App, for agents with their own identity, plugs in as one more kind of identity where the server picks a token, and nothing that calls GitHub changes.
+
+### The GitHub worker (`server/github-worker.ts`)
+
+- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with triage access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
+- **Helps later.** Webhooks through a small public receiver can feed the same functions, and the worker then only catches up after downtime.
+
+### Text crossing to and from GitHub (`server/public-text.ts`)
+
+- **Solves now.** An issue's text reaches an agent as a quoted report, without HTML comments, invisible characters, image alt text, hidden elements or link definitions. Everything sent to GitHub loses addresses on this tailnet, private addresses, email addresses and secrets first.
+- **Helps later.** An agent that reviews public pull requests posts through the same filter.
+
+### The branch rule (`server/git.ts`)
+
+- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches.
+- **Helps later.** Other rules about what machines may push go in the same place.
+
+### Projects and repos in the app (`app/src/Projects.tsx`, `app/src/App.tsx`, `app/src/Work.tsx`)
+
+- **Solves now.** The sidebar lists projects with their rooms, tasks and runs under them, and a Repos entry with the team's count. The Repos page says in one line what it shows, lists every repo with where it lives, its project, its open pull requests and task branches, and connects GitHub. New project makes a project and its repo. A project's page shows its repos, people, tasks, runs, documents and rooms, and starts tasks, rooms and runs in the project. A task's page names its project and its repos.
+- **Helps later.** The redesign starts from one view per thing a person looks for.
+
+### The step 13 checks (`test/step13.ts`, `test/step13b.ts`, `test/fake-github.ts`)
+
+- **Solves now.** A fake GitHub that speaks GitHub's REST calls, its device-flow sign-in and real git stands in for GitHub. `test/step13.ts` covers projects, repo requests, sign-in and the stopgap, the git proxy and its branch rule, the label and access rules, the text filters, ETags, a pipeline run from a GitHub issue to a merged pull request, and every token's absence from Postgres, logs and answers. `test/step13b.ts` drives the new pages in three browsers at desktop and phone width.
+- **Helps later.** Checks for later GitHub features start from the same fake.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

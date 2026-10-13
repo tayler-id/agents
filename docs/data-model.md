@@ -106,7 +106,7 @@ Projects, in `server/migrations/0006_projects.sql`. The design is in `docs/desig
 - **`repo_requests`, new.** A repo the app was asked to make on GitHub for a project: the organization or account it goes under, its name and description, `creating`, `done` or `failed`, GitHub's reason when it failed, and the `repos` row once made. Only a failed request has a reason and only a done one a repo. The app writes it before asking GitHub, so a crash or a refusal never leaves a repo nobody knows about, and trying again adopts a repo an earlier try made. A repo is asked for once per team.
 - **`repos.forge`.** The forge that holds the repo, `gitea` for this Mac's or `github`. Existing rows are `gitea`. The runner, the git proxy and the Repos page go by it.
 - **`repos.project_id`.** The project a repo belongs to, or none. A repo belongs to at most one project.
-- **`repos.polled_at`.** When the runner last asked GitHub about the repo's issues. GitHub can't reach this server with webhooks, so new issues are found by polling, and a restart carries on from here.
+- **`repos.polled_at`.** When the GitHub worker last read the repo's issue events. GitHub can't reach this server with webhooks, so the labels that ask for work are found by polling, and a restart carries on from here. No GitHub token is in Postgres: they live in mode 600 files on the server.
 - **`tasks.project_id`.** The project a task belongs to. Its runs and documents follow it, so they need no column of their own.
 - **`conversations.project_id`.** The project a room belongs to. Only a room can have one.
 
