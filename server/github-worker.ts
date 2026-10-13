@@ -6,10 +6,11 @@
 // the runner it serves only AGENTS_RUNNER_TEAMS when that is set.
 //
 // Anyone can open an issue on a public repo, so on GitHub a run starts only
-// from a label that starts with agent:, put on the issue by someone with triage
-// access or more. Opening an issue starts nothing, whatever labels its form
-// adds. The issue's text reaches the agent as a quoted report, without the parts
-// a reader can't see.
+// from a label that starts with agent:, put on the issue by someone with write,
+// maintain or admin access. Triage access can label issues but is not enough.
+// Opening an issue starts nothing, whatever labels its form adds. The issue's
+// text reaches the agent as a quoted report, without the parts a reader can't
+// see.
 
 import { z } from 'zod'
 import { many, pool } from './db.ts'
@@ -46,7 +47,7 @@ type PolledRepo = { id: string; team_id: string; forge: 'github'; remote_url: st
 // since an issue form puts them on for whoever opens the issue.
 const AGENT_LABEL = /^agent:/
 
-// Starts runs for the agent labels people with triage access put on the repo's
+// Starts runs for the agent labels people with write access put on the repo's
 // issues since the last poll. Returns how many.
 async function pollRepo(repo: PolledRepo): Promise<number> {
   const asked = new Date()
@@ -58,8 +59,8 @@ async function pollRepo(repo: PolledRepo): Promise<number> {
   // Null means GitHub's list is as it was at the last poll, so there is nothing new.
   for (const event of labels ?? []) {
     if (new Date(event.createdAt) < since || !AGENT_LABEL.test(event.label)) continue
-    if (!(await github.hasTriage(path, event.actor))) {
-      console.log(`${event.actor} put ${event.label} on ${path}#${event.issue.number} without triage access, so no run starts`)
+    if (!(await github.hasWriteAccess(path, event.actor))) {
+      console.log(`${event.actor} put ${event.label} on ${path}#${event.issue.number} without write access, so no run starts`)
       continue
     }
     const report = { ...reportFromIssue(event.issue), issue: event.issue.number, url: event.issue.html_url, author: event.issue.user?.login }

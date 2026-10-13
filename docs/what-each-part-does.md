@@ -357,7 +357,7 @@ The design is in `docs/design/projects.md`.
 
 ### The GitHub worker (`server/github-worker.ts`)
 
-- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with triage access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
+- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with write, maintain or admin access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. Triage access can label issues but starts nothing. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
 - **Helps later.** Webhooks through a small public receiver can feed the same functions, and the worker then only catches up after downtime.
 
 ### Text crossing to and from GitHub (`server/public-text.ts`)

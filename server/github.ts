@@ -109,9 +109,10 @@ export type GithubIssue = Issue & { labels: string[]; createdAt: string; isPullR
 export type GithubRepo = z.infer<typeof WireRepo>
 export type LabelEvent = { actor: string; label: string; createdAt: string; issue: GithubIssue }
 
-// The roles that may ask the team's agents for work on a public repo. A custom
-// role's name says nothing of what it allows, so it never counts.
-const TRIAGE_OR_MORE = new Set(['admin', 'maintain', 'write', 'triage'])
+// The roles that may ask the team's agents for work on a public repo. Triage
+// can label issues but not change code, so it is not enough. A custom role's
+// name says nothing of what it allows, so it never counts.
+const WRITE_OR_MORE = new Set(['admin', 'maintain', 'write'])
 
 const issueOf = (wire: z.infer<typeof WireIssue>): GithubIssue => ({
   number: wire.number, title: wire.title, body: wire.body, html_url: wire.html_url, state: wire.state,
@@ -132,7 +133,7 @@ const refPath = (branch: string) => branch.split('/').map(encodeURIComponent).jo
 // acts with the token of whoever brought the repo into its project.
 export const github: Forge & {
   newLabels(repo: string): Promise<LabelEvent[] | null>
-  hasTriage(repo: string, login: string): Promise<boolean>
+  hasWriteAccess(repo: string, login: string): Promise<boolean>
   pullRequestIfChanged(repo: string, n: number): Promise<PullRequest | null>
   repo(who: Who, owner: string, name: string): Promise<GithubRepo | null>
   createRepo(who: Who, owner: string, name: string, description: string): Promise<GithubRepo>
@@ -149,11 +150,11 @@ export const github: Forge & {
       ? [{ actor: e.actor.login, label: e.label.name, createdAt: e.created_at, issue: issueOf(e.issue) }] : []))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   },
-  // Whether a person has triage access to the repo or more. Someone GitHub
-  // doesn't know as a collaborator has none.
-  async hasTriage(repo, login) {
+  // Whether a person has write, maintain or admin access to the repo. Someone
+  // GitHub doesn't know as a collaborator has none.
+  async hasWriteAccess(repo, login) {
     try {
-      return TRIAGE_OR_MORE.has((await call(WireRole, { repo }, 'GET', `/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`)).role_name)
+      return WRITE_OR_MORE.has((await call(WireRole, { repo }, 'GET', `/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`)).role_name)
     } catch (error) {
       if (error instanceof ForgeError && error.status === 404) return false
       throw error

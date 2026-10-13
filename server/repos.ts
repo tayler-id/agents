@@ -21,13 +21,13 @@ export function forgeFor(repo: RepoOnForge): Forge {
 }
 
 // A run that someone asked for by labelling a GitHub issue opens its pull
-// request only while they still have triage access or more. Throws, saying so,
+// request only while they still have write access or more. Throws, saying so,
 // when they no longer do. A run a teammate started in the app has no asker here.
 export async function checkAsker(repo: RepoOnForge, sender: string | undefined): Promise<void> {
   if (repo.forge !== 'github' || sender === undefined) return
   const path = repoPath(repo.remote_url)
-  if (!(await github.hasTriage(path, sender))) {
-    throw new Error(`${sender}, who asked for this run, no longer has triage access to ${path}, so its pull request was not opened.`)
+  if (!(await github.hasWriteAccess(path, sender))) {
+    throw new Error(`${sender}, who asked for this run, no longer has write access to ${path}, so its pull request was not opened.`)
   }
 }
 
