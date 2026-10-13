@@ -319,7 +319,7 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 
 /* Phone width: the sidebar opens over the conversation, the panel replaces it. */
 @media (max-width: 760px) {
-  .shell, .shell.with-panel, .shell.with-screen { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .shell, .shell.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
   .topbar-title { font-weight: 600; }
   .sidebar { display: none; }
