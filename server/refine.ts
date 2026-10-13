@@ -4,36 +4,15 @@
 // instructions or a skill becomes a proposal the shepherd approves. The runner
 // calls these from its actions.
 
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename } from 'node:path'
 import type pg from 'pg'
 import { maybe, one } from './db.ts'
+import { diffText } from './diff.ts'
 import { forge, repoPath } from './forge.ts'
 import { recordVersion } from './pipelines.ts'
 import { NAME } from '../shared/types.ts'
 
 const REPLAYS = Number(process.env.AGENTS_REPLAYS ?? 3)
-
-// A unified diff of two texts, from git.
-export function diffText(before: string, after: string, name: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'agents-diff-'))
-  try {
-    writeFileSync(join(dir, 'a'), before)
-    writeFileSync(join(dir, 'b'), after)
-    execFileSync('git', ['diff', '--no-index', '--no-color', '--unified=3', 'a', 'b'], { cwd: dir, encoding: 'utf8' })
-    return ''
-  } catch (error) {
-    // git exits 1 when the files differ, with the diff on stdout.
-    const stdout = (error as { stdout?: unknown }).stdout
-    return (typeof stdout === 'string' ? stdout : '')
-      .replace(/^diff --git a\/a b\/b\n(index [^\n]*\n)?/, '')
-      .replace(/^--- a\/a$/m, `--- a/${name}`).replace(/^\+\+\+ b\/b$/m, `+++ b/${name}`)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 type Repo = { repoId: string; remote_url: string; default_branch: string }
 

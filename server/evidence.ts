@@ -44,6 +44,8 @@ const LEARNING_ACTIONS: ReadonlySet<Action> = new Set(['score_change', 'propose_
 
 const collapse = (text: string) => text.replace(/\s+/g, ' ').trim()
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+// A reason as a sentence in a summary, which a person may have ended already.
+export const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`)
 
 // A rule's name: the start of a hash of its text, with runs of whitespace as one space.
 export const ruleHash = (text: string): RuleHash => RuleHash.parse(createHash('sha256').update(collapse(text)).digest('hex').slice(0, 12))
@@ -327,7 +329,7 @@ export async function recordFindings(client: pg.PoolClient, input: {
 
 function summaryOf(kept: number, dropped: Dropped[], candidates: Candidate[]): string {
   const lines = [`Kept ${kept} finding${kept === 1 ? '' : 's'} and dropped ${dropped.length}.`]
-  for (const d of dropped) lines.push(`- Dropped: ${d.reason}.`)
+  for (const d of dropped) lines.push(`- Dropped: ${sentence(d.reason)}`)
   for (const c of candidates) lines.push(`- ${c.ready ? 'Ready' : 'Waiting'}: ${c.correction} ${countsLine(c.counts)}, going to ${routeLine(c.route)}.`)
   return lines.join('\n')
 }
@@ -486,6 +488,6 @@ export async function recordStudyFindings(client: pg.PoolClient, input: {
   }
   const runs = new Set((await many<{ occasion: string }>(client, 'select occasion from session_findings where id = any($1)', [kept])).map((r) => r.occasion))
   const summary = [`Kept ${kept.length} finding${kept.length === 1 ? '' : 's'} from ${runs.size} run${runs.size === 1 ? '' : 's'} of ${pipeline.name}, and dropped ${dropped.length}.`,
-    ...dropped.map((d) => `- Dropped: ${d.reason}.`)].join('\n')
+    ...dropped.map((d) => `- Dropped: ${sentence(d.reason)}`)].join('\n')
   return { kept, dropped, ready: kept.length > 0, summary }
 }
