@@ -50,12 +50,23 @@ A failed run keeps its team and Gitea repos. Remove them by deleting the team ro
 
 ## In progress
 
-Nothing. The branch is ready for the coordinator.
+A review on a different model asked for fixes before merging. The branch is rebased onto main at aad82a8, which keeps the machine token out of failed commands' errors. Each fix gets a check seen failing first:
+
+1. Blocking: scrub `pushes.error`, and prove with a forced failing push and a failed clone that `commands.error`, `pushes.error` and the transcript hold no `machine_`.
+2. Box sessions ask before commands again until Tayler decides, and the docs say a box also holds the Claude token.
+3. A message waits for its workspace only while the server says its setup is queued or running, and otherwise fails with "workspace … is not set up on this machine". Check the missing-folder case.
+4. Pushes use `--force-with-lease` against the commit last pushed. The title and description fields hide once a pull request is open. Fix the label in step14.
+5. Start a draft without saving when the form is untouched. Save refuses when the draft changed since the form loaded.
+6. The changes scan runs a few workspaces at a time, stops at 20,000 files and shows "too many files", treats a NUL byte as binary, and one repo's failure keeps the others.
+7. Scrub a pull request's title and body, and stop prefilling the body with the task's instructions.
+8. Break the step14 checks that no recorded break covers (change rows, draft edit and discard, the pull request's author), and fix "each changed repo" in the parts doc.
+9. Run typecheck, lint, names, and main's step3, 4a to 4d, 6, 6b, 7 (with the lock), 9 and 9b.
+
+Also worth doing: a timeout on forge calls, an expiry for a stuck push, `sendToSession` out of the import cycle, the script name in step14's header, and this note out of `docs/` at landing.
 
 ## Next steps
 
-1. Run `npm run typecheck`, `npm run lint` and `node test/names.ts`. Paste their final lines and the checks' final lines into the report.
-2. Report to the coordinator, with the `useRoute` finding in `app/src/App.tsx` described in the build log.
+Work through the list above in order, committing each fix with its check, then report as before.
 
 ## Open questions for Tayler
 
