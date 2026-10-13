@@ -39,6 +39,10 @@ services:
   electric-test:
     image: electricsql/electric:1.8.1
     restart: unless-stopped
+    # Every shape keeps files open, and checks from many agents make thousands of
+    # shapes. Docker's default of 1024 open files ran out on 2026-10-13.
+    ulimits:
+      nofile: 65536
     environment:
       DATABASE_URL: postgres://agents:${POSTGRES_PASSWORD}@postgres:5432/agents_test?sslmode=disable
       ELECTRIC_SECRET: ${ELECTRIC_SECRET}
