@@ -4,7 +4,7 @@
 //   node test/names.ts
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // The teardown and rea's evidence describe the app we studied, so they may name it.
@@ -17,8 +17,10 @@ const OLD: [string, RegExp][] = [
   ['a reference we learned from', /pstack|poteto|Lauren Tan|\bBenny\b|Bugbot|treehouse|tasks-axi|kunchenguid|Kun Chen|\bAXI\b|HumanLayer|firstmate|Boundary's|Kyle Mistele|AI That Works|ai-that-works|hellovai|Alexis King|Dex Horthy|CodeRabbit|Greptile|Sentry Seer/],
 ]
 
+// Only regular files are read. A link git lists can point at a folder, and a
+// tracked file can be missing from the working tree.
 const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' })
-  .split('\n').filter((f) => f && !RESEARCH.test(f) && f !== 'test/names.ts')
+  .split('\n').filter((f) => f && !RESEARCH.test(f) && f !== 'test/names.ts' && existsSync(`${ROOT}${f}`) && statSync(`${ROOT}${f}`).isFile())
 const hits: string[] = []
 for (const file of files) {
   const lines = readFileSync(`${ROOT}${file}`, 'utf8').split('\n')

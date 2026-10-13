@@ -1,6 +1,6 @@
 research/
 .DS_Store
-node_modules/
+node_modules
 .env
 test/ui-shots/
 app/dist/
