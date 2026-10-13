@@ -143,13 +143,14 @@ try {
   const plain = join(home, 'plain', 'people.sock')
   mkdirSync(dirname(plain))
   writeFileSync(plain, 'not a socket')
-  check(await refuses(PORT + 12, plain, plain) && readFileSync(plain, 'utf8') === 'not a socket',
+  // The API's own reason, since on this Mac connecting to a plain file also fails, naming the path.
+  check(await refuses(PORT + 12, plain, `${plain} is not a socket`) && readFileSync(plain, 'utf8') === 'not a socket',
     'a file at the socket path that is not a socket stops the API, which leaves the file alone')
 
   const open = join(home, 'open')
   mkdirSync(open)
   chmodSync(open, 0o777)
-  check(await refuses(PORT + 15, join(open, 'people.sock'), open), 'a socket folder that other users can write to stops the API')
+  check(await refuses(PORT + 15, join(open, 'people.sock'), `${open} must belong to this user`), 'a socket folder that other users can write to stops the API')
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error))
   console.error(`FAIL  ${error instanceof Error ? error.message : String(error)}`)
