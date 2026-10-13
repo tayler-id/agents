@@ -248,8 +248,9 @@ try {
     "an admin sees the tailnet's open invites, including ones made in Tailscale's console, with their links")
   const consoleResend = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${fromConsole.id}/resend`)
   const consoleCancel = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${fromConsole.id}/cancel`)
-  check(consoleResend.status === 200 && consoleCancel.status === 200 && !tailscale.state.invites.has(fromConsole.id),
-    'an admin resends and cancels a tailnet invite')
+  check(consoleResend.status === 200 && tailscale.state.calls.some((c) => c.method === 'POST' && c.path === `/user-invites/${fromConsole.id}/resend`)
+    && consoleCancel.status === 200 && !tailscale.state.invites.has(fromConsole.id),
+  'an admin resends and cancels a tailnet invite')
   const ownInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: `tsown12-${id}@mail.test`, role: 'member' })
   const ownTailscaleId: string = ownInvite.json?.invite?.tailscale_invite_id
   const cancelledThere = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${ownTailscaleId}/cancel`)
