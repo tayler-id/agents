@@ -14,8 +14,6 @@
     "check:step1": "node --env-file=.env --env-file=.env.test test/step1.ts",
     "check:step10": "node --env-file=.env --env-file=.env.test test/step10.ts",
     "check:step10b": "node --env-file=.env --env-file=.env.test test/step10b.ts",
-    "check:step12": "node --env-file=.env --env-file=.env.test test/step12.ts",
-    "check:step12b": "node --env-file=.env --env-file=.env.test test/step12b.ts",
     "check:step2": "node --env-file=.env --env-file=.env.test test/step2.ts",
     "check:step2b": "node --env-file=.env --env-file=.env.test test/step2b.ts",
     "check:step3": "node --env-file=.env --env-file=.env.test test/step3.ts",

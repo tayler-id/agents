@@ -3,7 +3,7 @@
 // their first request, with their own box. A login with no invite waits until
 // an admin adds it with one click. Members cannot do what only admins may.
 // Tailscale is the stand-in in test/fake-tailscale.ts.
-//   npm run check:step12
+//   node --env-file=.env --env-file=.env.test test/step12.ts
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'

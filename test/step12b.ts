@@ -4,8 +4,8 @@
 // no invite sees the waiting screen until an admin adds it with one click, then
 // the app opens by itself. Members see the team but none of the admin forms.
 // Scans for accessibility problems and takes screenshots (light, dark, phone).
-//   npm run check:step12b
-//   AGENTS_UI_ENGINES=chromium npm run check:step12b
+//   node --env-file=.env --env-file=.env.test test/step12b.ts
+//   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step12b.ts
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
