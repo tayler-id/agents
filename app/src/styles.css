@@ -12,6 +12,8 @@
   --waiting: #9a5b0f;
   --off: #9a9a93;
   --danger: #a3261d;
+  --mark: #e2e1d8;
+  --mark-strong: #cbcabe;
   color-scheme: light;
 }
 
@@ -27,6 +29,8 @@
     --waiting: #e3a650;
     --off: #6f6f69;
     --danger: #f08177;
+    --mark: #3b3b36;
+    --mark-strong: #55554e;
     color-scheme: dark;
   }
 }
@@ -42,6 +46,8 @@
   --waiting: #e3a650;
   --off: #6f6f69;
   --danger: #f08177;
+  --mark: #3b3b36;
+  --mark-strong: #55554e;
   color-scheme: dark;
 }
 
@@ -306,7 +312,7 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
   .versions { display: block; overflow-x: auto; }
 }
 
-/* The work layer: changes, the file and document panel, code and diffs. Highlighting and diffs use weight, tone and
+/* The work layer: changes, the file and document panel, code, diffs and pinned comments. Highlighting and diffs use weight, tone and
    a raised surface, never hue, and every border is one neutral hairline. */
 .shell.with-panel.wide { grid-template-columns: 260px minmax(0, 1fr) minmax(380px, 46%); }
 .changes .repo-name { margin: 8px 0 2px; font-weight: 600; color: var(--muted); }
@@ -337,6 +343,18 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 .tok-number { font-weight: 600; }
 .tok-comment { color: var(--muted); font-style: italic; }
 .tok-string { background: var(--raised); border-radius: 3px; }
+
+.comment.active { background: var(--raised); }
+.comment .quote {
+  display: block; width: 100%; padding: 0 0 0 10px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+  background: transparent; color: var(--muted); text-align: left; font-size: inherit;
+}
+.comment .quote:hover:not(:disabled), .comment .quote[aria-pressed="true"] { background: transparent; color: var(--text); }
+.comment .quote:focus-visible { border-color: var(--text); color: var(--text); }
+.quote-pick { display: flex; gap: 8px; }
+.quote-pick input { flex: 1; min-width: 0; }
+::highlight(comment-quote) { background-color: var(--mark); }
+::highlight(comment-quote-active) { background-color: var(--mark-strong); }
 
 @media (max-width: 760px) {
   .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }

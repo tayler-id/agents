@@ -9,7 +9,7 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
-import type { NewTask, PullRequestAsk, TaskFields } from '../../shared/work.ts'
+import type { NewComment, NewTask, PullRequestAsk, TaskFields } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 
 export type Me = MemberView
@@ -291,7 +291,7 @@ export const api = {
   versionDiff: (artifactId: ArtifactId | string, version: number) =>
     request<{ diff: string }>('GET', `/v1/artifacts/${artifactId}/versions/${version}/diff`),
   messageSession: (sessionId: string, text: string) => request('POST', `/v1/sessions/${sessionId}/messages`, { text }),
-  addComment: (artifactId: string, body: { version: number; text: string; quote?: string; send: boolean }) =>
+  addComment: (artifactId: string, body: z.input<typeof NewComment>) =>
     request<{ commentId: string }>('POST', `/v1/artifacts/${artifactId}/comments`, body),
   resolveComment: (commentId: string) => request('POST', `/v1/comments/${commentId}/resolve`, {}),
   runRoutine: (routineId: string) => request<{ conversationId: string }>('POST', `/v1/routines/${routineId}/run`, {}),
