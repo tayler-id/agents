@@ -3,11 +3,12 @@
 // and discarded. A task over two repos clones both and names both. The Changes
 // list holds every file the agent added, changed or deleted in each repo, with
 // its diff against the base and secrets scrubbed on the machine.
-//   npm run check:step14
+//   node --env-file=.env --env-file=.env.test test/step14.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -19,14 +20,15 @@ import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
-// Ports 7960 to 7979 are this step's: machines, people, then the stream server.
-const PORT = 7960
+// Ports 7960 to 7979 are this step's: machines, people, then the stream server. Main's step 10
+// checks put their people port at 7961 and 7971, so this one starts at 7962.
+const PORT = 7962
 const API = `http://127.0.0.1:${PORT}`
 const PEOPLE = `http://127.0.0.1:${PORT + 1}`
 const id = randomBytes(4).toString('hex')
 const [team, otherTeam] = [`flow-${id}`, `flow-x-${id}`]
 const [alice, amir, outsider] = [`alice-flow-${id}@local`, `amir-flow-${id}@local`, `out-flow-${id}@local`]
-const [SHOP, SERVICE] = [`flow-shop-${id}`, `flow-api-${id}`]
+const [SHOP, SERVICE, GONE] = [`flow-shop-${id}`, `flow-api-${id}`, `flow-gone-${id}`]
 const org = forgeConfig().org
 // Only the daemon knows it, so finding it scrubbed proves the machine scrubbed it.
 const SECRET = `flow-${randomBytes(12).toString('hex')}`
@@ -143,14 +145,16 @@ child.on('exit', (code) => process.exit(code ?? 1))
   return file
 }
 
-function startDaemon(token: string, daemonHome: string) {
-  children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
+function startDaemon(token: string, daemonHome: string): ChildProcess {
+  const daemon = spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
     env: {
       ...process.env, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: daemonHome, AGENTS_CLAUDE_BIN: claudeWrapper(),
       AGENTS_FAKE_SCENARIO: join(home, 'scenario.json'), FLOW_TEST_TOKEN: SECRET,
     },
-  }))
+  })
+  children.push(daemon)
+  return daemon
 }
 
 const workspaceOf = (taskId: string) => one<{ id: string; status: string; path: string }>(
@@ -158,6 +162,16 @@ const workspaceOf = (taskId: string) => one<{ id: string; status: string; path: 
 const changesOf = (taskId: string) => all<{ repo: string; path: string; status: string; additions: number; deletions: number; preview: string; content: string | null; diff: string | null; updated_at: Date }>(
   `select r.remote_url as repo, f.path, f.status, f.additions, f.deletions, f.preview, f.content, f.diff, f.updated_at
    from file_changes f join repos r on r.id = f.repo_id where f.task_id = $1 order by f.path`, [taskId])
+
+const unlistedOf = (taskId: string) => all<{ repo_id: string; kind: string; reason: string | null }>(
+  'select repo_id, kind, reason from unlisted_changes where task_id = $1', [taskId])
+// What is stored about a task's sessions and commands, as one string to search for a leaked token.
+const recordOf = async (taskId: string) => JSON.stringify([
+  await all(`select c.kind, c.error, c.payload from commands c where c.session_id in (select id from sessions where task_id = $1)
+    or c.payload->>'workspaceId' in (select id::text from workspaces where task_id = $1)`, [taskId]),
+  await all('select kind, text, body from events where session_id in (select id from sessions where task_id = $1)', [taskId]),
+  await all('select title, body, error from pushes where task_id = $1', [taskId]),
+])
 
 process.on('SIGTERM', () => {
   for (const child of children) child.kill('SIGTERM')
@@ -179,10 +193,12 @@ try {
   const seed = (file: string) => readFileSync(join(ROOT, 'ops/seed/shop', file), 'utf8')
   await forgeAdmin.ensureRepo(SHOP, { 'checkout.js': seed('checkout.js'), 'package.json': seed('package.json'), 'test/checkout.test.js': seed('test/checkout.test.js') }, 'step 14 shop', false)
   await forgeAdmin.ensureRepo(SERVICE, { 'README.md': '# api\n', 'server.js': "console.log('api')\n" }, 'step 14 api', false)
+  await forgeAdmin.ensureRepo(GONE, { 'README.md': '# gone\n' }, 'step 14 gone', false)
   const repoIdOf = async (name: string) => must(await one<{ id: string }>(
     'insert into repos (team_id, remote_url) values ($1, $2) returning id', [teamId, `${forgeConfig().url}/${org}/${name}.git`]), name).id
   const shopRepo = await repoIdOf(SHOP)
   const serviceRepo = await repoIdOf(SERVICE)
+  const goneRepo = await repoIdOf(GONE)
   // A slow setup in the first repo. An agent that started before setup ended would
   // write into the second repo's folder before its clone, and the clone would fail.
   await db.query(`update repos set setup_command = 'sleep 2' where id = $1`, [serviceRepo])
@@ -205,11 +221,12 @@ try {
     },
   }))
   await within(20, () => fetch(API).then(() => true, () => false))
-  startDaemon(token, home)
+  let daemon = startDaemon(token, home)
   await within(20, async () => (await one<{ status: string }>('select status from instances where name = $1', [`flow-mac-${id}`]))?.status === 'online')
 
   let draftTask = ''
   let draftSession = ''
+  let twinTask = ''
 
   await section('drafts', async () => {
     const created = await post('/v1/tasks', { title: 'Draft one', instructions: 'Write it up later.', agentId: writer, repoIds: [shopRepo], draft: true })
@@ -226,12 +243,13 @@ try {
     check(tasks.rows.some((t) => t.id === draftTask) && sessions.rows.some((s) => s.id === draftSession && s.status === 'draft'),
       'a teammate sees the draft and its draft status')
 
-    const missing = await as(amir, `/v1/tasks/${draftTask}/edit`, { title: 'No agent', instructions: '', repoIds: [] })
+    const loaded = { title: 'Draft one', instructions: 'Write it up later.', agentId: writer, repoIds: [shopRepo] }
+    const missing = await as(amir, `/v1/tasks/${draftTask}/edit`, { title: 'No agent', instructions: '', repoIds: [], loaded })
     check(missing.status === 400 && (await missing.text()).includes('agentId'), 'an edit without its agent is refused with a 400 that names the field')
-    const stranger = await as(outsider, `/v1/tasks/${draftTask}/edit`, { title: 'Mine now', instructions: '', agentId: writer, repoIds: [] })
+    const stranger = await as(outsider, `/v1/tasks/${draftTask}/edit`, { title: 'Mine now', instructions: '', agentId: writer, repoIds: [], loaded })
     check(stranger.status === 404, 'a person from another team cannot edit the draft')
 
-    await post(`/v1/tasks/${draftTask}/edit`, { title: 'Draft one, edited', instructions: 'Now over two repos.', agentId: helper, repoIds: [serviceRepo, shopRepo] }, amir)
+    await post(`/v1/tasks/${draftTask}/edit`, { title: 'Draft one, edited', instructions: 'Now over two repos.', agentId: helper, repoIds: [serviceRepo, shopRepo], loaded }, amir)
     const edited = await one<{ title: string; agent_id: string }>('select title, agent_id from tasks where id = $1', [draftTask])
     const repos = await all<{ repo_id: string; is_primary: boolean }>('select repo_id, is_primary from task_repos where task_id = $1 order by is_primary desc', [draftTask])
     const sessionAgent = await one<{ agent_id: string; status: string }>('select agent_id, status from sessions where id = $1', [draftSession])
@@ -242,6 +260,14 @@ try {
     const hidden = await shapeRows(outsider, 'task_repos', { task: draftTask })
     check(shown.rows.length === 2 && shown.rows.some((r) => r.repo_id === serviceRepo && r.is_primary) && hidden.status === 404,
       "the draft's repos read back for its editor, and not for another team")
+    // Both open another draft. Amir saves first, and Alice's form still holds the draft as it was.
+    const shared = await post('/v1/tasks', { title: 'Shared draft', instructions: '', agentId: writer, draft: true })
+    const opened = { title: 'Shared draft', instructions: '', agentId: writer, repoIds: [] }
+    await post(`/v1/tasks/${shared.taskId}/edit`, { ...opened, title: 'Shared draft, by Amir', loaded: opened }, amir)
+    const stale = await as(alice, `/v1/tasks/${shared.taskId}/edit`, { ...opened, title: 'Shared draft, by Alice', loaded: opened })
+    const kept = await one<{ title: string }>('select title from tasks where id = $1', [shared.taskId])
+    check(stale.status === 409 && (await stale.text()).includes('changed since') && kept?.title === 'Shared draft, by Amir',
+      "a save from a form loaded before a teammate's edit is refused, and the edit stays")
 
     const started = await post(`/v1/tasks/${draftTask}/start`)
     const startedSession = await one<{ status: string; workspace_id: string | null }>('select status, workspace_id from sessions where id = $1', [draftSession])
@@ -274,6 +300,7 @@ try {
     const twin = must(await one<{ id: string }>('insert into repos (team_id, remote_url) values ($1, $2) returning id',
       [teamId, `${forgeConfig().url}/flow-twin-${id}/${SHOP}.git`]), 'the twin repo').id
     const twins = await post('/v1/tasks', { title: 'Twins', instructions: '', agentId: writer, repoIds: [shopRepo, twin], draft: true })
+    twinTask = twins.taskId
     await post(`/v1/tasks/${twins.taskId}/start`)
     const twinSetup = await one<{ payload: { repos: { name: string }[] } }>(
       `select c.payload from commands c join workspaces w on c.payload->>'workspaceId' = w.id::text where w.task_id = $1 and c.kind = 'setup_workspace'`, [twins.taskId])
@@ -291,7 +318,7 @@ try {
     const workspace = must(await one<{ id: string }>(`insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`,
       [teamId, taskId, mac]), 'the workspace').id
     await db.query(`update sessions set workspace_id = $2, status = 'starting' where id = $1`, [session, workspace])
-    const payload = { permissions: { workspaceWrites: true, commands: false }, text: 'Look at the shop.', agentId: writer, harness: 'claude', model: null, instructions: '', harnessSessionId: null, workspaceId: workspace }
+    const payload = { permissions: { workspaceWrites: true }, text: 'Look at the shop.', agentId: writer, harness: 'claude', model: null, instructions: '', harnessSessionId: null, workspaceId: workspace }
     const message = must(await one<{ id: string }>(`insert into commands (team_id, instance_id, session_id, kind, payload) values ($1, $2, $3, 'message', $4) returning id`,
       [teamId, mac, session, JSON.stringify(payload)]), 'the message').id
     const claimed = await within(20, async () => (await one<{ status: string }>('select status from commands where id = $1', [message]))?.status !== 'queued')
@@ -348,6 +375,43 @@ try {
     check(settled && !after.some((r) => r.path === 'README.md'), 'a file taken back out leaves the list')
     check(after.find((r) => r.path === 'notes.txt')?.updated_at.getTime() === notesBefore, 'a file that did not change is not written again')
 
+    // Each turn's end sends the workspace's changes again.
+    const turn = (text: string) => post(`/v1/sessions/${draftSession}/messages`, { text })
+    // git only looks for a NUL byte in a file's first 8,000 bytes when it decides whether the file is text.
+    writeFileSync(join(service, 'late-nul.txt'), `${'a'.repeat(9000)}\0tail\n`)
+    await turn('Look again.')
+    const nul = await within(60, async () => (await changesOf(draftTask)).some((r) => r.path === 'late-nul.txt'))
+    const late = (await changesOf(draftTask)).find((r) => r.path === 'late-nul.txt')
+    check(nul && late?.preview === 'binary' && late.content === null, 'a file with a NUL byte past where git looks is listed as binary')
+
+    const many = join(shop, 'many')
+    mkdirSync(many)
+    for (let n = 0; n <= 20_000; n++) writeFileSync(join(many, `f${n}.txt`), `${n}\n`)
+    await turn('Look at all of it.')
+    const overflowed = await within(90, async () => (await unlistedOf(draftTask)).some((u) => u.repo_id === shopRepo && u.kind === 'too_many'))
+    const shopRows = (await changesOf(draftTask)).filter((r) => r.repo.endsWith(`/${SHOP}.git`))
+    const serviceKept = (await changesOf(draftTask)).some((r) => r.path === 'notes.txt')
+    check(overflowed && !shopRows.length && serviceKept, 'a repo with more than 20,000 changed files is marked too many, its list cleared, and the other repo still listed')
+    rmSync(many, { recursive: true, force: true })
+    await turn('Tidy that away.')
+    const listedAgain = await within(60, async () => !(await unlistedOf(draftTask)).length && (await changesOf(draftTask)).some((r) => r.path === 'checkout.js'))
+    check(listedAgain, 'once the files go, the repo is listed again')
+
+    // A file git cannot read fails the second repo's scan, and the first repo's changes still arrive.
+    writeFileSync(join(service, 'locked.txt'), 'private\n')
+    chmodSync(join(service, 'locked.txt'), 0o000)
+    writeFileSync(join(shop, 'fresh.txt'), 'fresh\n')
+    await turn('One more look.')
+    const fresh = await within(60, async () => (await changesOf(draftTask)).some((r) => r.path === 'fresh.txt'))
+    const unreadable = (await unlistedOf(draftTask)).find((u) => u.repo_id === serviceRepo)
+    const serviceStill = (await changesOf(draftTask)).some((r) => r.path === 'notes.txt')
+    check(fresh && unreadable?.kind === 'unreadable' && unreadable.reason?.includes('locked.txt') && serviceStill,
+      `a repo git cannot read is marked unreadable and keeps its last list, and the other repo's changes still arrive: ${unreadable?.reason ?? 'no reason'}`)
+    chmodSync(join(service, 'locked.txt'), 0o644)
+    rmSync(join(service, 'locked.txt'))
+    await turn('All readable again.')
+    check(await within(60, async () => !(await unlistedOf(draftTask)).length), 'once git can read it again, the repo is listed again')
+
     const foreign = await fetch(`${API}/v1/workspaces/${workspace.id}/changes`, {
       method: 'POST', headers: { authorization: `Bearer ${otherToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ repos: [] }),
     })
@@ -391,7 +455,15 @@ try {
     await pushed(again.pushId)
     const linksAgain = await all(`select 1 from artifacts where task_id = $1 and kind = 'link'`, [draftTask])
     const openAgain = await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${SHOP}/pulls?state=open`)
-    check(linksAgain.length === 2 && openAgain.length === open.length, 'asking again updates the open pull requests instead of opening more')
+    check(linksAgain.length === 2 && openAgain.length === open.length, 'asking again opens no second pull request')
+
+    const branchFile = `/repos/${org}/${SHOP}/contents/from-the-forge.txt`
+    await forgeAdmin.call('POST', branchFile, { content: Buffer.from('Added on the forge.\n').toString('base64'), message: 'Added on the forge', branch: `task/${slug}` })
+    const third = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
+    await pushed(third.pushId)
+    const refused = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [third.pushId])
+    const survived = await forgeAdmin.call('GET', `${branchFile}?ref=task/${slug}`).then(() => true, () => false)
+    check(refused?.status === 'failed' && survived, `a push never overwrites a commit added on the forge since the last push: ${refused?.error?.slice(0, 120) ?? 'no error'}`)
 
     const quiet = await post('/v1/tasks', { title: 'Look around', instructions: 'Change nothing.', agentId: writer, repoIds: [shopRepo] })
     await within(60, async () => (await one<{ status: string }>('select status from sessions where id = $1', [quiet.sessionId]))?.status === 'idle')
@@ -399,6 +471,47 @@ try {
     await pushed(nothing.pushId)
     const failed = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [nothing.pushId])
     check(failed?.status === 'failed' && failed.error?.includes('nothing to open'), `a task with no changes opens no pull request, and says why: ${failed?.error ?? 'no error'}`)
+
+    const leaked = `ghp_${randomBytes(18).toString('hex')}`
+    const titled = await post(`/v1/tasks/${quiet.taskId}/pull-requests`, { title: `Ship ${leaked}`, body: `Uses ${leaked}` })
+    await pushed(titled.pushId)
+    const stored = JSON.stringify([
+      await one('select title, body from pushes where id = $1', [titled.pushId]),
+      await one(`select c.payload from commands c join pushes p on p.command_id = c.id where p.id = $1`, [titled.pushId]),
+    ])
+    check(!stored.includes(leaked) && stored.includes('[secret:github]'), "a pull request's title and body are scrubbed before they are stored or pushed")
+
+    // A machine that went away mid-push leaves the push running. Once it is old, it no longer blocks a new one.
+    const mac = must(await one<{ id: string }>('select id from instances where name = $1', [`flow-mac-${id}`]), 'the mac').id
+    const quietWorkspace = must(await workspaceOf(quiet.taskId), 'the quiet workspace').id
+    const lostPayload = { workspaceId: quietWorkspace, repos: [], message: 'Lost', author: 'writer' }
+    const lost = must(await one<{ id: string }>(`insert into commands (team_id, instance_id, kind, payload, status, claimed_at)
+      values ($1, $2, 'push', $3, 'claimed', now() - interval '20 minutes') returning id`, [teamId, mac, JSON.stringify(lostPayload)]), 'the lost push command').id
+    const stuck = must(await one<{ id: string }>(`insert into pushes (team_id, task_id, workspace_id, command_id, title, body, created_at)
+      values ($1, $2, $3, $4, 'Lost', '', now() - interval '20 minutes') returning id`, [teamId, quiet.taskId, quietWorkspace, lost]), 'the stuck push').id
+    const fresh = await as(alice, `/v1/tasks/${quiet.taskId}/pull-requests`, { title: 'After the lost one', body: '' })
+    const expired = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [stuck])
+    check(fresh.ok && expired?.status === 'failed' && expired.error?.includes('did not finish'), `a push stuck for 20 minutes expires, and a new one starts: ${expired?.error ?? expired?.status ?? 'gone'}`)
+    if (fresh.ok) await pushed(((await fresh.json()) as { pushId: string }).pushId)
+  })
+
+  await section('a failed clone and a failed push leak no token', async () => {
+    // The twin task's second repo has no forge repo behind it, so its clone fails, and its first message with it.
+    const cloneFailed = await within(60, async () => (await one<{ n: number }>(
+      `select count(*)::int as n from events where kind = 'error' and session_id in (select id from sessions where task_id = $1)`, [twinTask]))?.n === 1)
+    const cloneRecord = await recordOf(twinTask)
+    check(cloneFailed && cloneRecord.includes('failed') && !cloneRecord.includes('machine_'),
+      "a failed clone fails the setup and the first message, and neither the commands nor the transcript hold the machine's token")
+
+    const nowhere = await post('/v1/tasks', { title: 'Push nowhere', instructions: 'Nothing to do.', agentId: writer, repoIds: [goneRepo] })
+    await within(60, async () => (await one<{ status: string }>('select status from sessions where id = $1', [nowhere.sessionId]))?.status === 'idle')
+    await forgeAdmin.call('DELETE', `/repos/${org}/${GONE}`)
+    const { pushId } = await post(`/v1/tasks/${nowhere.taskId}/pull-requests`, { title: 'Nowhere', body: '' })
+    await within(60, async () => (await one<{ status: string }>('select status from pushes where id = $1', [pushId]))?.status !== 'pushing')
+    const push = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [pushId])
+    const pushRecord = await recordOf(nowhere.taskId)
+    check(push?.status === 'failed' && push.error?.includes('push failed') && !pushRecord.includes('machine_'),
+      `a failed push says so, and neither its command nor the push hold the machine's token: ${push?.error?.slice(0, 120) ?? 'no error'}`)
   })
 
   await section('order of work', async () => {
@@ -498,8 +611,8 @@ try {
     await post('/v1/tasks', { title: 'On the box', instructions: 'Nothing to do.', agentId: boxer, repoIds: [shopRepo] })
     await within(60, async () => startedIn(join(boxHome, 'workspaces')))
     const box = startedIn(join(boxHome, 'workspaces'))
-    check(box && flag(box.args, '--permission-mode') === 'acceptEdits' && tools(box.args).includes('Bash'),
-      "a task's session on a box runs commands without asking too")
+    check(box && flag(box.args, '--permission-mode') === 'acceptEdits' && !tools(box.args).includes('Bash'),
+      "a task's session on a box changes files without asking, and still asks before commands")
   })
 
   await section('research, plan and implement', async () => {
@@ -585,6 +698,26 @@ try {
     'research that changes code fails the runner\'s check, goes back to the agent, and reaches a person after three tries')
     if (handoff) await post(`/v1/asks/${handoff.id}/answer`, { decision: 'stop' })
   })
+
+  await section('a message for a workspace gone from disk', async () => {
+    const lost = await post('/v1/tasks', { title: 'Lost folder', instructions: 'Nothing to do.', agentId: writer, repoIds: [shopRepo] })
+    await within(60, async () => (await one<{ status: string }>('select status from sessions where id = $1', [lost.sessionId]))?.status === 'idle')
+    const workspace = must(await workspaceOf(lost.taskId), 'the lost workspace')
+    // A new daemon process knows nothing of the setups the old one ran.
+    daemon.kill('SIGTERM')
+    await once(daemon, 'exit')
+    rmSync(workspace.path, { recursive: true, force: true })
+    daemon = startDaemon(token, home)
+    await post(`/v1/sessions/${lost.sessionId}/messages`, { text: 'Are you still there?' })
+    await post(`/v1/sessions/${lost.sessionId}/interrupt`)
+    const commandOf = (kind: string) => one<{ status: string; error: string | null }>(
+      'select status, error from commands where session_id = $1 and kind = $2 order by created_at desc limit 1', [lost.sessionId, kind])
+    const failedFast = await within(30, async () => (await commandOf('message'))?.status === 'failed')
+    const message = await commandOf('message')
+    const behind = await within(30, async () => !['queued', 'claimed'].includes((await commandOf('interrupt'))?.status ?? 'queued'))
+    check(failedFast && message?.error?.includes('is not set up on this machine') && behind,
+      `a message for a workspace gone from disk fails at once, and an interrupt behind it is not held up: ${message?.error ?? message?.status ?? 'no command'}`)
+  })
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)
@@ -593,7 +726,7 @@ try {
   await sleep(1000)
   if (!failures.length) {
     await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
-    for (const repo of [SHOP, SERVICE, PIPES]) await forgeAdmin.call('DELETE', `/repos/${org}/${repo}`).catch(() => undefined)
+    for (const repo of [SHOP, SERVICE, GONE, PIPES]) await forgeAdmin.call('DELETE', `/repos/${org}/${repo}`).catch(() => undefined)
   }
   await db.end().catch(() => undefined)
 }

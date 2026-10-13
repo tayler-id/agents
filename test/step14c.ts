@@ -22,8 +22,9 @@ import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
-// Ports 7960 to 7979 are this step's. This check: machines, people, streams.
-const PORT = 7970
+// Ports 7960 to 7979 are this step's. This check: machines, people, streams. Main's step 10b
+// puts its people port at 7971, so this one starts at 7973.
+const PORT = 7973
 const API = `http://127.0.0.1:${PORT}`
 const PEOPLE = `http://127.0.0.1:${PORT + 1}`
 const INSECURE = `http://agents.test:${PORT + 1}`
