@@ -165,9 +165,10 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** An agent reads how a pipeline's runs went (the `pipeline_history` tool), changes that pipeline's file once, and the change is scored. Only a change that scores better becomes a pull request on the pipelines repo, with both scores, and reaches the shepherd. Approving merges it, and the merged file becomes the current version.
 - **Helps later.** It can run on a schedule, so pipelines keep getting better while nobody is watching.
 
-### The coach pipeline (`pipelines/coach.ts`)
+### The coach pipeline (`pipelines/coach.ts`, `server/evidence.ts`, `server/hunks.ts`, `server/refine.ts`)
 
-- **Solves now.** An agent reads the team's conversations with another agent, finds a correction people made more than once, and proposes the smallest change that would have prevented it, with a diff. That is new instructions, or a skill when the corrections are about one kind of task. Approving applies it. A proposed skill name that is not lowercase letters, digits and dashes is refused, since the name becomes a folder on each machine.
+- **Solves now.** Coach learns from corrections people keep making to the agent named in the run's title. Code picks the agent's team sessions with steps nobody has read, never a replay, a private session or a learning pipeline's. A cheap model reads them once and reports findings, and code keeps a finding only when its quote is in the step it cites. Corrections group into candidates, counted in code across sessions and people, with people's, pipeline and box sessions counted apart. A candidate needs two sessions, expires after 90 days, and is routed before any text is written: one person's to their profile, one a check could catch to a check, a narrow one to a skill, the rest to the instructions. The writer's change comes as hunks the server computes, each citing findings, with floors, at most five hunks and a size budget. Replays of the turns behind the change, and of unrelated turns, run with and without it, and only a change that wins reaches the shepherd, who keeps or turns down each hunk with a reason. A hunk turned down stays down until more sessions back it. `test/step20.ts`, `test/step20a.ts` and `test/step20b.ts` cover each rule. The design is `docs/design/evidence.md`.
+- **Not built yet.** Agents has no lint job, so a kept check hunk is listed in the run's note for a person to add.
 
 ### Proposals in the app (`app/src/Proposal.tsx`)
 

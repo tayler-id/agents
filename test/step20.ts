@@ -194,7 +194,8 @@ try {
     `a quote that is not in its event is dropped: ${reasons.join(' | ')}`)
   check(reasons.some((r) => r.includes('shorter than 12')), 'a quote shorter than 12 characters is dropped')
   check(reasons.some((r) => r.includes('not one of the sessions read')), 'a finding citing a session nobody picked is dropped')
-  check(reasons.some((r) => r.includes('no step 999')), 'a finding citing a step that does not exist is dropped')
+  check(reasons.some((r) => r.includes('step 999 of session') && r.includes('not among the steps this run read')),
+    'a finding citing a step this run did not read is dropped')
   check(reasons.some((r) => r.includes('no rule abcdefabcdef')), 'a finding about a rule the agent does not have is dropped')
   check(reasons.some((r) => r.startsWith('not a finding')), 'a finding missing its quote is dropped')
   check(recorded.dropped.length === 6, `six findings are dropped: ${recorded.dropped.length}`)
@@ -239,6 +240,7 @@ try {
     [teamId, improver]), "improver's candidate").id
   const report2 = {
     findings: [
+      { kind: 'gap', session: aliceDm.session, step: aliceStep, quote: 'British English: colour, not color', correction: 'Write in British English.', candidate: britA.id, fix: 'text' },
       { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first'), quote: 'Release notes go newest first', correction: 'Newest first.', candidate: othersCandidate, fix: 'text' },
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'Keep it to one line'), quote: 'Keep it to one line, please.', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: aliceDm.session, step: await stepOf(aliceDm.session, 'newest change first'), quote: 'put the newest change first', correction: 'List the newest change first in release notes.', same: 'newest', fix: 'text', when: 'writing release notes' },
@@ -251,6 +253,9 @@ try {
   check(recorded2.dropped.filter((d) => d.reason.includes('names no open candidate')).length === 2,
     "a gap naming a candidate that does not exist, or another agent's, is dropped")
   check(recorded2.dropped.some((d) => d.reason.includes('merge')), 'a merge naming a candidate that does not exist is refused')
+  check(recorded2.dropped.some((d) => d.reason.includes(`step ${aliceStep} of session ${aliceDm.session} is not among the steps this run read`))
+    && second.prompt.includes('(read before, for context only)'),
+  'a step read before is shown for context, and a finding citing it is dropped')
   const merged = must(await byCorrection('Write in British English'), 'the merged British candidate')
   check(merged.ready && merged.counts.sessions === 2 && merged.counts.people === 2 && merged.counts.bySource.person === 2
     && !(await candidatesOf(pool, fixer)).some((c) => c.id === britB.id),

@@ -72,9 +72,9 @@ export const AgentPlugin = z.discriminatedUnion('kind', [
 ])
 export type AgentPlugin = z.infer<typeof AgentPlugin>
 
-// A pipeline stage's session: the outcomes its report_result tool accepts, the
-// tools it may use without asking, and the most it may spend.
-export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number() })
+// A pipeline stage's session: the outcomes its report_result tool accepts, and
+// the tools it may use without asking.
+export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()) })
 export type StageSpec = z.infer<typeof StageSpec>
 
 // What a daemon needs to hand a person's message to an agent's harness.
@@ -90,6 +90,8 @@ export const MessagePayload = z.object({
   workspaceId: z.string().optional(),
   // Set when the session runs a pipeline stage.
   stage: StageSpec.optional(),
+  // The most the session may spend, for a pipeline stage or a replay.
+  maxBudgetUsd: z.number().optional(),
   // The agent's skills, its plugins (MCP servers) and what it remembers.
   skills: z.array(AgentSkill).optional(),
   plugins: z.array(AgentPlugin).optional(),

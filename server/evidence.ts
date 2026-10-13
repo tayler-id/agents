@@ -38,9 +38,9 @@ const CONTEXT_STEPS = 2
 const TEXT_CHARS = 1500
 const TOOL_CHARS = 300
 const RESULT_CHARS = 200
-// A pipeline whose stages propose changes learns. Its sessions are never
-// evidence about an agent.
-const LEARNING_ACTIONS: ReadonlySet<Action> = new Set(['score_change', 'propose_instructions'])
+// A pipeline whose stages read evidence or propose changes learns. Its sessions
+// are never evidence about an agent.
+const LEARNING_ACTIONS: ReadonlySet<Action> = new Set(['pick_sessions', 'record_findings', 'propose_hunks', 'score_change'])
 
 const collapse = (text: string) => text.replace(/\s+/g, ' ').trim()
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
@@ -178,10 +178,14 @@ export async function pickSessions(db: Db, teamId: TeamId, agentId: AgentId): Pr
     })
   }
   const parts: string[] = []
+  const lines = (events: EventRow[]) => events.map(line).filter((l): l is string => l !== null)
   for (const p of picked) {
-    const earlier = (await eventsOf(db, p.sessionId, 1, p.fromSeq - 1)).filter((e) => e.kind === 'user' || e.kind === 'assistant').slice(-CONTEXT_STEPS)
-    const lines = [...earlier, ...(await eventsOf(db, p.sessionId, p.fromSeq, p.toSeq))].map(line).filter((l): l is string => l !== null)
-    parts.push([`session ${p.sessionId} · ${p.source} · ${p.kind}`, ...lines].join('\n'))
+    const earlier = lines((await eventsOf(db, p.sessionId, 1, p.fromSeq - 1)).filter((e) => e.kind === 'user' || e.kind === 'assistant').slice(-CONTEXT_STEPS))
+    parts.push([
+      `session ${p.sessionId} · ${p.source} · ${p.kind}`,
+      ...(earlier.length ? ['(read before, for context only)', ...earlier, '(new)'] : []),
+      ...lines(await eventsOf(db, p.sessionId, p.fromSeq, p.toSeq)),
+    ].join('\n'))
   }
   const agent = await one<{ instructions: string }>(db, `agent ${agentId}`, 'select instructions from agents where id = $1', [agentId])
   const candidates = await candidatesOf(db, agentId)
@@ -270,11 +274,13 @@ export async function recordFindings(client: pg.PoolClient, input: {
       drop(`session ${finding.session} is not one of the sessions read`)
       continue
     }
-    const event = await citedEvent(client, finding.session, finding.step)
-    if (!event) {
-      drop(`session ${finding.session} has no step ${finding.step}`)
+    if (finding.step < p.fromSeq || finding.step > p.toSeq) {
+      drop(`step ${finding.step} of session ${finding.session} is not among the steps this run read`)
       continue
     }
+    // Steps are numbered without gaps, so every step in the range read is there.
+    const event = await citedEvent(client, finding.session, finding.step)
+    if (!event) throw new Error(`session ${finding.session} has lost step ${finding.step}, which this run read`)
     const problem = quoteProblem(finding.quote, event.text ?? '')
     if (problem) {
       drop(problem === 'the quote is not in' ? `the quote is not in step ${finding.step} of session ${finding.session}` : problem)

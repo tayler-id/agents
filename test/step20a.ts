@@ -199,7 +199,9 @@ try {
   const stranger = await propose([
     { op: 'add', text: '- Anything.', findings: [randomUUID(), british[0]] },
     { op: 'delete', rule: keepShort, findings: ignoredShort },
+    { op: 'skill', name: '../../escape', description: 'Anything.', text: 'Anything.', findings: newest },
   ])
+  check(stranger.refused.some((r) => r.reason.includes('"../../escape" is not')), "a skill's name never reaches outside its folder")
   check(stranger.proposalId === null && stranger.refused.some((r) => r.reason.includes('not live evidence')), 'a hunk citing a finding that is not live evidence is refused')
   check(stranger.refused.some((r) => r.reason.includes('deleting a rule cites only harm findings about that rule')), 'a rule ignored is reworded, never deleted')
 

@@ -31,9 +31,17 @@ Improve keeps its shape: study, score, pull request, shepherd, merge. Three thin
 
 The pull request and the gate list the cited quotes, so the reasons a person reads are ones code checked.
 
+## Where the code is
+
+- `shared/evidence.ts` and `shared/ids.ts`, the shapes below.
+- `server/evidence.ts`, picking and reading sessions, checking and recording findings, and candidates with their counts and routes.
+- `server/hunks.ts`, applying the writer's operations, the rules for changes, the memory, deciding one hunk and settling a proposal.
+- `server/refine.ts`, the actions the runner calls, and the replays of both pipelines.
+- `pipelines/coach.ts` and `pipelines/improve.ts`, the stages and their prompts.
+
 ## Typed shapes
 
-The zod schemas live once in `shared/evidence.ts`, and the types are `z.infer` of them. Ids are branded, so a finding's id cannot go where a candidate's belongs.
+The zod schemas live once in `shared/evidence.ts`, and the types are `z.infer` of them. Ids are branded, so a finding's id cannot go where a candidate's belongs. The tables store findings and hunks as flat rows, and their check constraints hold the same rules the unions below spell out.
 
 ### Findings
 
@@ -159,7 +167,7 @@ Migration `0012_evidence.sql` adds five tables. `docs/data-model.md` has their c
 Each rule has a named constant in the code, with its reason, and a check that was seen failing.
 
 1. **A quote must be in its event.** The cited event's stored text must contain the quote, after collapsing runs of whitespace on both sides. A quote under 12 characters is dropped, since it matches too easily to tie a finding to what was said.
-2. **Each event is read once.** `session_reads` holds how far each session was read, so a long DM is read in parts, and a re-run reads only what is new.
+2. **Each event is read once.** `session_reads` holds how far each session was read, so a long DM is read in parts, and a re-run reads only what is new. The transcript shows two steps read before, marked as context, and a finding citing a step outside the ones this run read is dropped.
 3. **Two occasions make a candidate.** A candidate is ready once its live findings come from two occasions. An occasion is a session, or for a pipeline's stage sessions, the run, since one run's stages are one occasion. People are counted apart, and both counts show wherever a candidate does.
 4. **Candidates expire.** A finding counts for 90 days from the event it quotes. A candidate with no live findings is gone from every prompt and count.
 5. **The model judges sameness, code merges.** A reader may say a gap repeats an open candidate, or that two candidates are one. Code checks each id is an open candidate of this agent, then moves the findings. An id that names no open candidate drops its finding.
@@ -171,7 +179,7 @@ Each rule has a named constant in the code, with its reason, and a check that wa
 11. **The server computes the hunks.** The writer names operations on rules by their hashes. The server applies them, so the text and diff of each hunk are measured by code, and a change cannot touch text the writer did not name.
 12. **A rejected hunk stays rejected.** A hunk is held back when the team turned down one with the same scope and content hash that shares a finding with it, unless more occasions back the new one.
 13. **Only a winner reaches the shepherd.** With the change, fewer replays still need the correction than without it, and no more unrelated replays get worse.
-14. **Clean evidence.** Sessions of runs whose pipeline learns (it has a `pick_sessions`, `record_findings` or `score_change` stage, or does not load), replay sessions, and private sessions are never read.
+14. **Clean evidence.** Coach never reads a session of a run whose pipeline learns, meaning it has a `pick_sessions`, `record_findings`, `propose_hunks` or `score_change` stage, or does not load. Nor does it read a replay or a private session. Improve's study may cite any run of the pipeline it studies except replays and its own run, so improve can still improve coach.
 
 Improve gets rules 1, 7, 11 and 12. Its hunks are not held to the floors, the cap or the size budget, since the brief asks for citations and rejection memory there, and holding improve to two runs would take away a change it can make today. That one is Tayler's call.
 

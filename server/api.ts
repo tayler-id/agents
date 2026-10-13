@@ -31,6 +31,8 @@ import { answerRunAsk, cancelRun, startRun, startRunner, wakeRunner } from './ru
 import { syncPipelines } from './pipelines.ts'
 import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
 import { createRoom } from './rooms.ts'
+import { decideHunk } from './hunks.ts'
+import { HunkDecisionBody, HunkId } from '../shared/evidence.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
@@ -107,6 +109,10 @@ async function agentScope(req: IncomingMessage, url: URL) {
     ? await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
     : { rows: [] }
   if (!rows[0]) throw new HttpError(403, 'record reads need a session running on this machine')
+  // A replay must do without the correction it is scored on, and the record holds it.
+  if (await maybe(pool, 'select 1 from session_replays where session_id = $1', [sessionId])) {
+    throw new HttpError(403, 'a replay reads nothing from the team record')
+  }
   return { teamId: instance.team_id, sessionId }
 }
 
@@ -486,6 +492,19 @@ const routes: Route[] = [
     }))
     void wakeRunner()
     return { runId }
+  }],
+
+  // A person keeps or turns down one hunk of a coach proposal at its gate.
+  ['people', 'POST', new RegExp(`^/v1/hunks/${UUID}/decision$`), async (req, [hunkId]) => {
+    const person = await personFrom(req)
+    const body = HunkDecisionBody.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, 'decision must be accept, or reject with a reason')
+    const hunk = await maybe<{ task_id: string }>(pool,
+      `select r.task_id from proposal_hunks h join proposals p on p.id = h.proposal_id join runs r on r.id = p.run_id
+       where h.id = $1 and h.team_id = $2`, [hunkId, person.team_id])
+    if (!hunk || !(await canSeeTask(person, hunk.task_id))) throw new HttpError(404, 'no such hunk')
+    await tx((client) => decideHunk(client, person, HunkId.parse(hunkId), body.data))
+    return { ok: true }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/runs/${UUID}/cancel$`), async (req, [runId]) => {

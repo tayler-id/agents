@@ -55,6 +55,8 @@ type Common<S extends string> = {
 export type AgentStage<S extends string = string> = Common<S> & {
   kind: 'agent'
   agent?: string
+  // The Claude model for this stage, such as haiku for cheap reading. The agent's own when unset.
+  model?: string
   prompt: (ctx: RunContext) => string
   // Tools the stage may use without asking a person, in Claude's --allowedTools form.
   allow?: string[]
@@ -66,23 +68,36 @@ export type AgentStage<S extends string = string> = Common<S> & {
 // (exit code 0) or `fails`.
 export type CheckStage<S extends string = string> = Common<S> & { kind: 'check'; command: (ctx: RunContext) => string; maxAttempts?: number }
 
-// Something the runner does, and the outcomes each can end with. Every action can fail.
+// Something the runner does, and the outcomes each can end with. Every action can
+// fail. docs/design/evidence.md has the design of the ones coach uses.
 // - open_pull_request: pushes the task branch and opens a pull request.
 // - merge_pull_request: merges it, and marks the run's proposal approved.
 // - close_issue: comments on the report's issue and closes it.
 // - score_change: pushes the task branch, takes the one pipeline file it changed
 //   as a candidate version, replays past runs of that pipeline with the candidate
 //   and with the current version, and writes a proposal with both scores.
-// - propose_instructions: writes a proposal from the last agent stage's data:
-//   `agent` and new `instructions`, or a `skill` with `name` and `content`.
-// - apply_proposal: applies the run's proposal to the agent or skill.
+// - pick_sessions: picks the sessions of the agent named in the report that have
+//   events nobody has read, and writes them out for the next stage.
+// - record_findings: keeps the findings the last agent stage reported whose
+//   quotes are in the events they cite. Ready when a change has enough evidence.
+// - propose_hunks: turns the hunks the last agent stage reported into a proposal,
+//   refusing any that break the rules for changes.
+// - replay_sessions: replays the turns behind the proposal, and a few unrelated
+//   ones, with and without the change. Unscored when it changes no text.
+// - decide_replays: scores both versions from the verdicts the last agent stage
+//   reported. Better only when the change wins.
+// - settle_hunks: records the decision on every hunk, and applies the kept ones.
 export const ACTION_OUTCOMES = {
   open_pull_request: ['done', 'failed'],
   merge_pull_request: ['done', 'failed'],
   close_issue: ['done', 'failed'],
   score_change: ['better', 'not_better', 'failed'],
-  propose_instructions: ['done', 'failed'],
-  apply_proposal: ['done', 'failed'],
+  pick_sessions: ['picked', 'none', 'failed'],
+  record_findings: ['ready', 'waiting', 'failed'],
+  propose_hunks: ['proposed', 'refused', 'failed'],
+  replay_sessions: ['replayed', 'unscored', 'failed'],
+  decide_replays: ['better', 'not_better', 'failed'],
+  settle_hunks: ['applied', 'declined', 'failed'],
 } as const satisfies Record<string, readonly string[]>
 export type Action = keyof typeof ACTION_OUTCOMES
 

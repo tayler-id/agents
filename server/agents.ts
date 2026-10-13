@@ -189,13 +189,24 @@ export async function writeMemory(client: pg.PoolClient, agentId: string, teamId
 }
 
 // The memory block an agent starts a session with: the team's profile, each
-// person's profile, and the last few days of logs.
-export async function memoryBlock(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<string> {
-  const { rows } = await client.query<{ scope: string; login: string | null; kind: string; log_date: string | null; content: string }>(
-    `select m.scope, p.login, m.kind, m.log_date::text, m.content from memories m left join people p on p.id = m.person_id
+// person's profile, and the last few days of logs. A replay passes the profiles
+// a change would write, by person, in place of the stored ones.
+export async function memoryBlock(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[],
+  profiles: ReadonlyMap<string, string> = new Map()): Promise<string> {
+  const { rows: stored } = await client.query<{ scope: string; login: string | null; kind: string; log_date: string | null; content: string; person_id: string | null }>(
+    `select m.scope, p.login, m.kind, m.log_date::text, m.content, m.person_id from memories m left join people p on p.id = m.person_id
      where m.agent_id = $1 and (m.scope = 'team' or m.person_id = any($2))
        and (m.kind = 'profile' or m.log_date > current_date - 4) and m.content <> ''
      order by m.scope, p.login, m.kind desc, m.log_date`, [agentId, personIds])
+  const rows = stored.filter((m) => !(m.kind === 'profile' && m.person_id && profiles.has(m.person_id)))
+  for (const [personId, content] of profiles) {
+    const person = await one<{ login: string }>(client, `person ${personId}`, 'select login from people where id = $1', [personId])
+    rows.push({ scope: 'person', login: person.login, kind: 'profile', log_date: null, content, person_id: personId })
+  }
+  if (profiles.size) {
+    rows.sort((a, b) => a.scope.localeCompare(b.scope) || (a.login ?? '').localeCompare(b.login ?? '') || b.kind.localeCompare(a.kind)
+      || (a.log_date ?? '').localeCompare(b.log_date ?? ''))
+  }
   if (!rows.length) return ''
   const lines = rows.map((m) => `${m.kind === 'profile' ? 'About' : `Notes from ${m.log_date} on`} ${m.scope === 'team' ? 'the team' : m.login}:\n${m.content}`)
   return `What you remember (keep it current with the update_memory tool):\n\n${lines.join('\n\n')}`

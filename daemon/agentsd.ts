@@ -266,7 +266,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
     allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
     acceptEdits: payload.permissions.workspaceWrites,
-    maxBudgetUsd: stage?.maxBudgetUsd,
+    maxBudgetUsd: payload.maxBudgetUsd,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)

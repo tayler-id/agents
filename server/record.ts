@@ -124,6 +124,11 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     `insert into asks (team_id, kind, session_id, conversation_id, tool_use_id, payload)
      values ($1, 'tool_approval', $2, $3, $4, $5) returning id`,
     [session.team_id, session.id, session.conversation_id, event.toolUseId ?? null, JSON.stringify(scrub(body))])
+  // A replay of a coach change never waits on a person, so any tool it asks for is denied.
+  if (await maybe(client, 'select 1 from session_replays where session_id = $1', [session.id])) {
+    await answerAsk(client, ask.id, null, 'deny', 'A replay never waits on a person.')
+    return
+  }
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
     `select decision from approval_rules
      where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
