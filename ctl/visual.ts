@@ -33,6 +33,7 @@ export const VOLATILE: Rule[] = [
   { why: 'durations vary with machine load', scope: '.facts dd, table.versions td, table.scores td', pattern: '^(\\d+s|\\d+ min|\\d+ h \\d+ min)$', replace: '1s' },
   { why: 'a pipeline version is named by the blob id of a file that changes with the code', scope: 'table.versions code, .page-head code, details.source summary', pattern: '\\b[0-9a-f]{8}\\b', replace: '00000000' },
   { why: 'memory logs are named by the day they were written', scope: '.memories', pattern: '\\b\\d{4}-\\d{2}-\\d{2}\\b', replace: '2026-01-01' },
+  { why: "the machine's home is a scratch folder with a random name, which notices quote", scope: 'body', pattern: '/\\S*/agentsctl-[a-z0-9-]+-[A-Za-z0-9]{6}', replace: '/scratch/agentsctl-instance' },
 ]
 
 // How often a capture looks again while the page settles, and for how long.

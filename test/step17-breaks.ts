@@ -45,6 +45,8 @@ const BREAKS: Break[] = [
   // Driving the web app, and what it checks. Three breaks are in the app itself.
   { name: 'app-enter', why: 'the app stops sending a message on Enter', sections: 'web', red: 'browser drives a DM by role and name, and the reply arrives',
     edits: [{ file: 'app/src/Conversation.tsx', anchor: "if (event.key === 'Enter' && !event.shiftKey) void submit(event)", replace: "if (event.key === 'Return' && !event.shiftKey) void submit(event)" }] },
+  { name: 'db-value', why: 'db --value also lists its evidence file', sections: 'web', red: 'db --value prints the value alone',
+    edits: [{ file: 'ctl/cli.ts', anchor: 'help: [], data: shared.data, log: shared.log }', replace: 'help: [], ...shared }' }] },
   { name: 'db-write', why: 'db stops reading in a read-only transaction', sections: 'web', red: 'db refuses a write with exit 3',
     edits: [{ file: 'ctl/db.ts', anchor: "await client.query('begin transaction read only')", replace: "await client.query('begin')" }] },
   { name: 'snapshot', why: 'snapshot saves an empty tree', sections: 'web', red: 'snapshot --aria writes the page tree',

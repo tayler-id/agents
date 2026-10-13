@@ -349,9 +349,9 @@ const dbCommand = command({
       if (problem) {
         return failed(problem, { ...shared, outside: { source: 'record rows', text: lines || '(no rows)' }, help: [values.wait ? 'The record never reached that state. Check the step that should have written it' : 'Add `--wait <seconds>` if the row is still on its way'] })
       }
-      // --value prints the one value and nothing else, so a command can use it in another.
+      // --value prints the one value and nothing else, not even the evidence file, so a shell can put it in another command.
       const first = Object.values(rows[0] ?? {})[0]
-      if (values.value) return { kind: 'read', answer: typeof first === 'string' ? first : JSON.stringify(first ?? null), help: [], ...shared }
+      if (values.value) return { kind: 'read', answer: typeof first === 'string' ? first : JSON.stringify(first ?? null), help: [], data: shared.data, log: shared.log }
       return { kind: 'list', noun: 'rows', rows: rows.map(asRow), source: 'record rows', help: [], ...shared }
     }
   },

@@ -117,7 +117,11 @@ try {
     await ctl(['browser', 'network'])
     await ctl(['browser', 'click', '--role', 'button', '--name', 'Agent setup'])
     await ctl(['browser', 'wait', '--role', 'heading', '--name', 'fixer', '--within', 'region:Agent'])
-    await ctl(['browser', 'goto', '#/a/' + ((await ctl(['db', "select id from agents where team_id = {team} and name = 'fixer'", '--value'])).out.head)])
+    const fixerId = (await ctl(['db', "select id from agents where team_id = {team} and name = 'fixer'", '--value'])).out.head
+    // A shell puts --value's output into another command, so plain output must be the value alone.
+    const bare = await exec(process.execPath, [join(ROOT, 'ctl', 'main.ts'), 'db', "select id from agents where team_id = {team} and name = 'fixer'", '--value', '--instance', name], { cwd: ROOT })
+    check(/^[0-9a-f-]{36}$/.test(fixerId) && bare.stdout === `${fixerId}\n`, 'db --value prints the value alone, for a shell to use in another command')
+    await ctl(['browser', 'goto', '#/a/' + fixerId])
     const network = await ctl(['browser', 'network'])
     const requests = Found.safeParse(network.out.data)
     check(network.out.ok && requests.success && (requests.data.network ?? []).length > 0, 'network lists the requests of a fresh load of the agent page, and none failed')
