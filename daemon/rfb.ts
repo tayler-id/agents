@@ -10,8 +10,8 @@ import {
 
 export type Rect = { x: number; y: number; width: number; height: number }
 
-// Four bytes per pixel, blue, green, red, then one unused: little-endian 32-bit
-// pixels with red in bits 16 to 23, as SetPixelFormat asks below.
+// Four bytes per pixel, blue, green, red, then one unused. That is little-endian
+// 32-bit pixels with red in bits 16 to 23, as SetPixelFormat asks below.
 const BYTES_PER_PIXEL = 4
 const PIXEL_FORMAT = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]
 // Extended clipboard messages mark their length by setting its top bit.
@@ -139,8 +139,8 @@ export class RfbClient {
     })
   }
 
-  // Waits until the screen has stopped changing: no update for quietMs, or
-  // maxMs at most, for a screen that keeps moving, such as a loading spinner.
+  // Waits until the screen has gone quietMs without an update, or maxMs at most
+  // for a screen that keeps moving, such as a loading spinner.
   async settle(quietMs: number, maxMs: number) {
     const deadline = Date.now() + maxMs
     while (Date.now() < deadline) {

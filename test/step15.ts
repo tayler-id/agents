@@ -3,7 +3,7 @@
 // reports a screen. A task's session in it gets the computer tools, the
 // standing instructions and the verify-work skill, and those tools drive the
 // box's screen and browser. People watch the screen through the API's people
-// port and take it over: only the one who holds it can type, the agent is
+// port and take it over. Only the one who holds it can type, the agent is
 // refused until they hand it back, the record shows it, and a view closed
 // without handing back gives the screen back on its own. A screenshot the agent
 // saves becomes an image document. When the box stops, its viewers are told,
@@ -76,8 +76,8 @@ async function post(login: string, path: string, body: unknown = {}) {
   return { status: res.status, json: await res.json().catch(() => null) }
 }
 
-// A person's Screen view, as the app opens it: a WebSocket on the people port
-// carrying the screen as binary frames and who holds it as text frames.
+// A person's Screen view, as the app opens it. It is a WebSocket on the people
+// port carrying the screen as binary frames and who holds it as text frames.
 type View = { ws: WebSocket; stream: Duplex; controls: any[]; closed: { code: number; reason: string } | null }
 function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PEOPLE_PORT}`, headers: Record<string, string> = {}): Promise<View | number> {
   return new Promise((resolve) => {
@@ -180,7 +180,7 @@ try {
   const idle = await measure(container, () => sleep(IDLE_SAMPLE_MS))
   console.log(`      idle box with its desktop and an open browser: ${idle.last} MiB, CPU up to ${idle.cpu}%`)
 
-  // A person watches: the API asks the box for a tunnel and joins the two.
+  // A person watches. The API asks the box for a tunnel and joins the two.
   const { RfbClient } = await import('../daemon/rfb.ts')
   const { keyEvent, pointerEvent } = await import('../shared/rfb.ts')
   const connectStarted = Date.now()
@@ -193,7 +193,7 @@ try {
     `alice, watching through the people port, gets the box's screen (${aliceScreen.width}x${aliceScreen.height}, first frame in ${firstFrameMs} ms)`)
   check(holderOf(aliceView)?.holder === 'agent', 'the view says the agent has the screen')
 
-  // A task in the box: its session gets the computer, the instructions and the skill.
+  // A task in the box. Its session gets the computer, the instructions and the skill.
   const task = await post(alice, '/v1/tasks', { title: 'Check the page', instructions: 'Look at it.', agentId: must(await one('select id from agents where team_id = $1 and name = $2', [teamId, 'tester']), 'agent').id })
   const sessionId: string = must(task.json?.sessionId, 'the task session')
   const taskId: string = must(task.json?.taskId, 'the task')
@@ -296,7 +296,7 @@ try {
   // Bob's view has no request outstanding, since connecting asked once and was answered.
   await bobScreen.refresh(false)
 
-  // Latency: alice presses F2 and waits for the square's pixels to change.
+  // Latency. Alice presses F2 and waits for the square's pixels to change.
   const squareX = SQUARE.left + SQUARE.size / 2
   const squareY = toolbar + SQUARE.top + SQUARE.size / 2
   const latencies: number[] = []
@@ -375,7 +375,7 @@ try {
     '-H', `tailscale-user-login: ${alice}`, `http://host.docker.internal:${port}/v1/me`], { encoding: 'utf8' }).stdout.trim()
   check(reach(MACHINE_PORT) === '400' && reach(PEOPLE_PORT) === '000', 'from inside the box the machine port answers and the people port cannot be reached')
 
-  // Sizing: the agent's browser on the page, then all three engines at once.
+  // Sizing, first with the agent's browser on the page, then all three engines at once.
   const busy = await measure(container, async () => {
     for (let i = 0; i < 5; i++) await tools.callTool({ name: 'computer', arguments: { action: 'scroll', coordinate: [640, 400], scroll_direction: 'down', scroll_amount: 3 } })
   })

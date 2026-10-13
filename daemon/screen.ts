@@ -19,7 +19,7 @@ import { RfbClient } from './rfb.ts'
 import { encodePng } from './png.ts'
 
 // A screenshot waits for the screen to stop changing. The browser finishes a
-// page some time after its own tools say the page has loaded: in a box, a
+// page some time after its own tools say the page has loaded. In a box, a
 // screenshot taken straight after browser_navigate showed the old page and a
 // spinner. Paints come in bursts a frame or two apart, so 200 ms without one is
 // a settled screen, and a caret blinking every 500 ms doesn't hold it up. A
@@ -57,8 +57,8 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
   let running: AbortController | null = null
   let queue: Promise<unknown> = Promise.resolve()
   // Where the agents' pointer is and what their connection holds down. A
-  // person's own pointer moves don't change it: an agent's next action puts the
-  // pointer back where the agent left it.
+  // person's own pointer moves don't change it, since an agent's next action
+  // puts the pointer back where the agent left it.
   let pointer: Pointer = { x: Math.floor(desktop.size.width / 2), y: Math.floor(desktop.size.height / 2), buttons: 0 }
   const heldKeys = new Set<number>()
   let rfb: RfbClient | null = null

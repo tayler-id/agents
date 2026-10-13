@@ -41,8 +41,8 @@ export type Handoff =
   | { ok: false; reason: string }
 
 // How long a person may hold the screen with no Screen view open before it goes
-// back to the agent: long enough to reload the page or for a phone to change
-// networks, short enough that a closed tab doesn't hold an agent up for long.
+// back to the agent. It is long enough to reload the page or for a phone to
+// change networks, and short enough that a closed tab doesn't hold an agent up.
 export const SCREEN_GRACE_MS = 30_000
 
 type Holder = ScreenControl['holder']
@@ -205,5 +205,5 @@ export const ComputerOutput = z.object({
 })
 export const SavedScreenshot = z.object({ path: z.string().describe("The file's path in the task folder"), bytes: z.int().positive() })
 export const ScreenStatusOutput = z.object({ control: ScreenControl, size: ScreenSize })
-// A screenshot's name: it becomes a file name in the task folder.
+// A screenshot's name, which becomes a file name in the task folder.
 export const ScreenshotName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/, 'lowercase letters, digits and dashes')

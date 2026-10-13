@@ -3,7 +3,7 @@
 // both speak.
 
 export const RFB_VERSION = 'RFB 003.008\n'
-// The box's Xvnc offers no password: it listens only on a Unix socket inside
+// The box's Xvnc offers no password. It listens only on a Unix socket inside
 // the box, and every viewer reaches it through the API, which checks who they are.
 export const SECURITY_NONE = 1
 export const SECURITY_RESULT_OK = 0
@@ -30,8 +30,8 @@ export const ServerMessage = {
 } as const
 
 export const ENCODING_RAW = 0
-// The QEMU client message's one subtype noVNC sends: a key event that carries the
-// key's scan code as well as its keysym.
+// The one subtype of the QEMU client message that noVNC sends, a key event that
+// carries the key's scan code as well as its keysym.
 export const QEMU_EXTENDED_KEY_EVENT = 0
 // A pointer event with this bit set in its button mask is the ExtendedMouseButtons
 // form, one byte longer. The box's TigerVNC 1.12 never offers it.

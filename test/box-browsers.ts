@@ -1,7 +1,7 @@
-// Runs inside a box during the step 15 check: opens a page in Chromium, Firefox
-// and WebKit at once with the box's own Playwright, the way agents' checks do,
-// keeps them open a few seconds, and prints how long each took to load. The
-// check measures the box's memory meanwhile.
+// Runs inside a box during the step 15 check. It opens a page in Chromium,
+// Firefox and WebKit at once with the box's own Playwright, the way agents'
+// checks do, keeps them open a few seconds, and prints how long each took to
+// load. The check measures the box's memory meanwhile.
 //   node box-browsers.ts <path to the playwright package> <url>
 
 import { setTimeout as sleep } from 'node:timers/promises'

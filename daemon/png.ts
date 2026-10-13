@@ -9,7 +9,7 @@ const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const RGB = 3
 const FILTERS = 5
 // Screenshots go to the model on every action, so speed beats the last few
-// percent of size: level 6 is zlib's own balance of the two.
+// percent of size. Level 6 is zlib's own balance of the two.
 const DEFLATE_LEVEL = 6
 
 function chunk(type: string, data: Buffer): Buffer {

@@ -137,8 +137,8 @@ async function screenStatus(): Promise<CallToolResult> {
 }
 
 // The `computer` tool's input as one flat object, the shape Claude's own
-// computer-use tool has, built from the per-action schemas: each field once,
-// and `action` naming every action.
+// computer-use tool has. It is built from the per-action schemas, with each
+// field once and `action` naming every action.
 function computerInputSchema(): Tool['inputSchema'] {
   const properties: Record<string, object> = {}
   for (const option of ComputerAction.options) {

@@ -16,7 +16,7 @@ const Base64Image = z.object({
   source: z.object({ type: z.literal('base64'), media_type: z.string(), data: z.string() }),
 })
 
-// Leaves images out of the record: each keeps its type, size and SHA-256 in
+// Leaves images out of the record. Each keeps its type, size and SHA-256 in
 // place of its bytes. The record shows the agent looked, and screenshots it
 // saves on purpose become image documents. A reviver for JSON.parse.
 export function withoutImageData(_key: string, value: unknown): unknown {

@@ -37,9 +37,9 @@ export const VERIFY_SKILL: AgentSkill = {
 }
 
 // The `computer` server's tools, as Claude Code names them. Acting on the box's
-// own screen and browser runs without a prompt: checking work takes dozens of
-// these, and they stay in the box. The rest ask a person first, because each
-// can carry files or code out of the box or read a logged-in site's secrets.
+// own screen and browser runs without a prompt, since checking work takes
+// dozens of these and they stay in the box. The rest ask a person first, because
+// each can carry files or code out of the box or read a logged-in site's secrets.
 const own = ['computer', 'save_screenshot', 'screen_status']
 const browserAllowed = [
   'browser_navigate', 'browser_navigate_back', 'browser_tabs', 'browser_snapshot', 'browser_find', 'browser_take_screenshot',

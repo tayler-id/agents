@@ -32,7 +32,7 @@ export type Desktop = {
   stop(): Promise<void>
 }
 
-// Text on the clipboard. A paste is asynchronous: the app asks the clipboard's
+// Text on the clipboard. A paste is asynchronous. The app asks the clipboard's
 // owner for the text after the key press, so the next paste or key has to wait
 // until it has asked, or the app can lose the text.
 export type ClipboardOffer = {
@@ -232,9 +232,9 @@ export function startDesktop(config: DesktopConfig): Desktop {
     xclip.stdin.on('error', (error) => { problem.error = error })
     xclip.stdin.end(text)
     // xclip takes the clipboard a moment before the X server has seen it, and a
-    // paste in between asks the last owner, which is just letting go: the text is
-    // lost, as 2 of 72 pastes were in a box. Reading the clipboard back until it
-    // has the text proves the X server agrees.
+    // paste in between asks the last owner, which is just letting go, so the text
+    // is lost, as 2 of 72 pastes were in a box. Reading the clipboard back until
+    // it has the text proves the X server agrees.
     const deadline = Date.now() + CLIPBOARD_TIMEOUT_MS
     while ((await readClipboard()) !== text) {
       const error = failure()

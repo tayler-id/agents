@@ -118,7 +118,7 @@ export class RfbInputFilter {
     }
   }
 
-  // One whole message: what to pass on, or null to drop it.
+  // Decides on one whole message, returning what to pass on, or null to drop it.
   private take(message: Buffer): Uint8Array | null {
     switch (this.phase) {
       case 'version':

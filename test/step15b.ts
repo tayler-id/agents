@@ -145,12 +145,12 @@ async function runEngine(engine: string, taskId: string, sessionId: string, inst
       `${engine}: the teammate sees who has the screen`)
     const field = await onPage(page, INPUT.left + INPUT.width / 2, toolbar + INPUT.top + INPUT.height / 2)
     await page.mouse.click(field.x, field.y)
-    // Control, not the Mac's Command: the box runs Linux.
+    // Control, not the Mac's Command, since the box runs Linux.
     await page.keyboard.press('Control+a')
     await page.keyboard.type(`from ${engine}`)
     await page.screenshot({ path: join(SHOTS, `${engine}-screen-holding-light.png`) })
 
-    // Key press to pixels, measured in the page: F2 toggles the box's square.
+    // Key press to pixels, measured in the page. F2 toggles the box's square.
     const square = { x: SQUARE.left + SQUARE.size / 2, y: toolbar + SQUARE.top + SQUARE.size / 2 }
     const latencies: number[] = []
     for (let i = 0; i < LATENCY_TRIALS; i++) {
