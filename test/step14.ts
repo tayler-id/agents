@@ -115,6 +115,18 @@ async function shapeRows(login: string, name: string, args: Record<string, strin
   return { status: 200, rows: await shape.rows }
 }
 
+// A shape's rows once they pass the test, or the last rows read when time runs
+// out. Electric serves a write a moment after it commits, so a read right after
+// one can miss it.
+async function shapeUntil(login: string, name: string, args: Record<string, string>, test: (rows: any[]) => boolean, seconds = 20) {
+  let last: { status: number; rows: any[] } = { status: 0, rows: [] }
+  await within(seconds, async () => {
+    last = await shapeRows(login, name, args)
+    return last.status === 200 && test(last.rows)
+  })
+  return last
+}
+
 // The stand-in for Claude, wrapped so the check sees the flags each session started with.
 function claudeWrapper(): string {
   const file = join(home, 'claude.mjs')
@@ -207,8 +219,8 @@ try {
     check(session?.status === 'draft' && session.workspace_id === null && commands?.n === 0 && !(await workspaceOf(draftTask)),
       'a draft has a session in the draft status, and no workspace, message or command')
 
-    const tasks = await shapeRows(amir, 'tasks')
-    const sessions = await shapeRows(amir, 'sessions', { of: 'tasks' })
+    const tasks = await shapeUntil(amir, 'tasks', {}, (rows) => rows.some((t) => t.id === draftTask))
+    const sessions = await shapeUntil(amir, 'sessions', { of: 'tasks' }, (rows) => rows.some((s) => s.id === draftSession))
     check(tasks.rows.some((t) => t.id === draftTask) && sessions.rows.some((s) => s.id === draftSession && s.status === 'draft'),
       'a teammate sees the draft and its draft status')
 
@@ -224,7 +236,7 @@ try {
     check(edited?.title === 'Draft one, edited' && edited.agent_id === helper && repos.length === 2 && repos[0]?.repo_id === serviceRepo
       && repos[0].is_primary && sessionAgent?.agent_id === helper && sessionAgent?.status === 'draft',
     "a teammate's edit changes the draft's title, agent and repos, and it stays a draft")
-    const shown = await shapeRows(alice, 'task_repos', { task: draftTask })
+    const shown = await shapeUntil(alice, 'task_repos', { task: draftTask }, (rows) => rows.length === 2)
     const hidden = await shapeRows(outsider, 'task_repos', { task: draftTask })
     check(shown.rows.length === 2 && shown.rows.some((r) => r.repo_id === serviceRepo && r.is_primary) && hidden.status === 404,
       "the draft's repos read back for its editor, and not for another team")
@@ -241,7 +253,7 @@ try {
 
     const other = await post('/v1/tasks', { title: 'Draft two', instructions: 'Maybe never.', agentId: writer, draft: true })
     await post(`/v1/tasks/${other.taskId}/discard`)
-    const gone = await shapeRows(amir, 'tasks')
+    const gone = await shapeUntil(amir, 'tasks', {}, (rows) => !rows.some((t) => t.id === other.taskId))
     const restart = await as(alice, `/v1/tasks/${other.taskId}/start`)
     check(!gone.rows.some((t) => t.id === other.taskId) && restart.status === 409 && (await restart.text()).includes('discarded'),
       'a discarded draft leaves the task list and cannot be started')
@@ -301,9 +313,9 @@ try {
       && !JSON.stringify(rows).includes(SECRET), 'a secret in a changed file is scrubbed on the machine, in its content and its diff')
     check(readme?.preview === 'text' && readme.diff?.includes('new file mode') && readme.diff.includes('+# Shop'), "a file's diff is git's diff against the base")
 
-    const list = await shapeRows(amir, 'file_changes', { task: draftTask })
+    const list = await shapeUntil(amir, 'file_changes', { task: draftTask }, (rows) => rows.some((r) => r.path === 'README.md'))
     const listed = list.rows.find((r) => r.path === 'README.md')
-    const detail = listed ? await shapeRows(amir, 'file_change', { id: String(listed.id) }) : { status: 0, rows: [] }
+    const detail = listed ? await shapeUntil(amir, 'file_change', { id: String(listed.id) }, (rows) => rows.length === 1) : { status: 0, rows: [] }
     const strangers = await shapeRows(outsider, 'file_changes', { task: draftTask })
     check(listed && !('content' in listed) && detail.rows[0]?.content?.includes('# Shop') && strangers.status === 404,
       "a teammate reads the list without contents and one file with them, and another team's person reads nothing")
@@ -370,7 +382,7 @@ try {
     check(pr?.title === ask.title && pr.body === ask.body && files.some((f) => f.filename === 'checkout.js')
       && commits.length > 0 && commits.every((c) => c.commit.author.name === 'helper'),
     "the forge has the pull request on the task branch, with the change, in the task agent's name")
-    const seen = await shapeRows(amir, 'pushes', { task: draftTask })
+    const seen = await shapeUntil(amir, 'pushes', { task: draftTask }, (rows) => rows.some((r) => r.id === pushId && r.status === 'done'))
     check(seen.rows.some((r) => r.id === pushId && r.status === 'done' && r.error === null), 'a teammate sees how the push went')
 
     const again = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
@@ -483,7 +495,7 @@ try {
     const main = await forgeAdmin.call<{ content: string }>('GET', `/repos/${org}/${SHOP}/contents/checkout.js?ref=main`)
     check(Buffer.from(main.content, 'base64').toString().includes('Math.max(0, amount - 10)'), 'the approved change is merged on the forge')
 
-    const docs = await shapeRows(amir, 'documents')
+    const docs = await shapeUntil(amir, 'documents', {}, (rows) => rows.some((d) => d.path === 'plan.md'))
     const strangers = await shapeRows(outsider, 'documents')
     check(docs.rows.some((d) => d.path === 'research.md') && docs.rows.some((d) => d.path === 'plan.md') && docs.rows.every((d) => !('content' in d))
       && strangers.status === 200 && !strangers.rows.some((d) => d.path === 'research.md'),
