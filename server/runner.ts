@@ -20,7 +20,7 @@ import { workspacePermissions } from './permissions.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
-import type { Next, Pipeline, Report, RunContext, Stage } from '../shared/pipeline.ts'
+import type { Next, Pipeline, Report, RunComment, RunContext, Stage } from '../shared/pipeline.ts'
 import type { ExecResult, MessagePayload, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
 
 const CHANNEL = 'agents_runner'
@@ -214,12 +214,18 @@ async function context(client: pg.PoolClient, run: Run, rows: Row[], current?: R
   }
   const workspace = await workspaceOf(client, run)
   const [repo] = await reposOf(client, run)
+  // A comment keeps no author once its person has left the team.
+  const comments = await many<RunComment>(client,
+    `select a.path, c.version, c.anchor->>'quote' as quote, c.body as text, coalesce(p.login, 'a former teammate') as by
+     from comments c join artifacts a on a.id = c.artifact_id left join people p on p.id = c.author_person
+     where a.task_id = $1 and c.status = 'open' order by c.created_at, c.id`, [run.task_id])
   return {
     report: run.trigger_payload.report,
     openIssues: run.trigger_payload.openIssues,
     results, attempts,
     repo: repo?.name ?? '',
     taskFolder: workspace?.path ? `${workspace.path}/task` : 'task',
+    comments,
     replay: Boolean(run.replay_of),
   }
 }
@@ -355,7 +361,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     const task = await taskOf(client, run)
     const ask = await one<{ id: string }>(client, 'the new gate',
       `insert into asks (team_id, kind, run_id, conversation_id, payload) values ($1, 'gate', $2, $3, $4) returning id`,
-      [run.team_id, run.id, task.conversation_id, JSON.stringify({ question, stage: row.stage, options: ['approve', 'reject'], links })])
+      [run.team_id, run.id, task.conversation_id, JSON.stringify({ question, stage: row.stage, options: ['approve', 'reject'], links, labels: stage.labels ?? null })])
     await setRow(client, row, { status: 'waiting', ask_id: ask.id, started: true })
     await client.query(`update runs set status = 'waiting' where id = $1`, [run.id])
     await post(client, run, `row:${row.id}`, `${await shepherd(client, run)}${question}${links.map((l) => `\n${l.title}: ${l.url}`).join('')}`)
