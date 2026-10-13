@@ -4,35 +4,43 @@ A note for whoever picks this up, kept current with each commit on the branch.
 The design, with what is not done, is in [onboarding.md](onboarding.md).
 
 - Branch `worktree-agent-a1cdcf7d718680aab`, worktree `.claude/worktrees/agent-a1cdcf7d718680aab`.
-- Rebased onto main on 2026-10-13. Nothing is merged into main.
+- Rebased onto main at 9473ac3 on 2026-10-13. Nothing is merged into main.
 - The worktree has its own `node_modules` from `npm ci`.
 
 ## Done
 
-Commits since main, oldest first. After the rebase onto deec329, each of the first 17 was exported with `git archive` and passed `tsc`, `tsc -p app`, eslint and the name guard on its own.
+Commits since main, oldest first. After the rebase, each one was exported with `git archive` and passed `tsc`, `tsc -p app`, eslint and the name guard on its own.
 
 | Commit | What it adds |
 | --- | --- |
-| 719c270 | The design doc and its data-model entry |
-| cc92f5d | Request helpers moved from `server/api.ts` to `server/http.ts`, so new routes live in their own files |
-| 5ebfc32 | Migration `0005_onboarding.sql`, `shared/onboarding.ts` (zod schemas, branded ids, state machines), `admin.ts add-team` making the first login an admin, and `admin.ts set-role` |
-| 341f15a | Invites and joining: `server/tailscale.ts`, `server/onboarding.ts`, `server/onboarding-routes.ts`, a box for each person who joins, `test/step12.ts` |
-| e192ba5 | step12's race and admin-gate checks made able to fail |
-| efaf085 | Team page, waiting screen, sidebar Team link, `test/step12b.ts` |
-| e9f650b | Removes the check scripts an earlier commit added to `package.json` |
-| 5cb99a7 | Tailscale page: users, devices, invites, replacing or disconnecting the key, expiry warning |
-| d13d640 | Box lifecycle: `start_error` from Docker's stderr only, personal boxes never get the team's Claude token, `POST /v1/me/box`, only the owner makes agents on their box |
-| 4d8f619 | Claude sign-in relay: `server/claudelogin.ts`, `server/box-routes.ts`, `daemon/claude-login.ts`, agentsd follows sign-ins |
-| 64f4f5e | Your box page and the welcome steps (`app/src/Box.tsx`), `test/step12c.ts` with real containers and the door that holds a box at starting |
-| be049bd | This note |
-| ccaa231 | step12c looks for the token in the box's stderr as well as its stdout |
-| b6805e6 | step12b checks that a box that could not start says so, with Docker's reason |
-| 37c42c0 | Adding a teammate to a room: `addRoomMember` in `server/rooms.ts`, its route, the room's People list in `app/src/Conversation.tsx`, checks in step12 and step12b |
-| da91770 | Docs: the design doc corrected to what was built, with what is not done; README's "Inviting teammates from the app"; an Onboarding section in `docs/what-each-part-does.md` |
-| 4ac6f84 | step12 checks that resending a tailnet invite reaches Tailscale |
-| f8b3c8d | No type assertions left in the onboarding checks and stand-ins |
-| 827ba95 | step12 checks that a key that expires after it was saved stops the tailnet routes |
-| 201e99b | A box that could not start offers no Claude sign-in, and shows Docker's reason on its own line |
+| 3aaf1a0 | The design doc and its data-model entry |
+| 9c9326a | Request helpers moved from `server/api.ts` to `server/http.ts`, so new routes live in their own files |
+| 74bac8a | Migration `0005_onboarding.sql`, `shared/onboarding.ts` (zod schemas, branded ids, state machines), `admin.ts add-team` making the first login an admin, and `admin.ts set-role` |
+| 0110f1a | Invites and joining: `server/tailscale.ts`, `server/onboarding.ts`, `server/onboarding-routes.ts`, a box for each person who joins, `test/step12.ts` |
+| 8052590 | step12's race and admin-gate checks made able to fail |
+| 7f40e14 | Team page, waiting screen, sidebar Team link, `test/step12b.ts` |
+| 26521b3 | Removes the check scripts an earlier commit added to `package.json` |
+| 53abada | Tailscale page: users, devices, invites, replacing or disconnecting the key, expiry warning |
+| 6fa067f | Box lifecycle: `start_error` from Docker's stderr only, personal boxes never get the team's Claude token, `POST /v1/me/box`, only the owner makes agents on their box |
+| 0a06155 | Claude sign-in relay: `server/claudelogin.ts`, `server/box-routes.ts`, `daemon/claude-login.ts`, agentsd follows sign-ins |
+| e67314e | Your box page and the welcome steps (`app/src/Box.tsx`), `test/step12c.ts` with real containers and the door that holds a box at starting |
+| 42fe582 | This note |
+| 81be471 | step12c looks for the token in the box's stderr as well as its stdout |
+| 0a87d4d | step12b checks that a box that could not start says so, with Docker's reason |
+| a7b413a | Adding a teammate to a room: `addRoomMember` in `server/rooms.ts`, its route, the room's People list in `app/src/Conversation.tsx`, checks in step12 and step12b |
+| b1905df | Docs: the design doc corrected to what was built, with what is not done; README's "Inviting teammates from the app"; an Onboarding section in `docs/what-each-part-does.md` |
+| 2a0a1ea | step12 checks that resending a tailnet invite reaches Tailscale |
+| 0ed8696 | No type assertions left in the onboarding checks and stand-ins |
+| 63748e9 | step12 checks that a key that expires after it was saved stops the tailnet routes |
+| 9b5c141 | A box that could not start offers no Claude sign-in, and shows Docker's reason on its own line |
+| 30375b0 | The build log's Onboarding section |
+
+The final pass on 30375b0:
+
+- `npm run typecheck`, `npm run lint` and `node test/names.ts` exit 0.
+- step12 passed 62 of 62.
+- step12b passed 111 of 111 in Chromium, WebKit and Firefox at desktop and phone width.
+- step12c passed 51 of 51 in the three browsers, with real box containers.
 
 Migration 0005 is applied to `agents_test`. Never edit it. Its number may change at landing. The coordinator renumbers.
 
@@ -44,11 +52,9 @@ Every check was seen red under a deliberate break, with the file put back and it
 - step12b, in Chromium: 39 breaks. 35 failed their own check and 2 stopped the run. The last 2 each took out one of two rules that keep a room's teammate picker on a phone screen. Either alone holds, and taking out both went red.
 - step12c, in Chromium: 7 breaks, all red. The token logged to stderr stayed green against the old stdout-only check, which is why it reads both now.
 
-## Next steps, in order
+## Next steps
 
-1. Commit the docs, rebase onto main, and run the final pass: typecheck, lint, names, step12, then step12b and step12c in three browsers. step12c rebuilds `agents-box:onboard-check`, which the daemon breaks left broken.
-2. Delete the copies under `~/.agents-app/checks/copy12c` and the scratchpad, and any `onboard-*` teams left behind.
-3. Report to the coordinator.
+The work is done and reported. What waits on others is under "Open questions for Tayler" below, and in `docs/design/onboarding.md` under "Not done, and what waits".
 
 ## How to work here
 
