@@ -311,14 +311,10 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - One server instance runs the API, Electric and the forge.
   - One instance hosts boxes.
   - Nothing has a public port. Everything goes through the tailnet.
-  - Boxes may reach only the Claude API, the package registries and the server, never the metadata endpoint.
+  - Boxes reach the web like any computer, so every agent has its own browser. They never reach the metadata endpoint, the private network, the tailnet or other boxes, and they reach the server only on its machine port.
   - The cutover takes about 10 minutes, and the Mac's stack stays as the rollback.
 - **Implementation.** The AWS stack is written in the CDK in TypeScript, on the AWS agent's branch.
-- **Status.** Built on the AWS agent's branch, not ready to run. Its export moves Postgres, the forge and the secrets but not the boxes' home volumes, so agents would lose their workspaces, sessions and browser logins. The export must move those too, proven by a rehearsal in which tasks resume. Two choices wait on Tayler:
-  - box-to-server traffic inside the VPC rather than over the tailnet
-  - the allowlist, which blocks browsing from boxes
-
-  It costs about $217 a month.
+- **Status.** Built on the AWS agent's branch, not ready to run. Its export moves Postgres, the forge and the secrets but not the boxes' home volumes, so agents would lose their workspaces, sessions and browser logins. The export must move those too, proven by a rehearsal in which tasks resume. The branch also limits boxes to an allowlist that blocks browsing, which Tayler rejected on 2026-10-13, and it is being changed to the rule above. One choice waits on Tayler, box-to-server traffic inside the VPC rather than over the tailnet. It costs about $217 a month, $119 of it the box host running all day.
 
 ### Under evaluation
 
