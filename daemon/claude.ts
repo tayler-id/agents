@@ -2,10 +2,32 @@
 // into record events, keeping every raw line as well.
 
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
+import { z } from 'zod'
 import type { AnswerPayload, EventBatch, NewEvent } from '../shared/types.ts'
 import type { Harness, HarnessSession, HarnessStart } from './harness.ts'
+
+// An image as Claude Code prints one, in a tool's result and again in the line's
+// tool_use_result. A screenshot from the computer tool is a few hundred KB of
+// base64, on every action.
+const Base64Image = z.object({
+  type: z.literal('image'),
+  source: z.object({ type: z.literal('base64'), media_type: z.string(), data: z.string() }),
+})
+
+// Leaves images out of the record: each keeps its type, size and SHA-256 in
+// place of its bytes. The record shows the agent looked, and screenshots it
+// saves on purpose become image documents. A reviver for JSON.parse.
+export function withoutImageData(_key: string, value: unknown): unknown {
+  const image = Base64Image.safeParse(value)
+  if (!image.success) return value
+  const bytes = Buffer.from(image.data.source.data, 'base64')
+  return {
+    type: 'image',
+    source: { type: 'base64', media_type: image.data.source.media_type, omitted: true, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+  }
+}
 
 // Set by a parent Claude Code session. A daemon started from inside one must not
 // make its sessions look like that session's children.
@@ -238,7 +260,7 @@ class ClaudeSession implements HarnessSession {
       let line: Line
       try {
         // Claude's stream-json lines. Fields are read defensively in toBatch.
-        line = JSON.parse(rawLine) as Line
+        line = JSON.parse(rawLine, withoutImageData) as Line
       } catch {
         const clientId = randomUUID()
         yield { events: [{ clientId, kind: 'notice', text: rawLine, body: { unparsed: rawLine } }], raw: [{ clientId, line: rawLine }] }
