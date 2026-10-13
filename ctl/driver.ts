@@ -72,6 +72,8 @@ export const failing = (violations: Violation[]) => violations.filter((v) => AXE
 
 // How often `count --expect` and `text --expect` look again while a list fills in.
 const POLL_MS = 250
+// How each engine words a request the page cancelled: Chromium, Firefox, WebKit.
+const CANCELLED = /^(net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled)$/
 
 // The operations on one page. The session handles the rest, which open, close or record pages.
 export type PageOp = Exclude<Op, { op: 'ping' | 'visual' | 'record' | 'close' | 'shutdown' }>
@@ -137,12 +139,17 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
       return { ...done(found.length ? `${String(found.length)} errors since the last check: ${found.join(' | ')}` : 'no page errors or console errors since the last check'), pass: !found.length, errors: found }
     }
     case 'network': {
-      // Requests the page sent since the last look. Any that failed, or answered 400 or more, fails the check.
+      // Requests the page sent since the last look. Any that failed, or answered
+      // 400 or more, fails the check. One the page cancelled itself did not fail:
+      // the app cancels a poll it no longer needs, such as the wait for a live
+      // reply once the turn ends.
       const network = driver.network(key)
       writeFileSync(op.path, `${JSON.stringify(network, null, 2)}\n`)
-      const failed = network.filter((n) => n.failed !== null || (n.status !== null && n.status >= 400))
+      const cancelled = network.filter((n) => n.failed !== null && CANCELLED.test(n.failed))
+      const failed = network.filter((n) => (n.failed !== null && !CANCELLED.test(n.failed)) || (n.status !== null && n.status >= 400))
+      const listed = failed.length ? `: ${failed.map((n) => `${n.method} ${n.url} ${n.failed ?? String(n.status)}`).join(' | ')}` : ''
       return {
-        ...done(`${String(network.length)} requests since the last look, ${String(failed.length)} failed${failed.length ? `: ${failed.map((n) => `${n.method} ${n.url} ${n.failed ?? String(n.status)}`).join(' | ')}` : ''}`, { files: [op.path], network }),
+        ...done(`${String(network.length)} requests since the last look, ${String(failed.length)} failed${cancelled.length ? `, ${String(cancelled.length)} cancelled by the page` : ''}${listed}`, { files: [op.path], network }),
         pass: !failed.length,
       }
     }

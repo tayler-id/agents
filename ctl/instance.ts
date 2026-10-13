@@ -235,6 +235,9 @@ async function appUsable(state: ReadyState): Promise<{ ok: boolean; detail: stri
 }
 
 // Read-only: answers whether this instance is worth driving. Changes nothing.
+// An Electric shape answer: one row per change, plus control messages without a value.
+const ShapeRows = z.array(z.object({ value: z.object({ name: z.string() }).optional() }))
+
 export async function doctor(name: InstanceName | undefined): Promise<{ instance: string; ok: boolean; checks: Check[] }> {
   const state = resolve(name)
   const checks: Check[] = []
@@ -267,10 +270,19 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
     const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ status: 0, body: error instanceof Error ? error.message : String(error) }))
     const parsed = Me.safeParse(me.body)
     add('people door answers', parsed.success && parsed.data.team.name === state.team, parsed.success ? `${parsed.data.person.login} is on ${parsed.data.team.name}` : `GET /v1/me answered ${String(me.status)}: ${JSON.stringify(me.body)}`)
+    // Electric must serve what the database holds: a shape that stopped following
+    // the database still answers 200, with rows from before it stopped.
     const shape = await call(state, { method: 'GET', path: '/v1/shape/agents?offset=-1', as: 'person' }).catch(() => ({ status: 0, body: null }))
-    const agents = JSON.stringify(shape.body)
-    const seeded = Object.keys(state.seed.agents)
-    add('Electric', shape.status === 200 && seeded.every((a) => agents.includes(`"name":"${a}"`)), shape.status === 200 ? `the agents shape lists ${seeded.join(', ')}` : `the agents shape answered ${String(shape.status)}`)
+    const served = ShapeRows.safeParse(shape.body)
+    const listed = new Set(served.success ? served.data.flatMap((row) => (row.value ? [row.value.name] : [])) : [])
+    const held = await withClient(async (client) => z.array(z.object({ name: z.string() })).parse((await client.query(
+      'select name from agents where team_id = $1 and archived_at is null order by name', [state.seed.teamId])).rows).map((row) => row.name))
+    const unlisted = held.filter((name) => !listed.has(name))
+    add('Electric', shape.status === 200 && served.success && !unlisted.length,
+      shape.status !== 200 ? `the agents shape answered ${String(shape.status)}`
+        : !served.success ? `the agents shape is not a list of rows: ${served.error.message}`
+          : unlisted.length ? `the agents shape lacks ${unlisted.join(', ')}, which the database holds, so Electric has stopped following the database. Its container's log says why`
+            : `the agents shape lists all ${String(held.length)} of the team's agents: ${held.join(', ')}`)
     const commands = await call(state, { method: 'GET', path: '/v1/shape/commands?offset=-1', as: 'machine' }).catch(() => ({ status: 0, body: null }))
     add('machine token', commands.status === 200, commands.status === 200 ? "the machine's token reads its command queue" : `the command queue answered ${String(commands.status)}`)
     const machine = await machineStatus(state.seed.machine.id)

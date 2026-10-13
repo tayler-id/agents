@@ -215,7 +215,21 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
     }),
     click: (key, handle, timeoutMs) => act(key, handle, timeoutMs, (page) => locate(page, handle).click({ timeout: timeoutMs })),
     fill: (key, handle, value, timeoutMs) => act(key, handle, timeoutMs, (page) => locate(page, handle).fill(value, { timeout: timeoutMs })),
-    select: (key, handle, option, timeoutMs) => act(key, handle, timeoutMs, async (page) => { await locate(page, handle).selectOption(option, { timeout: timeoutMs }) }),
+    // Waits for the box, then for the choice, so a missing choice is named as
+    // such, with what the box offers, and never reported as a missing box.
+    select: (key, handle, option, timeoutMs) => act(key, handle, timeoutMs, async (page) => {
+      const box = locate(page, handle)
+      await box.waitFor({ state: 'visible', timeout: timeoutMs })
+      const deadline = Date.now() + timeoutMs
+      const wanted = 'label' in option ? `"${option.label}"` : `with value ${option.value}`
+      for (;;) {
+        const offered = await box.locator('option').evaluateAll((els) => els.map((el) => ({ label: el.textContent.trim(), value: el.getAttribute('value') ?? '' })))
+        if (offered.some((o) => ('label' in option ? o.label === option.label : o.value === option.value))) break
+        if (Date.now() > deadline) throw new Error(`${describe(handle)} has no choice ${wanted}. It offers: ${offered.map((o) => o.label).join(', ') || 'nothing'}`)
+        await sleep(SETTLE_POLL_MS)
+      }
+      await box.selectOption(option, { timeout: timeoutMs })
+    }),
     check: (key, handle, on, timeoutMs) => act(key, handle, timeoutMs, (page) => locate(page, handle).setChecked(on, { timeout: timeoutMs })),
     press: (key, keyName, handle, timeoutMs) => act(key, handle, timeoutMs, (page) => (handle ? locate(page, handle).press(keyName, { timeout: timeoutMs }) : page.keyboard.press(keyName))),
     type: (key, text) => act(key, undefined, 0, (page) => page.keyboard.type(text)),

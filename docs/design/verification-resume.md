@@ -22,21 +22,9 @@ Instance `m5`, `map run all --keep-going`, without `--visual`. Report in `.scrat
 
 ## In progress
 
-Fixing what the sweep found. Each failure is sorted as doc drift (fix the feature file), a harness gap (fix `ctl/`), or a product bug (keep the step, report the bug).
+The sweep's failures are sorted and fixed where they were the map's or the driver's fault (commit after `bcae5c9`): approvals' preconditions no longer block the whole file, proposals expect their kickers in capitals as shown, the record search expects fixer's room post (search leaves out the asking session's own conversation), Running now waits for the run to load before choosing it, `doctor` compares Electric's agents with the database and names any it lacks, `browser select` names a missing choice and what the box offers, and `browser network` reports requests the page cancelled itself apart from failures. Each known product bug is noted, dated, in its feature file's gotchas, and its step stays as the proof of the fix.
 
-Doc drift, not yet fixed in the files:
-
-- `approvals.md` preconditions hold the code span `bin/agentsctl up --claude real`, so the runner marks the whole feature as needing real Claude and blocks all eight steps. Rewrite the precondition without an `up` code span carrying flags (say `--claude real` and `--pipelines` alone); the per-step tags `(real Claude)` and `(pipelines)` already do the blocking.
-- `proposals.md` expects "Proposed instructions change · waiting for the shepherd", but the kicker is uppercased by CSS and `innerText` returns "PROPOSED INSTRUCTIONS CHANGE · WAITING FOR THE SHEPHERD". Expect the uppercase text, in all three steps that read the kicker.
-- `sessions.md` "An agent searches the team record" expects "checkout total", which is ada's DM post. Search leaves out the asking session's own conversation (`server/teamrecord.ts`), so it can never be there. Expect fixer's room post, "I will take the", and check the DM post is absent.
-- `sessions.md` "Running now shows a stage at work" clicked the Running now entry before the sidebar's runs had loaded, and the app opened the run's task, which has no Cancel run button. Wait for the run in `list:Runs` before clicking. A click that early going to the task is a small product race worth a line in the report, not a bug by the bar below.
-
-Harness gaps, not yet fixed in `ctl/`:
-
-- `doctor`'s Electric check says "the agents shape lists ..." even when it fails. Compare the shape with the team's agents in the database and name the missing ones.
-- `browser select` reports "combobox ... was not there" when the box is there and the option is not. Say which option is missing and what the box offers.
-- `browser network` counts a request the page cancelled itself (`net::ERR_ABORTED`) as failed. `app/src/live.ts` aborts its HEAD poll on purpose when a turn ends. Report cancelled requests apart from failed ones.
-- Optional: `api --expect-no-text`, for the search step's absence check.
+Next, from the coordinator: make agentsctl's output module the shared library our CLIs use (see the next steps).
 
 ## Product bugs found
 
@@ -55,15 +43,16 @@ At 17:34:11 UTC on 2026-10-13 the shared test Electric (`agents-electric-test-1`
 
 ## Next steps, in order
 
-1. Make the doc and harness fixes above. Typecheck with `env PATH=~/.local/node/bin:/usr/bin:/bin node_modules/.bin/tsc` and lint with `node_modules/.bin/eslint ctl test/step17.ts` on the same PATH.
-2. `bin/agentsctl down --instance m5`, then `up --pipelines` on a new name and rerun sessions, approvals, proposals and pipelines with `map run <feature>`.
-3. Typecheck, lint and run `test/step17.ts` until green.
-4. Write `test/step17-breaks.ts`. For each subcommand, apply one break (scripted, asserting its anchor appears exactly once), run step17, confirm the targeted check fails, restore byte for byte, confirm green. Record which check went red for each.
-5. A real Claude instance (`up --claude real --pipelines`) for the `(real Claude)` steps in approvals, conversations and tasks.
-6. Visual baselines: a fresh `up --pipelines`, `map run all --visual --keep-going`, look at the captures, capture again to measure noise, then `visual baseline --reason "..."` into `.claude/skills/verify-agents/baselines/` and `visual compare`.
-7. `map guard --base main` after the feature files are committed, and seen failing when a step's expectation is dropped.
-8. Docs: a README section on running and driving the app with agentsctl, an entry in `docs/what-each-part-does.md`, and a build-log section with the sweep's verdicts, the bugs, the breaks and the baseline size.
-9. Run `node test/names.ts` (it trips on the `node_modules` symlink in a worktree; move the link aside for the run and back after), then commit in small commits and merge main again.
+1. Move the output module into a shared CLI library that agents-git will import later, with no GitHub logic in it. It holds the output envelope, exit codes 0 to 3, error types, a zod command definition that generates help and rejects unknown flags (exit 2, listing the valid ones), a dispatcher, the renderer, the guard against suggesting the command just run, and a helper marking outside text as untrusted. Its rules: an empty result is never confused with a failed read; lists carry totals ("30 of 847") and say when empty, with `--fields` for more; long text is cut with its full size stated and `--full`; results go to stdout; an `ok:` line is built from a re-read of the new state; `already: true` is the one spelling. Ship a conformance check any CLI can run, and use it in step17.
+2. Typecheck with `env PATH=~/.local/node/bin:/usr/bin:/bin node_modules/.bin/tsc` and lint with `node_modules/.bin/eslint ctl test/step17.ts` on the same PATH.
+3. `bin/agentsctl down --instance m5`, then `up --pipelines` on a new name and rerun sessions, approvals, proposals and pipelines with `map run <feature>`.
+4. Typecheck, lint and run `test/step17.ts` until green.
+5. Write `test/step17-breaks.ts`. For each subcommand, apply one break (scripted, asserting its anchor appears exactly once), run step17, confirm the targeted check fails, restore byte for byte, confirm green. Record which check went red for each.
+6. A real Claude instance (`up --claude real --pipelines`) for the `(real Claude)` steps in approvals, conversations and tasks.
+7. Visual baselines: a fresh `up --pipelines`, `map run all --visual --keep-going`, look at the captures, capture again to measure noise, then `visual baseline --reason "..."` into `.claude/skills/verify-agents/baselines/` and `visual compare`.
+8. `map guard --base main` after the feature files are committed, and seen failing when a step's expectation is dropped.
+9. Docs: a README section on running and driving the app with agentsctl, an entry in `docs/what-each-part-does.md`, and a build-log section with the sweep's verdicts, the bugs, the breaks and the baseline size.
+10. Run `node test/names.ts` (it trips on the `node_modules` symlink in a worktree; move the link aside for the run and back after), then commit in small commits and merge main again.
 
 ## What a fresh agent must know
 
