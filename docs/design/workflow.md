@@ -228,6 +228,7 @@ Each check was seen failing with the thing it guards broken, then passing after 
 - **Only the Gitea forge was exercised.** The GitHub forge is on another branch. Pull requests go through the same `forge.openPullRequest` interface, untested there.
 - **Not checked by any test:** Try again after a failed push, a second push after more changes, the palette's arrow keys, and holding a task until a date from the app.
 - **Changes are current state only.** Earlier states of an unpushed file are not kept.
+- **A draft can show as a started task for a moment,** with "Starting…" and a message box, until its session reaches the page. A screenshot caught it on a phone opened right after the draft was made.
 
 ## Decisions to revisit
 

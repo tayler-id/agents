@@ -36,19 +36,18 @@ Run each from the worktree with `node --env-file=.env --env-file=.env.test test/
 
 After the rebase all three passed: step14 "all passed (test teams and repos removed)", step14b "all passed (test team and repo removed)", step14c "all passed (test team and repos removed)" with 108 checks.
 
-Every check has been seen failing under breaks and passing again after a byte-for-byte restore. The step14 and step14b breaks are listed in the commit messages of df5be9b, 7400a53, 31189f9, 96880a1, 534b54b, efff9c6 and 73cf4a4. step14c was broken in eight Chromium runs with 42 breaks, described in `docs/build-log.md` under "The work layer". Breaking it found two weak checks (30f3611), a race in the check (594e7f6) and a bug in the app (de8a980). 3292e82 made its phone test catch sideways scroll inside a page, and added checks for clicking marked text and for focus after the palette closes.
+Every check has been seen failing under breaks and passing again after a byte-for-byte restore. The step14 and step14b breaks are listed in the commit messages of df5be9b, 7400a53, 31189f9, 96880a1, 534b54b, efff9c6 and 73cf4a4. step14c was broken in ten Chromium runs with 44 breaks, described in `docs/build-log.md` under "The work layer". Breaking it found two weak checks (30f3611), a race in the check (594e7f6), a bug in the app (de8a980), and a phone test that measured the page before the draft loaded (de4df0c). 3292e82 made its phone test catch sideways scroll inside a page, and added checks for clicking marked text and for focus after the palette closes.
 
 A failed run keeps its team and Gitea repos. Remove them by deleting the team row named in the last line from `agents_test`, and the `flow-ux-<id>` and `flow-uxpipes-<id>` repos from Gitea.
 
 ## In progress
 
-The final runs of step14c and step14b in all three engines, on the code after de8a980. Then the docs commit for `docs/what-each-part-does.md` and `docs/build-log.md`, which are written.
+The final run of step14c in all three engines after de4df0c, then step14. step14b passed in all three engines after de8a980 (36 checks), and nothing it covers changed since.
 
 ## Next steps
 
-1. Commit the docs once the final runs pass.
-2. Run `npm run typecheck`, `npm run lint`, `node test/names.ts` and step14. Paste their final lines and the browser checks' final lines into the report.
-3. Report to the coordinator.
+1. Run `npm run typecheck`, `npm run lint` and `node test/names.ts`. Paste their final lines and the checks' final lines into the report.
+2. Report to the coordinator.
 
 ## Open questions for Tayler
 
