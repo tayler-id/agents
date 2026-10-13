@@ -17,6 +17,8 @@ create table projects (
 create unique index projects_name on projects (team_id, lower(name)) where archived_at is null;
 
 alter table repos
+  -- The forge that holds the repo: this Mac's Gitea, or GitHub for project repos.
+  add column forge text not null default 'gitea' check (forge in ('gitea', 'github')),
   add column project_id uuid references projects on delete set null,
   -- When the runner last asked GitHub about the repo's issues. GitHub can't reach
   -- this server, so new issues are found by polling, and a restart carries on here.
@@ -46,7 +48,11 @@ create table repo_requests (
   repo_id uuid references repos on delete set null,
   requested_by uuid references people on delete set null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- Only a failed request has an error, and only a done one a repo. A done
+  -- request's repo is null again if that repo is removed later.
+  check ((status = 'failed') = (error is not null)),
+  check (status = 'done' or repo_id is null)
 );
 -- GitHub's names ignore case. A repo is asked for once per team.
 create unique index repo_requests_name on repo_requests (team_id, lower(owner), lower(name));

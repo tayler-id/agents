@@ -21,6 +21,7 @@ Everything below is in `server/migrations/0006_projects.sql`, and listed in `doc
 |---|---|
 | `projects`, new | id, team, name, description, its room (`conversation_id`), who made it, when, and `archived_at`. A name is unique in a team among projects not archived. |
 | `repo_requests`, new | A repo the app was asked to make on GitHub for a project: the project, the organization or account it goes under, the repo's name and description, `creating`, `done` or `failed`, the error, the repo row once made, and who asked. A repo is asked for once per team. |
+| `repos.forge`, new | The forge that holds the repo, `gitea` for this Mac's or `github`. Existing rows are `gitea`. |
 | `repos.project_id`, new | The project the repo belongs to. A repo belongs to one project or none. |
 | `repos.polled_at`, new | When the runner last asked GitHub about the repo's issues, so after a restart it carries on from there. |
 | `tasks.project_id`, new | The project a task belongs to, and with it the task's runs and documents. |
@@ -38,6 +39,8 @@ A repo request is `creating`, `done` or `failed`.
 - **done.** The repo is on GitHub and in the team's `repos`, and the request points at it.
 - **failed.** GitHub said no, or could not be reached. The request keeps GitHub's reason, such as an expired token or a token that may not create repos, and Try again on the project page sets it back to `creating`.
 
+Only a failed request has a reason, and only a done one a repo. The database refuses any other mix, and `shared/projects.ts` types each state with only its own fields.
+
 Each try looks the repo up first and only creates it when it is missing. A second try after a crash adopts the repo the first try made instead of making another.
 
 ## New project, step by step
@@ -52,7 +55,7 @@ A project can take more repos later. Add a repo on its page takes a name under t
 
 ## GitHub as a forge
 
-`server/github.ts` talks to GitHub's REST API, next to `server/forge.ts` for this Mac's Gitea. Both answer the same calls: open issues, one issue, comment, close an issue, open a pull request or find the open one for a branch, read one, merge one, list open pull requests and list branches. The runner asks `forgeFor(url)` in `server/repos.ts` for the right one, so pipelines need no change. A repo is on GitHub when its URL starts with GitHub's address.
+`server/github.ts` talks to GitHub's REST API, next to `server/forge.ts` for this Mac's Gitea. Both answer the same calls: open issues, one issue, comment, close an issue, open a pull request or find the open one for a branch, read one, merge one, list open pull requests and list branches. Each repo records its forge in `repos.forge`, and the runner asks `forgeFor(repo)` in `server/repos.ts` for the right one, so pipelines need no change. Every GitHub answer is parsed with a zod schema before any other code sees it.
 
 - **Clone and push.** Machines clone and push GitHub repos through the API's git proxy, `/v1/git/<repo id>.git` on the machine port, as they do for this Mac's forge. The proxy checks that the repo is the machine's team's, then forwards to GitHub with the token as the password. The address it forwards to is built from the server's settings and the repo's owner and name, never taken from the URL in Postgres, so the token only ever goes to GitHub. A machine holds only its own instance token.
 - **Branch rule.** Machines never push to a repo's default branch. The proxy reads which branches a push updates before it forwards the push, and refuses one that names the default branch. GitHub protects branches of private repos only on paid plans, so on GitHub this rule is what keeps changes reaching main through pull requests. This Mac's forge also protects main itself.
@@ -71,10 +74,10 @@ pbpaste | node --env-file=.env server/admin.ts github <organization or account>
 
 The command reads the token from standard input, so it never shows in the process list or the shell history.
 
-- The API checks the token with GitHub, by asking who it belongs to and then for the organization, and writes `~/.agents-app/github.json` with mode 600 in a folder with mode 700. The file holds the token, the account it belongs to, the organization or account that repos go under, and when it was saved.
+- The API checks the token with GitHub, by asking who it belongs to and then for the organization, and writes `~/.agents-app/github.json` with mode 600, making its folder with mode 700 if it is missing. The file holds the token, the account it belongs to, the organization or account that repos go under, and when it was saved.
 - The token goes nowhere else. It never enters Postgres, a log, a command payload or a browser. The browser learns whether GitHub is connected, the account and the organization. The API reads the file each time it needs the token, so a new token works without a restart.
 - Only an admin may set it. `people.role` already has `admin` and `member`. `admin.ts add-team` now makes the team's first person its admin, and `admin.ts make-admin <login>` makes another.
-- `AGENTS_GITHUB_API` (default `https://api.github.com`) and `AGENTS_GITHUB_GIT` (default `https://github.com`) say where GitHub is. The checks point them at a fake GitHub server, and GitHub Enterprise would point them at its own host. `AGENTS_GITHUB_FILE` moves the file, which the checks use so they never touch the real one.
+- Three settings in the server's `.env` say where GitHub is and where its token is kept, and they are set together. On this Mac they are `AGENTS_GITHUB_FILE=~/.agents-app/github.json` written out in full, `AGENTS_GITHUB_API=https://api.github.com` and `AGENTS_GITHUB_GIT=https://github.com`. None has a default, so a process started without them, such as another check, never reaches GitHub or the token. Without them GitHub stays off, and the Repos page and New project name the settings to add. Setting only some of them stops the API at start with a message naming the rest. The checks point them at a fake GitHub server and a file of their own, and GitHub Enterprise would point them at its own host.
 
 ### A fine-grained personal access token
 

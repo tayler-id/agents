@@ -103,7 +103,8 @@ Onboarding, in `server/migrations/0005_onboarding.sql`. The design is in `docs/d
 Projects, in `server/migrations/0006_projects.sql`. The design is in `docs/design/projects.md`.
 
 - **`projects`, new.** A team's work on one thing: a name, a description, its room (`conversation_id`), who made it and when, and `archived_at`. A name is unique in a team among projects not archived. Everyone on the team sees every project.
-- **`repo_requests`, new.** A repo the app was asked to make on GitHub for a project: the organization or account it goes under, its name and description, `creating`, `done` or `failed`, GitHub's reason when it failed, and the `repos` row once made. The app writes it before asking GitHub, so a crash or a refusal never leaves a repo nobody knows about, and trying again adopts a repo an earlier try made. A repo is asked for once per team.
+- **`repo_requests`, new.** A repo the app was asked to make on GitHub for a project: the organization or account it goes under, its name and description, `creating`, `done` or `failed`, GitHub's reason when it failed, and the `repos` row once made. Only a failed request has a reason and only a done one a repo. The app writes it before asking GitHub, so a crash or a refusal never leaves a repo nobody knows about, and trying again adopts a repo an earlier try made. A repo is asked for once per team.
+- **`repos.forge`.** The forge that holds the repo, `gitea` for this Mac's or `github`. Existing rows are `gitea`. The runner, the git proxy and the Repos page go by it.
 - **`repos.project_id`.** The project a repo belongs to, or none. A repo belongs to at most one project.
 - **`repos.polled_at`.** When the runner last asked GitHub about the repo's issues. GitHub can't reach this server with webhooks, so new issues are found by polling, and a restart carries on from here.
 - **`tasks.project_id`.** The project a task belongs to. Its runs and documents follow it, so they need no column of their own.
