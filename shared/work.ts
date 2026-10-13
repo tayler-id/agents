@@ -50,6 +50,10 @@ export const DRAFT_ACTIONS: Record<DraftAction, { from: DraftState; to: DraftSta
   discard: { from: 'draft', to: 'discarded' },
 }
 
+// A row of the task_repos shape: one of a task's repos, for editing a draft.
+export const TaskRepoRow = z.object({ task_id: TaskId, repo_id: RepoId, is_primary: z.boolean() })
+export type TaskRepoRow = z.infer<typeof TaskRepoRow>
+
 export function draftState(session: { status: SessionStatus; archived: boolean }): DraftState {
   if (session.status !== 'draft') return 'started'
   return session.archived ? 'discarded' : 'draft'

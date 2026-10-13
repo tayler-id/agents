@@ -134,6 +134,12 @@ const personShapes: Record<string, PersonShape> = {
     table: 'artifact_versions', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
   }),
+  // A task's repos, for editing a draft.
+  task_repos: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_repos', where: 'task_id = $1', params: [taskId] }
+  },
   // A task's changed files, without their contents, and one file with them.
   file_changes: async (p, args) => {
     const taskId = arg(args, 'task')

@@ -224,6 +224,10 @@ try {
     check(edited?.title === 'Draft one, edited' && edited.agent_id === helper && repos.length === 2 && repos[0]?.repo_id === serviceRepo
       && repos[0].is_primary && sessionAgent?.agent_id === helper && sessionAgent?.status === 'draft',
     "a teammate's edit changes the draft's title, agent and repos, and it stays a draft")
+    const shown = await shapeRows(alice, 'task_repos', { task: draftTask })
+    const hidden = await shapeRows(outsider, 'task_repos', { task: draftTask })
+    check(shown.rows.length === 2 && shown.rows.some((r) => r.repo_id === serviceRepo && r.is_primary) && hidden.status === 404,
+      "the draft's repos read back for its editor, and not for another team")
 
     const started = await post(`/v1/tasks/${draftTask}/start`)
     const startedSession = await one<{ status: string; workspace_id: string | null }>('select status, workspace_id from sessions where id = $1', [draftSession])
