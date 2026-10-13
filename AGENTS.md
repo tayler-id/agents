@@ -2,6 +2,17 @@
 
 Agents is a multiplayer app where a team and its agents talk, work and share one Postgres record. Tayler owns it. These rules bind every agent that changes this repo.
 
+## What we're building
+
+The goal is `docs/intent/multiplayer.md`. Nothing below is traded away for cost, convenience or safety without Tayler's say:
+- People keep using their own coding agents on their own computers, and those sessions land in the shared record.
+- Each cloud agent gets its own Docker container with everything it needs: a desktop, a browser on the open web, its tools and computer use. A person can watch it and take over.
+- Every session on every machine lands in one Postgres record, and everyone's agents draw on it.
+- Pipelines are versioned code, and they change only with a person's approval.
+- Agents check their own work, and nothing lands unverified.
+
+A change that takes away something agents or people can do today is a regression. Say so in its first line and in your report, and leave the call to Tayler. Never offer it as one option among others.
+
 ## Read first
 
 - `.claude/skills/coding-standards/SKILL.md`, all of it. Reviewers judge every change by its "Types are the spec" and "No shortcuts" sections.

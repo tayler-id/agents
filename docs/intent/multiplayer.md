@@ -6,6 +6,7 @@ Confirmed with Tayler on 2026-10-11 through an interview. This is what the rebui
 
 - **Outcome.** Agents, a multiplayer app for a team and its agents. Every agent session on every connected instance goes into one shared record, and everyone's agents draw on it, so people working together have agents that know each other's context.
 - **Users.** A team. Each person claims an instance: their own Mac running a daemon, or a cloud box (a Docker container) that runs agents and pipelines unattended. The system tracks every instance that connects.
+- **Local and cloud agents.** People keep using their own coding agents, Claude Code or Codex, on their own computers, and those sessions land in the shared record. Cloud agents are spun up on demand, each in its own Docker container with everything it needs: a desktop, a browser on the open web, its tools and computer use. A person can watch any of them and take over, and each checks its own work, like the app we studied. Confirmed with Tayler on 2026-10-13.
 - **Pipelines.** Any agent with a job: the whole developer life cycle as one pipeline, bug fixing, and any agent built in the app. The system studies the record, proposes improvements to a pipeline, and a person approves them.
 - **Success.** Two people work at once. A teammate's Claude finds and uses my fix from an hour earlier without anyone pasting it in. I open their session live from the app. A bug-fix run on a cloud box shows up in the same record and gets one proposed improvement that I approve.
 - **Constraints.**
