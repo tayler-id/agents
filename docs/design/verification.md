@@ -16,7 +16,7 @@ A pipeline, the framework's router and its gates talk to a driver only through i
 
 - Commands: `up`, `doctor`, `down`, `browser <op>`, `api`, `db`, `seed`, `visual shot|compare|baseline`, `map list|check|export|run|guard`.
 - Evidence: each run's `evidence.json` lists every capture in the shape `EVIDENCE_MANIFEST` in `shared/evidence.ts`, and the map's `features.json` has the shape `FEATURE_MAP` there. The framework's gates read both with those schemas.
-- Output: plain text by default, and with `--json` one envelope (`Output` in `ctl/output.ts`) with `ok`, `head`, `detail`, `already`, `code`, `files`, `help` and `data`. A write leads with `ok:` and its resulting state. Every command ends with next steps.
+- Output: plain text by default, and with `--json` one envelope (`OUTPUT` in `shared/cli/output.ts`) with `ok`, `command`, `head`, `detail`, `already`, `code`, `files`, `help`, `untrusted` and `data`. Text from outside the driver prints fenced as untrusted. A write leads with `ok:` and its resulting state. Every command ends with next steps.
 - Exit codes: 0 done, 1 failed and safe to retry once fixed, 2 usage error, 3 refused with nothing changed.
 - Every write is safe to rerun and says `already: true` when it changed nothing. `--dry-run` parses a command and names its target without running it.
 - `doctor` is read-only and proves the app is usable, not only that a port answers.
@@ -62,22 +62,21 @@ Edit scope is the skill's folder and the driver. The pass never edits product co
 
 As of 2026-10-13, on the branch `worktree-agent-ae995231ee16af626`, not merged.
 
-Built, and run by hand on instances of the test system:
+Built, and proven by running it:
 
-- `bin/agentsctl` and `ctl/`. Run against an instance at least once, by the evidence folders' action logs: `up`, `doctor`, `down`, `api`, `db`, `seed`, `secret`, the browser and desktop driving ops, `browser a11y`, `console`, `network`, `overflow`, `tab-to`, `record` and `reset`, `visual shot`, `compare` and `baseline`, and `map run`. `map list`, `check` and `export` run without an instance.
+- `bin/agentsctl` and `ctl/`, on the CLI library in `shared/cli/`. `test/step17.ts` runs it through its command line on its own instance: up, doctor, the dashboard, `--dry-run`, the web app in Chromium, the desktop app, the API, the database, every seed, secrets, `machine read`, list, evidence, the conformance check, visual shot, compare and baseline, map check, export, guard and run, doctor noticing a stopped daemon, and down. Its last full run passed all 60 checks, with nothing it started left running.
+- `test/step17-breaks.ts` breaks what each of those checks guards, 44 breaks in all, including five in the app and two in the feature map, and watches the check fail. All 44 turned their check red, and every file came back byte for byte. Three misses on the first run were fixed: a gap in the overflow check, a check of `machine read --missing` that tried only an absent file, and one broken break.
 - The skill, `.claude/skills/verify-agents/`, and its feature map of twelve files, each with its map entry, plus `features.json` built from the entries.
 - `shared/evidence.ts`, the schemas for the evidence manifest (`evidence.json`) and the feature map that the framework's gates read. `visual shot` writes the manifest, and `visual compare` and `visual baseline` read captures only through it.
-- One full sweep, `map run all --keep-going` without `--visual`, on instance `m5`. Six features passed every step live: getting-in, agents, documents, secrets, machines and journeys. tasks passed 6 of 7 and conversations 13 of 16 (the interrupt steps need real Claude). sessions passed 7 of 10, pipelines 11 of 13, proposals 3 of 6 and approvals 0 of 8. The map and driver faults behind those failures are fixed and not yet rerun. The rest are product bugs, each noted in its feature file.
-- `map check`, seen failing when `features.json` differs from the entries, and passing again once restored.
+- One full sweep, `map run all --keep-going` without `--visual`, on instance `m5`. Six features passed every step live: getting-in, agents, documents, secrets, machines and journeys. tasks passed 6 of 7 and conversations 13 of 16 (the interrupt steps need real Claude). sessions passed 7 of 10, pipelines 11 of 13, proposals 3 of 6 and approvals 0 of 8. The map and driver faults behind those failures are fixed. The rest are product bugs, each noted in its feature file.
 
 Not done:
 
-- `test/step17.ts` is written and typechecks. It has never run.
-- `test/step17-breaks.ts` does not exist, so no subcommand's check has been seen failing under a break.
-- No visual baselines are committed. `test/names.ts` reads every file as text, and in two of six captures tried, the PNG's bytes happen to spell the studied app's abbreviation, so a committed baseline would fail the name guard. Skipping binary files there needs Tayler's approval, since `test/names.ts` is a protected file.
-- Never run live: `machine read` (its steps need real Claude), `browser trace` and `browser focus`. `map guard` has not run against a base that has the map, so it has not been seen failing.
-- No step tagged `(real Claude)` has run: the tool approvals and the two interrupts.
-- A UI bug counts once a second agent confirms its recordings. One bug has its two recordings, and nobody has confirmed them yet. The others have been seen once.
+- A second full sweep, with captures. It ran on 2026-10-13 and passed every step of getting-in, 14 of conversations' 16 steps and 10 of agents' 13, then the shared test Electric stopped sending changes to the agents table (it had run out of file handles), so the runner marked the other steps `verifier-blocked`, as it should. It needs Electric restarted, which no agent may do.
+- Committed visual baselines. 30 captures of five views (1.3 MB) exist from that sweep. `test/names.ts` reads every file as text, and in two of six captures tried, the PNG's bytes happen to spell the studied app's abbreviation, so a committed baseline would fail the name guard. Skipping binary files there needs Tayler's approval, since `test/names.ts` is a protected file. Noise between two sweeps is not measured.
+- No step tagged `(real Claude)` has run: the four tool approvals and the two interrupts.
+- A UI bug counts once a second agent confirms its recordings. Three bugs have two recordings each, and nobody has confirmed them yet.
+- `map guard` is seen failing against HEAD, not yet against main, which has no map.
 - The pipeline files `verify-create.ts` and `verify-maintain.ts`. Each stage maps to a command that exists, so the files are mostly prompts and `next` maps.
-- Running them on a box. A box would need the app's own services (here Postgres and Electric for the test database) and the three browsers. Today's box image has neither, and boxes reach only the live API's port, so the live stage would run on the server Mac.
+- Running them on a box. A box would need the app's own services (here Postgres and Electric for the test database) and the three browsers. Today's box image has neither, so the live stage would run on the server Mac.
 - The generate stage for a repo that is not Agents. The driver's browser layer, evidence, visual compare and map runner do not depend on Agents. The instance lifecycle and seeding in `ctl/instance.ts` and `ctl/seed.ts` are Agents' own, and are what generate would write for another repo.
