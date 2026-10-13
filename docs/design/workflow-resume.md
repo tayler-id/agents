@@ -40,14 +40,22 @@ Every check has been seen failing under breaks and passing again after a byte-fo
 
 A failed run keeps its team and Gitea repos. Remove them by deleting the team row named in the last line from `agents_test`, and the `flow-ux-<id>` and `flow-uxpipes-<id>` repos from Gitea.
 
+## Latest results
+
+- step14c, all three engines, after it opens each page at its own address: "all passed (test team and repos removed)", 120 checks.
+- step14, after de4df0c: "all passed (test teams and repos removed)", 57 checks.
+- step14b, all three engines, after de8a980: "all passed (test team and repo removed)", 36 checks. Nothing it covers changed since.
+- Main's step2 (18 checks) and step10 (28 checks) on this branch: "all passed (test teams removed)".
+- Main's step10b in Chromium on this branch: "all passed (test team removed)", 23 checks.
+
 ## In progress
 
-The final run of step14c in all three engines after de4df0c, then step14. step14b passed in all three engines after de8a980 (36 checks), and nothing it covers changed since.
+Nothing. The branch is ready for the coordinator.
 
 ## Next steps
 
 1. Run `npm run typecheck`, `npm run lint` and `node test/names.ts`. Paste their final lines and the checks' final lines into the report.
-2. Report to the coordinator.
+2. Report to the coordinator, with the `useRoute` finding in `app/src/App.tsx` described in the build log.
 
 ## Open questions for Tayler
 
