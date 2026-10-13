@@ -13,7 +13,7 @@ When a person messages an agent, the API queues a `message` command, and the age
 
 ## What Claude does when it is killed
 
-I killed `claude -p` 2.1.296 with SIGKILL at three points, then resumed each session with `--resume`. The design rests on these results.
+I killed `claude -p` 2.1.296 with SIGKILL at three points, resumed each session with `--resume`, and sent messages into running turns. The design rests on these results.
 
 1. Killed while the model streams text, Claude's transcript holds the user message and nothing of the reply. The streamed text exists only in our live stream.
 2. Resumed and sent a new message, Claude adds a reply "No response requested." after the cut-off message, then answers the new message. The turn finishes.
@@ -22,38 +22,43 @@ I killed `claude -p` 2.1.296 with SIGKILL at three points, then resumed each ses
 5. On resume, Claude writes an error result "Tool call interrupted: the session ended before this call's result was recorded" for that call. It never prints it on stdout, so our record never sees it.
 6. Killed while waiting for an approval, the transcript holds only the user message. The tool call the approval was for is missing, though Claude had already printed it and the daemon had recorded it.
 7. Resuming a conversation that does not exist on the machine prints "No conversation found with session ID" and exits with code 1.
+8. A message sent while Claude is mid-turn joins that turn. Sent during a tool call, it reached the model with the tool's result, and one result answered both messages. Sent after the turn's result, it started a turn of its own.
+9. With `--replay-user-messages`, Claude prints each message back, marked `isReplay`, at the moment it takes the message into a turn. The follow-up in fact 8 came back after the tool's result, not when it was sent.
+10. The printed-back message keeps the `uuid` it was sent with.
 
-So Claude's transcript can lag what Claude printed. After a crash, our record is the only full account of the turn, and whatever the resumed session is told must come from the record.
+So Claude's transcript can lag what Claude printed. After a crash, our record is the only full account of the turn, and whatever the resumed session is told must come from the record. And a turn can answer several messages, so a person can steer an agent while it works. Holding a follow-up back until the turn ends would take that away.
 
 ## The model
 
-### A turn
+### A message and its turn
 
-A turn is one `message` command, such as a person's post, a pipeline stage's prompt, a reminder, a room turn or a routine. Its state is the command's status read together with its session's status, so nothing new has to be kept in step with it.
+A message is one `message` command, such as a person's post, a pipeline stage's prompt, a reminder, a room turn or a routine. A turn is the harness's work from taking in a message to printing a result, and it answers every message it took in on the way. A message's state is its command's status read together with its session's status, so nothing new has to be kept in step with it.
 
-| Turn state | Command status | Session status |
+| Message state | Command status | Session status |
 |---|---|---|
 | queued | queued | any |
-| running | claimed | starting, running, needs_approval, needs_input |
+| handed over | claimed | starting, running, needs_approval, needs_input, idle |
 | interrupted | claimed | lost |
 | done | done | any |
 | failed | failed | any |
 
 | Move | Who makes it | When |
 |---|---|---|
-| queued to running | the daemon, through the claim endpoint | its session has no turn in flight |
-| running to done | the server, inside the transaction that records the turn's end event | the harness reports the turn's result |
-| running to failed | the server, on the daemon's report | the harness exits mid-turn, or the machine could not start it |
-| running to interrupted | the server | the machine reports the turn cut off when it restarts, or the machine stops answering |
-| interrupted to running | the daemon, then the harness's next status | the restarted machine resumes the turn |
+| queued to handed over | the daemon, through the claim endpoint | it writes the message to the session's harness, as soon as it arrives |
+| handed over to done | the server, inside the transaction that records the turn's end event | the harness reports the result of the turn that took the message in |
+| handed over to failed | the server, on the daemon's report | the harness exits before that turn ends, or the machine could not start it |
+| handed over to interrupted | the server | the machine restarts with the message unfinished, or the machine stops answering |
+| interrupted to handed over | the daemon | the restarted machine resumes the session with every unfinished message |
 | interrupted to done | the server | the machine restarts and a person's interrupt or a run's stop was waiting for it |
 
 `shared/lifecycle.ts` holds this table as code. The server checks every move it makes against it and throws on any other.
 
 Two rules make the table hold.
 
-- **One turn at a time per session.** The daemon claims a session's next message only when the session has no turn in flight, and keeps the rest waiting in the queue. A unique index on `commands (session_id) where kind = 'message' and status = 'claimed'` makes a second claimed turn impossible, and the claim endpoint answers 423 when a turn is already running. Today the daemon hands a second message to a busy Claude at once, and Claude queues it, so a person sees the same order of replies either way.
-- **The server ends the turn.** The transaction that records a turn's `usage` event also marks its command done, and one that records a `failed` status marks it failed. A daemon that dies between the two writes can't leave a finished turn looking unfinished, because there is only one write.
+- **The harness says which messages a turn answered.** The daemon sends each message to Claude with its command id as the `uuid`, and starts Claude with `--replay-user-messages`. When Claude prints a message back, that message has joined the running turn. The turn's result batch carries the command ids it took in, as `ended`. A message Claude has not taken in yet stays handed over, and joins the next turn.
+- **The server ends the message.** The transaction that records a turn's `usage` event marks the commands in `ended` done. When the harness exits, the daemon's last batch lists every message the process still had, and the server marks them failed with the harness's error. A daemon that dies between the two writes can't leave a finished message looking unfinished, because there is only one write.
+
+The daemon's `busy` flag comes from the same ids: a harness is busy while it holds a message no result has ended. Today it counts one result per message, so after Claude answers two messages with one result it stays busy forever, and the agent's new setup never reaches it.
 
 ### A session
 
@@ -74,7 +79,7 @@ A `lost` session leaves `lost` the way any session changes status. The resumed h
 
 ### The server, in Postgres
 
-- The turn's command, claimed when the daemon hands the turn to the harness and finished when the turn's end event is recorded.
+- Each message's command, claimed when the daemon hands the message to the harness and finished when the end of the turn that took it in is recorded.
 - Every event the harness prints, as today, keyed by client id so a retried post adds nothing.
 - At a restart, for each interrupted turn, a `notice` event with `body.subtype = 'interrupted'` that names the reason, the turn's command, and the tool calls and approvals left open. Then a `user` event with no author, holding the exact text the resumed session is sent.
 - When a machine stops answering, the same notice with the reason "the machine stopped answering", and the session's status `lost`.
@@ -84,7 +89,7 @@ A `lost` session leaves `lost` the way any session changes status. The resumed h
 
 - `AGENTS_HOME/sessions/<session>.pid` holds the process id of each harness it starts, removed when the harness exits. AGENTS_HOME is on the box's home volume, so a replaced container finds the file too.
 
-The daemon keeps nothing else between runs. Its turn state lives in Postgres.
+The daemon keeps nothing else between runs. Which messages each harness holds it keeps in memory, and a crash loses nothing by that, since recovery takes every unfinished message from Postgres.
 
 ## How a restart finds and resumes work
 
@@ -92,13 +97,13 @@ The daemon does three things before it reads its queue.
 
 1. **Stops what the last run left.** For each `.pid` file it reads the process's command line with `ps -ww`, and stops the process and its children only when the command line names that session's MCP config file, which holds the session id. A process id from another container, or one reused since, never matches. This matters when only the daemon died. Its Claude keeps working the turn, and resuming beside it would put two processes on one transcript.
 2. **Reports.** It calls `POST /v1/instance/recover`. In one transaction the server:
-   - puts back claimed commands that are not turns (`setup_workspace`, `exec`, `push`), as requeue did;
+   - puts back claimed commands that are not messages (`setup_workspace`, `exec`, `push`), as requeue did;
    - fails each `answer` command still queued or claimed, since the request it answers died with the process, and leaves the decision on the ask;
-   - for each claimed turn, reads the record since the turn's user event and sorts each tool call that has no result. A call with an approval that never reached the harness is waiting for approval. Any other call without a result is in flight, which means it may or may not have taken effect;
-   - ends the turn as done, with a notice saying why, when an `interrupt` or `stop` for that session was waiting. Otherwise it records the interrupted notice and the continuation, sets the session `lost`, and returns the turn.
-3. **Resumes.** For each returned turn it starts the harness with the session's Claude id, or a fresh one when the crash came before Claude reported its id, and sends the continuation. The turn's command stays claimed until that turn ends.
+   - for each session with claimed messages, reads the record since the first of their user events and sorts each tool call that has no result. A call with an approval that never reached the harness is waiting for approval. Any other call without a result is in flight, which means it may or may not have taken effect;
+   - ends those messages as done, with a notice saying why, when an `interrupt` or `stop` for that session was waiting. Otherwise it records the interrupted notice and one continuation for all of them, sets the session `lost`, and returns the session with its messages.
+3. **Resumes.** For each returned session it starts the harness with the session's Claude id, or a fresh one when the crash came before Claude reported its id, and sends the continuation. The resumed turn's result ends every message the continuation covers. Their commands stay claimed until then.
 
-The continuation names the cut-off message and every open thread, because the resumed session may not know them (facts 1 and 6). For example:
+The continuation names every unfinished message and every open thread, because the resumed session may not know them (facts 1 and 6). For example:
 
 ```
 This session was resumed after its machine stopped in the middle of your turn. What you did
@@ -116,6 +121,8 @@ Finish the turn. The message you were answering:
 
 Do the LEDGER task.
 ```
+
+With more than one unfinished message, it lists each in the order people sent them.
 
 The daemon never runs a tool call again by itself, and never sends the original message to a fresh session. Either would repeat an action without saying so. The resumed session decides, told what may have happened.
 
@@ -156,6 +163,8 @@ A machine that comes back without restarting, such as after a network outage, se
 | Only Claude dies | The daemon sees it exit, and the turn fails with Claude's error, as today. The person's next message resumes the session. |
 | The daemon dies after reading a line and before posting it | That line is lost from the record. The continuation lists every call without a recorded result, so the session is told. |
 | The daemon dies during recovery | The next start runs recovery again. Each run adds a notice, so the record shows every restart. |
+| A follow-up arrives mid-turn | It goes to the harness at once and joins the running turn, as today. If the machine dies before Claude takes it in, the continuation includes it. |
+| Claude answers two messages with one result | The result's batch ends both commands, and the harness is no longer busy. |
 | A tool command outlives a killed Claude | On a box, removing the container ends it. On the Mac it runs to its end, unseen, and the continuation says the call may still be running. Not solved, see below. |
 | A person interrupts while the machine is down | The interrupt waits in the queue, and the restart ends the turn instead of resuming it. |
 | A person answers while the machine is down | The decision is kept on the ask and delivered to the resumed session's new request. |
@@ -170,7 +179,7 @@ A machine that comes back without restarting, such as after a network outage, se
 The daemon keeps every Claude detail in `daemon/claude.ts` behind `daemon/harness.ts`. For the five checks to pass, an engine has to do what Claude does here:
 
 - resume a conversation by its id, given as `resume`, and report its id with its first lines;
-- print one result per message and take one message at a time;
+- take messages while it works, say which messages each turn took in, and print one result per turn;
 - raise a permission request with an id, and refuse an answer to a request it isn't waiting on;
 - report the process id the daemon should stop before resuming it elsewhere, or none when it runs no process here.
 
@@ -178,7 +187,7 @@ An engine whose sessions are durable on their own, so that a turn's loop runs on
 
 ## The checks
 
-Each check starts its own API, daemon and team, prefixed `dur-`, on ports 8040 to 8059, kills only the processes it started, and removes what it made when it passes.
+Each check starts its own API, daemon and team, prefixed `dur-`, on ports 8046 to 8059, kills only the processes it started, and removes what it made when it passes. Ports 8041 to 8045 are taken by another workstream's leftover processes, so the checks avoid them.
 
 1. `test/step18a.ts`, real Claude. A person asks for a forty-line poem. Once the live stream has text, the check kills the daemon, then Claude and its children. It restarts the daemon. The poem lands in the conversation, from the same Claude conversation, with the interrupted notice in the record.
 2. `test/step18b.ts`, the fake Claude. The agent appends a line to a ledger and is killed before the result. On restart the ledger still has one line, the record names the call as interrupted, the resumed session was told about it and checked, and the turn ends. A second turn kills only the daemon, and the old Claude is stopped before the turn resumes.
@@ -190,12 +199,7 @@ On main, checks 1 to 4 time out waiting for the turn to finish, and check 5 sees
 
 ## Schema change
 
-Migration `0010_durability.sql`, described in `docs/data-model.md`:
-
-- `commands_one_turn`, a unique index on `commands (session_id) where kind = 'message' and status = 'claimed'`;
-- `asks.request_ended_at`, null while the harness request the ask answers is alive or has its answer.
-
-Both work with main's code, which other checks run against the same `agents_test`.
+Migration `0010_durability.sql`, described in `docs/data-model.md`, adds one column, `asks.request_ended_at`. It is null while the harness request the ask answers is alive or has its answer. Main's code never reads it, so main's checks run unchanged against the same `agents_test`.
 
 ## Not covered
 
