@@ -19,7 +19,7 @@ import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
 import type { Next, Pipeline, Report, RunContext, Stage } from '../shared/pipeline.ts'
-import type { ExecResult, MessagePayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
+import type { ExecResult, MessagePayload, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
 
 const CHANNEL = 'agents_runner'
 const TICK_MS = 2000
@@ -369,12 +369,13 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
   const task = await taskOf(client, run)
   const repo = await repoOf(client, run)
   if (stage.action === 'open_pull_request' || stage.action === 'score_change') {
+    const push: PushPayload = {
+      workspaceId: workspace.id, message: stage.title?.(ctx) ?? ctx.report.title, author: pipeline.agent,
+      repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task), base: r.default_branch })),
+    }
     const sent = await one<{ id: string }>(client, 'the new push command',
       `insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'push', $3) returning id`,
-      [run.team_id, workspace.instance_id, JSON.stringify({
-        workspaceId: workspace.id, message: stage.title?.(ctx) ?? ctx.report.title, author: pipeline.agent,
-        repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task) })),
-      })])
+      [run.team_id, workspace.instance_id, JSON.stringify(push)])
     await setRow(client, row, { status: 'running', command_id: sent.id, data: { phase: 'push' }, started: true })
     return true
   }

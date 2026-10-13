@@ -8,7 +8,9 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
+import { workspaceChanges } from './changes.ts'
 import type { ExecPayload, ExecResult, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
+import type { RepoChanges } from '../shared/work.ts'
 
 const run = promisify(execFile)
 const OUTPUT_LIMIT = 20_000
@@ -35,37 +37,68 @@ export function workspaces(home: string, api: string, token: string) {
     child.on('error', (error) => { clearTimeout(timer); resolve({ exitCode: null, output: error.message, timedOut }) })
   })
 
+  // Clones each repo and checks out the task branch. Running it again reuses
+  // what is already there, so a retried command does no harm.
+  async function cloneAll({ workspaceId, repos }: SetupWorkspacePayload) {
+    const root = dir(workspaceId)
+    mkdirSync(join(root, 'task'), { recursive: true })
+    const worktrees = []
+    for (const repo of repos) {
+      const path = join(root, repo.name)
+      if (!existsSync(join(path, '.git'))) {
+        await git(root, 'clone', '--quiet', '--branch', repo.base, `${api}/v1/git/${repo.repoId}.git`, repo.name)
+      }
+      const branches = await git(path, 'branch', '--list', repo.branch)
+      if (branches) await git(path, 'switch', '--quiet', repo.branch)
+      else await git(path, 'switch', '--quiet', '-c', repo.branch, repo.commit ?? `origin/${repo.base}`)
+      const baseCommit = repo.commit ?? await git(path, 'rev-parse', `origin/${repo.base}`)
+      if (repo.setup) {
+        const result = await sh(path, repo.setup, 600)
+        if (result.exitCode !== 0) throw new Error(`setup for ${repo.name} failed: ${result.output.slice(-2000)}`)
+      }
+      worktrees.push({ repoId: repo.repoId, baseCommit })
+    }
+    return { path: root, worktrees }
+  }
+
+  // Each workspace's latest setup. A session in the workspace waits for it, and
+  // fails with its error, so the agent never starts in a half-cloned repo.
+  const setups = new Map<string, Promise<unknown>>()
+  const settingUp = new Set<string>()
+
   return {
     dir,
     taskFolder: (workspaceId: string) => join(dir(workspaceId), 'task'),
 
-    // Clones each repo and checks out the task branch. Running it again reuses
-    // what is already there, so a retried command does no harm.
-    async setup({ workspaceId, repos }: SetupWorkspacePayload) {
-      const root = dir(workspaceId)
-      mkdirSync(join(root, 'task'), { recursive: true })
-      const worktrees = []
-      for (const repo of repos) {
-        const path = join(root, repo.name)
-        if (!existsSync(join(path, '.git'))) {
-          await git(root, 'clone', '--quiet', '--branch', repo.base, `${api}/v1/git/${repo.repoId}.git`, repo.name)
-        }
-        const branches = await git(path, 'branch', '--list', repo.branch)
-        if (branches) await git(path, 'switch', '--quiet', repo.branch)
-        else await git(path, 'switch', '--quiet', '-c', repo.branch, repo.commit ?? `origin/${repo.base}`)
-        const baseCommit = repo.commit ?? await git(path, 'rev-parse', `origin/${repo.base}`)
-        if (repo.setup) {
-          const result = await sh(path, repo.setup, 600)
-          if (result.exitCode !== 0) throw new Error(`setup for ${repo.name} failed: ${result.output.slice(-2000)}`)
-        }
-        worktrees.push({ repoId: repo.repoId, baseCommit })
-      }
-      return { path: root, worktrees }
+    setup(payload: SetupWorkspacePayload) {
+      const work = cloneAll(payload)
+      setups.set(payload.workspaceId, work)
+      settingUp.add(payload.workspaceId)
+      const settled = () => { settingUp.delete(payload.workspaceId) }
+      void work.then(settled, settled)
+      return work
+    },
+
+    async ready(workspaceId: string) {
+      await setups.get(workspaceId)
+    },
+
+    // What differs from each repo's base, or null while the workspace is being set up.
+    async changes(workspaceId: string, sent: ReadonlyMap<string, string>): Promise<RepoChanges[] | null> {
+      if (settingUp.has(workspaceId) || !existsSync(dir(workspaceId))) return null
+      return workspaceChanges(dir(workspaceId), sent)
+    },
+
+    // The workspaces on this machine.
+    ids(): string[] {
+      const root = join(home, 'workspaces')
+      return existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : []
     },
 
     exec: ({ workspaceId, repo, command, timeoutSec }: ExecPayload) => sh(join(dir(workspaceId), repo), command, timeoutSec),
 
-    // Commits anything the agent left uncommitted, then pushes the task branch.
+    // Commits anything the agent left uncommitted, pushes the task branch, and
+    // counts the commits it holds past its base.
     async push({ workspaceId, repos, message, author }: PushPayload): Promise<PushResult> {
       const pushed = []
       for (const repo of repos) {
@@ -75,7 +108,9 @@ export function workspaces(home: string, api: string, token: string) {
           await git(path, '-c', `user.name=${author}`, '-c', `user.email=${author}@agents.local`, 'commit', '--quiet', '-m', message)
         }
         await git(path, 'push', '--quiet', '--force', 'origin', `HEAD:refs/heads/${repo.branch}`)
-        pushed.push({ repoId: repo.repoId, commit: await git(path, 'rev-parse', 'HEAD') })
+        const ahead = Number(await git(path, 'rev-list', '--count', `origin/${repo.base}..HEAD`))
+        if (!Number.isInteger(ahead)) throw new Error(`git did not count the commits of ${repo.name} past ${repo.base}`)
+        pushed.push({ repoId: repo.repoId, commit: await git(path, 'rev-parse', 'HEAD'), ahead })
       }
       return { pushed }
     },

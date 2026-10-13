@@ -18,6 +18,8 @@ import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onbo
 import type { Command, EventBatch, MessagePayload, StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
+import { changeKey } from './changes.ts'
+import { ChangesReply } from '../shared/work.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -154,6 +156,57 @@ function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Rec
 // Documents already sent from task folders, by workspace and path, with their hashes.
 const sentDocuments = new Map<string, string>()
 
+// A workspace's changes go at most this often while the agent works, since each
+// look stages the whole working tree.
+const CHANGES_EVERY_MS = 2000
+type Refresh = { busy: boolean; again: boolean; timer: NodeJS.Timeout | null; last: number }
+const refreshes = new Map<string, Refresh>()
+// For each workspace, the hash of each file the API has, by changeKey.
+const sentChanges = new Map<string, Map<string, string>>()
+
+// Sends what differs from the base in a workspace's repos, soon. Calls while a
+// send is under way, or due, fold into one more.
+function refreshChanges(workspaceId: string) {
+  const state = refreshes.get(workspaceId) ?? { busy: false, again: false, timer: null, last: 0 }
+  refreshes.set(workspaceId, state)
+  if (state.busy) {
+    state.again = true
+    return
+  }
+  if (state.timer || stopping) return
+  state.timer = setTimeout(() => {
+    state.timer = null
+    state.busy = true
+    state.last = Date.now()
+    void sendChanges(workspaceId)
+      .catch((error: unknown) => {
+        // A workspace the API does not know as this machine's, such as one left
+        // from a removed team, has nothing to report.
+        if (error instanceof ApiError && error.status === 404) return
+        console.error(`changes in ${workspaceId}:`, messageOf(error))
+      })
+      .finally(() => {
+        state.busy = false
+        if (state.again) {
+          state.again = false
+          refreshChanges(workspaceId)
+        }
+      })
+  }, Math.max(0, state.last + CHANGES_EVERY_MS - Date.now()))
+}
+
+async function sendChanges(workspaceId: string) {
+  const sent = sentChanges.get(workspaceId) ?? new Map<string, string>()
+  const repos = await ws.changes(workspaceId, sent)
+  if (!repos) return
+  const reply = ChangesReply.parse(await api<unknown>('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
+  const held = new Map<string, string>()
+  for (const repo of repos) for (const file of repo.files) held.set(changeKey(repo.repoId, file.path), file.hash)
+  for (const file of reply.missing) held.delete(changeKey(file.repoId, file.path))
+  sentChanges.set(workspaceId, held)
+  if (reply.missing.length) refreshChanges(workspaceId)
+}
+
 // Files the agent wrote in the task folder become document versions. Sent at the
 // end of each turn, only when they changed.
 async function sendDocuments(sessionId: string, workspaceId: string) {
@@ -200,6 +253,8 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       if (payload.workspaceId && batch.events.some((e) => e.kind === 'usage')) {
         await sendDocuments(command.sessionId, payload.workspaceId).catch((error: unknown) => { console.error('documents:', messageOf(error)) })
       }
+      // A tool's result may have changed files, and a turn's end is when people look.
+      if (payload.workspaceId && batch.events.some((e) => e.kind === 'tool_result' || e.kind === 'usage')) refreshChanges(payload.workspaceId)
     }
     await live.close()
     if (sessions.get(command.sessionId) === session) {
@@ -217,6 +272,7 @@ async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'setup_workspace') return ws.setup(command.payload)
   if (command.kind === 'exec') return ws.exec(command.payload)
   if (command.kind === 'push') return ws.push(command.payload)
+  if (command.kind === 'message' && command.payload.workspaceId) await ws.ready(command.payload.workspaceId)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
     // A process keeps the setup it started with. Once the agent's instructions,
@@ -246,6 +302,17 @@ async function handle(command: Command) {
     await api('POST', `/v1/instance/commands/${command.id}`, { status: 'failed', error: message })
       .catch(() => {})
   }
+  // Setting up, a check or a push may have changed what differs from the base.
+  if (command.sessionId === null) refreshChanges(command.payload.workspaceId)
+}
+
+// A session's commands run one after another, in the order they arrived, while
+// sessions run beside each other, so one waiting for its workspace holds up no other.
+const sessionQueues = new Map<string, Promise<void>>()
+function inOrder(sessionId: string, work: () => Promise<void>) {
+  const next = (sessionQueues.get(sessionId) ?? Promise.resolve()).then(work)
+  sessionQueues.set(sessionId, next)
+  void next.then(() => { if (sessionQueues.get(sessionId) === next) sessionQueues.delete(sessionId) })
 }
 
 async function heartbeat() {
@@ -263,6 +330,8 @@ async function listen(signal: AbortSignal) {
     try {
       const { requeued } = await api<{ requeued: number }>('POST', '/v1/instance/commands/requeue', {})
       if (requeued) console.log(`requeued ${requeued} unfinished commands`)
+      // Workspaces from before this process may have changes the API has not seen.
+      for (const workspaceId of ws.ids()) refreshChanges(workspaceId)
       break
     } catch (error) {
       console.error('waiting for the API:', (error as Error).message)
@@ -295,7 +364,7 @@ async function claimAndHandle(commandId: string) {
     // Workspace work can take minutes, so it runs beside the queue rather than
     // holding up messages and interrupts for sessions.
     if (command.sessionId === null) void handle(command)
-    else await handle(command)
+    else inOrder(command.sessionId, () => handle(command))
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) return
     console.error(`claim ${commandId}:`, (error as Error).message)
@@ -413,6 +482,7 @@ async function shutdown() {
   if (stopping) return
   stopping = true
   abort.abort()
+  for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
   for (const session of sessions.values()) session.stop()
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000

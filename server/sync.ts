@@ -13,6 +13,7 @@ import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VI
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
+import { FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -132,6 +133,16 @@ const personShapes: Record<string, PersonShape> = {
   artifact_versions: async (p, args) => ({
     table: 'artifact_versions', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
+  }),
+  // A task's changed files, without their contents, and one file with them.
+  file_changes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'file_changes', where: 'task_id = $1', params: [taskId], columns: FILE_CHANGE_COLUMNS }
+  },
+  file_change: async (p, args) => ({
+    table: 'file_changes', where: 'id = $1', columns: FILE_CHANGE_DETAIL_COLUMNS,
+    params: [await requireTaskOf(p, 'select task_id from file_changes where id = $1 and team_id = $2', arg(args, 'id'))],
   }),
 }
 

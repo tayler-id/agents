@@ -32,8 +32,9 @@ import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTempla
 import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { discardDraft, editDraft, startDraft } from './drafts.ts'
-import { TaskId } from '../shared/ids.ts'
-import { DraftAction, NewTask, TaskFields } from '../shared/work.ts'
+import { saveChanges } from './changes.ts'
+import { TaskId, WorkspaceId } from '../shared/ids.ts'
+import { ChangesPost, DraftAction, NewTask, TaskFields } from '../shared/work.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -225,6 +226,14 @@ const routes: Route[] = [
       return { path: text(fieldOf(d, 'path'), `documents.${i}.path`), content: typeof content === 'string' ? content : '' }
     })
     return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, documents)) }
+  }],
+
+  // What differs from the base branch in a workspace's repos, from its machine.
+  ['machines', 'POST', new RegExp(`^/v1/workspaces/${UUID}/changes$`), async (req, [id]) => {
+    const instance = await instanceFrom(req)
+    const workspaceId = parsed(WorkspaceId, id)
+    const post = parsed(ChangesPost, await readJson(req))
+    return tx((client) => saveChanges(client, instance.id, workspaceId, post))
   }],
 
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/events$`), async (req, [sessionId]) => {
