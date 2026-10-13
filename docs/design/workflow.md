@@ -1,6 +1,6 @@
 # The work layer: drafts, phases, changes and pull requests
 
-The work layer follows HumanLayer's model: tasks, sessions, versioned documents, approvals and phased workflows. Measured against their product, these parts were missing or half built. This is the design I am building to, written before the code. The tables are in `server/migrations/0007_workflow.sql` and listed in `docs/data-model.md` for review.
+The work layer is tasks, sessions, versioned documents, approvals and workflows in phases. These parts of it were missing or half built. This is the design I am building to, written before the code. The tables are in `server/migrations/0007_workflow.sql` and listed in `docs/data-model.md` for review.
 
 What happened on the live server on 2026-10-13 shaped part of it. Tayler started a task, "we need to create a readme for the repo", on `team/shop`. The agent wrote `shop/README.md` in its checkout of the repo. Nothing showed in the app, since only files in the task's `task` folder became documents. There was no diff, no way to push or open a pull request, and Tayler had to approve every Bash and Write call. That task is the acceptance test for the changes, the viewer, the diff and the pull request.
 
@@ -96,7 +96,7 @@ Files in the `task` folder open in the same panel. Their Diff tab shows the chan
 
 ## The research, plan and implement pipeline
 
-**Solves.** HumanLayer's featured flow runs questions, research, design, structure, plan and implement, and every phase is a place to push back. Ours is a pipeline file, `pipelines/research-plan-implement.ts`, with three written phases and a person's review after each.
+**Solves.** A hard change goes better when the agent researches and plans before it writes any code, and a person can push back after each phase. This is a pipeline file, `pipelines/research-plan-implement.ts`, with three written phases and a person's review after each.
 
 **Stages.**
 

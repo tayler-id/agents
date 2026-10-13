@@ -1,5 +1,5 @@
-// From a request to a reviewed pull request in phases, after HumanLayer's
-// research, plan and implement flow, where every phase is a place to push back.
+// From a request to a reviewed pull request in phases, where every phase is a
+// place to push back.
 // The agent researches and writes research.md, then plans and writes plan.md,
 // and a person reviews each at a gate: they comment on its lines, then approve
 // it or send it back with a note. No code changes before the plan is approved,
