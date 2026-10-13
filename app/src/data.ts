@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import {
-  Done, InviteLink, InviteMade, InviteResent, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
+  BoxMade, Done, InviteLink, InviteMade, InviteResent, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
 
@@ -240,6 +240,10 @@ export const api = {
   tailnetInvites: () => call(TailnetInvites, 'GET', '/v1/tailscale/invites'),
   tailnetInvite: (inviteId: string, action: TailnetInviteAction) =>
     call(Done, 'POST', `/v1/tailscale/invites/${encodeURIComponent(inviteId)}/${action}`, {}),
+  makeBox: () => call(BoxMade, 'POST', '/v1/me/box', {}),
+  startClaudeLogin: () => call(LoginStarted, 'POST', '/v1/me/claude-login', {}),
+  sendClaudeCode: (loginId: string, code: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/code`, { code }),
+  cancelClaudeLogin: (loginId: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/cancel`, {}),
   openDm: (agent: string) => request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'dm', agent }),
   send: (conversationId: string, text: string, clientId: string) =>
     request('POST', `/v1/conversations/${conversationId}/messages`, { text, clientId }),

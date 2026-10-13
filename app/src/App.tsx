@@ -6,6 +6,7 @@ import {
 } from './data.ts'
 import { TeamPage, Waiting } from './Team.tsx'
 import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
+import { BoxPage, GettingStarted } from './Box.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -15,7 +16,7 @@ import { AgentPage, NewAgent } from './AgentPage.tsx'
 import { NewRoom, NewTask, TaskView } from './Work.tsx'
 
 // Pages with no id of their own, such as the team.
-const PAGES = ['team', 'tailscale'] as const
+const PAGES = ['team', 'tailscale', 'box'] as const
 type Page = (typeof PAGES)[number]
 
 // Where the app is: a conversation, run, task, pipeline, agent, page or
@@ -92,19 +93,20 @@ function Workspace({ me }: { me: Me }) {
         <span className="topbar-title">{me.team.name}</span>
       </header>
       <Sidebar me={me} route={route} runs={runs} />
-      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale'
+      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
         : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
+          : route.page === 'box' ? <BoxPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
-                  : route.create === 'agent' ? <NewAgent />
+                  : route.create === 'agent' ? <NewAgent me={me} />
                     : route.create === 'room' ? <NewRoom me={me} />
                       : route.create === 'task' ? <NewTask />
-                        : <Welcome />}
+                        : <Welcome me={me} />}
       </main>
       {route.session && (route.conversation || route.run || route.task) && (
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
@@ -117,12 +119,15 @@ function Workspace({ me }: { me: Me }) {
   )
 }
 
-function Welcome() {
+// A newcomer sees their first steps here until their box is ready and they are signed in to Claude.
+function Welcome({ me }: { me: Me }) {
   return (
-    <section className="welcome">
-      <h1>Pick an agent to talk to</h1>
-      <p className="muted">Every conversation, every pipeline run and everything their agents do is shared with your team as it happens.</p>
-    </section>
+    <GettingStarted me={me}>
+      <section className="welcome">
+        <h1>Pick an agent to talk to</h1>
+        <p className="muted">Every conversation, every pipeline run and everything their agents do is shared with your team as it happens.</p>
+      </section>
+    </GettingStarted>
   )
 }
 
@@ -214,6 +219,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         <button type="button" className={`link small${route.page === 'team' ? ' current' : ''}`} onClick={() => go({ page: 'team' })}>
           Team{waitingToJoin.length ? ` · ${waitingToJoin.length} ${waitingToJoin.length === 1 ? 'wants' : 'want'} to join` : ''}
         </button>
+        <button type="button" className={`link small${route.page === 'box' ? ' current' : ''}`} onClick={() => go({ page: 'box' })}>Your box</button>
         {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
       </div>
       {keyAlert && (
