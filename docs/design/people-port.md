@@ -114,6 +114,7 @@ Every branch has its own copy of the checks that start an API with `AGENTS_PEOPL
 
 ## What this does not cover
 
+- Real serve has not proxied to the socket yet, since that needs the serve change in the live steps. In checks, `test/people.ts` plays serve's part. Serve's proxy differs from its TCP one only in how it dials (`reverseProxy.getTransport`), and `test/step19b.ts` and the desktop app on this Mac try the real path in live step 6.
 - Any process running as Tayler's user on the server Mac can open the people socket and name any login, as it could reach 7710 before. That includes agents whose home is this Mac, since the daemon runs their sessions as Tayler. Running them as another user, or only in boxes, closes that.
 - The stream server on 4437 has no access checks of its own. The policy keeps peers off it and the box firewall keeps containers off it, but any local process can still read or append to a session's stream.
 - The peer API stays reachable from every peer, as Tailscale designs it.
