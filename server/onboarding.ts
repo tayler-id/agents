@@ -5,7 +5,7 @@
 
 import type pg from 'pg'
 import { z } from 'zod'
-import { many, maybe, one, pool, tx } from './db.ts'
+import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { addPersonalBox } from './boxes.ts'
 import { HttpError, Person } from './record.ts'
 import { wakeRunner } from './runner.ts'
@@ -28,8 +28,6 @@ export type Arrival =
   | { kind: 'waiting'; request: JoinRequestRow }
 
 type Joining = { teamId: TeamId; login: string; name: string | null; role: TeamRole; addedBy: PersonId | null }
-
-const isUniqueViolation = (error: unknown) => error instanceof Error && 'code' in error && error.code === '23505'
 
 async function personByLogin(db: pg.Pool | pg.PoolClient, login: string): Promise<Person | null> {
   const row = await maybe(db, 'select id, team_id, login, role from people where login = $1', [login])

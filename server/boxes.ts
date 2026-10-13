@@ -19,8 +19,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type pg from 'pg'
-import { maybe, pool } from './db.ts'
+import { z } from 'zod'
+import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
+import { HttpError } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
 import { InstanceId, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
@@ -37,14 +39,28 @@ const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '
 export const containerName = (instanceId: string) => `agents-box-${instanceId}`
 const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
 
+// What docker said went wrong. Never the error's message, which repeats the
+// command line and so the box's token.
+function dockerProblem(error: unknown): string {
+  const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr : ''
+  // Docker ends with a usage hint, "Run 'docker run --help' for more information", which says nothing here.
+  const said = stderr.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith("Run 'docker")).slice(-2).join(' ')
+  // Docker usually says why on stderr. When it says nothing, this is all there is to tell.
+  return said || 'Docker could not start the container and gave no reason.'
+}
+
+const BoxKind = z.object({ personal: z.boolean() })
+
 // Starts a fresh container for the box from the current image, on the box's volume.
-// The token is new each time, since only its hash is kept.
+// The token is new each time, since only its hash is kept. A person's own box
+// never gets the team's Claude token: it runs Claude on its owner's own sign-in.
 async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {
   const token = `machine_${randomBytes(24).toString('base64url')}`
   await client.query('update instances set token_sha256 = $2 where id = $1', [instanceId, sha256(token)])
+  const { personal } = BoxKind.parse(await one(client, 'the box', 'select personal from instances where id = $1', [instanceId]))
   await docker('rm', '-f', containerName(instanceId)).catch(() => {})
   const env = ['-e', `AGENTS_API=${API_FROM_BOX}`, '-e', `AGENTS_TOKEN=${token}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app']
-  if (existsSync(CLAUDE_TOKEN_FILE)) env.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()}`)
+  if (!personal && existsSync(CLAUDE_TOKEN_FILE)) env.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()}`)
   const extra = JSON.parse(process.env.AGENTS_BOX_DOCKER_ARGS ?? '[]') as string[]
   await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped',
     '--label', `agents.instance=${instanceId}`, '-v', `${containerName(instanceId)}-home:/home/agent`, ...env, ...extra, IMAGE)
@@ -79,6 +95,16 @@ const NAME_TRIES = 9
 function boxNameFor(login: string): string {
   const local = (login.split('@')[0] ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24)
   return `box-${local || 'person'}`
+}
+
+// A box for someone who joined before boxes were made on joining. Each person has one at most.
+export async function makeOwnBox(person: { id: PersonId; team_id: TeamId; login: string }): Promise<InstanceId> {
+  try {
+    return await tx((client) => addPersonalBox(client, person.team_id, person.id, person.login))
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new HttpError(409, 'You already have a box.')
+    throw error
+  }
 }
 
 // A person's own box, named after their login, held by them for good. The
@@ -132,13 +158,26 @@ export async function claimBox(client: pg.PoolClient, teamId: string, runId: str
 
 // Starts the container of every box a person or an active run holds, if it is
 // not running. Runs outside any run's transaction, after claims have committed.
+const HeldBox = z.object({ id: InstanceId, start_error: z.string().nullable() })
+
 export async function startClaimedBoxes(teamIds: string[] | null) {
-  const { rows } = await pool.query<{ id: string }>(
-    `select i.id from instances i left join runs r on r.id = i.claimed_by_run
+  const rows = (await many(pool,
+    `select i.id, i.start_error from instances i left join runs r on r.id = i.claimed_by_run
      where i.kind = 'box' and ($1::uuid[] is null or i.team_id = any($1))
-       and (i.claimed_by is not null or r.status in ('queued', 'running', 'waiting'))`, [teamIds])
+       and (i.claimed_by is not null or r.status in ('queued', 'running', 'waiting'))`, [teamIds])).map((row) => HeldBox.parse(row))
   for (const box of rows) {
-    await startContainer(pool, box.id).catch((e: unknown) => { console.error(`starting box ${box.id}:`, e instanceof Error ? e.message : e) })
+    try {
+      await startContainer(pool, box.id)
+      if (box.start_error !== null) await pool.query('update instances set start_error = null where id = $1', [box.id])
+    } catch (error) {
+      // The runner tries again on its next tick, and the box's owner sees why it
+      // is not running. A reason is logged once, when it is new.
+      const problem = dockerProblem(error)
+      if (problem !== box.start_error) {
+        console.error(`starting box ${box.id}: ${problem}`)
+        await pool.query('update instances set start_error = $2 where id = $1', [box.id, problem])
+      }
+    }
   }
 }
 

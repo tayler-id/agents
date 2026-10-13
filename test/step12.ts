@@ -140,6 +140,22 @@ try {
   const bossMe = await asPerson(PEOPLE, `Boss12-${id}@Mail.Test`, 'GET', '/v1/me')
   check(bossMe.json?.kind === 'member' && bossMe.json.person.role === 'admin', 'an invite for an admin makes an admin, matching the login whatever its case')
 
+  // Boxes. This API's box image is never built, so the runner's tries to start them fail.
+  const ownBoxId: string = must(boxes[0], 'their box').id
+  const stuck = await within(30, async () => /No such image|Unable to find image/.test((await row('select start_error from instances where id = $1', [ownBoxId]))?.start_error ?? ''))
+  const startError: string = (await row('select start_error from instances where id = $1', [ownBoxId]))?.start_error ?? ''
+  check(stuck && !/machine_|AGENTS_TOKEN|CLAUDE_CODE_OAUTH_TOKEN/.test(startError) && !/AGENTS_TOKEN=|machine_[A-Za-z0-9_-]{20}/.test(api.text()),
+    `a box that cannot start keeps Docker's reason for its owner, with no token in it or in the log (${startError})`)
+  const boxMade = await asPerson(PEOPLE, member, 'POST', '/v1/me/box')
+  const memberBox = await row('select id, personal, owner_id, claimed_by from instances where owner_id = (select id from people where login = $1) and personal', [member])
+  check(boxMade.status === 200 && memberBox?.id === boxMade.json?.instanceId && memberBox?.claimed_by === memberBox?.owner_id
+    && (await asPerson(PEOPLE, member, 'POST', '/v1/me/box')).status === 409,
+  'someone on the team from before makes their own box, and only one')
+  const theirs = await asPerson(PEOPLE, member, 'POST', '/v1/agents', { name: `notmine-${id}`, homeInstanceId: ownBoxId })
+  const mine = await asPerson(PEOPLE, invitee, 'POST', '/v1/agents', { name: `mine-${id}`, homeInstanceId: ownBoxId })
+  check(theirs.status === 403 && /teammate's own/.test(theirs.json?.error) && mine.status === 200,
+    "only a box's owner makes agents whose home it is")
+
   // Waiting, and one click to add.
   const waiting = await asPerson(PEOPLE, github, 'GET', '/v1/me', undefined, 'GH Twelve')
   // Electric follows Postgres's log, so a row reaches a shape a moment after it is written.

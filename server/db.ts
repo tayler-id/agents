@@ -24,6 +24,9 @@ export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<
   }
 }
 
+// Postgres refused a row that a unique index already has.
+export const isUniqueViolation = (error: unknown) => error instanceof Error && 'code' in error && error.code === '23505'
+
 // Reading rows. Pick by what a missing row means: `one` when it is a bug, so it
 // throws and says which row; `maybe` when it is a normal case the caller handles.
 // The coding-standards skill, "Read database rows with one, maybe or many".

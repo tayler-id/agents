@@ -33,6 +33,7 @@ import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
+import { boxRoutes } from './box-routes.ts'
 import {
   EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
@@ -389,6 +390,7 @@ const routes: Route[] = [
   }],
 
   ...onboardingRoutes,
+  ...boxRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']

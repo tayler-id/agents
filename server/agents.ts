@@ -5,7 +5,9 @@
 
 import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
+import { z } from 'zod'
 import { many, maybe, one } from './db.ts'
+import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
 import { NAME } from '../shared/types.ts'
 import { HttpError, type Person } from './record.ts'
@@ -42,12 +44,17 @@ export async function agentOf(client: pg.PoolClient, person: Person, agentId: st
   return agent
 }
 
+const Home = z.object({ id: InstanceId, personal: z.boolean(), owner_id: PersonId.nullable() })
+
 export async function createAgent(client: pg.PoolClient, person: Person, body: Record<string, unknown>): Promise<string> {
   const name = text(body.name, 'name', 40)
   if (!NAME.test(name)) throw new HttpError(400, 'name must be lowercase letters, digits and dashes, starting with a letter')
-  const home = await maybe<{ id: string }>(client,
-    'select id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])
-  if (!home) throw new HttpError(404, 'no such machine')
+  const found = await maybe(client,
+    'select id, personal, owner_id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])
+  if (!found) throw new HttpError(404, 'no such machine')
+  const home = Home.parse(found)
+  // Agents on a person's own box run on that person's Claude sign-in, so only they put agents there.
+  if (home.personal && home.owner_id !== person.id) throw new HttpError(403, "That box is a teammate's own. Only they can make agents on it.")
   const taken = await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [person.team_id, name])
   if (taken) throw new HttpError(409, `there is already an agent named ${name}`)
   const agent = await one<{ id: string }>(client, 'the new agent',
