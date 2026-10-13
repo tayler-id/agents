@@ -304,7 +304,18 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
   return { instance: state.name, ok: checks.every((c) => c.ok), checks }
 }
 
-const docker = async (...args: string[]) => (await run('docker', args)).stdout.trim()
+const docker = async (...args: string[]) => {
+  try {
+    return (await run('docker', args)).stdout.trim()
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      throw new CliError(EXIT.failed, "docker is not on PATH, and down needs it to remove the instance's boxes", [
+        'Put the folder holding docker on PATH (/opt/homebrew/bin on this Mac), then run down again. It carries on where it stopped',
+      ])
+    }
+    throw error
+  }
+}
 async function dockerHas(kind: 'container' | 'volume', name: string): Promise<boolean> {
   try {
     await docker(kind, 'inspect', name)

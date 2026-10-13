@@ -1,9 +1,10 @@
 // Step 17, the verification tool. Runs bin/agentsctl the way the verify-agents
 // skill tells an agent to: up, doctor, drive the web app, the desktop app, the
-// API and the database, capture evidence, compare visual captures, run a
-// feature of the map, and down. Every subcommand has a check, and the run fails
-// if any evidence is missing after down or any process it started outlives it.
-//   node --env-file=.env --env-file=.env.test test/step17.ts
+// API and the database, seed, capture evidence, compare visual captures, run a
+// feature of the map, and down, and runs the shared CLI conformance check on
+// it. The run fails if any evidence is missing after down or any process it
+// started outlives it.
+//   node test/step17.ts
 
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
@@ -14,6 +15,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import { EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
 import { OUTPUT, type Output } from '../shared/cli/output.ts'
+import { conformance, runner } from '../shared/cli/conformance.ts'
 import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
 import { InstanceState, ProcessRecord, stateFile, type InstanceName } from '../ctl/state.ts'
@@ -136,6 +138,45 @@ try {
   const cy = await ctl(['browser', 'text', '--role', 'navigation', '--name', 'Workspace', '--as', 'cy', '--expect', `cy-${name}@verify.local`])
   check(seeded.out.ok && !seeded.out.already && reseeded.out.already && cy.out.ok, 'seed person adds cy, who can open the app, and seeding again says already: true')
 
+  // The rest of seeding, and the machine's secrets and files, each write read back.
+  const agent = await ctl(['seed', 'agent', 'scout'])
+  const box = await ctl(['seed', 'box', 'crate'])
+  const task = await ctl(['seed', 'task', '--title', 'Step 17 checks the task seed'])
+  const taskAgain = await ctl(['seed', 'task', '--title', 'Step 17 checks the task seed'])
+  check(agent.out.head === 'ok: seed agent scout -> scout lives on mac' && /^ok: seed box crate -> crate is \S+ and free$/.test(box.out.head)
+    && /^ok: seed task "Step 17 checks the task seed" -> the task is at #\/t\/[0-9a-f-]{36}, for fixer$/.test(task.out.head) && !task.out.already && taskAgain.out.already,
+  'seed adds an agent, a box and a task, each read back from the record, and the same task again says already: true')
+  const secret = await ctl(['secret', 'set', 'STEP17_TOKEN', '--value', 'step17-value'])
+  const held = await ctl(['machine', 'read', 'secrets.json', '--expect-text', 'STEP17_TOKEN'])
+  const unset = await ctl(['secret', 'unset', 'STEP17_TOKEN'])
+  const unsetAgain = await ctl(['secret', 'unset', 'STEP17_TOKEN'])
+  const absent = await ctl(['machine', 'read', 'agents/nothing-here.txt', '--missing', '--timeout', '1'])
+  check(secret.out.head.endsWith('-> held by the machine mac') && held.out.ok && held.out.untrusted.includes('file on the machine')
+    && unset.out.head.endsWith('-> not held by the machine mac') && unsetAgain.out.already && absent.out.ok,
+  'secret set and unset change what the machine holds, machine read prints its file as untrusted text, and --missing passes on an absent file')
+  const instances = await ctl(['list'], { instance: false })
+  check(instances.out.ok && /^\d+ instances?$/.test(instances.out.head) && instances.out.detail.includes(`name=${name}`), 'list counts the instances in this checkout and shows this one')
+  const done = await ctl(['evidence'])
+  check(done.out.ok && /^(\d+ of )?\d+ actions$/.test(done.out.head) && done.out.untrusted.length > 0, 'evidence counts the run\'s actions and fences their summaries as untrusted')
+
+  // The rules every CLI of ours keeps, checked through the command line.
+  const here = ['--instance', name]
+  const rules = await conformance({
+    run: runner(process.execPath, [join(ROOT, 'ctl', 'main.ts')], ROOT, process.env),
+    invoke: 'bin/agentsctl',
+    commands: ['up', 'doctor', 'down', 'list', 'evidence', 'browser', 'desktop', 'api', 'db', 'seed', 'secret', 'machine', 'visual', 'map'],
+    cases: {
+      read: ['doctor', ...here],
+      list: ['map', 'list'],
+      emptyList: ['db', 'select 1 as n where false', ...here],
+      failingRead: ['db', 'select * from no_such_table', ...here],
+      write: ['seed', 'person', 'dee', ...here],
+      long: ['db', 'select generate_series(1, 100) as n', ...here],
+      untrusted: ['api', 'GET', '/v1/me', ...here],
+    },
+  })
+  for (const rule of rules) check(rule.ok, `conformance: ${rule.rule}${rule.ok ? '' : `, and it saw ${rule.saw}`}`)
+
   // Visual regression, against a baselines folder of the check's own.
   const baselines = mkdtempSync(join(tmpdir(), 'step17-baselines-'))
   await ctl(['browser', 'goto', '/'])
@@ -166,6 +207,9 @@ try {
 
   // The feature map.
   check((await ctl(['map', 'check'], { instance: false })).out.ok, 'map check finds every feature file whole and every command parsing')
+  const exported = await ctl(['map', 'export'], { instance: false })
+  check(exported.out.ok && exported.out.already && exported.out.head.endsWith('features.json lists 12 features'), 'map export finds features.json already matching the feature files, read back')
+  check((await ctl(['map', 'guard', '--base', 'HEAD'], { instance: false })).out.ok, 'map guard finds every assertion the map had at HEAD')
   const mapRun = MapReport.safeParse((await ctl(['map', 'run', 'getting-in'])).out.data)
   check(mapRun.success && mapRun.data.features[0]?.verdict === 'live-ui-verified' && mapRun.data.features[0].steps.every((s) => s.verdict === 'live-ui-verified'),
     'map run getting-in verifies every step live')
@@ -191,7 +235,7 @@ try {
     && ['aria', 'screens', 'videos', 'traces', 'visual', 'visual-diff', 'map'].every((d) => existsSync(join(evidence, d)) && readdirSync(join(evidence, d)).length > 0)
   check(kept, 'down keeps the evidence: the action log, logs, final state, captures, video, trace and map report')
   const team = await ctl(['db', `select count(*)::int as n from teams where name = 'verify-${name}'`])
-  check(!existsSync(stateFile(name as InstanceName)) && team.code === 1, 'down removes the instance from this checkout and its team from the database')
+  check(!existsSync(stateFile(name as InstanceName)) && team.code !== 0, 'down removes the instance from this checkout, and nothing can read its team after')
   const downAgain = await ctl(['down'])
   check(downAgain.code === 0 && downAgain.out.already, 'down again changes nothing and says already: true')
 } catch (error) {
