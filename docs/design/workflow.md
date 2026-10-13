@@ -27,6 +27,51 @@ Start, edit and discard lock the session row and refuse anything that is no long
 
 **What each person sees.** New task has Save draft beside Start task. A draft opens as its own page with the form filled in, Start task and Discard draft, and says who wrote it. Teammates see it in the sidebar's tasks, marked draft. Anyone who can see the task can edit, start or discard it, the way anyone can answer an ask.
 
+## Order of work: what blocks a task, what is held, and what is ready
+
+**Solves.** Tayler approved this addition. A task can wait on other tasks, a person can pause one on purpose and say why, and anyone, or any agent, can ask what is ready to start next. Another agent will use the edges for stacked pull requests and the holds for "waiting on Tayler", so the shapes live in `shared/work.ts`.
+
+**A task's state.** The ready query needs to know which tasks wait to start, so a task now has a state, derived from what is already stored, with one new column.
+
+- `queued`, a draft: written, not started. The queue is the drafts.
+- `active`, started and not done.
+- `done`, once someone marks it done. `tasks.done_at` holds when.
+- `discarded`, a draft someone threw away, archived.
+
+One transition table in `shared/work.ts` holds every action and the states it may start from, so the draft actions above are rows in it.
+
+| Action | From | To |
+|---|---|---|
+| edit, start, discard | queued | queued, active, discarded |
+| done | queued or active | done |
+| reopen | done | queued or active, as before it was done |
+
+**Blocking edges.** `task_blocks` holds one row per edge: the blocked task, the task blocking it, an optional one-line reason, who added it and when. A task is blocked while any task blocking it is neither done nor discarded.
+
+- Adding an edge needs both tasks to be the team's and visible to the person. It refuses an edge from a task to itself, and one that would close a cycle, which a recursive query checks under a team lock so two people cannot close one together.
+- Discarding a task that still blocks a queued or active task is refused, naming what it blocks.
+
+**Holds.** `task_holds` holds at most one hold per task: its kind, a one-line reason, an optional until date, who held it and when.
+
+- The kinds are `decision` (waiting on a person's decision), `external`, `load`, `parked` and `future`.
+- A hold with an until date lapses on that date and after, by the server's date, and the task can be ready again. A lapsed hold stays recorded until someone lifts it or holds the task again.
+- A hold can pause queued or active work. A done or discarded task takes none.
+
+**Priority.** `tasks.priority`, 0 the most urgent and 4 the least, 2 by default.
+
+**The ready query.** Queued tasks that nothing blocks and no current hold pauses, ordered by priority, then by age, oldest first, then by id. Beside it, the held tasks with their kind, reason and until date. One server function answers both, for the app at `GET /v1/tasks/ready` and for agents through the team-record tool `ready_tasks`, so both see the same list.
+
+**Commands.** Each is idempotent and answers `{ already }`, true when there was nothing to change, instead of an error.
+
+- `POST /v1/tasks/:id/blockers` adds an edge, or changes its reason. `POST /v1/tasks/:id/blockers/:blocker/remove` removes it.
+- `POST /v1/tasks/:id/hold` holds the task, or changes its hold. `POST /v1/tasks/:id/unhold` lifts it.
+- `POST /v1/tasks/:id/priority` sets the priority.
+- `POST /v1/tasks/:id/done` and `POST /v1/tasks/:id/reopen`.
+
+An action from a state it cannot start from, such as holding a discarded task, is still a 409 that names the state.
+
+**What each person sees.** The sidebar lists Ready, the next tasks to start in order, and Held, each with its kind and reason. A task's page and a draft's page show its priority, what blocks it and why, its hold or a way to hold it, and Mark done or Reopen.
+
 ## Several repos in one task
 
 **Solves.** New task picks one or more repos. The workspace already makes one clone per repo, and everything after setup now handles several.
@@ -145,6 +190,8 @@ Migration `0007_workflow.sql`:
 
 - `file_changes`, new, as above.
 - `pushes`, new, as above.
+- `task_blocks` and `task_holds`, new, as above.
+- `tasks.priority` and `tasks.done_at`, new columns.
 
 Used for the first time, with no change to the schema: the `draft` session status, `comments.anchor.occurrence`, a push command's `base` per repo and its result's `ahead`, and `permissions` in a message command's payload.
 
