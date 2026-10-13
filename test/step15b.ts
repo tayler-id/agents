@@ -5,8 +5,8 @@
 // live, takes over, types into the box's page, and hands it back, while a
 // teammate watching sees who has it. Measures the time from a key press in the
 // browser to the changed pixels on its screen. Opens a screenshot the agent
-// saved. Scans for accessibility problems and takes screenshots (light, dark,
-// phone) to look at.
+// saved. Then stops the box, and the Screen view must say so. Scans for
+// accessibility problems and takes screenshots (light, dark, phone) to look at.
 // The box reaches this check's API only on 7701, the machine port the box
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step15b.ts
@@ -17,11 +17,11 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
+import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { must } from './must.ts'
-import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, tryDocker, boxCheckEnv, computerTools, pageSays, stopAll } from './computers.ts'
+import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, docker, tryDocker, boxCheckEnv, computerTools, pageSays, stopAll } from './computers.ts'
 
 const SHOTS = join(ROOT, 'test', 'ui-shots')
 const PEOPLE_PORT = 7982
@@ -100,16 +100,20 @@ async function onPage(page: Page, x: number, y: number) {
   return { x: box.x + (x * box.width) / SCREEN.width, y: box.y + (y * box.height) / SCREEN.height }
 }
 
+// A person's page in one engine, signed in by the header the people port
+// reads, with any page error kept in `errors`.
+async function openPage(browser: Browser, engine: string, errors: string[], login: string, path: string, options: Record<string, unknown> = {}) {
+  const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': login }, viewport: { width: 1440, height: 900 }, ...options })
+  const page = await context.newPage()
+  page.on('pageerror', (error) => errors.push(`${login}: ${error.message}`))
+  await page.goto(path)
+  return page
+}
+
 async function runEngine(engine: string, taskId: string, sessionId: string, instanceId: string, imageId: string, tools: Awaited<ReturnType<typeof computerTools>>['client']) {
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
-  const open = async (login: string, path: string, options: Record<string, unknown> = {}) => {
-    const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': login }, viewport: { width: 1440, height: 900 }, ...options })
-    const page = await context.newPage()
-    page.on('pageerror', (error) => errors.push(`${login}: ${error.message}`))
-    await page.goto(path)
-    return page
-  }
+  const open = (login: string, path: string, options: Record<string, unknown> = {}) => openPage(browser, engine, errors, login, path, options)
   try {
     // Alice opens the task, and its screen beside it.
     const page = await open(alice, `/#/t/${taskId}`)
@@ -221,6 +225,35 @@ async function runEngine(engine: string, taskId: string, sessionId: string, inst
   }
 }
 
+// Once the box has stopped, its Screen view says so and offers to reconnect,
+// at desktop and phone width. Until the API drops the silent box, the view says
+// the box did not answer, and a person would press Reconnect, as this does.
+async function stoppedScreen(engine: string, taskId: string, sessionId: string, instanceId: string) {
+  const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
+  const errors: string[] = []
+  const saysStopped = async (page: Page) => within(90, async () => {
+    if (await visible(page, '.screen-status', 1, /The box is not connected/)) return true
+    const reconnect = page.getByRole('button', { name: 'Reconnect' })
+    if (await reconnect.isVisible()) await reconnect.click()
+    return false
+  })
+  try {
+    const path = `/#/t/${taskId}/screen/${instanceId}/${sessionId}`
+    const page = await openPage(browser, engine, errors, alice, path)
+    const said = await saysStopped(page)
+    await page.screenshot({ path: join(SHOTS, `${engine}-screen-stopped-light.png`) })
+    const offers = await page.getByRole('button', { name: 'Reconnect' }).isVisible() && await page.getByRole('button', { name: 'Take over' }).count() === 0
+    const phone = await openPage(browser, engine, errors, alice, path, { viewport: { width: 390, height: 844 }, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
+    const phoneSaid = await saysStopped(phone)
+    const phoneFits = await noSideScroll(phone, ['.screen-panel', '.screen-status', '.panel-head'])
+    await phone.screenshot({ path: join(SHOTS, `${engine}-screen-stopped-phone.png`) })
+    check(said && offers && phoneSaid && phoneFits && errors.length === 0,
+      `${engine}: a stopped box's Screen view says it is not connected and offers to reconnect, on a phone too${errors.length ? ` (${errors.join('; ')})` : ''}`)
+  } finally {
+    await browser.close()
+  }
+}
+
 process.on('SIGTERM', () => {
   for (const child of children) child.kill('SIGTERM')
   process.exit(1)
@@ -269,6 +302,9 @@ try {
   const imageId = must(await one(`select id from artifacts where task_id = $1 and path = 'checks/agents-check-page.png'`, [taskId]), 'image document').id as string
 
   for (const engine of engines) await runEngine(engine, taskId, sessionId, instanceId, imageId, tools)
+
+  docker('stop', container)
+  for (const engine of engines) await stoppedScreen(engine, taskId, sessionId, instanceId)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? ''}`)

@@ -6,8 +6,9 @@
 // port and take it over: only the one who holds it can type, the agent is
 // refused until they hand it back, the record shows it, and a view closed
 // without handing back gives the screen back on its own. A screenshot the agent
-// saves becomes an image document. Prints the image's size, the time from a key
-// press in a viewer to its pixels, and the box's memory and CPU.
+// saves becomes an image document. When the box stops, its viewers are told.
+// Prints the image's size, the time from a key press in a viewer to its pixels,
+// and the box's memory and CPU.
 // The box reaches this check's API only on 7701, the machine port the box
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step15.ts
@@ -379,6 +380,17 @@ try {
   })
   console.log(`      agent driving the screen: ${busy.peak} MiB at most, CPU up to ${busy.cpu}%`)
   console.log(`      Chromium, Firefox and WebKit at once beside it: ${browsers.peak} MiB at most, CPU up to ${browsers.cpu}%`)
+
+  // The box stops. Bob, still watching, is told, and from then on the screen
+  // says the box is not connected, to anyone opening it or taking it over. The
+  // API drops a silent box within SCREEN_DEAD_MS plus one SCREEN_PING_MS.
+  docker('stop', container)
+  const notConnected = 'closed 4404 The box is not connected. It may be stopped.'
+  const toldBob = await within(30, async () => bobView.closed !== null)
+  const saysStopped = await within(90, async () => await outcome(alice, instanceId) === notConnected)
+  const takeStopped = await post(alice, `/v1/screens/${instanceId}/take`, { sessionId })
+  check(toldBob && bobView.closed?.code === 4502 && saysStopped && takeStopped.status === 409,
+    `when the box stops, a viewer is told it closed the screen, and the screen then says it is not connected (${bobView.closed?.code ?? 'still open'}, take ${takeStopped.status})`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack}`)
