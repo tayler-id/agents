@@ -1,6 +1,6 @@
 # Verification as a repo capability
 
-Agents writes code with its agents, and Tayler wants to trust that work without rereading it. The rule this design holds to: an agent proves a change by driving the running app the way a person does, and keeps the evidence. For that to be one command and not a new conversation each time, every repo a team works on carries a verification skill, a feature map, and a tool that runs and drives the app. Agents' own repo has them now. This document says how Agents makes and keeps them for any repo, as pipelines, and what of that exists and has been proven.
+Agents writes code with its agents, and Tayler wants to trust that work without rereading it. The rule this design holds to is that an agent proves a change by driving the running app the way a person does, and keeps the evidence. For that to be one command and not a new conversation each time, every repo a team works on carries a verification skill, a feature map, and a tool that runs and drives the app. Agents' own repo has a first version of all three. This document says how Agents would make and keep them for any repo, as pipelines, and ends with what exists, what was run, and what is not done.
 
 ## What a repo carries
 
@@ -14,7 +14,8 @@ Three things, all in the repo, so they change in the same commit as the code the
 
 A pipeline, the framework's router and its gates talk to a driver only through its command line, so every repo's driver follows the same contract:
 
-- Commands: `up`, `doctor`, `down`, `browser <op>`, `api`, `db`, `seed`, `visual shot|compare|baseline`, `map list|check|run|guard`.
+- Commands: `up`, `doctor`, `down`, `browser <op>`, `api`, `db`, `seed`, `visual shot|compare|baseline`, `map list|check|export|run|guard`.
+- Evidence: each run's `evidence.json` lists every capture in the shape `EVIDENCE_MANIFEST` in `shared/evidence.ts`, and the map's `features.json` has the shape `FEATURE_MAP` there. The framework's gates read both with those schemas.
 - Output: plain text by default, and with `--json` one envelope (`Output` in `ctl/output.ts`) with `ok`, `head`, `detail`, `already`, `code`, `files`, `help` and `data`. A write leads with `ok:` and its resulting state. Every command ends with next steps.
 - Exit codes: 0 done, 1 failed and safe to retry once fixed, 2 usage error, 3 refused with nothing changed.
 - Every write is safe to rerun and says `already: true` when it changed nothing. `--dry-run` parses a command and names its target without running it.
@@ -55,20 +56,28 @@ Its stages:
 5. **guard** (check). `bin/agentsctl map guard --base origin/main` fails when the change removes or loosens any expectation in the map, since a weaker expectation is how a regression gets hidden. A pull request that must drop one (a feature removed on purpose) names the commit that removed it, and the shepherd sees the guard's list.
 6. **open_pr**, **shepherd**, **merge**, only on `changed`.
 
-Edit scope is the skill's folder and the driver. The pass never edits product code: a behaviour the map describes that the app no longer has is either drift (fix the map) or a regression (report it), and the guard keeps the second from passing as the first.
+Edit scope is the skill's folder and the driver. The pass never edits product code. A behaviour the map describes that the app no longer has is either drift (fix the map) or a regression (report it), and the guard keeps the second from passing as the first.
 
-## What exists, and what was proven
+## What exists, and what is not done
 
-Built in this repo and proven by running it:
+As of 2026-10-13, on the branch `worktree-agent-ae995231ee16af626`, not merged.
 
-- Agents' own skill, `.claude/skills/verify-agents/`, with a feature map of twelve files covering every section of the user guide, and baselines for its key views.
-- `bin/agentsctl` and `ctl/`, the driver, following the contract above. `test/step17.ts` runs the skill's launch, health check, a drive and cleanup through the command line, and fails if evidence goes missing or a process outlives the run. Each subcommand's check was seen failing under a break (`test/step17-breaks.ts`).
-- `map run`, which runs a feature file as written and gives each step a verdict, and `map check`, the index stage above.
-- `map guard`, the guard stage above.
-- The live stage's commands, run by hand: a full sweep on a fresh instance with visual captures, recorded in the build log with every step's verdict.
+Built, and run by hand on instances of the test system:
 
-Designed here and not built yet:
+- `bin/agentsctl` and `ctl/`. Run against an instance at least once, by the evidence folders' action logs: `up`, `doctor`, `down`, `api`, `db`, `seed`, `secret`, the browser and desktop driving ops, `browser a11y`, `console`, `network`, `overflow`, `tab-to`, `record` and `reset`, `visual shot`, `compare` and `baseline`, and `map run`. `map list`, `check` and `export` run without an instance.
+- The skill, `.claude/skills/verify-agents/`, and its feature map of twelve files, each with its map entry, plus `features.json` built from the entries.
+- `shared/evidence.ts`, the schemas for the evidence manifest (`evidence.json`) and the feature map that the framework's gates read. `visual shot` writes the manifest, and `visual compare` and `visual baseline` read captures only through it.
+- One full sweep, `map run all --keep-going` without `--visual`, on instance `m5`. Six features passed every step live: getting-in, agents, documents, secrets, machines and journeys. tasks passed 6 of 7 and conversations 13 of 16 (the interrupt steps need real Claude). sessions passed 7 of 10, pipelines 11 of 13, proposals 3 of 6 and approvals 0 of 8. The map and driver faults behind those failures are fixed and not yet rerun. The rest are product bugs, each noted in its feature file.
+- `map check`, seen failing when `features.json` differs from the entries, and passing again once restored.
 
-- The pipeline files `verify-create.ts` and `verify-maintain.ts`. Each stage maps to a command that exists, so the files are mostly prompts and `next` maps, and the router and gates can run the commands directly in the meantime.
-- Running them on a box. A box would need the app's own services (here Postgres and Electric for the test database) and the three browsers. Today's box image has neither, and boxes reach only the live API's port, so the live stage runs on the server Mac until the box image grows them.
-- The generate stage for a repo that is not Agents. The driver's browser layer, evidence, visual compare and map runner are repo-independent. The instance lifecycle and seeding in `ctl/instance.ts` and `ctl/seed.ts` are Agents' own and are what generate writes for another repo.
+Not done:
+
+- `test/step17.ts` is written and typechecks. It has never run.
+- `test/step17-breaks.ts` does not exist, so no subcommand's check has been seen failing under a break.
+- No visual baselines exist. `.claude/skills/verify-agents/baselines/` is made once a sweep with `--visual` is reviewed and accepted.
+- Never run live: `machine read` (its steps need real Claude), `browser trace` and `browser focus`. `map guard` has not run against a base that has the map, so it has not been seen failing.
+- No step tagged `(real Claude)` has run: the tool approvals and the two interrupts.
+- A UI bug counts once a second agent confirms its recordings. One bug has its two recordings, and nobody has confirmed them yet. The others have been seen once.
+- The pipeline files `verify-create.ts` and `verify-maintain.ts`. Each stage maps to a command that exists, so the files are mostly prompts and `next` maps.
+- Running them on a box. A box would need the app's own services (here Postgres and Electric for the test database) and the three browsers. Today's box image has neither, and boxes reach only the live API's port, so the live stage would run on the server Mac.
+- The generate stage for a repo that is not Agents. The driver's browser layer, evidence, visual compare and map runner do not depend on Agents. The instance lifecycle and seeding in `ctl/instance.ts` and `ctl/seed.ts` are Agents' own, and are what generate would write for another repo.

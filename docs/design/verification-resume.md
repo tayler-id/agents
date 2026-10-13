@@ -30,13 +30,13 @@ Fixed since, where the map or the driver was at fault, and not yet rerun live: a
 
 ## In progress
 
-The coordinator's review findings, in this order:
+The coordinator's review findings are done:
 
-1. Done: `shared/evidence.ts`, committed alone.
-2. Make agentsctl write and read evidence only through it. `visual shot` writes each capture into the run's `evidence.json` (and a copy at `.scratch/verify/evidence.json`, the path the check host reads); `visual compare` and `baseline` read captures from the manifest and check each sha256; each feature file gets its map entry as a json block, `features.json` is built from those blocks, and `map check` fails when the two differ. `ctl/verdict.ts` and the engine and width enums in `ctl/protocol.ts` go, replaced by the shared ones.
-3. Correct `docs/design/verification.md` so it claims only what is built and proven, and lists what is not.
+1. `shared/evidence.ts`, committed alone (id at the top of this note).
+2. agentsctl writes and reads evidence only through it (`08450d8`). `visual shot` lists each capture in the run's `evidence.json` and copies it to `.scratch/verify/evidence.json`; `visual compare` and `baseline` read captures from the manifest and check each sha256; each feature file carries its map entry, `map export` writes `features.json`, and `map check` fails when they differ (seen failing, then passing once restored). Engines, widths and verdicts come from the shared module; the flag is `--width`, and `visual baseline` takes `--view`.
+3. `docs/design/verification.md` claims only what was built and run, by the evidence folders' action logs, and lists what is not done.
 
-Then the shared CLI library (next steps, 1).
+Next is the shared CLI library (next steps, 1).
 
 ## Product bugs found
 
