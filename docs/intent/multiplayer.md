@@ -10,7 +10,7 @@ Confirmed with Tayler on 2026-10-11 through an interview. This is what the rebui
 - **Success.** Two people work at once. A teammate's Claude finds and uses my fix from an hour earlier without anyone pasting it in. I open their session live from the app. A bug-fix run on a cloud box shows up in the same record and gets one proposed improvement that I approve.
 - **Constraints.**
   - Postgres is the only system of record.
-  - Reads sync over plain HTTP, with no WebSockets. The stack follows HumanLayer's: a sync engine in the style of Electric that reads Postgres's write-ahead log like a read replica and serves shapes, an auth proxy in front of it, and a durable stream server for live tokens.
+  - Reads sync over plain HTTP, with no WebSockets. The stack is a sync engine in the style of Electric that reads Postgres's write-ahead log like a read replica and serves shapes, an auth proxy in front of it, and a durable stream server for live tokens.
   - Everyone on the team sees everything, enforced at the proxy. Each session carries an access list from day one, so locking a session or adding a team later changes the proxy, not the schema.
   - Secrets are scrubbed before anything is written.
   - Claude runs through my subscription.
@@ -24,6 +24,4 @@ The shared record moves to the front. Phase 1 sits on Postgres and the sync stac
 
 ## Sources
 
-- HumanLayer's sync architecture, Kyle Mistele on AI That Works, "syncs and A/B testing 200 agents" (2026-08-18), from 25:08. Transcript in `hellovai/ai-that-works/2026-08-18-syncs-and-ab-testing-200-agents`.
-- Software factory layers (compute, dev environment, harness, orchestration) and Boundary's factory, AI That Works, "Software Factory Design Patterns" (2026-08-25). Transcript in `hellovai/ai-that-works/2026-08-25-software-factory-design-patterns`.
 - Electric's auth guide, `electric.ax/docs/guides/auth`: shapes are plain HTTP, and a proxy sets the table and `where` filter server side.

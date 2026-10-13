@@ -1,4 +1,4 @@
-// Takes a bug report to a reviewed pull request, after Boundary's bug-fixing flow. It
+// Takes a bug report to a reviewed pull request. It
 // checks whether the bug is known or already fixed, proves it with a failing
 // test, then fixes it or writes a plan, and the shepherd decides.
 

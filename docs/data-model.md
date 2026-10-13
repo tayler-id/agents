@@ -10,7 +10,7 @@ We copy the product we studied, not its name, and everything it runs is an **age
 
 ### The shape
 
-Everything lives in one app. Conversations are where the team and its agents talk. Work happens inside it, using HumanLayer's model: tasks, sessions, workspaces and artifacts, usually started from a conversation. Every session's events go into the shared record, which every agent can search. Pipelines run on top.
+Everything lives in one app. Conversations are where the team and its agents talk. Work happens inside it, in tasks, sessions, workspaces and artifacts, usually started from a conversation. Every session's events go into the shared record, which every agent can search. Pipelines run on top.
 
 ### Task
 
@@ -33,7 +33,7 @@ Named teammates with memory, skills, plugins, secrets, routines and a home machi
 
 ### Event
 
-One entry in a session's record. Events are only added, never rewritten, except to redact a leaked secret. Every event is kept whole in Postgres, as HumanLayer does.
+One entry in a session's record. Events are only added, never rewritten, except to redact a leaked secret. Every event is kept whole in Postgres.
 
 | Column | Type | What it holds |
 |---|---|---|

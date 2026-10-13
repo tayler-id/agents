@@ -60,7 +60,7 @@ Built in this order. Each step ends in a check that I first watch fail, then pas
 - A runner on pg-boss starts runs from cron and from GitHub, Linear and Slack webhooks.
 - Boxes can be claimed, released, shut down when idle and recreated from the image, with a volume for the home folder and workspace.
 - Every run records its pipeline version, metrics and spend. Each pipeline has a spend cap.
-- First pipeline, bug-fix, following Boundary's: a report comes in, check whether it's already fixed, remove duplicates, build a trusted reproduction, classify the difficulty, fix it or plan it, then ping the shepherd.
+- First pipeline, bug-fix: a report comes in, check whether it's already fixed, remove duplicates, build a trusted reproduction, classify the difficulty, fix it or plan it, then ping the shepherd.
 - Check: a bug report webhook starts a bug-fix run on a box, which opens a PR. The shepherd approves it, and the whole run is visible live with its version and metrics.
 
 ## Phase 3: refinement

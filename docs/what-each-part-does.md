@@ -134,7 +134,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### The bug-fix pipeline (`pipelines/bug-fix.ts`)
 
-- **Solves now.** A bug report becomes a reviewed pull request, after Boundary's bug-fixing flow. Triage checks for duplicates and whether the bug is already fixed. The agent writes a failing test, and the runner confirms it fails before any fix. The agent fixes it or writes a plan, the runner confirms the tests pass, opens the pull request and asks the shepherd. Approving merges it, which closes the issue.
+- **Solves now.** A bug report becomes a reviewed pull request. Triage checks for duplicates and whether the bug is already fixed. The agent writes a failing test, and the runner confirms it fails before any fix. The agent fixes it or writes a plan, the runner confirms the tests pass, opens the pull request and asks the shepherd. Approving merges it, which closes the issue.
 - **Helps later.** It is the first pipeline the improve pipeline works on.
 
 ### Boxes (`box/Dockerfile`, `server/boxes.ts`, `ops/box-firewall.sh`)
