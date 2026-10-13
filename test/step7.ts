@@ -85,7 +85,7 @@ const box = () => one<{ id: string; name: string; status: string; claimed_by_run
 const running = (container: string) => tryDocker('inspect', '-f', '{{.State.Running}}', container) === 'true'
 
 const boxEnv: Record<string, string> = {
-  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(work, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2),
+  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(work, 'people', 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2),
   AGENTS_BOX_API: `http://host.docker.internal:${PORT}`, AGENTS_MAX_BOXES: '1', AGENTS_BOX_IDLE_MIN: '1',
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
     '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
@@ -126,7 +126,7 @@ try {
   }))
 
   node('server/boxes.ts', 'build')
-  await servePeople(PORT + 1, join(work, 'people.sock'))
+  await servePeople(PORT + 1, join(work, 'people', 'people.sock'))
   api = spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...boxEnv, AGENTS_STREAMS_DIR: join(work, 'streams') },
   })

@@ -94,12 +94,16 @@ For the coordinator to run once Tayler approves. Nothing here was applied by thi
        "proto": "tcp",
        "accept": ["agents-server:80", "agents-server:7700"],
        "deny": ["agents-server:7710", "agents-server:1055", "agents-server:4437", "agents-server:5432",
-                "agents-server:5433", "agents-server:3000", "agents-server:3001", "agents-server:3002"]
+                "agents-server:5433", "agents-server:3000", "agents-server:3001", "agents-server:3002",
+                "agents-server-v6:7710", "agents-server-v6:1055", "agents-server-v6:4437", "agents-server-v6:5432",
+                "agents-server-v6:5433", "agents-server-v6:3000", "agents-server-v6:3001", "agents-server-v6:3002"]
      }
    ]
    ```
 
-   Tailscale runs the tests on every change to the policy and rejects a change that fails them, so a later edit that reopens one of those ports is refused. If the editor refuses an IPv6 address under `hosts`, put both addresses in the grant's `dst` directly, and the IPv4 address in the tests. If it refuses the tests block, leave it out and say so.
+   Tailscale runs the tests on every change to the policy and rejects a change that fails them, so a later edit that reopens one of those ports is refused. If the editor refuses an IPv6 address under `hosts`, put both addresses in the grant's `dst` directly, and the addresses in place of the aliases in the tests. If it refuses the tests block, leave it out and say so.
+
+   `autogroup:member` covers devices owned by people, not tagged devices. The AWS boxes are planned to join the tailnet tagged, so they will need a grant of their own to `tcp:7700`, and nothing more.
 2. **Settings, before the code lands.** Add `AGENTS_PEOPLE_SOCKET=/Users/<you>/.agents-app/people.sock` to `~/Projects/agents/.env`, so an API restarted at any point after landing finds it. The API on main ignores it. Add an empty `AGENTS_PEOPLE_SOCKET=` to `~/Projects/agents/.env.test` and to each worktree's `.env.test`, so a check that starts an API without its own socket stops instead of taking the live one.
 3. **Land the branch.** Branches that land after it need the change under "Other branches".
 4. **Point serve at the socket.** Serving a Unix socket needs root, so this asks for Tayler's password. The CLI does not check that the socket exists, so this goes before the restart, and the app over the tailnet answers 502 until step 5.
@@ -110,6 +114,8 @@ For the coordinator to run once Tayler approves. Nothing here was applied by thi
 
 5. **Restart the API** with `launchctl kickstart -k gui/$(id -u)/com.agents.api`. `~/.agents-app/api.log` then shows `people on /Users/<you>/.agents-app/people.sock` and `machines on 127.0.0.1:7700`.
 6. **Check, last.** In `~/Projects/agents`, `node --env-file=.env --env-file=.env.test test/live-tailnet.ts` passes all its lines, and the desktop app on this Mac still opens as Tayler.
+
+Run `test/live-tailnet.ts` again after any policy edit, serve change or API restart, then or later. After step 1 its two policy lines pass. The rest turn green at steps 4 and 5, when serve points at the socket and the new API stops listening on 7710. Between those two steps the line for the app through serve fails, since serve points at a socket the old API does not have.
 
 To undo, each part on its own:
 - **The code.** `git revert -m 1 <the merge commit>` on main, restart the API, and point serve back with `tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 http://127.0.0.1:7710`, which needs no root.

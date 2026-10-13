@@ -141,7 +141,7 @@ try {
     'without AGENTS_PEOPLE_SOCKET, or with it empty, the API stops at once and names it')
 
   const plain = join(home, 'plain', 'people.sock')
-  mkdirSync(dirname(plain))
+  mkdirSync(dirname(plain), { mode: 0o700 })
   writeFileSync(plain, 'not a socket')
   // The API's own reason, since on this Mac connecting to a plain file also fails, naming the path.
   check(await refuses(PORT + 12, plain, `${plain} is not a socket`) && readFileSync(plain, 'utf8') === 'not a socket',
