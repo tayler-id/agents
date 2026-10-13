@@ -12,7 +12,7 @@ import globals from 'globals'
 
 export default tseslint.config(
   // ops/seed/shop is the sample app the forge setup pushes, not this codebase.
-  { ignores: ['node_modules/', 'app/dist/', 'research/', 'docs/', '.scratch/', 'test/ui-shots/', 'eslint.config.js', 'ops/seed/'] },
+  { ignores: ['node_modules/', 'app/dist/', 'research/', 'docs/', '.scratch/', 'test/ui-shots/', 'eslint.config.js', 'ops/seed/', '.claude/worktrees/'] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
