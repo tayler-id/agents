@@ -66,11 +66,10 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
     }
     await driver.open(key)
     if (op.op === 'record') {
-      const path = nextPath(state.evidence, 'videos', op.label, 'webm')
-      const { already, file: video } = await driver.record(key, op.action, op.label, path, request.timeoutMs)
+      const { already, file: video } = await driver.record(key, op.action, op.label, (label) => nextPath(state.evidence, 'videos', label, 'webm'), request.timeoutMs)
       const summary = op.action === 'start'
         ? (already ? 'a recording was already running' : `recording "${op.label}" from ${driver.url(key)}. Drive the steps, then: record stop`)
-        : (already ? 'nothing was recording' : `saved the recording "${op.label}" to ${path}`)
+        : (already || video === null ? 'nothing was recording' : `saved the recording to ${video}`)
       return { ok: true, found: { url: driver.url(key), summary, pass: true, already, files: video ? [video] : [] } }
     }
     if (op.op === 'visual') {

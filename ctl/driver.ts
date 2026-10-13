@@ -57,7 +57,8 @@ export type Driver = {
   // Replaces text that changes from run to run, before a visual capture.
   normalize(key: PageKey): Promise<void>
   // Starts a video of the page, which starts it afresh at the same address, or stops it and keeps it at `path`.
-  record(key: PageKey, action: 'start' | 'stop', label: string, path: string, timeoutMs: number): Promise<{ already: boolean; file: string | null }>
+  // On stop, the video is saved where `name` puts the label it was started with.
+  record(key: PageKey, action: 'start' | 'stop', label: string, name: (label: string) => string, timeoutMs: number): Promise<{ already: boolean; file: string | null }>
   close(key: PageKey): Promise<void>
   shutdown(): Promise<void>
 }

@@ -311,7 +311,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
       }, VOLATILE)
     },
-    record: async (key, action, label, path, timeoutMs) => {
+    record: async (key, action, label, name, timeoutMs) => {
       const holder = await open(key)
       const url = holder.page.url()
       if (action === 'start') {
@@ -325,6 +325,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       }
       const video = holder.page.video()
       if (!holder.recording || !video) return { already: true, file: null }
+      const path = name(holder.recording.label)
       // Closing the page finishes its video.
       await closeHolder(key)
       await video.saveAs(path)
