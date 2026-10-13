@@ -11,7 +11,7 @@ const ROOT = new URL('..', import.meta.url).pathname
 const RESEARCH = /^(research|docs\/evidence)\//
 const OLD: [string, RegExp][] = [
   ['the studied app', /grok[\s_-]?bot/i],
-  ['its abbreviation', /(?<![A-Za-z0-9])gb(?:[-_.]|d\b|i_)|(?<![A-Z])GB_[A-Z]|(?<![A-Za-z0-9])\.gb(?![A-Za-z0-9])/],
+  ['its abbreviation', /(?<![A-Za-z0-9])gb(?:d\b|i_|(?![A-Za-z0-9]))|(?<![A-Z])GB_[A-Z]|(?<![A-Za-z0-9])\.gb(?![A-Za-z0-9])/],
   ['bot for an agent', /\bbots?\b/i],
   // Projects, companies and people we learned from are never named. Tools we install and run may be.
   ['a reference we learned from', /pstack|poteto|Lauren Tan|\bBenny\b|Bugbot|treehouse|tasks-axi|kunchenguid|Kun Chen|\bAXI\b|HumanLayer|firstmate|Boundary's|Kyle Mistele|AI That Works|ai-that-works|hellovai|Alexis King|Dex Horthy|CodeRabbit|Greptile|Sentry Seer/],

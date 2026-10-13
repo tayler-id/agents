@@ -10,7 +10,7 @@ RUN apt-get update \
 RUN npm install -g @anthropic-ai/claude-code@2.1.296 && npm cache clean --force
 
 RUN useradd --create-home --shell /bin/bash agent
-WORKDIR /opt/gb
+WORKDIR /opt/agents
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY shared ./shared
