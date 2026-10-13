@@ -20,6 +20,7 @@ import pg from 'pg'
 import { fakeTailscale } from './fake-tailscale.ts'
 import { asPerson, results, ROOT, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
+import { messageOf } from '../shared/errors.ts'
 
 const PORTS = { machines: 7927, people: 7928, streams: 7929 }
 const TAILSCALE_PORT = 7930
@@ -332,8 +333,8 @@ try {
   if (saved.status !== 200) throw new Error(`could not save the Tailscale key: ${saved.text}`)
   for (const engine of engines) await run(engine)
 } catch (error) {
-  failures.push((error as Error).message)
-  console.error(`FAIL  ${(error as Error).stack ?? ''}`)
+  failures.push(messageOf(error))
+  console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
 } finally {
   api.child.kill('SIGTERM')
   await tailscale.close()

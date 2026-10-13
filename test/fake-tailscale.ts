@@ -6,6 +6,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { buffer } from 'node:stream/consumers'
 import { z } from 'zod'
 
 export type FakeUser = {
@@ -22,6 +23,17 @@ export type FakeInvite = {
   id: string; role: string; tailnetId: number; inviterId: number; email: string; lastEmailSentAt?: string; inviteUrl?: string
 }
 export type Call = { method: string; path: string; body: unknown }
+export type FakeState = {
+  key: string
+  keyExpires: string
+  users: Map<string, FakeUser>
+  devices: Map<string, FakeDevice>
+  invites: Map<string, FakeInvite>
+  lastSent: Map<string, number>
+  calls: Call[]
+  // When set, the next invite Tailscale is asked to make fails with this message.
+  refuseNextInvite: string | null
+}
 
 const RESEND_EVERY_MS = 60_000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -35,16 +47,15 @@ const keyIdOf = (key: string) => {
 
 export function fakeTailscale(options: { key: string; keyExpiresInDays: number; domain: string }) {
   keyIdOf(options.key)
-  const state = {
+  const state: FakeState = {
     key: options.key,
     keyExpires: new Date(Date.now() + options.keyExpiresInDays * DAY_MS).toISOString(),
-    users: new Map<string, FakeUser>(),
-    devices: new Map<string, FakeDevice>(),
-    invites: new Map<string, FakeInvite>(),
-    lastSent: new Map<string, number>(),
-    calls: [] as Call[],
-    // When set, the next invite Tailscale is asked to make fails with this message.
-    refuseNextInvite: null as string | null,
+    users: new Map(),
+    devices: new Map(),
+    invites: new Map(),
+    lastSent: new Map(),
+    calls: [],
+    refuseNextInvite: null,
   }
 
   const user = (loginName: string, displayName: string, role = 'member', status = 'active'): FakeUser => {
@@ -85,9 +96,7 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
-    const chunks: Buffer[] = []
-    for await (const chunk of req as AsyncIterable<Buffer>) chunks.push(chunk)
-    const text = Buffer.concat(chunks).toString('utf8')
+    const text = (await buffer(req)).toString('utf8')
     const body: unknown = text ? JSON.parse(text) : undefined
     const path = new URL(req.url ?? '/', 'http://fake').pathname.replace(/^\/api\/v2/, '')
     const method = req.method ?? 'GET'

@@ -39,7 +39,9 @@ export async function fakeSetupToken(): Promise<number> {
   }
   process.stdin.setRawMode(true)
   let typed = ''
-  for await (const chunk of process.stdin as AsyncIterable<Buffer>) {
+  for await (const chunk of process.stdin) {
+    // In raw mode with no encoding set, stdin gives bytes.
+    if (!Buffer.isBuffer(chunk)) throw new Error('stdin gave something other than bytes')
     for (const key of chunk.toString('utf8')) {
       if (key !== '\r') {
         typed += key

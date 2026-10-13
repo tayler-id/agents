@@ -12,9 +12,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
+import { z } from 'zod'
 import { fakeTailscale } from './fake-tailscale.ts'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
+import { messageOf } from '../shared/errors.ts'
 
 const PORTS = { machines: 7920, people: 7921, streams: 7922 }
 const TAILSCALE_PORT = 7923
@@ -316,7 +318,7 @@ try {
   await api.exited
   const boxToken = `machine_${randomBytes(24).toString('base64url')}`
   await db.query('update instances set token_sha256 = $2 where id = $1', [ownBoxId, createHash('sha256').update(boxToken).digest('hex')])
-  const { token: otherToken } = JSON.parse(node('server/admin.ts', 'add-instance', team, `other-${id}`, 'mac', owner)) as { token: string }
+  const { token: otherToken } = z.object({ token: z.string() }).parse(JSON.parse(node('server/admin.ts', 'add-instance', team, `other-${id}`, 'mac', owner)))
   const asBox = async (token: string, path: string, body: unknown = {}) => {
     const res = await fetch(`${OFF_MACHINES}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const text = await res.text()
@@ -384,8 +386,8 @@ try {
   check(inDb.length === 0 && !api.text().includes(key) && !off.text().includes(key),
     `the Tailscale key is in no table and no log${inDb.length ? ` (found in ${inDb.join(', ')})` : ''}`)
 } catch (error) {
-  failures.push((error as Error).message)
-  console.error(`FAIL  ${(error as Error).stack ?? ''}`)
+  failures.push(messageOf(error))
+  console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
 } finally {
   for (const { child } of apis) child.kill('SIGTERM')
   await tailscale.close()
