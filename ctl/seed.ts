@@ -11,7 +11,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import { childEnv, ROOT } from './config.ts'
 import { withClient } from './db.ts'
-import { Refused } from './output.ts'
+import { Refused } from '../shared/cli/output.ts'
 import { ForgeError, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { AgentId, InstanceId, PersonId, readState, RepoId, saveState, TeamId, type ForgeRepo, type InstanceName, type ReadyState, type Seed } from './state.ts'
 

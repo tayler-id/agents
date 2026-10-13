@@ -15,7 +15,7 @@ import { ENGINE, ENGINES, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, WIDTH, WIDT
 import { BASELINES_DIR, LATEST_MANIFEST, ROOT } from './config.ts'
 import { decode, diff, encode, type Box } from './png.ts'
 import { failing, type Driver, type PageKey } from './driver.ts'
-import { CliError, EXIT } from './output.ts'
+import { CliError, EXIT } from '../shared/cli/output.ts'
 import type { Capture, Handle } from './protocol.ts'
 
 // A pixel counts as changed when a channel moves by more than this. Below it is

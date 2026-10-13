@@ -7,10 +7,10 @@
 import pg from 'pg'
 import { z } from 'zod'
 import { config } from './config.ts'
-import { Json, Refused } from './output.ts'
+import { JSON_VALUE, Refused } from '../shared/cli/output.ts'
 import type { Seed } from './state.ts'
 
-export const Rows = z.array(z.record(z.string(), Json))
+export const Rows = z.array(z.record(z.string(), JSON_VALUE))
 export type Rows = z.infer<typeof Rows>
 
 export async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {

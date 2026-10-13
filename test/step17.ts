@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
-import { Output } from '../ctl/output.ts'
+import { OUTPUT, type Output } from '../shared/cli/output.ts'
 import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
 import { InstanceState, ProcessRecord, stateFile, type InstanceName } from '../ctl/state.ts'
@@ -44,7 +44,7 @@ async function ctl(args: string[], options: { instance?: boolean } = {}): Promis
       const stdout = error instanceof Error && 'stdout' in error && typeof error.stdout === 'string' ? error.stdout : ''
       return { code, stdout }
     })
-  const out = Output.safeParse(JSON.parse(result.stdout || 'null'))
+  const out = OUTPUT.safeParse(JSON.parse(result.stdout || 'null'))
   if (!out.success) throw new Error(`agentsctl ${args.join(' ')} printed no envelope (exit ${String(result.code)}): ${result.stdout.slice(0, 500)}`)
   if (!out.data.ok) console.log(`      ${args.slice(0, 2).join(' ')}: ${out.data.head}`)
   return { code: result.code, out: out.data }

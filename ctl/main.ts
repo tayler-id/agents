@@ -3,12 +3,12 @@
 //   bin/agentsctl          a dashboard of what runs here and what to try next
 //   bin/agentsctl help     every command
 // It needs Node 24 first on the PATH (~/.local/node/bin on the server Mac).
+// Everything it prints goes to stdout, the stream an agent reads, and the exit
+// code says whether it worked.
 
-import { render } from './output.ts'
+import { render } from '../shared/cli/output.ts'
 import { runCli } from './cli.ts'
 
 const { code, output, json, full } = await runCli(process.argv.slice(2))
-if (json) process.stdout.write(`${JSON.stringify(output)}\n`)
-else if (output.ok) process.stdout.write(`${render(output, full)}\n`)
-else process.stderr.write(`${render(output, full)}\n`)
+process.stdout.write(`${json ? JSON.stringify(output) : render(output, full)}\n`)
 process.exitCode = code

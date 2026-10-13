@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
 import { EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
-import { Refused } from './output.ts'
+import { Refused } from '../shared/cli/output.ts'
 
 export const ROOT = fileURLToPath(new URL('..', import.meta.url))
 

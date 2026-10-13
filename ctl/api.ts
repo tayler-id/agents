@@ -6,7 +6,7 @@
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import { config } from './config.ts'
-import { Json } from './output.ts'
+import { JSON_VALUE, type JsonValue } from '../shared/cli/output.ts'
 import type { ReadyState } from './state.ts'
 
 export const Caller = z.enum(['person', 'machine', 'webhook'])
@@ -16,7 +16,7 @@ export type Door = z.infer<typeof Door>
 export const Method = z.enum(['GET', 'POST', 'HEAD'])
 export type Method = z.infer<typeof Method>
 
-export const Reply = z.object({ status: z.number().int(), body: z.union([Json, z.string()]) })
+export const Reply = z.object({ status: z.number().int(), body: z.union([JSON_VALUE, z.string()]) })
 export type Reply = z.infer<typeof Reply>
 
 const PIPELINE_HOOK = /^\/v1\/hooks\/pipelines\/([0-9a-f-]{36})$/
@@ -25,7 +25,7 @@ export const url = (state: ReadyState, door: Door, path: string) =>
   `http://127.0.0.1:${String(door === 'people' ? state.ports.people : state.ports.machines)}${path}`
 
 export async function call(state: ReadyState, options: {
-  method: Method; path: string; as: Caller; login?: string; door?: Door; body?: Json
+  method: Method; path: string; as: Caller; login?: string; door?: Door; body?: JsonValue
 }): Promise<Reply> {
   if (!options.path.startsWith('/v1/') && options.path !== '/') throw new Error(`the path must start with /v1/: ${options.path}`)
   const headers: Record<string, string> = {}
@@ -43,7 +43,7 @@ export async function call(state: ReadyState, options: {
   }
   const res = await fetch(url(state, door, options.path), { method: options.method, headers, body })
   const text = await res.text()
-  const parsed = text ? Json.safeParse(safeJson(text)) : { success: true as const, data: null }
+  const parsed = text ? JSON_VALUE.safeParse(safeJson(text)) : { success: true as const, data: null }
   return { status: res.status, body: parsed.success ? parsed.data : text }
 }
 

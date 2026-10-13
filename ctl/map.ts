@@ -18,7 +18,7 @@ import { z } from 'zod'
 import { featureEntryOf, FEATURE_MAP, FEATURE_MAP_FILE, VERDICT, type Feature as MapEntry, type FeatureMap, type Verdict } from '../shared/evidence.ts'
 import { FEATURES_DIR, ROOT } from './config.ts'
 import { nextPath } from './evidence.ts'
-import type { Output } from './output.ts'
+import type { Output } from '../shared/cli/output.ts'
 import type { ReadyState } from './state.ts'
 
 const exec = promisify(execFile)

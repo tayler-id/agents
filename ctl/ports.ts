@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { LIVE_PORTS, PORT_RANGE } from './config.ts'
-import { Refused } from './output.ts'
+import { Refused } from '../shared/cli/output.ts'
 import { stateFile, type InstanceName, type Ports } from './state.ts'
 
 export const PORTS_PER_INSTANCE = 3

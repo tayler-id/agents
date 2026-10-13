@@ -1,46 +1,30 @@
-// agentsctl's command line. Each command parses its arguments with zod first,
-// then runs, so `map check` and `--dry-run` can parse a command without running
-// it. Output follows output.ts: a write leads with `ok:`, a read with its
-// answer, a failure with `error:` and its exit code, and each ends with next
-// steps. runCli is what bin/agentsctl runs, and what `map run` calls for each
+// agentsctl's commands, defined on the shared CLI library in shared/cli. Each
+// command parses its flags with zod, then returns a read, a list, a write with
+// the state it read back afterwards, or a failure, and the library words the
+// output. runCli is what bin/agentsctl runs, and what `map run` calls for each
 // command in the feature map.
 
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { parseArgs } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
+import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row } from '../shared/cli/command.ts'
+import { JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
+import { ENGINE, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, FEATURE_MAP, WIDTH } from '../shared/evidence.ts'
 import { BASELINES_DIR, EVIDENCE_DIR, ROOT } from './config.ts'
 import { bind, readOnly, withClient, type Rows } from './db.ts'
 import { call, Caller, Door, Method } from './api.ts'
 import { actions, nextPath, record } from './evidence.ts'
 import { doctor, down, list, ready, resolve, up } from './instance.ts'
 import { isOurs } from './procs.ts'
-import { ENGINE, WIDTH } from '../shared/evidence.ts'
 import { Role, type Found, type Handle, type Op, type Target } from './protocol.ts'
 import { sessionCall, stopSessionServer } from './session-client.ts'
-import { addAgent, addBox, addPerson, AGENTS, seedExtraRepo } from './seed.ts'
+import { addAgent, addBox, addPerson, seedExtraRepo } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
 import { baseline, compare } from './visual.ts'
 import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
-import { CliError, EXIT, Json, Refused, UsageError, type Output } from './output.ts'
 
-type Result = {
-  ok: boolean
-  head: string
-  detail?: string
-  help: string[]
-  already?: boolean
-  files: string[]
-  data: unknown
-  evidence?: string
-  // The exit code of a result that is not ok: failed (1) by default.
-  code?: typeof EXIT.failed | typeof EXIT.refused
-}
-type Options = NonNullable<Parameters<typeof parseArgs>[0]>['options']
-// A command: parse checks the arguments and returns what runs it, touching nothing.
-type Command = { parse: (args: string[]) => () => Promise<Result> }
-
+const INVOKE = 'bin/agentsctl'
 // How long a browser step waits for its element by default: long enough for
 // Electric to deliver a row and React to render it on a busy laptop.
 const DEFAULT_TIMEOUT_S = 15
@@ -51,25 +35,11 @@ const DEFAULT_MAX_TABS = 40
 // How many evidence folders the dashboard lists.
 const RECENT_EVIDENCE = 5
 
-const run = (command: string, why: string) => `Run \`bin/agentsctl ${command}\` ${why}`
+const run = (line: string, why: string) => `Run \`${INVOKE} ${line}\` ${why}`
 const at = (state: { name: string }) => ` --instance ${state.name}`
 
-const COMMON: Options = { instance: { type: 'string' }, json: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, full: { type: 'boolean' } }
-const Common = z.object({ instance: InstanceName.optional(), json: z.boolean().optional(), 'dry-run': z.boolean().optional(), full: z.boolean().optional() })
-
-function parse<S extends z.ZodType>(args: string[], options: Options, schema: S): { values: z.infer<S>; positionals: string[] } {
-  let parsed
-  try {
-    parsed = parseArgs({ args, options: { ...COMMON, ...options }, allowPositionals: true, strict: true })
-  } catch (error) {
-    throw new UsageError(error instanceof Error ? error.message : String(error))
-  }
-  const values = schema.safeParse(parsed.values)
-  if (!values.success) throw new UsageError(z.prettifyError(values.error))
-  return { values: values.data, positionals: parsed.positionals }
-}
-
-const toJson = (value: unknown): Json => Json.parse(JSON.parse(JSON.stringify(value ?? null)))
+const GLOBAL: Flags = { instance: { kind: 'string', about: 'the instance to act on; the only one in this checkout by default' } }
+const Common = z.object({ instance: InstanceName.optional() })
 
 // A person on the instance: ada (who started it), ben (a teammate), anyone
 // added with `seed person <who>`, or a full login.
@@ -79,15 +49,42 @@ export function loginFor(state: ReadyState, who: string | undefined): string {
   return `${who}-${state.name}@verify.local`
 }
 
+const failed = (error: string, rest: Omit<Extract<Result, { kind: 'failed' }>, 'kind' | 'error' | 'code'>, code: 1 | 3 = 1): Result => ({ kind: 'failed', code, error, ...rest })
+
+// --- Driving the web and desktop app ---
+
 // --role, --name and --text name one element. --within role:name, or --within
 // role with --within-text, names the container it is in.
-const HANDLE_OPTIONS: Options = {
-  role: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, within: { type: 'string' }, 'within-text': { type: 'string' },
+const HANDLE: Flags = {
+  role: { kind: 'string', about: 'the ARIA role of the element, such as button or textbox' },
+  name: { kind: 'string', about: 'its accessible name, matched whole' },
+  text: { kind: 'string', about: 'text inside it' },
+  within: { kind: 'string', about: 'its container, as role:name, such as list:Agents, or a role with --within-text' },
+  'within-text': { kind: 'string', about: 'text inside the container named by --within <role>' },
 }
-const HandleArgs = z.object({
+const PAGE: Flags = {
+  engine: { kind: 'string', about: 'chromium, firefox or webkit (chromium by default)' },
+  width: { kind: 'string', about: 'desktop or phone (desktop by default)' },
+  as: { kind: 'string', about: 'who is signed in: ada, ben, a name given to seed person, or a full login' },
+  timeout: { kind: 'string', about: `seconds to wait for the element (${String(DEFAULT_TIMEOUT_S)} by default)` },
+}
+const READY: Flags = {
+  'ready-role': { kind: 'string', about: 'the role of an element to wait for before each capture' },
+  'ready-name': { kind: 'string', about: "that element's accessible name" },
+  'ready-text': { kind: 'string', about: 'text inside that element' },
+}
+const DriveArgs = Common.extend({
   role: Role.optional(), name: z.string().optional(), text: z.string().optional(), within: z.string().optional(), 'within-text': z.string().optional(),
+  engine: ENGINE.default('chromium'), width: WIDTH.default('desktop'), as: z.string().optional(),
+  timeout: z.coerce.number().positive().default(DEFAULT_TIMEOUT_S),
+  value: z.string().optional(), option: z.string().optional(), path: z.string().optional(), label: z.string().optional(),
+  aria: z.boolean().optional(), gone: z.boolean().optional(), page: z.boolean().optional(),
+  expect: z.string().optional(), max: z.coerce.number().int().positive().default(DEFAULT_MAX_TABS),
+  'ready-role': Role.optional(), 'ready-name': z.string().optional(), 'ready-text': z.string().optional(),
 })
-function handleOf(values: z.infer<typeof HandleArgs>): Handle | undefined {
+type DriveValues = z.infer<typeof DriveArgs>
+
+function handleOf(values: DriveValues): Handle | undefined {
   if (!values.role) return undefined
   const spec = values.within
   if (spec === undefined) {
@@ -100,33 +97,43 @@ function handleOf(values: z.infer<typeof HandleArgs>): Handle | undefined {
   return { role: values.role, name: values.name, text: values.text, within: { role: role.data, name: colon < 0 ? undefined : spec.slice(colon + 1), text: values['within-text'] } }
 }
 
-const DriveArgs = Common.extend({
-  ...HandleArgs.shape,
-  engine: ENGINE.default('chromium'), width: WIDTH.default('desktop'), as: z.string().optional(),
-  timeout: z.coerce.number().positive().default(DEFAULT_TIMEOUT_S),
-  value: z.string().optional(), option: z.string().optional(), path: z.string().optional(), label: z.string().optional(),
-  aria: z.boolean().optional(), gone: z.boolean().optional(), page: z.boolean().optional(),
-  expect: z.string().optional(), max: z.coerce.number().int().positive().default(DEFAULT_MAX_TABS),
-  'ready-role': Role.optional(), 'ready-name': z.string().optional(), 'ready-text': z.string().optional(),
-})
-const DRIVE_OPTIONS: Options = {
-  ...HANDLE_OPTIONS, engine: { type: 'string' }, width: { type: 'string' }, as: { type: 'string' }, timeout: { type: 'string' },
-  value: { type: 'string' }, option: { type: 'string' }, path: { type: 'string' }, label: { type: 'string' },
-  aria: { type: 'boolean' }, gone: { type: 'boolean' }, page: { type: 'boolean' }, expect: { type: 'string' }, max: { type: 'string' },
-  'ready-role': { type: 'string' }, 'ready-name': { type: 'string' }, 'ready-text': { type: 'string' },
+type OpName = Exclude<Op['op'], 'ping' | 'visual' | 'shutdown'> | 'uncheck'
+// Where a capture goes: a path, or a label naming the numbered file in the evidence folder.
+const CAPTURE: Flags = {
+  path: { kind: 'string', about: 'where to save it' },
+  label: { kind: 'string', about: 'a name for the file in the evidence folder' },
+}
+// Each operation: what follows its name, one line of help, its own flags, and
+// whether it changes the page (a write, leading with ok:) or reads it. `outside`
+// names the page text it prints, which the output fences as untrusted.
+const DRIVE: Record<OpName, { args: string; about: string; flags: Flags; writes: boolean; outside?: string }> = {
+  goto: { args: '<route>', about: 'open a route, such as / or #/a/<agent id>, loading the page afresh', flags: {}, writes: true },
+  click: { args: '', about: 'click the element', flags: HANDLE, writes: true },
+  fill: { args: '', about: 'replace what the element holds with --value', flags: { ...HANDLE, value: { kind: 'string', about: 'the text to put in' } }, writes: true },
+  select: { args: '', about: 'pick a choice in a select box, by --option (its label) or --value', flags: { ...HANDLE, option: { kind: 'string', about: "the choice's label" }, value: { kind: 'string', about: "the choice's value" } }, writes: true },
+  check: { args: '', about: 'tick a checkbox', flags: HANDLE, writes: true },
+  uncheck: { args: '', about: 'untick a checkbox', flags: HANDLE, writes: true },
+  press: { args: '<key>', about: 'press a key, such as Enter or Tab, in the element or on the page', flags: HANDLE, writes: true },
+  type: { args: '<text>', about: 'type text where the keyboard focus is', flags: {}, writes: true },
+  wait: { args: '', about: 'wait until the element is there, or with --gone until it is not', flags: { ...HANDLE, gone: { kind: 'boolean', about: 'wait for it to go' } }, writes: false },
+  text: { args: '', about: "print the element's text; with --expect, wait until it holds that text", flags: { ...HANDLE, expect: { kind: 'string', about: 'text it must hold' } }, writes: false, outside: 'page text' },
+  count: { args: '', about: 'count the matching elements; with --expect, wait until there are that many', flags: { ...HANDLE, expect: { kind: 'string', about: 'how many there must be' } }, writes: false },
+  snapshot: { args: '', about: "save and print the page's ARIA tree", flags: { aria: { kind: 'boolean', about: 'the ARIA tree, which is the one snapshot there is' }, ...CAPTURE }, writes: false, outside: 'page ARIA tree' },
+  screenshot: { args: '', about: 'save a screenshot', flags: { page: { kind: 'boolean', about: 'the whole page, not only what shows' }, ...CAPTURE }, writes: false },
+  console: { args: '', about: 'list page and console errors since the last look; fails on any', flags: {}, writes: false, outside: 'console messages' },
+  network: { args: '', about: 'list requests since the last look; fails on any that failed or answered 400 or more', flags: CAPTURE, writes: false },
+  trace: { args: 'start|stop', about: 'record a Playwright trace from start to stop', flags: CAPTURE, writes: true },
+  overflow: { args: '', about: 'fail when the page scrolls sideways, naming what sticks out', flags: {}, writes: false },
+  a11y: { args: '', about: 'run axe on the page; fail on serious or critical violations', flags: {}, writes: false },
+  focus: { args: '', about: 'print what has the keyboard focus', flags: {}, writes: false, outside: 'page text' },
+  'tab-to': { args: '', about: 'press Tab until the element has the focus, or fail', flags: { ...HANDLE, max: { kind: 'string', about: `presses to try (${String(DEFAULT_MAX_TABS)} by default)` } }, writes: true },
+  record: { args: 'start|stop', about: 'record a video of the page from start to stop', flags: { label: { kind: 'string', about: 'what the recording shows' } }, writes: true },
+  close: { args: '', about: 'close this page', flags: {}, writes: true },
 }
 
-const DRIVE_OPS = ['goto', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'type', 'wait', 'text', 'count', 'snapshot', 'screenshot',
-  'console', 'network', 'trace', 'overflow', 'a11y', 'focus', 'tab-to', 'record', 'close', 'reset'] as const
-const DriveOp = z.enum(DRIVE_OPS)
-type DriveOp = z.infer<typeof DriveOp>
-type Values = z.infer<typeof DriveArgs>
-// Operations that change the page or the app, which lead with ok:. The rest read.
-const ACTS = new Set<DriveOp>(['goto', 'click', 'fill', 'select', 'check', 'uncheck', 'press', 'type', 'tab-to', 'trace', 'record', 'close'])
-
-// The operation a drive command asks for, built from its arguments. Paths for
-// captures are chosen later, once the instance's evidence folder is known.
-function opFor(name: Exclude<DriveOp, 'reset'>, values: Values, word: string, evidence: string | null): Op {
+// The operation a drive command asks for. Paths for captures are chosen once
+// the instance's evidence folder is known.
+function opFor(name: OpName, values: DriveValues, word: string, evidence: string | null): Op {
   const handle = handleOf(values)
   const need = (): Handle => {
     if (!handle) throw new UsageError(`${name} needs an element: --role, with --name or --text`)
@@ -177,7 +184,7 @@ function opFor(name: Exclude<DriveOp, 'reset'>, values: Values, word: string, ev
 }
 
 // What to try after a drive step, by what it did and how it went.
-function driveHelp(target: Target, name: DriveOp, found: Found | null, failedShot: string | null): string[] {
+function driveHelp(target: Target, name: OpName | 'visual', found: Found | null, failedShot: string | null): string[] {
   if (!found) {
     return [
       run(`${target} snapshot --aria`, 'to list the roles and names on the page'),
@@ -187,67 +194,81 @@ function driveHelp(target: Target, name: DriveOp, found: Found | null, failedSho
   }
   if (name === 'record') return found.files.length ? [`Watch ${relative(ROOT, found.files[0] ?? '')}, and have an agent that did not drive it confirm what it shows`] : [run(`${target} record stop`, 'when the steps are done')]
   if (name === 'a11y' || name === 'console' || name === 'overflow') return found.pass ? [] : [run(`${target} screenshot`, 'to keep the view as evidence'), 'Report it as a product bug once it reproduces twice through the UI']
-  if (ACTS.has(name)) return [run(`${target} snapshot --aria`, 'to see the result'), run(`${target} screenshot`, 'to keep it as evidence')]
+  if (name !== 'visual' && DRIVE[name].writes) return [run(`${target} snapshot --aria`, 'to see the result'), run(`${target} screenshot`, 'to keep it as evidence')]
   return []
 }
 
-const driveCommand = (target: Target): Command => ({
-  parse: (args) => {
-    const [first, ...rest] = args
-    const parsedName = DriveOp.safeParse(first)
-    if (!parsedName.success) throw new UsageError(`${target} takes one of: ${DRIVE_OPS.join(', ')}`)
-    const { values, positionals } = parse(rest, DRIVE_OPTIONS, DriveArgs)
-    // reset closes the whole browser session, for a page stuck in a state no step expects.
-    if (parsedName.data === 'reset') {
+// The route a page is on, read from the page after the operation.
+const routeOf = (url: string) => new URL(url).hash || '#/'
+
+function driveCommand(target: Target, name: OpName): Command {
+  const spec = DRIVE[name]
+  return command({
+    name: `${target} ${name}`, args: spec.args, about: spec.about, flags: { ...spec.flags, ...PAGE }, schema: DriveArgs,
+    prepare: (values, positionals) => {
+      const word = positionals.join(' ')
+      opFor(name, values, word, null)
+      if (target === 'desktop' && values.engine !== 'chromium') throw new UsageError('the desktop app is Electron, so it takes no --engine')
       return async () => {
         const state = ready(values.instance)
-        const closed = await stopSessionServer(state)
-        return {
-          ok: true, head: closed ? `ok: ${target} reset -> the browser session is closed` : `ok: ${target} reset -> no browser session was running`,
-          already: !closed, help: [run(`${target} goto /`, 'to open a fresh page')], files: [], data: { closed }, evidence: state.evidence,
-        }
+        const reply = await sessionCall(state, {
+          target, engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
+          op: opFor(name, values, word, state.evidence),
+        })
+        if (!reply.ok) return failed(reply.error, { help: driveHelp(target, name, null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence })
+        const found = reply.found
+        const [firstLine = '', ...more] = found.summary.split('\n')
+        const shared = { help: driveHelp(target, name, found, null), files: found.files, data: found, log: state.evidence }
+        if (!found.pass) return failed(firstLine, { ...shared, detail: more.join('\n') })
+        if (spec.writes) return { kind: 'write', did: firstLine, state: `the page is at ${routeOf(found.url)}${found.focus ? `, with the focus on ${found.focus}` : ''}`, already: found.already === true, detail: more.join('\n'), ...shared }
+        const outside = spec.outside && more.length ? { source: spec.outside, text: more.join('\n') } : undefined
+        return { kind: 'read', answer: firstLine, detail: outside ? undefined : more.join('\n'), outside, ...shared }
       }
-    }
-    const name = parsedName.data
-    const word = positionals.join(' ')
-    opFor(name, values, word, null)
-    if (values.expect !== undefined && name !== 'text' && name !== 'count') throw new UsageError('--expect goes with text or count')
-    if (target === 'desktop' && values.engine !== 'chromium') throw new UsageError('the desktop app is Electron, so it takes no --engine')
-    return async () => {
-      const state = ready(values.instance)
-      const reply = await sessionCall(state, {
-        target, engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
-        op: opFor(name, values, word, state.evidence),
-      })
-      if (!reply.ok) {
-        return { ok: false, head: `error: ${target} ${name}: ${reply.error}`, help: driveHelp(target, name, null, reply.files[0] ?? null), files: reply.files, data: reply, evidence: state.evidence }
-      }
-      const found = reply.found
-      const [firstLine = '', ...more] = found.summary.split('\n')
-      const head = !found.pass ? `error: ${target} ${name}: ${firstLine}` : ACTS.has(name) ? `ok: ${firstLine}` : firstLine
-      return { ok: found.pass, head, detail: more.join('\n'), already: found.already, help: driveHelp(target, name, found, null), files: found.files, data: found, evidence: state.evidence }
-    }
+    },
+  })
+}
+
+// reset closes the whole browser session, for a page stuck in a state no step expects.
+const resetCommand = (target: Target): Command => command({
+  name: `${target} reset`, args: '', about: 'close the whole browser session; the next command opens a fresh one', flags: {}, schema: Common,
+  prepare: (values) => async () => {
+    const state = ready(values.instance)
+    const closed = await stopSessionServer(state)
+    const still = state.processes.filter((p) => p.role === 'session')
+    let running = false
+    for (const record of still) if (await isOurs(record)) running = true
+    if (running) return failed('the browser session is still running after it was told to stop', { help: [run(`down${at(state)}`, 'and up again')], data: { closed }, log: state.evidence })
+    return { kind: 'write', did: `${target} reset`, state: 'no browser session runs', already: !closed, help: [run(`${target} goto /`, 'to open a fresh page')], data: { closed }, log: state.evidence }
   },
 })
+
+// --- The API and the record ---
 
 const ApiArgs = Common.extend({
   as: Caller.default('person'), login: z.string().optional(), door: Door.optional(), body: z.string().optional(),
   expect: z.coerce.number().int().optional(), 'expect-text': z.string().optional(),
 })
 
-const apiCommand: Command = {
-  parse: (args) => {
-    const { values, positionals } = parse(args, {
-      as: { type: 'string' }, login: { type: 'string' }, door: { type: 'string' }, body: { type: 'string' }, expect: { type: 'string' }, 'expect-text': { type: 'string' },
-    }, ApiArgs)
+const apiCommand = command({
+  name: 'api', args: '<GET|POST|HEAD> <path>', about: 'call the API as a person, the machine or a webhook, and keep the answer',
+  flags: {
+    as: { kind: 'string', about: 'person (by default), machine or webhook' },
+    login: { kind: 'string', about: 'which person: ada (by default), ben, or a login' },
+    door: { kind: 'string', about: 'people or machines, the port to call' },
+    body: { kind: 'string', about: 'a JSON body' },
+    expect: { kind: 'string', about: 'the status it must answer (any 2xx by default)' },
+    'expect-text': { kind: 'string', about: 'text the answer must hold' },
+  },
+  schema: ApiArgs,
+  prepare: (values, positionals) => {
     const [methodText, path] = positionals
     const method = Method.safeParse(methodText)
     if (!method.success || !path) throw new UsageError('api takes a method and a path: api GET /v1/me')
     if (!path.startsWith('/v1/') && path !== '/') throw new UsageError(`the path must start with /v1/: ${path}`)
-    let body: Json | undefined
+    let body: JsonValue | undefined
     if (values.body !== undefined) {
       try {
-        body = Json.parse(JSON.parse(values.body))
+        body = JSON_VALUE.parse(JSON.parse(values.body))
       } catch (error) {
         throw new UsageError(`--body is not JSON: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -258,21 +279,22 @@ const apiCommand: Command = {
       const file = nextPath(state.evidence, 'api', `${method.data}-${path}`, 'json')
       writeFileSync(file, `${JSON.stringify({ request: { method: method.data, path, as: values.as, body: body ?? null }, reply }, null, 2)}\n`)
       const statusOk = values.expect === undefined ? reply.status >= 200 && reply.status < 300 : reply.status === values.expect
-      const bodyText = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body)
-      const wanted = values['expect-text']
-      const missing = wanted !== undefined && !bodyText.includes(wanted) ? wanted : null
-      const ok = statusOk && missing === null
-      const why = !statusOk ? (values.expect === undefined ? ', and a 2xx was expected' : `, and ${String(values.expect)} was expected`) : missing === null ? '' : `, without "${missing}" in the answer`
       const shown = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body, null, 2)
+      const wanted = values['expect-text']
+      const missing = wanted !== undefined && !shown.includes(wanted) && !(typeof reply.body !== 'string' && JSON.stringify(reply.body).includes(wanted))
       const verb = `${method.data} ${path} as ${values.as}`
-      return {
-        ok, head: ok ? `${method.data === 'POST' ? 'ok: ' : ''}${verb} -> ${String(reply.status)}` : `error: ${verb} -> ${String(reply.status)}${why}`,
-        detail: shown, files: [file], data: reply, evidence: state.evidence,
-        help: ok && method.data === 'POST' ? [run('db "<select>"', 'to read the side effect back from the record')] : ok ? [] : [`Read the answer in ${relative(ROOT, file)}`],
+      const outside = { source: 'API answer', text: shown }
+      if (!statusOk || missing) {
+        const why = !statusOk ? (values.expect === undefined ? 'a 2xx was expected' : `${String(values.expect)} was expected`) : `the answer lacks "${wanted ?? ''}"`
+        return failed(`${verb} answered ${String(reply.status)}, and ${why}`, { outside, files: [file], data: reply, help: [`Read the answer in ${relative(ROOT, file)}`], log: state.evidence })
       }
+      if (method.data === 'POST') {
+        return { kind: 'write', did: verb, state: `the API answered ${String(reply.status)}`, already: false, outside, files: [file], data: reply, help: [run('db "<select>"', 'to read the side effect back from the record')], log: state.evidence }
+      }
+      return { kind: 'read', answer: `${verb} answered ${String(reply.status)}`, outside, files: [file], data: reply, help: [], log: state.evidence }
     }
   },
-}
+})
 
 const DbArgs = Common.extend({
   'expect-rows': z.coerce.number().int().nonnegative().optional(), expect: z.array(z.string().regex(/^[a-z_]+=/, '--expect is column=value')).optional(),
@@ -295,13 +317,18 @@ function checkRows(rows: Rows, values: z.infer<typeof DbArgs>): string | null {
   return null
 }
 
-const table = (rows: Rows) => rows.length
-  ? rows.map((row) => Object.entries(row).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('  ')).join('\n')
-  : '(no rows)'
+const asRow = (row: Rows[number]): Row => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]))
 
-const dbCommand: Command = {
-  parse: (args) => {
-    const { values, positionals } = parse(args, { 'expect-rows': { type: 'string' }, expect: { type: 'string', multiple: true }, wait: { type: 'string' }, value: { type: 'boolean' } }, DbArgs)
+const dbCommand = command({
+  name: 'db', args: '"<select>"', about: 'read the record with one read-only query; {team}, {owner}, {teammate} and {machine} name the instance\'s rows',
+  flags: {
+    'expect-rows': { kind: 'string', about: 'how many rows there must be' },
+    expect: { kind: 'strings', about: 'column=value every row must have' },
+    wait: { kind: 'string', about: 'seconds to keep reading until the expectations hold' },
+    value: { kind: 'boolean', about: 'print the one value alone, for use in another command' },
+  },
+  schema: DbArgs,
+  prepare: (values, positionals) => {
     const sql = positionals.join(' ')
     if (!sql.trim()) throw new UsageError('db takes one read-only query in quotes')
     return async () => {
@@ -317,263 +344,337 @@ const dbCommand: Command = {
       }
       const file = nextPath(state.evidence, 'db', sql.slice(0, 40), 'json')
       writeFileSync(file, `${JSON.stringify({ query: sql, rows }, null, 2)}\n`)
+      const shared = { files: [file], data: { rows }, log: state.evidence }
+      const lines = rows.map((r) => Object.entries(asRow(r)).map(([k, v]) => `${k}=${v}`).join('  ')).join('\n')
+      if (problem) {
+        return failed(problem, { ...shared, outside: { source: 'record rows', text: lines || '(no rows)' }, help: [values.wait ? 'The record never reached that state. Check the step that should have written it' : 'Add `--wait <seconds>` if the row is still on its way'] })
+      }
+      // --value prints the one value and nothing else, so a command can use it in another.
       const first = Object.values(rows[0] ?? {})[0]
-      // --value prints the one value and nothing else, so a shell can use it in another command.
-      if (values.value && !problem) return { ok: true, head: typeof first === 'string' ? first : JSON.stringify(first ?? null), help: [], files: [], data: { rows }, evidence: state.evidence }
-      return {
-        ok: problem === null, head: problem ? `error: db: ${problem}` : `${String(rows.length)} rows`, detail: table(rows), files: [file], data: { rows }, evidence: state.evidence,
-        help: problem ? [values.wait ? 'The record never reached that state. Check the step that should have written it' : 'Add `--wait <seconds>` if the row is still on its way'] : [],
-      }
+      if (values.value) return { kind: 'read', answer: typeof first === 'string' ? first : JSON.stringify(first ?? null), help: [], ...shared }
+      return { kind: 'list', noun: 'rows', rows: rows.map(asRow), source: 'record rows', help: [], ...shared }
     }
   },
-}
+})
 
-const SeedArgs = Common.extend({ instructions: z.string().optional(), title: z.string().optional(), agent: z.string().optional() })
-const SeedKind = z.enum(['person', 'agent', 'box', 'repo', 'task'])
+// --- Seeding: people, agents, boxes, repos and tasks, made as an admin would ---
 
-const seedCommand: Command = {
-  parse: (args) => {
-    const [first, ...rest] = args
-    const kind = SeedKind.safeParse(first)
-    if (!kind.success) throw new UsageError(`seed takes ${SeedKind.options.join(', ')}. An instance starts with agents ${Object.keys(AGENTS).join(', ')} and people ada and ben`)
-    const { values, positionals } = parse(rest, { instructions: { type: 'string' }, title: { type: 'string' }, agent: { type: 'string' } }, SeedArgs)
-    const [what] = positionals
-    const required = (value: string | undefined, usage: string): string => {
-      if (value === undefined) throw new UsageError(usage)
-      return value
-    }
-    const named = kind.data === 'task' ? '' : required(what, `seed ${kind.data} <name>`)
-    const title = kind.data === 'task' ? required(values.title, 'seed task --title <what needs doing> [--agent fixer]') : ''
+const InstructionsArgs = Common.extend({ instructions: z.string().optional() })
+const one = <T extends z.ZodType>(schema: T, rows: unknown[]): z.infer<T> | null => (rows.length ? schema.parse(rows[0]) : null)
+
+const seedPerson = command({
+  name: 'seed person', args: '<who>', about: 'add a person to the team, who can then open the app with --as <who>', flags: {}, schema: Common,
+  prepare: (values, [who]) => {
+    if (!who) throw new UsageError('seed person <who>')
     return async () => {
       const state = ready(values.instance)
-      const done = (already: boolean, head: string, help: string[], data: unknown): Result => ({ ok: true, head, already, help, files: [], data, evidence: state.evidence })
-      switch (kind.data) {
-        case 'person': {
-          const login = loginFor(state, named)
-          const { already } = await addPerson(state.team, login)
-          return done(already, `ok: seed person ${named} -> ${login} is on ${state.team}`, [run(`browser goto / --as ${named}`, `to open the app as ${named}`)], { login })
-        }
-        case 'agent': {
-          const { agentId, already } = await addAgent(state.team, named, values.instructions ?? `You are ${named}.`)
-          const latest = readState(state.name)
-          if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the agent was added`)
-          if (!already) saveState({ ...latest, seed: { ...latest.seed, agents: { ...latest.seed.agents, [named]: agentId } } })
-          return done(already, `ok: seed agent ${named} -> it lives on ${state.seed.machine.name}`, [run(`browser click --role button --name ${named} --within list:Agents`, 'to open its DM')], { agent: named, agentId })
-        }
-        case 'box': {
-          const { already } = await addBox(state.team, named, state.seed.owner.login)
-          return done(already, `ok: seed box ${named} -> free, with no container until someone claims it`, [run(`browser click --role button --name Claim --within listitem --within-text "${named} (box)"`, 'to claim it')], { box: named })
-        }
-        case 'repo': {
-          const { repo, already } = await seedExtraRepo(state, named)
-          return done(already, `ok: seed repo ${named} -> ${repo.path} is on the forge`, [run('browser click --role button --name "New task"', 'to start a task on it')], repo)
-        }
-        case 'task': {
-          const agentName = values.agent ?? 'fixer'
-          const agentId = state.seed.agents[agentName]
-          if (!agentId) throw new UsageError(`no agent named ${agentName} on the instance: ${Object.keys(state.seed.agents).join(', ')}`)
-          const had = await withClient(async (client) => z.array(z.object({ id: z.string() })).parse((await client.query(
-            'select id from tasks where team_id = $1 and title = $2 order by created_at desc limit 1', [state.seed.teamId, title])).rows))
-          const [existingTask] = had
-          if (existingTask) return done(true, `ok: seed task "${title}" -> #/t/${existingTask.id}`, [run(`browser goto "#/t/${existingTask.id}"`, 'to open it')], { taskId: existingTask.id })
-          const reply = await call(state, { method: 'POST', path: '/v1/tasks', as: 'person', body: { title, instructions: values.instructions ?? '', agentId } })
-          const task = z.object({ taskId: z.string(), sessionId: z.string() }).safeParse(reply.body)
-          if (!task.success) return { ok: false, head: `error: seed task: POST /v1/tasks answered ${String(reply.status)}`, detail: JSON.stringify(reply.body), help: [run(`doctor${at(state)}`, 'to check the instance')], files: [], data: reply, evidence: state.evidence }
-          return done(false, `ok: seed task "${title}" -> started for ${agentName} at #/t/${task.data.taskId}`, [run(`browser goto "#/t/${task.data.taskId}"`, 'to open it')], task.data)
-        }
-      }
+      const login = loginFor(state, who)
+      const { already } = await addPerson(state.team, login)
+      const found = await withClient(async (client) => one(z.object({ login: z.string() }), (await client.query(
+        'select p.login from people p join teams t on t.id = p.team_id where t.name = $1 and p.login = $2', [state.team, login])).rows))
+      if (!found) return failed(`${login} is not on ${state.team} after adding them`, { help: [run(`doctor${at(state)}`, 'to check the instance')], data: { login }, log: state.evidence })
+      return { kind: 'write', did: `seed person ${who}`, state: `${found.login} is on ${state.team}`, already, help: [run(`browser goto / --as ${who}`, `to open the app as ${who}`)], data: { login }, log: state.evidence }
     }
   },
-}
+})
 
-// A secret on the instance's machine, where a person keeps it: the daemon's secrets.json.
-const secretCommand: Command = {
-  parse: (args) => {
-    const [action, ...rest] = args
-    const { values, positionals } = parse(rest, { value: { type: 'string' } }, Common.extend({ value: z.string().optional() }))
-    const [key] = positionals
-    if ((action !== 'set' && action !== 'unset') || !key || !/^[A-Z][A-Z0-9_]*$/.test(key)) throw new UsageError('secret set <NAME> --value <value>, or secret unset <NAME>')
-    if (action === 'set' && values.value === undefined) throw new UsageError('secret set needs --value')
+const seedAgent = command({
+  name: 'seed agent', args: '<name>', about: "add an agent that lives on the instance's machine", flags: { instructions: { kind: 'string', about: 'its instructions' } }, schema: InstructionsArgs,
+  prepare: (values, [named]) => {
+    if (!named) throw new UsageError('seed agent <name>')
     return async () => {
       const state = ready(values.instance)
-      const dir = join(state.scratch, 'daemon')
-      const file = join(dir, 'secrets.json')
-      const current = existsSync(file) ? z.record(z.string(), z.string()).parse(JSON.parse(readFileSync(file, 'utf8'))) : {}
-      const already = action === 'set' ? current[key] === values.value : !(key in current)
-      if (!already) {
-        const next = action === 'set' && values.value !== undefined ? { ...current, [key]: values.value } : Object.fromEntries(Object.entries(current).filter(([k]) => k !== key))
-        mkdirSync(dir, { recursive: true })
-        writeFileSync(file, JSON.stringify(next), { mode: 0o600 })
-      }
+      const { agentId, already } = await addAgent(state.team, named, values.instructions ?? `You are ${named}.`)
+      const latest = readState(state.name)
+      if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the agent was added`)
+      if (!already) saveState({ ...latest, seed: { ...latest.seed, agents: { ...latest.seed.agents, [named]: agentId } } })
+      const found = await withClient(async (client) => one(z.object({ machine: z.string() }), (await client.query(
+        `select i.name as machine from agents a join instances i on i.id = a.home_instance_id where a.id = $1 and a.archived_at is null`, [agentId])).rows))
+      if (!found) return failed(`${named} has no home machine after it was added`, { help: [], data: { agentId }, log: state.evidence })
+      return { kind: 'write', did: `seed agent ${named}`, state: `${named} lives on ${found.machine}`, already, help: [run(`browser click --role button --name ${named} --within list:Agents`, 'to open its DM')], data: { agent: named, agentId }, log: state.evidence }
+    }
+  },
+})
+
+const seedBox = command({
+  name: 'seed box', args: '<name>', about: 'add a box, with no container until someone claims it', flags: {}, schema: Common,
+  prepare: (values, [named]) => {
+    if (!named) throw new UsageError('seed box <name>')
+    return async () => {
+      const state = ready(values.instance)
+      const { already } = await addBox(state.team, named, state.seed.owner.login)
+      const found = await withClient(async (client) => one(z.object({ status: z.string(), claimed: z.boolean() }), (await client.query(
+        `select status, claimed_by is not null as claimed from instances where team_id = $1 and name = $2 and kind = 'box'`, [state.seed.teamId, named])).rows))
+      if (!found) return failed(`the box ${named} is not on the team after adding it`, { help: [], data: { box: named }, log: state.evidence })
       return {
-        ok: true, head: `ok: secret ${action} ${key} -> ${action === 'set' ? 'held' : 'not held'} by the machine ${state.seed.machine.name}`, already,
-        help: [`Message an agent whose plugin needs ${key}: it reads the machine's secrets when its next session starts`], files: [], data: { secret: key, set: action === 'set' }, evidence: state.evidence,
+        kind: 'write', did: `seed box ${named}`, state: `${named} is ${found.status} and ${found.claimed ? 'claimed' : 'free'}`, already,
+        help: [run(`browser click --role button --name Claim --within listitem --within-text "${named} (box)"`, 'to claim it')], data: { box: named }, log: state.evidence,
       }
     }
   },
+})
+
+const seedRepo = command({
+  name: 'seed repo', args: '<name>', about: "add a repo on the instance's forge org, cloned from the sample shop", flags: {}, schema: Common,
+  prepare: (values, [named]) => {
+    if (!named) throw new UsageError('seed repo <name>')
+    return async () => {
+      const state = ready(values.instance)
+      const { repo, already } = await seedExtraRepo(state, named)
+      const found = await withClient(async (client) => one(z.object({ remote_url: z.string() }), (await client.query('select remote_url from repos where id = $1', [repo.repoId])).rows))
+      if (!found) return failed(`${repo.path} is not among the team's repos after adding it`, { help: [], data: repo, log: state.evidence })
+      return { kind: 'write', did: `seed repo ${named}`, state: `${repo.path} is a team repo at ${found.remote_url}`, already, help: [run('browser click --role button --name "New task"', 'to start a task on it')], data: repo, log: state.evidence }
+    }
+  },
+})
+
+const seedTask = command({
+  name: 'seed task', args: '', about: 'start a task for an agent, as a person does with New task',
+  flags: { title: { kind: 'string', about: 'what needs doing' }, agent: { kind: 'string', about: 'the agent (fixer by default)' }, instructions: { kind: 'string', about: 'details for the agent' } },
+  schema: InstructionsArgs.extend({ title: z.string(), agent: z.string().default('fixer') }),
+  prepare: (values) => async () => {
+    const state = ready(values.instance)
+    const agentId = state.seed.agents[values.agent]
+    if (!agentId) throw new UsageError(`no agent named ${values.agent} on the instance: ${Object.keys(state.seed.agents).join(', ')}`)
+    const existing = async () => withClient(async (client) => one(z.object({ id: z.string(), title: z.string() }), (await client.query(
+      'select id, title from tasks where team_id = $1 and title = $2 order by created_at desc limit 1', [state.seed.teamId, values.title])).rows))
+    const had = await existing()
+    if (!had) {
+      const reply = await call(state, { method: 'POST', path: '/v1/tasks', as: 'person', body: { title: values.title, instructions: values.instructions ?? '', agentId } })
+      if (reply.status < 200 || reply.status >= 300) return failed(`POST /v1/tasks answered ${String(reply.status)}`, { outside: { source: 'API answer', text: JSON.stringify(reply.body) }, help: [run(`doctor${at(state)}`, 'to check the instance')], data: reply, log: state.evidence })
+    }
+    const task = await existing()
+    if (!task) return failed(`no task titled "${values.title}" after starting it`, { help: [], data: null, log: state.evidence })
+    return { kind: 'write', did: `seed task "${values.title}"`, state: `the task is at #/t/${task.id}, for ${values.agent}`, already: had !== null, help: [run(`browser goto "#/t/${task.id}"`, 'to open it')], data: { taskId: task.id }, log: state.evidence }
+  },
+})
+
+// --- The instance's machine: its secrets and its files ---
+
+const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/
+const secretsFile = (state: ReadyState) => join(state.scratch, 'daemon', 'secrets.json')
+const readSecrets = (file: string) => (existsSync(file) ? z.record(z.string(), z.string()).parse(JSON.parse(readFileSync(file, 'utf8'))) : {})
+
+function secretCommand(action: 'set' | 'unset'): Command {
+  return command({
+    name: `secret ${action}`, args: '<NAME>', about: action === 'set' ? "give the machine a secret's value, where a person keeps it" : "take a secret's value off the machine",
+    flags: action === 'set' ? { value: { kind: 'string', about: 'the value' } } : {},
+    schema: Common.extend({ value: z.string().optional() }),
+    prepare: (values, [key]) => {
+      if (!key || !SECRET_NAME.test(key)) throw new UsageError(`secret ${action} <NAME>, in capitals, such as NOTES_TOKEN`)
+      if (action === 'set' && values.value === undefined) throw new UsageError('secret set needs --value')
+      return async () => {
+        const state = ready(values.instance)
+        const file = secretsFile(state)
+        const current = readSecrets(file)
+        const already = action === 'set' ? current[key] === values.value : !(key in current)
+        if (!already) {
+          const next = action === 'set' && values.value !== undefined ? { ...current, [key]: values.value } : Object.fromEntries(Object.entries(current).filter(([k]) => k !== key))
+          mkdirSync(join(state.scratch, 'daemon'), { recursive: true })
+          writeFileSync(file, JSON.stringify(next), { mode: 0o600 })
+        }
+        const held = key in readSecrets(file)
+        if (held !== (action === 'set')) return failed(`the machine ${held ? 'still holds' : 'does not hold'} ${key} after secret ${action}`, { help: [], data: { secret: key }, log: state.evidence })
+        return {
+          kind: 'write', did: `secret ${action} ${key}`, state: `${held ? 'held' : 'not held'} by the machine ${state.seed.machine.name}`, already,
+          help: [`Message an agent whose plugin needs ${key}: it reads the machine's secrets when its next session starts`], data: { secret: key, held }, log: state.evidence,
+        }
+      }
+    },
+  })
 }
 
-// A file on the instance's machine, read back the way a person would look on
-// their Mac: an agent's folder (agents/<agent id>), a task's workspace
+// A file on the instance's machine, read the way a person would look on their
+// Mac: an agent's folder (agents/<agent id>), a task's workspace
 // (workspaces/<workspace id>), or secrets.json. It waits for the file to appear,
 // or with --missing for it to be absent.
-const MachineArgs = Common.extend({ 'expect-text': z.string().optional(), missing: z.boolean().optional(), timeout: z.coerce.number().positive().default(DEFAULT_TIMEOUT_S) })
-
-const machineCommand: Command = {
-  parse: (args) => {
-    const [action, ...rest] = args
-    const { values, positionals } = parse(rest, { 'expect-text': { type: 'string' }, missing: { type: 'boolean' }, timeout: { type: 'string' } }, MachineArgs)
-    const [path] = positionals
-    if (action !== 'read' || !path) throw new UsageError('machine read <path in the machine\'s home> [--expect-text <text>] [--missing]')
+const machineRead = command({
+  name: 'machine read', args: "<path in the machine's home>", about: "read a file on the instance's machine, waiting for it to appear",
+  flags: {
+    'expect-text': { kind: 'string', about: 'text the file must hold' },
+    missing: { kind: 'boolean', about: 'wait for the file to be absent instead' },
+    timeout: { kind: 'string', about: `seconds to wait (${String(DEFAULT_TIMEOUT_S)} by default)` },
+  },
+  schema: Common.extend({ 'expect-text': z.string().optional(), missing: z.boolean().optional(), timeout: z.coerce.number().positive().default(DEFAULT_TIMEOUT_S) }),
+  prepare: (values, [path]) => {
+    if (!path) throw new UsageError("machine read <path in the machine's home> [--expect-text <text>] [--missing]")
     if (path.startsWith('/') || path.split('/').includes('..')) throw new Refused(`${path} is outside the machine's home`, ['Give a path inside it, such as agents/<agent id>/first.txt'])
     return async () => {
       const state = ready(values.instance)
       const file = join(state.scratch, 'daemon', path)
       const deadline = Date.now() + values.timeout * 1000
-      const look = (): { ok: boolean; head: string; text: string | null } => {
-        const text = existsSync(file) ? readFileSync(file, 'utf8') : null
-        if (values.missing) return { ok: text === null, head: text === null ? `${path} is not on the machine` : `error: machine read: ${path} is on the machine, and should not be`, text }
-        if (text === null) return { ok: false, head: `error: machine read: ${path} is not on the machine`, text }
-        const wanted = values['expect-text']
-        return wanted === undefined || text.includes(wanted) ? { ok: true, head: `${path} holds ${String(text.length)} characters`, text } : { ok: false, head: `error: machine read: ${path} does not hold "${wanted}"`, text }
-      }
-      let seen = look()
-      while (!seen.ok && Date.now() < deadline) {
+      const look = () => (existsSync(file) ? readFileSync(file, 'utf8') : null)
+      const holds = (text: string | null) => (values.missing ? text === null : text !== null && (values['expect-text'] === undefined || text.includes(values['expect-text'])))
+      let text = look()
+      while (!holds(text) && Date.now() < deadline) {
         await sleep(POLL_MS)
-        seen = look()
+        text = look()
       }
-      return { ok: seen.ok, head: seen.head, detail: seen.text ?? '', help: [], files: [], data: { path, exists: seen.text !== null, text: seen.text }, evidence: state.evidence }
+      const shared = { help: [], data: { path, exists: text !== null }, log: state.evidence }
+      const outside = text === null ? undefined : { source: 'file on the machine', text }
+      if (values.missing) return text === null ? { kind: 'read', answer: `${path} is not on the machine`, ...shared } : failed(`${path} is on the machine, and should not be`, { ...shared, outside })
+      if (text === null) return failed(`${path} is not on the machine`, shared)
+      if (!holds(text)) return failed(`${path} does not hold "${values['expect-text'] ?? ''}"`, { ...shared, outside })
+      return { kind: 'read', answer: `${path} holds ${String(text.length)} characters`, outside, ...shared }
     }
   },
-}
+})
+
+// --- Visual regression ---
 
 const VisualArgs = Common.extend({ from: z.string().optional(), reason: z.string().optional(), view: z.array(z.string()).optional(), baselines: z.string().optional() })
-
-const visualCommand: Command = {
-  parse: (args) => {
-    const [action, ...rest] = args
-    if (action === 'shot') {
-      const { values, positionals } = parse(rest, DRIVE_OPTIONS, DriveArgs)
-      const [stateName] = positionals
-      if (!stateName || !/^[a-z0-9-]+$/.test(stateName)) throw new UsageError('visual shot needs a state name in lowercase words and dashes, such as conversation-dm')
-      const readyHandle = values['ready-role'] ? { role: values['ready-role'], name: values['ready-name'], text: values['ready-text'] } : undefined
-      return async () => {
-        const state = ready(values.instance)
-        const reply = await sessionCall(state, {
-          target: 'browser', engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
-          op: { op: 'visual', state: stateName, ready: readyHandle },
-        })
-        if (!reply.ok) return { ok: false, head: `error: visual shot ${stateName}: ${reply.error}`, help: driveHelp('browser', 'screenshot', null, reply.files[0] ?? null), files: reply.files, data: reply, evidence: state.evidence }
-        const found = reply.found
-        return {
-          ok: found.pass, head: found.pass ? `ok: visual shot ${stateName} -> ${String(found.files.length)} captures, each checked` : `error: visual shot ${stateName}: a capture had a problem`,
-          detail: found.summary, help: [run('visual compare', 'to diff the captures against the baselines')], files: found.files, data: found, evidence: state.evidence,
-        }
-      }
-    }
-    const { values } = parse(rest, { from: { type: 'string' }, reason: { type: 'string' }, view: { type: 'string', multiple: true }, baselines: { type: 'string' } }, VisualArgs)
-    // Another baselines folder, for a check that must leave the skill's alone.
-    const baselines = values.baselines === undefined ? BASELINES_DIR : values.baselines.startsWith('/') ? values.baselines : join(ROOT, values.baselines)
-    const evidenceOf = () => (values.from ? (values.from.startsWith('/') ? values.from : join(ROOT, values.from)) : resolve(values.instance).evidence)
-    if (action === 'compare') {
-      return async () => {
-        const evidence = evidenceOf()
-        const result = compare(evidence, baselines)
-        const bad = result.results.filter((r) => r.status !== 'same' && r.status !== 'within tolerance')
-        const lines = result.results.map((r) => `${bad.includes(r) ? 'FAIL' : 'pass'}  ${r.view} ${r.engine}-${r.width}: ${r.detail}${r.diff ? ` (diff ${relative(ROOT, r.diff)})` : ''}`)
-        if (result.notCaptured.length) lines.push(`not captured this run: ${result.notCaptured.join(', ')}`)
-        const head = !result.results.length ? `error: visual compare: no captures in ${relative(ROOT, evidence)}`
-          : result.ok ? `${String(result.results.length)} captures match their baselines` : `error: visual compare: ${String(bad.length)} of ${String(result.results.length)} captures differ`
-        const help = !result.results.length ? [run('map run all --visual', 'to take every capture'), run('visual shot <view>', 'for one view')]
-          : result.ok ? [] : ['Open each diff: red marks what changed', run('visual baseline --reason "<why the view changed on purpose>"', 'only if the change is intended'), 'Otherwise it is a regression: reproduce it and report it']
-        return { ok: result.ok, head, detail: lines.join('\n'), help, files: result.results.flatMap((r) => (r.diff ? [r.diff] : [])), data: result, evidence }
-      }
-    }
-    if (action === 'baseline') {
-      const reason = values.reason
-      if (!reason) throw new UsageError('visual baseline needs --reason "<why the view changed on purpose>"')
-      return async () => {
-        const evidence = evidenceOf()
-        const { update, unchanged } = baseline(evidence, reason, values.view ?? [], baselines)
-        const files = update?.files ?? []
-        return {
-          ok: true, already: update === null,
-          head: update ? `ok: visual baseline -> ${String(files.length)} baselines replaced, ${String(unchanged)} already matched` : `ok: visual baseline -> all ${String(unchanged)} captures already match`,
-          detail: update ? `reason: ${reason}` : '', help: [run('visual compare', 'to confirm the run now matches')], files, data: { update, unchanged }, evidence,
-        }
-      }
-    }
-    throw new UsageError('visual takes shot, compare or baseline')
-  },
+const FROM: Flags = {
+  from: { kind: 'string', about: "a run's evidence folder (the instance's by default)" },
+  baselines: { kind: 'string', about: "a baselines folder (the skill's by default)" },
 }
+const fromRoot = (path: string) => (path.startsWith('/') ? path : join(ROOT, path))
+const evidenceOf = (values: z.infer<typeof VisualArgs>) => (values.from ? fromRoot(values.from) : resolve(values.instance).evidence)
 
-const mapCommand: Command = {
-  parse: (args) => {
-    const [action, ...rest] = args
-    const { values, positionals } = parse(rest, { visual: { type: 'boolean' }, 'keep-going': { type: 'boolean' }, base: { type: 'string' } },
-      Common.extend({ visual: z.boolean().optional(), 'keep-going': z.boolean().optional(), base: z.string().optional() }))
-    if (action === 'list') {
-      return async () => {
-        const features = listMap()
-        return {
-          ok: true, head: `${String(features.length)} features`, detail: features.map((f) => `${f.id}  ${f.title}  (${String(f.steps.length)} steps)`).join('\n'),
-          help: [run('map run <feature>', 'to drive one'), run('map run all --visual', 'for the full sweep')], files: [], data: features,
-        }
+const visualShot = command({
+  name: 'visual shot', args: '<view>', about: 'capture the current view in three engines at two widths, check each, and list them in evidence.json',
+  flags: { ...PAGE, ...READY }, schema: DriveArgs,
+  prepare: (values, [view]) => {
+    if (!view || !/^[a-z0-9][a-z0-9-]*$/.test(view)) throw new UsageError('visual shot needs a view name in lowercase words and dashes, such as conversation-dm')
+    const readyHandle = values['ready-role'] ? { role: values['ready-role'], name: values['ready-name'], text: values['ready-text'] } : undefined
+    return async () => {
+      const state = ready(values.instance)
+      const reply = await sessionCall(state, {
+        target: 'browser', engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
+        op: { op: 'visual', state: view, ready: readyHandle },
+      })
+      if (!reply.ok) return failed(reply.error, { help: driveHelp('browser', 'visual', null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence })
+      const found = reply.found
+      const manifestFile = join(state.evidence, EVIDENCE_MANIFEST_FILE)
+      const listed = existsSync(manifestFile) ? EVIDENCE_MANIFEST.parse(JSON.parse(readFileSync(manifestFile, 'utf8'))).shots.filter((s) => s.view === view).length : 0
+      const shared = { detail: found.summary, help: [run('visual compare', 'to diff the captures against the baselines')], files: found.files, data: found, log: state.evidence }
+      if (!found.pass) return failed('a capture had a problem', shared)
+      return { kind: 'write', did: `visual shot ${view}`, state: `${String(listed)} captures of ${view} in ${relative(ROOT, manifestFile)}, each checked`, already: false, ...shared }
+    }
+  },
+})
+
+const visualCompare = command({
+  name: 'visual compare', args: '', about: "diff a run's captures against the baselines, naming each changed region", flags: FROM, schema: VisualArgs,
+  prepare: (values) => async () => {
+    const evidence = evidenceOf(values)
+    const result = compare(evidence, values.baselines === undefined ? BASELINES_DIR : fromRoot(values.baselines))
+    const bad = result.results.filter((r) => r.status !== 'same' && r.status !== 'within tolerance')
+    const lines = result.results.map((r) => `${bad.includes(r) ? 'FAIL' : 'pass'}  ${r.view} ${r.engine}-${r.width}: ${r.detail}${r.diff ? ` (diff ${relative(ROOT, r.diff)})` : ''}`)
+    if (result.notCaptured.length) lines.push(`not captured this run: ${result.notCaptured.join(', ')}`)
+    const shared = { detail: lines.join('\n'), files: result.results.flatMap((r) => (r.diff ? [r.diff] : [])), data: result }
+    if (!result.results.length) return failed(`no captures in ${relative(ROOT, join(evidence, EVIDENCE_MANIFEST_FILE))}`, { ...shared, help: [run('map run all --visual', 'to take every capture'), run('visual shot <view>', 'for one view')] })
+    if (!result.ok) {
+      return failed(`${String(bad.length)} of ${String(result.results.length)} captures differ`, {
+        ...shared, help: ['Open each diff: red marks what changed', run('visual baseline --reason "<why the view changed on purpose>"', 'only if the change is intended'), 'Otherwise it is a regression: reproduce it and report it'],
+      })
+    }
+    return { kind: 'read', answer: `${String(result.results.length)} captures match their baselines`, help: [], ...shared }
+  },
+})
+
+const visualBaseline = command({
+  name: 'visual baseline', args: '', about: "make a run's captures the baselines, logging why",
+  flags: { ...FROM, reason: { kind: 'string', about: 'why the view changed on purpose' }, view: { kind: 'strings', about: 'only this view' } }, schema: VisualArgs,
+  prepare: (values) => {
+    const reason = values.reason
+    if (!reason) throw new UsageError('visual baseline needs --reason "<why the view changed on purpose>"')
+    return async () => {
+      const evidence = evidenceOf(values)
+      const dir = values.baselines === undefined ? BASELINES_DIR : fromRoot(values.baselines)
+      const { update, unchanged } = baseline(evidence, reason, values.view ?? [], dir)
+      const after = compare(evidence, dir).results.filter((r) => !values.view?.length || values.view.includes(r.view))
+      const matching = after.filter((r) => r.status === 'same').length
+      if (matching !== after.length) return failed(`${String(after.length - matching)} baselines still differ from the run's captures after the update`, { help: [], data: { update, unchanged } })
+      return {
+        kind: 'write', did: 'visual baseline', state: `${String(matching)} baselines match the run's captures`, already: update === null,
+        detail: update ? `reason: ${reason}` : '', help: [run('visual compare', 'to confirm the run matches')], files: update?.files ?? [], data: { update, unchanged },
       }
     }
-    if (action === 'export') {
-      return async () => {
-        const { file, map, already } = exportMap()
-        return {
-          ok: true, already, head: `ok: map export -> ${relative(ROOT, file)} lists ${String(map.features.length)} features`,
-          help: [run('map check', 'to confirm the map is whole')], files: already ? [] : [file], data: map,
-        }
-      }
+  },
+})
+
+// --- The feature map ---
+
+const mapList = command({
+  name: 'map list', args: '', about: 'list the features in the map, in sweep order', flags: {}, schema: Common,
+  fields: { all: ['id', 'name', 'steps', 'paths', 'checks', 'file'], shown: ['id', 'name', 'steps'] },
+  prepare: () => async () => {
+    const features = listMap()
+    return {
+      kind: 'list', noun: 'features', help: [run('map run <feature>', 'to drive one'), run('map run all --visual', 'for the full sweep')], data: features,
+      rows: features.map((f) => ({ id: f.id, name: f.entry.name, steps: String(f.steps.length), paths: f.entry.paths.join(','), checks: f.entry.checks.join(','), file: relative(ROOT, f.file) })),
     }
-    if (action === 'check') {
-      return async () => {
-        const problems = checkMap((argv) => { parseCommand(argv) })
-        return {
-          ok: !problems.length, head: problems.length ? `error: map check: ${String(problems.length)} problems` : 'every feature file has its four sections, the index lists each one, and every command in it parses',
-          detail: problems.join('\n'), help: problems.length ? ['Fix each file named, then run `bin/agentsctl map check` again'] : [], files: [], data: { problems },
-        }
-      }
+  },
+})
+
+const mapCheck = command({
+  name: 'map check', args: '', about: 'check every feature file, the index and features.json, without running anything', flags: {}, schema: Common,
+  prepare: () => async () => {
+    const problems = checkMap((argv) => { parseOnly(CLI, argv) })
+    if (problems.length) return failed(`${String(problems.length)} problems`, { detail: problems.join('\n'), help: ['Fix each file named, then check again'], data: { problems } })
+    return { kind: 'read', answer: 'every feature file has its map entry and four sections, the index lists each one, every command in it parses, and features.json matches', help: [], data: { problems } }
+  },
+})
+
+const mapExport = command({
+  name: 'map export', args: '', about: "write features.json, the map the framework's gates read, from the feature files' entries", flags: {}, schema: Common,
+  prepare: () => async () => {
+    const { file, map, already } = exportMap()
+    const reread = FEATURE_MAP.parse(JSON.parse(readFileSync(file, 'utf8')))
+    return {
+      kind: 'write', did: 'map export', state: `${relative(ROOT, file)} lists ${String(reread.features.length)} features`, already,
+      help: [run('map check', 'to confirm the map is whole')], files: already ? [] : [file], data: map,
     }
-    if (action === 'guard') {
-      const base = values.base
-      if (!base) throw new UsageError('map guard --base <git ref>, such as origin/main')
-      return async () => {
-        const removed = await guardMap(base)
-        return {
-          ok: !removed.length, head: removed.length ? `error: map guard: ${String(removed.length)} assertions were removed or changed since ${base}` : `every assertion the map had at ${base} is still there`,
-          detail: removed.join('\n'), files: [], data: { base, removed },
-          help: removed.length ? ['A weaker map can hide a regression. Put each assertion back, or name in the pull request the commit that removed its feature'] : [],
-        }
-      }
+  },
+})
+
+const mapGuard = command({
+  name: 'map guard', args: '', about: 'fail when the map lost or changed an assertion it had at a base commit',
+  flags: { base: { kind: 'string', about: 'the git ref to compare with, such as origin/main' } }, schema: Common.extend({ base: z.string() }),
+  prepare: (values) => async () => {
+    const removed = await guardMap(values.base)
+    if (removed.length) {
+      return failed(`${String(removed.length)} assertions were removed or changed since ${values.base}`, {
+        detail: removed.join('\n'), data: { base: values.base, removed },
+        help: ['A weaker map can hide a regression. Put each assertion back, or name in the pull request the commit that removed its feature'],
+      })
     }
-    if (action === 'run') {
-      if (!positionals.length) throw new UsageError('map run takes feature names, or all')
-      return async () => {
-        const state = ready(values.instance)
-        const health = async () => {
-          const report = await doctor(state.name)
-          return { ok: report.ok, why: report.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ') }
-        }
-        const report = await runMap(state, positionals, { visual: values.visual === true, keepGoing: values['keep-going'] === true }, runCli, health)
-        const failed = report.features.filter((f) => f.verdict === 'verifier-failed')
-        const help = report.ok
-          ? [values.visual ? run('visual compare', 'to diff the captures against the baselines') : run(`map run ${positionals.join(' ')} --visual`, 'to also capture the views'), run(`down${at(state)}`, 'when you are done')]
-          : [
-            ...(failed.length ? [run('browser record start --label "<what it shows>"', 'and reproduce each failed step twice through the UI before calling it a bug')] : []),
+    return { kind: 'read', answer: `every assertion the map had at ${values.base} is still there`, help: [], data: { base: values.base, removed } }
+  },
+})
+
+const mapRun = command({
+  name: 'map run', args: '<feature ...|all>', about: 'run feature files as written, giving each step a verdict',
+  flags: { visual: { kind: 'boolean', about: 'also take the visual captures' }, 'keep-going': { kind: 'boolean', about: 'run every step even after one fails' } },
+  schema: Common.extend({ visual: z.boolean().optional(), 'keep-going': z.boolean().optional() }),
+  prepare: (values, positionals) => {
+    if (!positionals.length) throw new UsageError('map run takes feature names, or all')
+    return async () => {
+      const state = ready(values.instance)
+      const health = async () => {
+        const report = await doctor(state.name)
+        return { ok: report.ok, why: report.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ') }
+      }
+      const report = await runMap(state, positionals, { visual: values.visual === true, keepGoing: values['keep-going'] === true }, runCli, health)
+      const failing = report.features.filter((f) => f.verdict === 'verifier-failed')
+      // Step results quote what the page and the record said.
+      const outside = { source: 'step results, which quote the page and the record', text: report.text }
+      const shared = { outside, files: [report.file], data: report, log: state.evidence }
+      if (!report.ok) {
+        return failed(`${String(failing.length)} features failed`, {
+          ...shared, help: [
+            ...(failing.length ? [run('browser record start --label "<what it shows>"', 'and reproduce each failed step twice through the UI before calling it a bug')] : []),
             ...(values['keep-going'] ? [] : [run(`map run ${positionals.join(' ')} --keep-going`, 'to give every step a verdict')]),
             `Read the report: ${relative(ROOT, report.file)}`,
-          ]
-        return { ok: report.ok, head: report.ok ? `ok: map run -> every step live-ui-verified` : `error: map run: ${String(failed.length)} features failed`, detail: report.text, help, files: [report.file], data: report, evidence: state.evidence }
+          ],
+        })
       }
+      return { kind: 'read', answer: `every step of ${positionals.join(', ')} is live-ui-verified`, help: [values.visual ? run('visual compare', 'to diff the captures against the baselines') : run(`map run ${positionals.join(' ')} --visual`, 'to also capture the views'), run(`down${at(state)}`, 'when you are done')], ...shared }
     }
-    throw new UsageError('map takes list, check, export, guard or run')
   },
-}
+})
+
+// --- The instance itself ---
 
 function upHelp(state: ReadyState): string[] {
   return [
@@ -583,20 +684,117 @@ function upHelp(state: ReadyState): string[] {
   ]
 }
 
+const upCommand = command({
+  name: 'up', args: '', about: 'start an isolated Agents on ports 8020 to 8039, against the test database',
+  flags: {
+    port: { kind: 'string', about: 'the first of its three ports' },
+    claude: { kind: 'string', about: 'fake (by default), the scripted harness, or real Claude sessions' },
+    pipelines: { kind: 'boolean', about: 'also set up the forge org and the pipelines' },
+    'no-build': { kind: 'boolean', about: 'serve the app as last built' },
+  },
+  schema: Common.extend({ port: z.coerce.number().int().optional(), claude: Harness.default('fake'), pipelines: z.boolean().optional(), 'no-build': z.boolean().optional() }),
+  prepare: (values) => async () => {
+    const { state, already } = await up({ name: values.instance, port: values.port, harness: values.claude, pipelines: values.pipelines === true, build: values['no-build'] !== true })
+    const after = readState(state.name)
+    if (after?.phase !== 'ready') return failed(`${state.name} is ${after?.phase ?? 'gone'} after up`, { help: [run(`down${at(state)}`, 'and up again')], data: after })
+    const detail = [
+      `team: ${after.team}`,
+      `people: ${after.seed.owner.login} (ada), ${after.seed.teammate.login} (ben)`,
+      `agents: ${Object.keys(after.seed.agents).join(', ')} on the machine ${after.seed.machine.name}`,
+      `app: http://127.0.0.1:${String(after.ports.people)}/ (${INVOKE} browser sends the login)`,
+      `claude: ${after.harness === 'fake' ? 'the fake harness, test/fake-claude.ts' : 'real Claude sessions'}`,
+      `pipelines: ${after.pipelines ? `bug-fix, improve and coach, from the forge org verify-${after.name}` : 'none (up --pipelines adds them)'}`,
+      `evidence: ${relative(ROOT, after.evidence)}`,
+    ].join('\n')
+    return { kind: 'write', did: `up ${after.name}`, state: `ready on ports ${String(after.ports.machines)}-${String(after.ports.streams)}`, already, detail, help: upHelp(after), data: after, log: after.evidence }
+  },
+})
+
+const doctorCommand = command({
+  name: 'doctor', args: '', about: 'check, without changing anything, that the instance is usable', flags: {}, schema: Common,
+  prepare: (values) => async () => {
+    const state = resolve(values.instance)
+    const report = await doctor(values.instance)
+    const failing = report.checks.filter((c) => !c.ok)
+    const detail = report.checks.map((c) => `${c.ok ? 'pass' : 'FAIL'}  ${c.name}: ${c.detail}`).join('\n')
+    if (!report.ok) {
+      return failed(`${failing.map((c) => c.name).join(', ')} failed`, { detail, help: [`Read the logs in ${relative(ROOT, state.evidence)}`, run(`down${at(state)}`, 'and up again if it does not recover')], data: report, log: state.evidence })
+    }
+    return { kind: 'read', answer: `${state.name} is usable: ${String(report.checks.length)} checks pass`, detail, help: state.phase === 'ready' ? upHelp(state).slice(1) : [], data: report, log: state.evidence }
+  },
+})
+
+const downCommand = command({
+  name: 'down', args: '', about: 'stop what the instance started and remove its team, keeping its evidence',
+  flags: { 'keep-data': { kind: 'boolean', about: 'keep its team, repos and boxes' } }, schema: Common.extend({ 'keep-data': z.boolean().optional() }),
+  prepare: (values) => async () => {
+    const stopped = await down(values.instance, { keepData: values['keep-data'] === true })
+    if (!stopped) {
+      const gone = values.instance ? readState(values.instance) === null : list().length === 0
+      if (!gone) return failed('down stopped nothing, and the instance is still in this checkout', { help: [run('list', 'to see what is here')], data: null })
+      return { kind: 'write', did: 'down', state: values.instance ? `${values.instance} is not in this checkout` : 'no instance in this checkout', already: true, help: [run('up --pipelines', 'to start an instance')], data: null }
+    }
+    const kept = existsSync(stopped.evidence)
+    const removed = [stopped.removed.team ? `team ${stopped.team}` : '', ...stopped.removed.repos, ...stopped.removed.containers, stopped.removed.scratch ? 'its scratch folder' : ''].filter(Boolean)
+    const detail = [
+      stopped.survivors.length ? `still running: ${stopped.survivors.map((s) => `${String(s.pid)} ${s.command}`).join('; ')}` : 'still running: none',
+      `removed: ${removed.length ? removed.join(', ') : 'nothing (--keep-data)'}`,
+    ].join('\n')
+    if (stopped.survivors.length || !kept) {
+      return failed(stopped.survivors.length ? `${String(stopped.survivors.length)} processes ${stopped.name} started are still running` : `the evidence folder of ${stopped.name} is missing`, {
+        detail, help: ['Stop each survivor by its pid after checking with `ps -ww -p <pid>` that it is the instance\'s'], data: stopped, log: stopped.evidence,
+      })
+    }
+    return {
+      kind: 'write', did: `down ${stopped.name}`, state: `nothing it started is running, and its evidence is in ${relative(ROOT, stopped.evidence)}`, already: false, detail,
+      help: [run(`visual compare --from ${relative(ROOT, stopped.evidence)}`, 'to diff its captures, if it took any'), run('up --pipelines', 'to start a fresh instance')], data: stopped, log: stopped.evidence,
+    }
+  },
+})
+
+const listCommand = command({
+  name: 'list', args: '', about: 'list the instances in this checkout', flags: {}, schema: Common,
+  fields: { all: ['name', 'phase', 'ports', 'claude', 'pipelines', 'evidence'], shown: ['name', 'phase', 'ports'] },
+  prepare: () => async () => {
+    const states = list()
+    return {
+      kind: 'list', noun: 'instances', data: states,
+      rows: states.map((s) => ({ name: s.name, phase: s.phase, ports: `${String(s.ports.machines)}-${String(s.ports.streams)}`, claude: s.harness, pipelines: String(s.pipelines), evidence: relative(ROOT, s.evidence) })),
+      help: states.length ? states.map((s) => run(`doctor${at(s)}`, `to check ${s.name}`)) : [run('up --pipelines', 'to start one')],
+    }
+  },
+})
+
+const evidenceCommand = command({
+  name: 'evidence', args: '', about: "list what the instance's run did, from its evidence folder", flags: {}, schema: Common,
+  fields: { all: ['at', 'command', 'ok', 'summary'], shown: ['command', 'ok', 'summary'] },
+  prepare: (values) => async () => {
+    const state = resolve(values.instance)
+    if (!existsSync(state.evidence)) return failed(`the evidence folder ${relative(ROOT, state.evidence)} is missing`, { help: [], data: null })
+    const done = actions(state.evidence)
+    return {
+      kind: 'list', noun: 'actions', source: 'action summaries, which quote the page and the record', detail: `folder: ${relative(ROOT, state.evidence)}`,
+      rows: done.map((a) => ({ at: a.at, command: a.command, ok: String(a.ok), summary: a.summary.split('\n')[0] ?? '' })),
+      help: [], data: { evidence: state.evidence, actions: done },
+    }
+  },
+})
+
 // The dashboard: what runs here, whether it answers, and what to try next.
 async function dashboard(): Promise<Result> {
   const states = list()
   const rows: string[] = []
   for (const state of states) {
     const alive = state.processes.filter((p) => p.role !== 'session')
-    let up = alive.length > 0
-    for (const record of alive) if (!(await isOurs(record))) up = false
-    const answers = state.phase === 'ready' && up ? (await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch(() => null))?.status === 200 : false
-    rows.push(`${state.name},${state.phase},${String(state.ports.machines)}-${String(state.ports.streams)},${state.harness},${state.pipelines ? 'pipelines' : 'no pipelines'},${answers ? 'answers' : up ? 'running, not answering' : 'not running'}`)
+    let running = alive.length > 0
+    for (const record of alive) if (!(await isOurs(record))) running = false
+    const answers = state.phase === 'ready' && running ? (await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch(() => null))?.status === 200 : false
+    rows.push(`${state.name},${state.phase},${String(state.ports.machines)}-${String(state.ports.streams)},${state.harness},${state.pipelines ? 'pipelines' : 'no pipelines'},${answers ? 'answers' : running ? 'running, not answering' : 'not running'}`)
   }
   // Folders are named <instance>-<when it started>, so the part after the last dash orders them by time.
   const when = (folder: string) => folder.slice(folder.lastIndexOf('-') + 1)
-  const recent = existsSync(EVIDENCE_DIR) ? readdirSync(EVIDENCE_DIR).sort((a, b) => when(b).localeCompare(when(a))).slice(0, RECENT_EVIDENCE) : []
+  const folders = existsSync(EVIDENCE_DIR) ? readdirSync(EVIDENCE_DIR).sort((a, b) => when(b).localeCompare(when(a))) : []
+  const recent = folders.slice(0, RECENT_EVIDENCE)
   const evidence = recent.map((folder) => {
     const done = actions(join(EVIDENCE_DIR, folder))
     return `${relative(ROOT, join(EVIDENCE_DIR, folder))} (${String(done.length)} actions, ${String(done.filter((a) => !a.ok).length)} failed)`
@@ -607,188 +805,51 @@ async function dashboard(): Promise<Result> {
       : [run(`down${at(first)}`, `to clear ${first.name}, which is ${first.phase}`)]
   const detail = [
     rows.length ? `instances[${String(rows.length)}]{name,phase,ports,claude,forge,health}:\n${rows.map((r) => `  ${r}`).join('\n')}` : 'instances: none in this checkout',
-    evidence.length ? `evidence[${String(evidence.length)}]:\n${evidence.map((e) => `  - ${e}`).join('\n')}` : '',
-  ].filter(Boolean).join('\n')
-  return { ok: true, head: 'agentsctl: run and drive Agents for verification', detail, help, files: [], data: { instances: states, evidence: recent } }
+    folders.length ? `evidence, ${String(recent.length)} of ${String(folders.length)} folders:\n${evidence.map((e) => `  - ${e}`).join('\n')}` : 'evidence: none yet',
+  ].join('\n')
+  return { kind: 'read', answer: 'agentsctl: run and drive Agents for verification', detail, help, data: { instances: states, evidence: recent } }
 }
 
-const COMMANDS: Record<string, Command> = {
-  up: {
-    parse: (args) => {
-      const { values } = parse(args, { port: { type: 'string' }, claude: { type: 'string' }, pipelines: { type: 'boolean' }, 'no-build': { type: 'boolean' } },
-        Common.extend({ port: z.coerce.number().int().optional(), claude: Harness.default('fake'), pipelines: z.boolean().optional(), 'no-build': z.boolean().optional() }))
-      return async () => {
-        const { state, already } = await up({ name: values.instance, port: values.port, harness: values.claude, pipelines: values.pipelines === true, build: values['no-build'] !== true })
-        const detail = [
-          `team: ${state.team}`,
-          `people: ${state.seed.owner.login} (ada), ${state.seed.teammate.login} (ben)`,
-          `agents: ${Object.keys(state.seed.agents).join(', ')} on the machine ${state.seed.machine.name}`,
-          `app: http://127.0.0.1:${String(state.ports.people)}/ (bin/agentsctl browser sends the login)`,
-          `claude: ${state.harness === 'fake' ? 'the fake harness, test/fake-claude.ts' : 'real Claude sessions'}`,
-          `pipelines: ${state.pipelines ? `bug-fix, improve and coach, from the forge org verify-${state.name}` : 'none (up --pipelines adds them)'}`,
-          `evidence: ${relative(ROOT, state.evidence)}`,
-        ].join('\n')
-        return { ok: true, head: `ok: up ${state.name} -> ready on ports ${String(state.ports.machines)}-${String(state.ports.streams)}`, already, detail, help: upHelp(state), files: [], data: state, evidence: state.evidence }
-      }
-    },
-  },
-  doctor: {
-    parse: (args) => {
-      const { values } = parse(args, {}, Common)
-      return async () => {
-        const state = resolve(values.instance)
-        const report = await doctor(values.instance)
-        const failing = report.checks.filter((c) => !c.ok)
-        const help = failing.length
-          ? [`Read the logs in ${relative(ROOT, state.evidence)}`, run(`down${at(state)}`, 'and up again if it does not recover')]
-          : state.phase === 'ready' ? upHelp(state).slice(1) : []
-        return {
-          ok: report.ok, head: report.ok ? `${state.name} is usable: ${String(report.checks.length)} checks pass` : `error: doctor: ${failing.map((c) => c.name).join(', ')} failed`,
-          detail: report.checks.map((c) => `${c.ok ? 'pass' : 'FAIL'}  ${c.name}: ${c.detail}`).join('\n'), help, files: [], data: report, evidence: state.evidence,
-        }
-      }
-    },
-  },
-  down: {
-    parse: (args) => {
-      const { values } = parse(args, { 'keep-data': { type: 'boolean' } }, Common.extend({ 'keep-data': z.boolean().optional() }))
-      return async () => {
-        const stopped = await down(values.instance, { keepData: values['keep-data'] === true })
-        if (!stopped) return { ok: true, already: true, head: `ok: down${values.instance ? ` ${values.instance}` : ''} -> nothing was running`, help: [run('up --pipelines', 'to start an instance')], files: [], data: null }
-        const kept = existsSync(stopped.evidence)
-        const removed = [stopped.removed.team ? `team ${stopped.team}` : '', ...stopped.removed.repos, ...stopped.removed.containers, stopped.removed.scratch ? 'its scratch folder' : ''].filter(Boolean)
-        const ok = !stopped.survivors.length && kept
-        const head = ok ? `ok: down ${stopped.name} -> stopped, evidence kept in ${relative(ROOT, stopped.evidence)}`
-          : `error: down ${stopped.name}: ${stopped.survivors.length ? `${String(stopped.survivors.length)} processes it started are still running` : 'its evidence folder is missing'}`
-        const detail = [
-          stopped.survivors.length ? `still running: ${stopped.survivors.map((s) => `${String(s.pid)} ${s.command}`).join('; ')}` : 'still running: none',
-          `removed: ${removed.length ? removed.join(', ') : 'nothing (--keep-data)'}`,
-        ].join('\n')
-        const help = ok ? [run(`visual compare --from ${relative(ROOT, stopped.evidence)}`, 'to diff its captures, if it took any'), run('up --pipelines', 'to start a fresh instance')]
-          : [`Stop each survivor by its pid after checking with \`ps -ww -p <pid>\` that it is the instance's`]
-        return { ok, head, detail, help, files: [], data: stopped, evidence: stopped.evidence }
-      }
-    },
-  },
-  list: {
-    parse: (args) => {
-      parse(args, {}, Common)
-      return async () => {
-        const states = list()
-        return {
-          ok: true, head: `${String(states.length)} instances in this checkout`,
-          detail: states.map((s) => `${s.name}  ${s.phase}  ports ${String(s.ports.machines)}-${String(s.ports.streams)}  ${relative(ROOT, s.evidence)}`).join('\n'),
-          help: states.length ? states.map((s) => run(`doctor${at(s)}`, `to check ${s.name}`)) : [run('up --pipelines', 'to start one')], files: [], data: states,
-        }
-      }
-    },
-  },
-  evidence: {
-    parse: (args) => {
-      const { values } = parse(args, {}, Common)
-      return async () => {
-        const state = resolve(values.instance)
-        const done = actions(state.evidence)
-        const failed = done.filter((a) => !a.ok)
-        return {
-          ok: true, head: `${relative(ROOT, state.evidence)}: ${String(done.length)} actions, ${String(failed.length)} failed`,
-          detail: failed.map((a) => `${a.command}: ${a.summary}`).join('\n'), help: [], files: [], data: { evidence: state.evidence, actions: done },
-        }
-      }
-    },
-  },
-  browser: driveCommand('browser'),
-  desktop: driveCommand('desktop'),
-  api: apiCommand,
-  db: dbCommand,
-  seed: seedCommand,
-  secret: secretCommand,
-  machine: machineCommand,
-  visual: visualCommand,
-  map: mapCommand,
-}
-
-export const USAGE = `agentsctl: run and drive Agents for verification. Run from the repo root with ~/.local/node/bin first on PATH.
-
-  bin/agentsctl                       a dashboard: instances, their health, recent evidence, what to try next
-  bin/agentsctl up [--instance <name>] [--port <first>] [--claude fake|real] [--pipelines] [--no-build]
-  bin/agentsctl doctor | down [--keep-data] | list | evidence
-  bin/agentsctl browser <op> [--engine chromium|firefox|webkit] [--width desktop|phone] [--as ada|ben|<who>] [--timeout <s>]
-      ops: goto <route> | click | fill --value | select --option|--value | check | uncheck | press <key> | type <text>
-           wait [--gone] | text [--expect] | count [--expect] | snapshot --aria | screenshot [--page]
-           console | network | trace start|stop | overflow | a11y | focus | tab-to | record start --label <what it shows> | record stop | close
-           reset (closes the whole browser session; the next command opens a fresh one)
-      elements: --role <role> --name <accessible name> [--text <text inside>] [--within <role>:<name> | --within <role> --within-text <text>]
-  bin/agentsctl desktop <op> (the same ops, in the Electron app)
-  bin/agentsctl api <GET|POST|HEAD> <path> [--as person|machine|webhook] [--login ada|ben] [--door people|machines] [--body <json>] [--expect <status>] [--expect-text <text>]
-  bin/agentsctl db "<select>" [--expect-rows <n>] [--expect <column>=<value>] [--wait <seconds>] [--value]
-  bin/agentsctl seed person <who> | agent <name> | box <name> | repo <name> | task --title <title> [--agent <name>]
-  bin/agentsctl secret set <NAME> --value <value> | secret unset <NAME>
-  bin/agentsctl machine read <path in the machine's home> [--expect-text <text>] [--missing]
-  bin/agentsctl visual shot <view> [--ready-role <role> --ready-name <name>] | compare [--from <dir>] [--baselines <dir>] | baseline --reason <why> [--from <dir>] [--baselines <dir>]
-  bin/agentsctl map list | check | export | guard --base <git ref> | run <feature ...|all> [--visual] [--keep-going]
-
-Every command takes --instance <name> (the only running one by default), --json for one typed envelope,
---full to show long output whole, and --dry-run, which checks the command line and the instance and runs nothing.
-A write leads with "ok:", rerunning one that changed nothing says "already: true", and each command ends with next steps.
-Exit codes: 0 done, 1 failed and safe to retry once fixed, 2 usage error, 3 refused with nothing changed.`
-
-// Parses a command line into what runs it, or throws a UsageError naming what is wrong.
-export function parseCommand(argv: string[]): () => Promise<Result> {
-  const [name, ...rest] = argv
-  if (name === undefined || (name.startsWith('--') && !argv.some((a) => !a.startsWith('--')))) return dashboard
-  if (name === 'help' || name === '--help') return async () => ({ ok: true, head: USAGE, help: [], files: [], data: null })
-  const command = COMMANDS[name]
-  if (!command) throw new UsageError(`no command ${name}`)
-  return command.parse(rest)
-}
-
-// Commands with a second word, such as `browser click`.
-const TWO_WORDS = new Set(['browser', 'desktop', 'seed', 'secret', 'machine', 'visual', 'map'])
-// Commands that start no instance and need none.
-const NO_INSTANCE = new Set(['help', 'up', 'list', 'map list', 'map check', 'map export', 'visual compare', 'visual baseline'])
+// Commands that act on no instance.
+const NO_INSTANCE = new Set(['up', 'list', 'map list', 'map check', 'map export', 'map guard', 'visual compare', 'visual baseline'])
 
 // What a command would do, once its arguments have parsed. Runs nothing.
-function dryRun(argv: string[], command: string): Output {
-  const named = argv[argv.indexOf('--instance') + 1]
+function dryRun(target: Command, argv: string[], values: Record<string, unknown>): Result {
   const shown = argv.filter((a) => a !== '--dry-run' && a !== '--json').map((a) => (/^[\w./:@=-]+$/.test(a) ? a : JSON.stringify(a))).join(' ')
-  let target = ''
-  let ready: InstanceState | null = null
-  if (!NO_INSTANCE.has(command)) {
+  const named = Common.parse(values).instance
+  let where = ''
+  let instance: InstanceState | null = null
+  if (!NO_INSTANCE.has(target.name)) {
     try {
-      ready = resolve(argv.includes('--instance') && named !== undefined ? InstanceName.parse(named) : undefined)
-      target = ` It would act on instance ${ready.name}, which is ${ready.phase}.`
+      instance = resolve(named)
+      where = ` It would act on instance ${instance.name}, which is ${instance.phase}.`
     } catch (error) {
-      target = ` It would fail: ${error instanceof Error ? error.message : String(error)}`
+      where = ` It would fail: ${error instanceof Error ? error.message : String(error)}`
     }
   }
-  return {
-    ok: true, command, head: `dry run: bin/agentsctl ${shown} parses.${target} Nothing ran.`, detail: '', already: false, code: EXIT.done,
-    files: [], help: [`Run it without --dry-run: bin/agentsctl ${shown}`], data: { argv, instance: ready?.name ?? null },
-  }
+  return { kind: 'read', answer: `dry run: ${INVOKE} ${shown} parses.${where} Nothing ran.`, help: [`Run it without --dry-run: ${INVOKE} ${shown}`], data: { argv, instance: instance?.name ?? null } }
 }
 
-export async function runCli(argv: string[]): Promise<{ code: number; output: Output; json: boolean; full: boolean }> {
-  const json = argv.includes('--json')
-  const full = argv.includes('--full')
-  const [first, second] = argv
-  const command = first === undefined || first.startsWith('--') ? 'dashboard' : TWO_WORDS.has(first) && second !== undefined && !second.startsWith('--') ? `${first} ${second}` : first
-  try {
-    const runIt = parseCommand(argv)
-    if (argv.includes('--dry-run')) return { code: EXIT.done, output: dryRun(argv, command), json, full }
-    const result = await runIt()
-    const code = result.ok ? EXIT.done : result.code ?? EXIT.failed
-    const output: Output = {
-      ok: result.ok, command, head: result.head, detail: result.detail ?? '', already: result.already === true, code,
-      files: result.files, help: result.help, data: toJson(result.data),
-    }
-    if (result.evidence) record(result.evidence, { command, args: argv, ok: result.ok, summary: result.head, files: result.files })
-    return { code, output, json, full }
-  } catch (error) {
-    const known = error instanceof CliError
-    const code = known ? error.code : EXIT.failed
-    const message = error instanceof Error ? error.message : String(error)
-    const help = known ? error.help : [run('doctor', 'to check the instance'), 'If this keeps happening, read the logs in the instance\'s evidence folder']
-    return { code, output: { ok: false, command, head: `error: ${command}: ${message}`, detail: '', already: false, code, files: [], help, data: null }, json, full }
-  }
+const OPS = Object.keys(DRIVE).filter((k): k is OpName => k in DRIVE)
+
+export const CLI: Cli = {
+  name: 'agentsctl',
+  invoke: INVOKE,
+  about: 'run and drive Agents for verification. Run it from the repo root with ~/.local/node/bin first on PATH.',
+  global: GLOBAL,
+  commands: [
+    upCommand, doctorCommand, downCommand, listCommand, evidenceCommand,
+    ...OPS.map((op) => driveCommand('browser', op)), resetCommand('browser'),
+    ...OPS.map((op) => driveCommand('desktop', op)), resetCommand('desktop'),
+    apiCommand, dbCommand, seedPerson, seedAgent, seedBox, seedRepo, seedTask, secretCommand('set'), secretCommand('unset'), machineRead,
+    visualShot, visualCompare, visualBaseline, mapList, mapCheck, mapExport, mapGuard, mapRun,
+  ],
+  dashboard,
+  dryRun,
+  after: (result, output, argv) => {
+    if (result.log) record(result.log, { command: output.command, args: argv, ok: output.ok, summary: output.head, files: output.files })
+  },
+  failureHelp: [run('doctor', 'to check the instance'), "If this keeps happening, read the logs in the instance's evidence folder"],
 }
+
+export const runCli = (argv: string[]) => dispatch(CLI, argv)
