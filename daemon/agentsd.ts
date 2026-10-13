@@ -14,6 +14,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
 import { Permissions, type Command, type EventBatch, type MessagePayload, type Recovery, type ResumeTurn, type StageSpec } from '../shared/types.ts'
@@ -27,7 +28,6 @@ import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-l
 import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
 
-const HEARTBEAT_MS = 15_000
 const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
@@ -363,7 +363,7 @@ function inOrder(sessionId: string, work: () => Promise<void>) {
 async function heartbeat() {
   while (!stopping) {
     await api('POST', '/v1/instance/heartbeat', { status: 'online' }).catch((error: unknown) => { console.error(messageOf(error)) })
-    await sleep(HEARTBEAT_MS)
+    await sleep(HEARTBEAT_SEC * 1000)
   }
 }
 

@@ -6,6 +6,14 @@ import type { SessionStatus } from './types.ts'
 // A session whose harness may be working on a turn right now.
 export const WORKING: readonly SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
 
+// How often a daemon tells the API its machine is up.
+export const HEARTBEAT_SEC = 15
+// A machine silent this long has stopped answering, and its working sessions
+// show as lost: three missed heartbeats. Less than two would mark a machine
+// whose heartbeat is merely late.
+export const MACHINE_LOST_AFTER_SEC = 3 * HEARTBEAT_SEC
+export const MACHINE_LOST_AFTER_MIN_SEC = 2 * HEARTBEAT_SEC
+
 export const MESSAGE_STATES = ['queued', 'handed_over', 'interrupted', 'done', 'failed'] as const
 export type MessageState = (typeof MESSAGE_STATES)[number]
 

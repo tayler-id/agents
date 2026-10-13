@@ -31,7 +31,8 @@ const LOCK_WAIT_MIN = 20
 
 const c = new Check()
 const say = person(PEOPLE, login)
-const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8' }).trim()
+// Docker's own complaints go into the error, not the check's output.
+const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const tryDocker = (...args: string[]) => {
   try {
     return docker(...args)

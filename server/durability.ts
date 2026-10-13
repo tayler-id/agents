@@ -6,8 +6,11 @@
 
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
+import { z } from 'zod'
 import { many } from './db.ts'
-import { messageState, moveMessage, type CommandStatus } from '../shared/lifecycle.ts'
+import {
+  MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, messageState, moveMessage, WORKING, type CommandStatus,
+} from '../shared/lifecycle.ts'
 import type { EventBatch, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
 import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
 
@@ -82,6 +85,46 @@ export async function takeOverEndedAsk(
     })
   }
   return true
+}
+
+// How long a machine may be silent before its working sessions show as lost.
+// AGENTS_MACHINE_LOST_SEC sets it, never under two heartbeats, and a bad value
+// stops the API when it starts.
+function lostAfterSec(raw: string | undefined): number {
+  if (raw === undefined) return MACHINE_LOST_AFTER_SEC
+  const parsed = z.coerce.number().int().min(MACHINE_LOST_AFTER_MIN_SEC).safeParse(raw)
+  if (!parsed.success) throw new Error(`AGENTS_MACHINE_LOST_SEC must be a whole number of seconds, at least ${MACHINE_LOST_AFTER_MIN_SEC}`)
+  return parsed.data
+}
+const LOST_AFTER_SEC = lostAfterSec(process.env.AGENTS_MACHINE_LOST_SEC)
+// The API may itself have been down, so every machine gets the same span to call
+// in after it starts before its silence counts.
+const WATCHING_FROM = Date.now() + LOST_AFTER_SEC * 1000
+const STOPPED_ANSWERING = 'The machine running this session stopped answering.'
+
+// Marks a machine that has stopped answering stale, and each working session on
+// it lost, when the session has been quiet as long too. The second condition
+// keeps a box that is still starting from losing the session it is about to run.
+export async function markLostMachines(client: pg.PoolClient, teamIds: string[] | null) {
+  if (Date.now() < WATCHING_FROM) return
+  await client.query(
+    `update instances set status = 'stale' where status = 'online' and last_seen_at < now() - make_interval(secs => $1)
+       and ($2::uuid[] is null or team_id = any($2))`, [LOST_AFTER_SEC, teamIds])
+  const sessions = await many<{ id: string; status: SessionStatus; claimed: boolean }>(client,
+    `select s.id, s.status,
+       exists (select 1 from commands c where c.session_id = s.id and c.kind = 'message' and c.status = 'claimed') as claimed
+     from sessions s join instances i on i.id = s.instance_id
+     where s.status = any($1) and ($3::uuid[] is null or s.team_id = any($3))
+       and (i.last_seen_at is null or i.last_seen_at < now() - make_interval(secs => $2))
+       and coalesce(s.last_active_at, s.created_at) < now() - make_interval(secs => $2)
+     order by s.id for update of s skip locked`, [WORKING, LOST_AFTER_SEC, teamIds])
+  for (const session of sessions) {
+    if (session.claimed) moveMessage(messageState('claimed', session.status), 'interrupted')
+    await appendEvents(client, session.id, {
+      events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_ANSWERING, body: { subtype: 'interrupted', reason: STOPPED_ANSWERING } }],
+      status: 'lost',
+    })
+  }
 }
 
 const RESTARTED = 'The machine restarted in the middle of this turn.'
