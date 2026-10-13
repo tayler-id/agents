@@ -15,6 +15,7 @@ import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
 import { expireTurns } from './rooms.ts'
+import { finishPushes } from './pulls.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -831,6 +832,7 @@ export function startRunner() {
           await stopIdleBoxes(teams).catch(logged('idle boxes'))
         }
         await withClient((client) => expireTurns(client, teams)).catch(logged('turns'))
+        await finishPushes(teams).catch(logged('pull requests'))
         const rows = await many<{ id: string }>(pool,
           `select id from runs where status in ('queued', 'running', 'waiting') and ($1::uuid[] is null or team_id = any($1))
            order by created_at`, [teams])

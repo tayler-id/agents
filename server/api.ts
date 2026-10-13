@@ -33,8 +33,9 @@ import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
+import { askForPullRequests } from './pulls.ts'
 import { TaskId, WorkspaceId } from '../shared/ids.ts'
-import { ChangesPost, DraftAction, NewTask, TaskFields } from '../shared/work.ts'
+import { ChangesPost, DraftAction, NewTask, PullRequestAsk, TaskFields } from '../shared/work.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -304,6 +305,14 @@ const routes: Route[] = [
     const person = await personFrom(req)
     const { repoId, ...task } = parsed(NewTask, await readJson(req))
     return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
+  }],
+
+  // Push the task's branches and open a pull request for each repo with commits.
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/pull-requests$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(PullRequestAsk, await readJson(req))
+    return tx((client) => askForPullRequests(client, person, taskId, ask))
   }],
 
   // A draft task: edited, started, or discarded.

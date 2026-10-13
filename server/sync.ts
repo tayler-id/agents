@@ -13,7 +13,7 @@ import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VI
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
-import { FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS } from '../shared/work.ts'
+import { FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -144,6 +144,12 @@ const personShapes: Record<string, PersonShape> = {
     table: 'file_changes', where: 'id = $1', columns: FILE_CHANGE_DETAIL_COLUMNS,
     params: [await requireTaskOf(p, 'select task_id from file_changes where id = $1 and team_id = $2', arg(args, 'id'))],
   }),
+  // Each time someone asked to open a task's pull requests, and how it went.
+  pushes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'pushes', where: 'task_id = $1', params: [taskId], columns: PUSH_COLUMNS }
+  },
 }
 
 const instanceShapes: Record<string, InstanceShape> = {
