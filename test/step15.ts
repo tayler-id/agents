@@ -6,7 +6,8 @@
 // port and take it over: only the one who holds it can type, the agent is
 // refused until they hand it back, the record shows it, and a view closed
 // without handing back gives the screen back on its own. A screenshot the agent
-// saves becomes an image document. When the box stops, its viewers are told.
+// saves becomes an image document. When the box stops, its viewers are told,
+// and when it starts again or is recreated, its screen and browser come back.
 // Prints the image's size, the time from a key press in a viewer to its pixels,
 // and the box's memory and CPU.
 // The box reaches this check's API only on 7701, the machine port the box
@@ -48,6 +49,10 @@ const LATENCY_LIMIT_MS = 1000
 const KEY_SHOWS_MS = 3000
 // docker stats samples about once a second, so this gives five or six samples.
 const IDLE_SAMPLE_MS = 6000
+// Where the daemon keeps the box browser's profile, AGENTS_HOME/browser.
+const BOX_PROFILE = '/home/agent/.agents-app/browser'
+// Xvnc's lock for display :1, which holds its process id in ten columns.
+const X_LOCK = '/tmp/.X1-lock'
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
@@ -391,6 +396,50 @@ try {
   const takeStopped = await post(alice, `/v1/screens/${instanceId}/take`, { sessionId })
   check(toldBob && bobView.closed?.code === 4502 && saysStopped && takeStopped.status === 409,
     `when the box stops, a viewer is told it closed the screen, and the screen then says it is not connected (${bobView.closed?.code ?? 'still open'}, take ${takeStopped.status})`)
+
+  // The box comes back each way a box comes back, and each time its screen and
+  // its browser must return:
+  //  - started again after the server stopped it for being idle
+  //  - started again after it was killed, as a crash or a dying machine leaves
+  //    it, with Xvnc's lock still in the container naming a live process
+  //  - recreated from the image on a home volume whose browser profile is still
+  //    locked by a browser on another machine, as a volume moved between hosts is
+  // Xvnc refuses to start while the process its lock names is alive. In a probe
+  // the new Xvnc got the killed one's process id, so its own lock stopped it.
+  // Here the lock names process 1, which is always alive.
+  const seesScreen = async () => {
+    const view = await openView(alice, instanceId)
+    if (typeof view === 'number') return false
+    try {
+      const client = await RfbClient.connect(view.stream)
+      return client.width === SCREEN.width && client.height === SCREEN.height
+    } catch {
+      // Not back yet. The API closed the view, which ends the handshake.
+      return false
+    } finally {
+      view.ws.close()
+    }
+  }
+  // The DevTools address the daemon gave the session's browser tools.
+  const devtools = `${String(server.env.AGENTS_BROWSER_CDP)}/json/version`
+  const browserUp = () => within(60, async () => (tryDocker('exec', container, 'curl', '-s', devtools) ?? '').includes('"Browser"'))
+  const comesBack = async () => ({ screen: await within(120, seesScreen), browser: await browserUp() })
+  docker('start', container)
+  const started = await comesBack()
+  docker('exec', container, 'rm', '-f', X_LOCK)
+  execFileSync('docker', ['exec', '-i', container, 'tee', X_LOCK], { input: `${'1'.padStart(10)}\n`, stdio: ['pipe', 'ignore', 'inherit'] })
+  docker('kill', container)
+  docker('start', container)
+  const killed = await comesBack()
+  docker('rm', '-f', container)
+  // Chromium names the lock's holder as host and process id.
+  docker('run', '--rm', '-v', `${container}-home:/home/agent`, '--entrypoint', 'ln', IMAGE, '-sfn', 'another-machine-4242', `${BOX_PROFILE}/SingletonLock`)
+  node('server/boxes.ts', 'recreate', team, boxName)
+  const recreated = await comesBack()
+  const said = (back: { screen: boolean; browser: boolean }) => `screen ${back.screen}, browser ${back.browser}`
+  check(started.screen && started.browser && killed.screen && killed.browser && recreated.screen && recreated.browser,
+    `the box's screen and browser come back when it starts again (${said(started)}), after it was killed (${said(killed)}), `
+    + `and when it is recreated on a volume locked elsewhere (${said(recreated)})`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack}`)
