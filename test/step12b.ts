@@ -1,8 +1,9 @@
 // Onboarding in the app, in Chromium, Firefox and WebKit, at desktop and phone
 // width. An admin invites someone from the Team page and reads the invite link,
-// and the invited person opens the app and is on the team at once. A login with
-// no invite sees the waiting screen until an admin adds it with one click, then
-// the app opens by itself. Members see the team but none of the admin forms.
+// and the invited person opens the app and is on the team at once. Their box
+// cannot start here, since its image does not exist, and they read why. A login
+// with no invite sees the waiting screen until an admin adds it with one click,
+// then the app opens by itself. Members see the team but none of the admin forms.
 // Scans for accessibility problems and takes screenshots (light, dark, phone).
 //   node --env-file=.env --env-file=.env.test test/step12b.ts
 //   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step12b.ts
@@ -143,6 +144,15 @@ async function run(engine: string) {
       `${engine}: their own box shows in their machines list as theirs, with nothing to release`)
     check(await within(20, async () => (await admin.locator('ul[aria-label="People"] li', { hasText: `Invited ${engine}` }).count()) > 0),
       `${engine}: the admin sees them among the team's people`)
+
+    // Their box cannot start here, since its image was never built, and they read why.
+    check(await visible(newcomer, 'section[aria-label="Getting started"] li', 30, new RegExp(`box-inv12b-${engine}-${id}, could not start`)),
+      `${engine}: a newcomer whose box could not start reads that in the welcome steps`)
+    await newcomer.getByRole('button', { name: 'Set up your box' }).click()
+    check(await visible(newcomer, 'section[aria-label="Your box"] .box-state', 15, /It could not start/)
+      && await visible(newcomer, 'section[aria-label="Your box"] p', 15, /Docker said: .*(No such image|Unable to find image)/),
+    `${engine}: their box page says the box could not start, and what Docker said`)
+    await newcomer.screenshot({ path: join(SHOTS, `${engine}-box-failed-light.png`), fullPage: true })
 
     // A login with no invite waits, and one click lets them in.
     const stranger = await open(waiting, {}, `Waiting ${engine}`)
