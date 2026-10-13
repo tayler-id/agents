@@ -91,7 +91,7 @@ try {
   `an admin's invite goes to Tailscale with the email lowercased, and the link comes back once (${made.status} ${made.json?.error ?? ''})`)
   check((await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: invitee, role: 'member' })).status === 409, 'an email with an open invite cannot be invited again')
   check((await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: member, role: 'member' })).status === 409, 'someone already on a team cannot be invited')
-  check((await asPerson(PEOPLE, member, 'POST', '/v1/invites', { email: later, role: 'member' })).status === 403, 'a member cannot invite')
+  check((await asPerson(PEOPLE, member, 'POST', '/v1/invites', { email: `friend12-${id}@mail.test`, role: 'member' })).status === 403, 'a member cannot invite')
   const inviteId: string = made.json?.invite.id
   check((await asPerson(PEOPLE, owner, 'GET', `/v1/invites/${inviteId}/link`)).json?.link === tailscaleInvite?.inviteUrl, "an admin can fetch the invite's link again")
   tailscale.state.lastSent.set(must(tailscaleInvite, 'the Tailscale invite').id, 0)
@@ -106,19 +106,31 @@ try {
     'an invite Tailscale refuses leaves no invite behind, and the admin reads why')
   const cancelled = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: later, role: 'member' })
   const laterInvite = [...tailscale.state.invites.values()].find((i) => i.email === later)
-  const cancel = await asPerson(PEOPLE, owner, 'POST', `/v1/invites/${cancelled.json?.invite.id}/cancel`)
+  const cancel = await asPerson(PEOPLE, owner, 'POST', `/v1/invites/${cancelled.json?.invite?.id}/cancel`)
   check(cancel.status === 200 && (await row('select status from invites where email = $1', [later]))?.status === 'cancelled'
     && laterInvite && !tailscale.state.invites.has(laterInvite.id),
   'cancelling an invite cancels it in Tailscale too')
 
-  // Joining with an invite.
+  // Joining with an invite. Three first requests at once must make one person.
+  // The check holds the invite's row lock until all three are waiting in
+  // Postgres, so they truly race instead of finishing one after another.
   tailscale.accept(invitee, 'Dev Twelve')
-  const firsts = await Promise.all([1, 2, 3].map(() => asPerson(PEOPLE, invitee, 'GET', '/v1/me', undefined, 'Dev Twelve')))
+  const holder = new pg.Client({ connectionString: process.env.DATABASE_URL })
+  await holder.connect()
+  await holder.query('begin')
+  await holder.query('select 1 from invites where email = $1 for update', [invitee])
+  const racing = Promise.all([1, 2, 3].map(() => asPerson(PEOPLE, invitee, 'GET', '/v1/me', undefined, 'Dev Twelve')))
+  const waitingInPostgres = await within(10, async () => (await row(
+    `select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
+     and (query like '%hashtext(''join:''%' or query like '%from invites where status = ''open'' and email = lower%')`, [])).n === 3)
+  await holder.query('commit')
+  await holder.end()
+  const firsts = await racing
   const people = (await db.query('select id, team_id, role, name from people where login = $1', [invitee])).rows
   const person = people[0]
-  check(firsts.every((f) => f.json?.kind === 'member' && f.json.team.name === team) && people.length === 1
+  check(waitingInPostgres && firsts.every((f) => f.json?.kind === 'member' && f.json.team.name === team) && people.length === 1
     && person?.team_id === teamId && person.role === 'member' && person.name === 'Dev Twelve',
-  'the invited person joins on their first request, once, with the role and the name Tailscale gave')
+  `the invited person joins on their first request, once even when three arrive together, with the role and the name Tailscale gave (${firsts.map((f) => f.json?.kind).join(', ')})`)
   const invite = await row('select status, person_id, closed_at from invites where email = $1', [invitee])
   check(invite?.status === 'joined' && invite.person_id === person?.id && invite.closed_at, 'the invite is closed as joined, by that person')
   const boxes = (await db.query(`select id, name, kind, personal, owner_id, claimed_by from instances where team_id = $1 and personal`, [teamId])).rows
