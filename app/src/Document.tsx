@@ -1,19 +1,22 @@
-import { useMemo, useState, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useState, type SyntheticEvent } from 'react'
 import {
-  act, api, byNumber, clock, useSnapshot, type Artifact, type ArtifactVersion, type Comment, type Person,
+  act, api, byNumber, clock, messageOf, useSnapshot, type Artifact, type ArtifactVersion, type Comment, type Person,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { CodeView, DiffView, Tabs } from './Code.tsx'
 
-// A document an agent wrote in its task's folder, with every version it saved.
+// A document an agent wrote in its task's folder, with every version it saved,
+// what changed from the version before, and comments on it.
 export function DocumentPanel({ artifactId, taskId, onClose }: { artifactId: string; taskId: string | null; onClose: () => void }) {
   const { rows: artifacts } = useSnapshot<Artifact>('artifacts', taskId ? { task: taskId } : null, 4000)
   const { rows: versions } = useSnapshot<ArtifactVersion>('artifact_versions', { artifact: artifactId }, 4000)
   const artifact = artifacts.find((a) => a.id === artifactId)
   const ordered = useMemo(() => [...versions].sort(byNumber((v: ArtifactVersion) => v.version)).reverse(), [versions])
   const [picked, setPicked] = useState<number | null>(null)
+  const [tab, setTab] = useState<'file' | 'diff'>('file')
   const shown = ordered.find((v) => v.version === picked) ?? ordered[0]
   return (
-    <aside className="panel" aria-label="Document">
+    <aside className="panel wide" aria-label="Document">
       <header className="panel-head">
         <div>
           <h2>{artifact?.title ?? 'Document'}</h2>
@@ -30,11 +33,40 @@ export function DocumentPanel({ artifactId, taskId, onClose }: { artifactId: str
         </div>
       )}
       <div className="document" tabIndex={0}>
-        {shown ? (artifact?.path?.endsWith('.md') ? <Markdown text={shown.content} /> : <pre>{shown.content}</pre>) : <p className="muted small">Loading…</p>}
-        {shown && <Comments artifactId={artifactId} version={shown.version} canSend={Boolean(artifact?.made_by_session)} />}
+        {!shown ? <p className="muted small">Loading…</p> : (
+          <Tabs label="View" tabs={[['file', 'File'], ['diff', 'Diff']]} value={tab} onChange={setTab}>
+            {tab === 'diff' ? <VersionDiff artifactId={artifactId} version={shown.version} path={artifact?.path ?? ''} />
+              : (
+                <div className="document-body">
+                  {artifact?.path?.endsWith('.md') ? <Markdown text={shown.content} /> : <CodeView path={artifact?.path ?? ''} text={shown.content} />}
+                </div>
+              )}
+          </Tabs>
+        )}
+        {shown && (
+          <Comments artifactId={artifactId} version={shown.version} canSend={Boolean(artifact?.made_by_session)} />
+        )}
       </div>
     </aside>
   )
+}
+
+// What changed in this version from the one before, from the server's git diff.
+function VersionDiff({ artifactId, version, path }: { artifactId: string; version: number; path: string }) {
+  const [state, setState] = useState<{ version: number; diff: string | null; error: string }>({ version: 0, diff: null, error: '' })
+  useEffect(() => {
+    if (version < 2) return
+    let stopped = false
+    api.versionDiff(artifactId, version).then(
+      ({ diff }) => { if (!stopped) setState({ version, diff, error: '' }) },
+      (error: unknown) => { if (!stopped) setState({ version, diff: null, error: messageOf(error) }) },
+    )
+    return () => { stopped = true }
+  }, [artifactId, version])
+  if (version < 2) return <p className="muted small">This is the first version, so there is nothing before it to compare.</p>
+  if (state.version !== version) return <p className="muted small">Loading…</p>
+  if (state.error) return <p className="error small" role="alert">{state.error}</p>
+  return <DiffView diff={state.diff ?? ''} label={`What changed in ${path} in version ${version}`} />
 }
 
 // Comments on a document's versions. Sent to the agent, a comment reaches the

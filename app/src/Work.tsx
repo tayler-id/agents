@@ -5,6 +5,7 @@ import {
   act, api, byNumber, clock, repoName, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Repo, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { Changes, PullRequests } from './Changes.tsx'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -107,7 +108,7 @@ export function NewTask() {
 const WORKING = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
 
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
-export function TaskView({ taskId, openSession }: { taskId: string; openSession: string | null }) {
+export function TaskView({ taskId, openSession, openFile }: { taskId: string; openSession: string | null; openFile: string | null }) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
   const { rows: sessions } = useRows<Session>('sessions', { of: 'tasks' })
   const { rows: asks } = useRows<Ask>('asks')
@@ -119,6 +120,7 @@ export function TaskView({ taskId, openSession }: { taskId: string; openSession:
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
   const agent = agents.find((a) => a.id === task.agent_id)
+  const documents = artifacts.filter((a) => a.kind === 'document')
   const send = async (event: SyntheticEvent) => {
     event.preventDefault()
     if (!session || !text.trim()) return
@@ -145,16 +147,17 @@ export function TaskView({ taskId, openSession }: { taskId: string; openSession:
       <div className="page-body">
         {session ? <Transcript session={session} agentName={agent?.name ?? 'Agent'} /> : <p className="muted small">Starting…</p>}
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
-        {!!artifacts.length && (
+        <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
+          <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} />
+        </Changes>
+        {!!documents.length && (
           <>
             <h2 className="kicker section">Made by this task</h2>
             <ul className="artifacts" aria-label="Made by this task">
-              {artifacts.map((a) => (
+              {documents.map((a) => (
                 <li key={a.id}>
-                  {a.kind === 'link'
-                    ? <a href={a.url ?? '#'} target="_blank" rel="noreferrer">{a.title}</a>
-                    : <button type="button" className="link" onClick={() => go({ task: taskId, document: a.id })}>{a.title}</button>}
-                  <span className="muted small">{a.kind === 'link' ? a.state : `version ${a.current_version}`}</span>
+                  <button type="button" className="link" onClick={() => go({ task: taskId, document: a.id })}>{a.title}</button>
+                  <span className="muted small">version {a.current_version}</span>
                 </li>
               ))}
             </ul>

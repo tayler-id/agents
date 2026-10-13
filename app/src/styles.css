@@ -305,3 +305,39 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
   .page-head { flex-wrap: wrap; }
   .versions { display: block; overflow-x: auto; }
 }
+
+/* The work layer: changes, the file and document panel, code and diffs. Highlighting and diffs use weight, tone and
+   a raised surface, never hue, and every border is one neutral hairline. */
+.shell.with-panel.wide { grid-template-columns: 260px minmax(0, 1fr) minmax(380px, 46%); }
+.changes .repo-name { margin: 8px 0 2px; font-weight: 600; color: var(--muted); }
+.change .path { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pull-requests { display: grid; gap: 6px; margin-top: 10px; }
+.pull-request a { font-weight: 600; }
+
+.tabs { display: flex; gap: 2px; margin-bottom: 10px; }
+.tabs [role="tab"] { border: 0; background: transparent; color: var(--muted); padding: 4px 10px; border-radius: 6px; }
+.tabs [role="tab"].selected { background: var(--raised); color: var(--text); font-weight: 600; }
+.tabs [role="tab"]:focus-visible { background: var(--raised); }
+.tab-panel { min-width: 0; }
+
+.code, .diff-view {
+  display: grid; grid-template-columns: minmax(0, 1fr); padding: 6px 0; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.code:focus-visible, .diff-view:focus-visible { background: var(--surface); }
+.code-line { display: grid; grid-template-columns: 5ch minmax(0, 1fr); }
+.diff-line { display: grid; grid-template-columns: 5ch 5ch 2ch minmax(0, 1fr); }
+.code-line .ln, .diff-line .ln { padding-right: 10px; text-align: right; color: var(--muted); user-select: none; }
+.code-line .lc, .diff-line .lc { padding-right: 12px; white-space: pre-wrap; word-break: break-word; }
+.diff-line .sign { color: var(--muted); user-select: none; }
+.diff-line.added { background: var(--raised); font-weight: 600; }
+.diff-line.removed { color: var(--muted); }
+.diff-line.hunk, .diff-line.note { grid-template-columns: minmax(0, 1fr); padding: 4px 12px; color: var(--muted); }
+.tok-keyword { font-weight: 700; }
+.tok-number { font-weight: 600; }
+.tok-comment { color: var(--muted); font-style: italic; }
+.tok-string { background: var(--raised); border-radius: 3px; }
+
+@media (max-width: 760px) {
+  .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }
+}

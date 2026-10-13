@@ -7,6 +7,7 @@ import {
 import { TeamPage, Waiting } from './Team.tsx'
 import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
 import { BoxPage, GettingStarted } from './Box.tsx'
+import { FilePanel } from './FilePanel.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -19,13 +20,13 @@ import { NewRoom, NewTask, TaskView } from './Work.tsx'
 const PAGES = ['team', 'tailscale', 'box'] as const
 type Page = (typeof PAGES)[number]
 
-// Where the app is: a conversation, run, task, pipeline, agent, page or
-// new-thing form in the middle, and maybe a session or a document beside it.
+// Where the app is: a conversation, run, task, pipeline, agent, page or new-thing
+// form in the middle, and maybe a session, a document or a changed file beside it.
 type Route = {
   conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
-  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null
+  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null; file: string | null
 }
-const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null }
+const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null }
 const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
 
 function readRoute(): Route {
@@ -37,12 +38,13 @@ function readRoute(): Route {
   route.page = PAGES.find((page) => page === kind) ?? null
   if (sub === 's') route.session = subId || null
   if (sub === 'd') route.document = subId || null
+  if (sub === 'f') route.file = subId || null
   return route
 }
 
 export function go(to: Partial<Route>) {
   const r = { ...EMPTY, ...to }
-  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : ''
+  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
   window.location.hash = r.page ? `#/${r.page}` : r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
@@ -88,10 +90,13 @@ function Workspace({ me }: { me: Me }) {
   const menuOpen = menuOpenOn === here
   const setMenuOpen = (open: boolean) => { setMenuOpenOn(open ? here : null) }
   const { rows: runs } = useSnapshot<Run>('runs', {}, 4000)
-  const side = Boolean(route.session || route.document)
+  const side = Boolean(route.session || route.document || route.file)
+  // Documents and files hold lines of text, so their panel takes more of the width.
+  const wide = Boolean(route.document || route.file)
+  const taskOfPanel = route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null
   const back = () => go({ conversation: route.conversation, run: route.run, task: route.task })
   return (
-    <div className={`shell${side ? ' with-panel' : ''}${menuOpen ? ' menu-open' : ''}`}>
+    <div className={`shell${side ? ' with-panel' : ''}${wide ? ' wide' : ''}${menuOpen ? ' menu-open' : ''}`}>
       <header className="topbar">
         <button type="button" className="ghost" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Menu</button>
         <span className="topbar-title">{me.team.name}</span>
@@ -103,8 +108,8 @@ function Workspace({ me }: { me: Me }) {
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
-          : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
-            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
+          : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
+            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
                   : route.create === 'agent' ? <NewAgent me={me} />
@@ -116,9 +121,9 @@ function Workspace({ me }: { me: Me }) {
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
       )}
       {route.document && (route.run || route.task) && (
-        <DocumentPanel key={route.document} artifactId={route.document}
-          taskId={route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null} onClose={back} />
+        <DocumentPanel key={route.document} artifactId={route.document} taskId={taskOfPanel} onClose={back} />
       )}
+      {route.file && taskOfPanel && <FilePanel key={route.file} changeId={route.file} taskId={taskOfPanel} onClose={back} />}
     </div>
   )
 }

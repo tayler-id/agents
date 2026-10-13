@@ -9,6 +9,8 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
+import type { PullRequestAsk } from '../../shared/work.ts'
+import type { ArtifactId, PushId } from '../../shared/ids.ts'
 
 export type Me = MemberView
 
@@ -154,7 +156,7 @@ export function useRows<T extends Row>(name: string, args: Record<string, string
 export function useSnapshot<T extends Row>(name: string, args: Record<string, string> | null = {}, everyMs = 5000) {
   const url = args ? shapeUrl(name, args) : null
   // Rows are kept with the URL they came from, so a view never shows another shape's rows.
-  const [state, setState] = useState<{ url: string | null; rows: T[] }>({ url, rows: [] })
+  const [state, setState] = useState<{ url: string | null; rows: T[] }>({ url: null, rows: [] })
   useEffect(() => {
     if (!url) return
     let stopped = false
@@ -167,7 +169,20 @@ export function useSnapshot<T extends Row>(name: string, args: Record<string, st
     const timer = setInterval(load, everyMs)
     return () => { stopped = true; clearInterval(timer) }
   }, [url, everyMs])
-  return { rows: url && state.url === url ? state.rows : [] }
+  return { rows: url && state.url === url ? state.rows : [], loaded: url !== null && state.url === url }
+}
+
+// A snapshot's rows through their schema, the boundary where rows from the
+// server become typed values. Rows that do not fit are reported, never shown.
+export function useParsedSnapshot<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null, everyMs = 5000): {
+  rows: z.output<S>[]; error: string | null; loaded: boolean
+} {
+  const { rows, loaded } = useSnapshot<Row>(name, args, everyMs)
+  return useMemo(() => {
+    const parsed = z.array(schema).safeParse(rows)
+    return parsed.success ? { rows: parsed.data, error: null, loaded }
+      : { rows: [], error: `The ${name} from the server did not read: ${z.prettifyError(parsed.error)}`, loaded }
+  }, [rows, schema, name, loaded])
 }
 
 // A snapshot whose rows are read through their schema. Rows that do not fit
@@ -267,6 +282,9 @@ export const api = {
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents }),
   startTask: (body: { title: string; instructions: string; agentId: string; repoId?: string; conversationId?: string; messageId?: string }) =>
     request<{ taskId: string; sessionId: string }>('POST', '/v1/tasks', body),
+  openPullRequests: (taskId: string, ask: PullRequestAsk) => request<{ pushId: PushId }>('POST', `/v1/tasks/${taskId}/pull-requests`, ask),
+  versionDiff: (artifactId: ArtifactId | string, version: number) =>
+    request<{ diff: string }>('GET', `/v1/artifacts/${artifactId}/versions/${version}/diff`),
   messageSession: (sessionId: string, text: string) => request('POST', `/v1/sessions/${sessionId}/messages`, { text }),
   addComment: (artifactId: string, body: { version: number; text: string; quote?: string; send: boolean }) =>
     request<{ commentId: string }>('POST', `/v1/artifacts/${artifactId}/comments`, body),
