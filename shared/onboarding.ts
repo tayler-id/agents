@@ -178,6 +178,12 @@ export const InviteMade = z.object({
 })
 export type InviteMade = z.infer<typeof InviteMade>
 export const InviteLink = z.object({ link: z.string() })
+export type InviteLink = z.infer<typeof InviteLink>
+// A resend of an invite made while Tailscale was not connected makes its Tailscale invite, and its link comes back.
+export const InviteResent = z.object({ link: z.string().nullable() })
+export type InviteResent = z.infer<typeof InviteResent>
+export const PersonAdded = z.object({ personId: PersonId })
+export type PersonAdded = z.infer<typeof PersonAdded>
 
 // Whether a tailnet user's login is on the asking admin's team.
 export const TeamStanding = z.discriminatedUnion('on', [
@@ -205,5 +211,6 @@ export const TailnetUsers = z.object({ users: z.array(TailnetUser) })
 export const TailnetDevices = z.object({ devices: z.array(TailnetDevice) })
 export const TailnetInvites = z.object({ invites: z.array(TailnetInvite) })
 export const Done = z.object({ ok: z.literal(true) })
+export type Done = z.infer<typeof Done>
 export const LoginStarted = z.object({ loginId: ClaudeLoginId })
 export const BoxMade = z.object({ instanceId: InstanceId })

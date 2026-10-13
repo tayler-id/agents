@@ -12,7 +12,7 @@ import { wakeRunner } from './runner.ts'
 import { tailscale, tailscaleConnected } from './tailscale.ts'
 import {
   INVITE_MOVES, InviteRow, JOIN_REQUEST_MOVES, JoinRequestRow, movesInto, PersonId, TeamId, TeamRole,
-  type InviteId, type InviteMade, type InviteStatus, type MeView,
+  type InviteId, type InviteLink, type InviteMade, type InviteResent, type InviteStatus, type MeView,
 } from '../shared/onboarding.ts'
 
 const INVITE = `id, team_id, email, role, tailscale_invite_id, invited_by, status, person_id,
@@ -154,7 +154,7 @@ export async function makeInvite(admin: Person, email: string, role: TeamRole): 
 
 // Emails the invite again. An invite made while Tailscale was not connected gets
 // its Tailscale invite now.
-export async function resendInvite(admin: Person, inviteId: InviteId): Promise<{ link: string | null }> {
+export async function resendInvite(admin: Person, inviteId: InviteId): Promise<InviteResent> {
   const invite = await openInvite(admin, inviteId)
   if (!(await tailscaleConnected())) throw new HttpError(409, 'Tailscale is not connected, so the app cannot email invites. Connect it on the Tailscale page.')
   if (invite.tailscale_invite_id !== null) {
@@ -179,7 +179,7 @@ export async function cancelInvite(admin: Person, inviteId: InviteId) {
   await tx((client) => moveInvite(client, invite.id, admin.team_id, 'cancelled', null))
 }
 
-export async function inviteLink(admin: Person, inviteId: InviteId): Promise<{ link: string }> {
+export async function inviteLink(admin: Person, inviteId: InviteId): Promise<InviteLink> {
   const invite = await openInvite(admin, inviteId)
   if (invite.tailscale_invite_id === null) throw new HttpError(404, 'This invite was made without Tailscale, so it has no link.')
   const made = await tailscale.invite(invite.tailscale_invite_id)
