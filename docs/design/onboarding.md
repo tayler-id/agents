@@ -26,6 +26,7 @@ Inviting and adding come first. They are the gap Tayler notices most.
 - **No full Claude sign-in happened.** The checks use a stand-in `claude setup-token`. The real CLI was run only to see its link and its answer to a bad code.
 - **Removing a person from the team is not built.**
 - **Boxes on the real server need the new image.** The daemon's sign-in support reaches boxes only after `server/boxes.ts build` and recreating them.
+- **Built but not covered by a check.** The expiry date an admin types when Tailscale reports none. The Team page saying nobody was emailed, when Tailscale is off or has no key.
 
 ## Admins
 

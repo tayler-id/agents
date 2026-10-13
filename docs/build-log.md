@@ -198,3 +198,26 @@ Running ten agents at once on 2026-10-13 found three problems on main.
 - **The hole.** In Tailscale's userspace mode a tailnet device reached every loopback port on this Mac. It could post its own `Tailscale-User-Login` to the people port, read any live stream on 4437, or open the Homebrew Postgres on 5432, which trusts local connections. Only this Mac was on the tailnet, so nobody could use it.
 - **The fix,** from the security branch, merged as 564f5da. The API serves people only on a Unix socket, and a tailnet policy allows only ports 80 and 7700. `test/step19.ts` failed on all eight lines against main's code, and the full suite passed after the merge, all 19 checks. Two reviews on a different model came first, and the second found no blocker.
 - **Cross-site posts.** Two other reviews found that a page on another site could make a person's browser post a form to the app, signed as that person. A person's change must now be sent as JSON, and the app always says so. The new line in `check:step2` failed on the old code.
+
+### Onboarding, on its own branch (built, not merged)
+
+Tayler asked for "a very easy way to invite and add and have them spin up", and for the tailnet's admin console inside the app. The design, with what is not done, is in `docs/design/onboarding.md`.
+
+- **What works.**
+  - An admin invites an email from the Team page, through Tailscale's API when it is connected. The person is on the team from their first visit, with a box of their own.
+  - A login nobody invited waits on a screen that names it, and an admin adds it with one click.
+  - A Tailscale page lists the tailnet's users, devices and invites, with the actions Tayler uses in Tailscale's console. The API key stays in a file on the server, mode 600.
+  - Each person signs in to their own Claude account from the app, through their box, and agents on their box run on that sign-in.
+  - Someone in a room, or an admin, adds a teammate to it.
+- **Not done.** Inviting waits on the people-port fix, since joining by invite trusts the login header. The real Tailscale API and a full Claude sign-in were never exercised. Removing a person from the team isn't built. Boxes on the real server get the new daemon only after the image is rebuilt and the boxes recreated.
+- **Verified.** After rebasing onto main at deec329, typecheck, lint and the name guard pass. step12 passed 61 checks through the API, step12b 111 in Chromium, WebKit and Firefox at desktop and phone width, and step12c 51 with real box containers in the three browsers.
+- **Seen failing.** 113 breaks, each taking out one thing a check guards. A runner applied each one, ran the check, then put the file back and compared its hash.
+  - step12: all 67 went red, two of them by stopping the check early. When step12 was first written, 2 of its first 31 breaks stayed green. With the join lock gone, the three joins it sent still finished one after another, and with the admin gate gone, the check crashed before reaching the line it guards. Both checks were rewritten and went red.
+  - step12b, in Chromium: 35 of 39 failed their own check and 2 stopped the run. The last 2 each took out one of the two rules that keep a room's teammate picker on a phone screen. Either rule alone holds, and taking out both went red.
+  - step12c, in Chromium: all 7 went red. The token written to a box's stderr was also tried against the check as it was, which read only stdout, and that stayed green.
+- **Found on the way.**
+  - The API log held a box's machine token, and any team Claude token, whenever `docker run` failed, because the error's message repeats the whole command line. This was on main. A box's start error now keeps only what Docker wrote to stderr, and a break that puts the message back turns step12 red.
+  - step12c looked for the token in a box's stdout only, and the daemon writes errors to stderr. It reads both now. A break that logs the token to stderr turns it red.
+  - In WebKit and Firefox a box came online before the page loaded, so "is starting" never showed. step12c now relays the boxes' connections to the API through a door it holds shut until the newcomer has seen their box starting.
+  - step12 checked only the status of a tailnet invite resend, which a route that never called Tailscale would also pass. It now looks for the call, and goes red with the call taken out.
+- **Open.** In about 2 runs of 20, WebKit leaves step12b's Invite button disabled after the email is typed, and the field reads empty while focused. The cause is not known. The check prints the field, the button and the focus when it happens.

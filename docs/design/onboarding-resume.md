@@ -4,12 +4,12 @@ A note for whoever picks this up, kept current with each commit on the branch.
 The design, with what is not done, is in [onboarding.md](onboarding.md).
 
 - Branch `worktree-agent-a1cdcf7d718680aab`, worktree `.claude/worktrees/agent-a1cdcf7d718680aab`.
-- Rebased onto main at deec329 on 2026-10-13. Nothing is merged into main.
+- Rebased onto main on 2026-10-13. Nothing is merged into main.
 - The worktree has its own `node_modules` from `npm ci`.
 
 ## Done
 
-Commits since main, oldest first. Each passed `tsc`, `tsc -p app` and eslint on its own before the rebase, checked by exporting it with `git archive`.
+Commits since main, oldest first. After the rebase onto deec329, each of the first 17 was exported with `git archive` and passed `tsc`, `tsc -p app`, eslint and the name guard on its own.
 
 | Commit | What it adds |
 | --- | --- |
@@ -28,30 +28,27 @@ Commits since main, oldest first. Each passed `tsc`, `tsc -p app` and eslint on 
 | ccaa231 | step12c looks for the token in the box's stderr as well as its stdout |
 | b6805e6 | step12b checks that a box that could not start says so, with Docker's reason |
 | 37c42c0 | Adding a teammate to a room: `addRoomMember` in `server/rooms.ts`, its route, the room's People list in `app/src/Conversation.tsx`, checks in step12 and step12b |
-
-After the rebase, on main's rules:
-
-- `npm run typecheck`, `npm run lint` and `node test/names.ts` pass.
-- step12 passed 61 of 61.
-- step12b passed 111 of 111 in Chromium, WebKit and Firefox.
-- step12c passed 51 of 51 in the three browsers.
+| da91770 | Docs: the design doc corrected to what was built, with what is not done; README's "Inviting teammates from the app"; an Onboarding section in `docs/what-each-part-does.md` |
+| 4ac6f84 | step12 checks that resending a tailnet invite reaches Tailscale |
+| f8b3c8d | No type assertions left in the onboarding checks and stand-ins |
+| 827ba95 | step12 checks that a key that expires after it was saved stops the tailnet routes |
+| 201e99b | A box that could not start offers no Claude sign-in, and shows Docker's reason on its own line |
 
 Migration 0005 is applied to `agents_test`. Never edit it. Its number may change at landing. The coordinator renumbers.
 
-## In progress
+## Breaks
 
-- Docs for this work, uncommitted when this was written: `docs/design/onboarding.md` corrected to what was built, with a "Not done, and what waits" section; `README.md` gains "Inviting teammates from the app"; `docs/what-each-part-does.md` gains an Onboarding section. Still to write: a `docs/build-log.md` section.
-- Breaks for the new checks are not run yet.
+Every check was seen red under a deliberate break, with the file put back and its hash compared afterwards. The break lists and the runner live in the session's scratchpad, not the repo. The counts are in the build log's Onboarding section.
+
+- step12: 67 breaks, all red, two by stopping the check early.
+- step12b, in Chromium: 39 breaks. 35 failed their own check and 2 stopped the run. The last 2 each took out one of two rules that keep a room's teammate picker on a phone screen. Either alone holds, and taking out both went red.
+- step12c, in Chromium: 7 breaks, all red. The token logged to stderr stayed green against the old stdout-only check, which is why it reads both now.
 
 ## Next steps, in order
 
-1. Breaks. Every check must be seen red under a deliberate break, then restored byte for byte and green.
-   - step12 had 31 breaks, 29 red on the first run. The join lock and admin gate checks were fixed to go red. Rerun them against the final step12.
-   - New ones for the room checks in step12: drop the 403 gate, drop the private 404, return without inserting, drop `c.kind = 'room'`, drop `c.archived_at is null`, drop the team filter on the room or on the teammate, and add the admin as well.
-   - step12b: let anyone add, give `.add-line` an auto column, skip the "Added" line, drop `start_error` from `boxState`, drop the "Docker said" line.
-   - step12c, with `AGENTS_UI_ENGINES=chromium` to save time: give personal boxes the team token, save the token 0644, stop passing `oauthToken`, never post the link, show no "is starting" text, log the token to stderr, skip `GettingStarted`.
-2. Write the build-log section with the break results, and commit the docs.
-3. Final pass, then the report to the coordinator.
+1. Commit the docs, rebase onto main, and run the final pass: typecheck, lint, names, step12, then step12b and step12c in three browsers. step12c rebuilds `agents-box:onboard-check`, which the daemon breaks left broken.
+2. Delete the copies under `~/.agents-app/checks/copy12c` and the scratchpad, and any `onboard-*` teams left behind.
+3. Report to the coordinator.
 
 ## How to work here
 
@@ -60,7 +57,8 @@ Read `AGENTS.md` first. In short:
 - `export PATH="$HOME/.local/node/bin:$PATH"` first. The `node` in `/usr/local/bin` can't load native packages.
 - Run a check by file: `node --env-file=.env --env-file=.env.test test/step12.ts`. Add `AGENTS_UI_ENGINES=chromium` to run one browser.
 - These checks use ports 7920 to 7935, never 7701, so they need no lock. step12 uses 7920 to 7926, step12b 7927 to 7930, step12c 7932 to 7935. Take `mkdir ~/.agents-app/checks/run.lock` before any check on 7701, and `rmdir` it after.
-- step12b and step12c both build `app/dist`, so run them one after the other, and don't edit `app/` while either runs.
+- step12b and step12c both build `app/dist`, so run them one after the other, and don't edit `app/` while either runs. To run breaks for different checks at once, run each in its own copy of the tree. A copy that runs step12c must sit under the home folder, since the colima VM mounts only that.
+- Other agents write to the same session scratchpad. Keep scratch files in a folder of your own there.
 - Team names start with `onboard-`. A failing check keeps its team. Delete `onboard-*` teams from `agents_test` and `~/.agents-app/checks/onboard-12c-*` folders once done with them.
 - step12c builds and runs `agents-box:onboard-check`. Never build or overwrite `agents-box:latest`.
 - Never touch the real `agents` database, the launchd services or Tailscale settings. Don't send real invites.
