@@ -157,7 +157,8 @@ try {
   const added = bHunks.find((h) => h.op === 'add')
   const deleted = bHunks.find((h) => h.op === 'delete')
   check(b.proposalId && bHunks.length === 2 && added?.after === '- Write in British English.' && added.before === '' && added.diff.includes('+- Write in British English.')
-    && !added.diff.includes('-- Ask before deleting files.') && added.content_hash === sha256('') && added.occasions === 2 && added.counts.people === 2,
+    && !added.diff.includes('-- Ask before deleting files.') && added.diff.split('\n').filter((l: string) => /^\+(?!\+\+)/.test(l)).length === 1
+    && added.content_hash === sha256('') && added.occasions === 2 && added.counts.people === 2,
   `the server computed the added rule's hunk, citing two occasions from two people: ${JSON.stringify(added?.diff)}`)
   check(deleted?.before === '- Ask before deleting files.' && deleted.after === '' && deleted.diff.includes('-- Ask before deleting files.')
     && deleted.content_hash === sha256('- Ask before deleting files.') && deleted.evidence.length === 2 && deleted.evidence[0].quote.includes('asked before deleting'),

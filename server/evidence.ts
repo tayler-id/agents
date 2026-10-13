@@ -53,7 +53,7 @@ export const ruleHash = (text: string): RuleHash => RuleHash.parse(createHash('s
 // An agent's instructions as rules. A rule is a paragraph, a list item or a
 // heading. `start` and `end` are where its text sits in the instructions.
 export type Unit = Rule & { start: number; end: number }
-const STARTS_UNIT = /^\s*([-*+]|\d+[.)]|#{1,6})\s/
+export const STARTS_UNIT = /^\s*([-*+]|\d+[.)]|#{1,6})\s/
 
 export function unitsOf(text: string): Unit[] {
   const units: Unit[] = []

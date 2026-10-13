@@ -459,7 +459,8 @@ export async function decideReplays(client: pg.PoolClient, proposalId: ProposalI
   const better = !unjudged.length && withChange.still < current.still && withChange.worse <= current.worse
   const scores = { change: withChange, current, cases }
   await client.query('update proposals set scores = $2, status = $3 where id = $1', [proposalId, JSON.stringify(scores), better ? 'open' : 'rejected'])
-  const line = (s: SessionScore) => `${s.still} of ${s.behind} turns behind it still needed the correction, and ${s.worse} of ${s.unrelated} other turns got worse`
+  const line = (s: SessionScore) => `${s.still} of ${s.behind} turns behind it still needed the correction`
+    + (s.unrelated ? `, and ${s.worse} of ${s.unrelated} other turns got worse` : ', with no other turns to replay')
   return {
     better, scores,
     summary: unjudged.length ? sentence(`The judge left ${unjudged.join(', ')} unjudged, so the change was not shown to win`)

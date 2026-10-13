@@ -10,7 +10,9 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, type Db } from './db.ts'
 import { diffHunks, diffText } from './diff.ts'
-import { candidatesOf, countsLine, countsOf, EVIDENCE_DAYS, FLOOR, routeLine, ruleTallies, sentence, unitsOf, type Dropped, type Unit } from './evidence.ts'
+import {
+  candidatesOf, countsLine, countsOf, EVIDENCE_DAYS, FLOOR, routeLine, ruleTallies, sentence, STARTS_UNIT, unitsOf, type Dropped, type Unit,
+} from './evidence.ts'
 import { writeMemory } from './agents.ts'
 import { HttpError, type Person } from './record.ts'
 import {
@@ -60,7 +62,11 @@ export function editInstructions(text: string, edits: Edit[]): string {
     if (!anchor) return { from: text.length, to: text.length, insert: edit.text.trim(), order }
     const i = units.indexOf(anchor)
     const [next, prev] = [units[i + 1], units[i - 1]]
-    const gap = next ? text.slice(anchor.end, next.start) : prev ? text.slice(prev.end, anchor.start) : '\n\n'
+    // A paragraph needs a blank line before it, or it would join the rule above.
+    // A list item or heading takes the spacing around the rule it follows.
+    const gap = !STARTS_UNIT.test(edit.text.trim()) ? '\n\n'
+      : next ? text.slice(anchor.end, next.start)
+        : STARTS_UNIT.test(anchor.text) ? '\n' : prev ? text.slice(prev.end, anchor.start) : '\n\n'
     return { from: anchor.end, to: anchor.end, insert: `${gap}${edit.text.trim()}`, order }
   })
   // From the end backwards, so each splice's offsets still hold. Two at one place keep their order.

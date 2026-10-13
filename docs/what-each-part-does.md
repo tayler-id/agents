@@ -172,7 +172,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### Proposals in the app (`app/src/Proposal.tsx`)
 
-- **Solves now.** A proposal shows its summary, the scores of both versions and the diff, on the pipeline's page and on the run that proposed it, next to the gate that approves it.
+- **Solves now.** A proposal shows its summary and the scores of both versions, on the pipeline's page and on the run that proposed it, next to the gate that approves it. Each hunk shows its diff, the quotes it rests on with who said them, and its count of sessions, people's, pipeline and box apart, and of people. At a coach proposal's gate a person keeps or turns down each hunk, with a reason to turn one down, and the hunk then shows who decided and why. `test/step20d.ts` drives it in three browsers and at phone width.
 
 ## Phase 4: the rest of the app
 

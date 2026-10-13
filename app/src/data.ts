@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
+import type { ProposalHunk, Scores } from '../../shared/evidence.ts'
 import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
@@ -74,13 +75,13 @@ export type Artifact = Row & {
   id: string; task_id: string; kind: 'document' | 'link'; path: string | null; title: string; url: string | null
   state: string | null; current_version: number | null; made_by_session: string | null; updated_at: string
 }
-export type Score = { replays: number; finished: number; problems: number; stagesRun: number; costUsd: number; durationSec: number }
 export type Proposal = Row & {
-  id: string; target: 'pipeline' | 'instructions' | 'skill'; pipeline_id: string | null; agent_id: string | null; skill_name: string | null
+  id: string; target: 'pipeline' | 'instructions' | 'skill' | 'agent'; pipeline_id: string | null; agent_id: string | null; skill_name: string | null
   base_version_id: string | null; candidate_version_id: string | null; run_id: string | null; diff: string; summary: string
-  scores: { candidate?: Score; current?: Score } | Record<string, never>; status: string; pull_request: string | null
+  scores: Scores; status: string; pull_request: string | null
   decided_by: string | null; decided_at: string | null; created_at: string
 }
+export type Hunk = Row & ProposalHunk
 export type Skill = Row & { id: string; agent_id: string | null; name: string; description: string; content: string; updated_at: string }
 export type Plugin = Row & { id: string; agent_id: string; name: string; kind: 'stdio' | 'http'; config: { command?: string; args?: string[]; env?: Record<string, { secret: string }>; url?: string; headers?: Record<string, { secret: string }> } }
 export type Routine = Row & { id: string; agent_id: string; name: string; prompt: string; trigger: string; trigger_config: { schedule?: string }; enabled: boolean; last_fired_at: string | null }
@@ -273,6 +274,8 @@ export const api = {
   startRun: (pipelineId: string, title: string, body: string, repoId: string) =>
     request<{ runId: string }>('POST', `/v1/pipelines/${pipelineId}/runs`, { title, body, repoId }),
   cancelRun: (runId: string) => request('POST', `/v1/runs/${runId}/cancel`, {}),
+  decideHunk: (hunkId: string, decision: 'accept' | 'reject', reason?: string) =>
+    request('POST', `/v1/hunks/${hunkId}/decision`, { decision, reason }),
   claimBox: (instanceId: string) => request('POST', `/v1/instances/${instanceId}/claim`, {}),
   createAgent: (body: Record<string, unknown>) => request<{ agentId: string }>('POST', '/v1/agents', body),
   updateAgent: (agentId: string, body: Record<string, unknown>) => request('POST', `/v1/agents/${agentId}`, body),
