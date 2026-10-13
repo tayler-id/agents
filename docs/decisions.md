@@ -29,6 +29,20 @@ Every decision about how Agents is built and how work on it happens, newest grou
   After that, other agent engines with durable sessions can run behind `daemon/harness.ts` against the same five tests. One replaces ours only if it clearly wins.
 - **Status.** Decided, being built.
 
+### Coach and improve learn only from checked evidence
+
+- **Purpose.** Instructions and pipelines change only on evidence from real sessions, checked in code, and a change reaches a person only after replays show it helps.
+- **How it works.**
+  - A cheap model reads each recent session once and records findings: a rule followed, a rule ignored, a rule that caused harm, or a correction no rule covers. Code drops any finding whose quote isn't in the event it cites.
+  - A correction becomes a candidate once two sessions carry it, with people counted separately. Candidates expire after 90 days.
+  - A candidate that a lint rule, type or check could catch goes there first. One person's preference goes to their profile. Only what's left changes shared instructions.
+  - Changes come as small hunks, each citing its findings. Code requires two sessions for an added rule and two harm findings to delete one, caps the hunks, and holds a size budget.
+  - Replays score each change on the sessions behind it and on unrelated ones. Only a change that wins reaches the shepherd.
+  - Decisions are per hunk, remembered for the whole team with a reason.
+  - Coach's and improve's own sessions and replays never count as evidence.
+- **Implementation.** A new workstream on its own branch, from the evaluation in `research/evaluations/instruction-training.md`.
+- **Status.** Decided, being built. We don't install or wrap the tool we evaluated.
+
 ## 2026-10-13: how agents code on this repo
 
 ### The product is Agents, and our docs name only what we use
@@ -310,6 +324,5 @@ Every decision about how Agents is built and how work on it happens, newest grou
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
 - **A GitHub CLI wrapper,** and a written spec for agent-facing CLIs. These may shape our own GitHub commands and the shared CLI library.
-- **A tool that trains instruction files from examples.** Evaluated against coach and improve. The recommendation is to build its evidence rules into coach and improve, and not to install it. Waits on Tayler.
 
 Each gets an entry here once decided.
