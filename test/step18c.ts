@@ -59,7 +59,7 @@ try {
   // Each allow the fake Claude processes received, with the request it answered.
   const allowed = () => fakeLog(folder, 'received').filter((r) => r.kind === 'answer' && r.behavior === 'allow')
 
-  // One: the person answers while the machine is down.
+  // First the person answers while the machine is down.
   await until('the first ask', 60, async () => (await asks()).some((a) => a.status === 'open'))
   const [first] = await asks()
   await killMachine(daemon)
@@ -79,7 +79,7 @@ try {
   'the resumed session asked again with a new request, and the answer reached that request')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after an answer given during the outage' })
 
-  // Two: the machine dies with the ask waiting, and the person answers after it is back.
+  // Then the machine dies with the ask waiting, and the person answers after it is back.
   await say(`/v1/conversations/${conversationId}/messages`, { text: 'Do APPROVE-TWO.' })
   await until('the second ask', 60, async () => (await asks()).some((a) => a.status === 'open'))
   const second = (await asks()).find((a) => a.status === 'open')

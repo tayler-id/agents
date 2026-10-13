@@ -44,7 +44,7 @@ const tryDocker = (...args: string[]) => {
 const boxEnv: Record<string, string> = {
   AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PEOPLE_PORT), AGENTS_STREAMS_PORT: String(PEOPLE_PORT + 1),
   AGENTS_BOX_IMAGE: image, AGENTS_BOX_API: `http://host.docker.internal:${PORT}`,
-  // The box gets no Claude login: it runs the fake.
+  // The box gets no Claude login, since it runs the fake.
   AGENTS_BOX_TOKEN_FILE: join(work, 'no-token'),
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
     '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,

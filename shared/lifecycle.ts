@@ -8,9 +8,9 @@ export const WORKING: readonly SessionStatus[] = ['starting', 'running', 'needs_
 
 // How often a daemon tells the API its machine is up.
 export const HEARTBEAT_SEC = 15
-// A machine silent this long has stopped answering, and its working sessions
-// show as lost: three missed heartbeats. Less than two would mark a machine
-// whose heartbeat is merely late.
+// A machine silent for three heartbeats has stopped answering, and its working
+// sessions show as lost. Less than two would mark a machine whose heartbeat is
+// merely late.
 export const MACHINE_LOST_AFTER_SEC = 3 * HEARTBEAT_SEC
 export const MACHINE_LOST_AFTER_MIN_SEC = 2 * HEARTBEAT_SEC
 

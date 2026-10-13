@@ -14,9 +14,9 @@ import {
 import type { EventBatch, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
 import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
 
-// Finishes the messages a batch names: done when the batch ends the turn that
-// took them in, failed when their harness exited first. A retried batch finds
-// them finished already and changes nothing.
+// Finishes the messages a batch names. They are done when the batch ends the
+// turn that took them in, and failed when their harness exited first. A retried
+// batch finds them finished already and changes nothing.
 export async function endMessages(client: pg.PoolClient, sessionId: string, batch: EventBatch) {
   const ended = batch.ended ?? []
   if (!ended.length) return
@@ -199,9 +199,9 @@ async function openThreads(client: pg.PoolClient, sessionId: string, from: numbe
 }
 
 // Called by a machine that has just started. Each session it was answering
-// messages in is interrupted: ended when a person asked to stop it meanwhile,
-// and otherwise returned to be resumed, with every unfinished message and
-// everything the turn left open. Answers on their way to its dead processes
+// messages in is interrupted. It ends there when a person asked to stop it
+// meanwhile, and is otherwise returned to be resumed, with every unfinished
+// message and everything the turn left open. Answers on their way to its dead processes
 // fail, keeping their decisions on the asks, and its other commands go back in
 // the queue.
 export async function recoverMachine(client: pg.PoolClient, instanceId: string): Promise<Recovery> {

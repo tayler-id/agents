@@ -1,6 +1,6 @@
 // Durability check 1, with real Claude. A person asks an agent for a poem. While
-// the model is writing it, the machine dies: the daemon, then Claude and every
-// process under it. When the daemon starts again it reports the turn as
+// the model is writing it, the machine dies. The daemon goes first, then Claude
+// and every process under it. When the daemon starts again it reports the turn as
 // interrupted and resumes the same Claude conversation, and the poem lands in
 // the conversation. The record says what happened, and a reconnecting client
 // reads what the record holds.
@@ -21,7 +21,7 @@ const id = randomBytes(4).toString('hex')
 const team = `dur-a-${id}`
 const login = `${team}@local`
 const ASK = 'Write a forty-line poem about lighthouses, one line of verse per line. Do not call any tools, and do not search the team record first. Reply with the poem only.'
-// Enough streamed text to be sure the model is mid-reply: a few lines of the poem.
+// A few lines of the poem, enough to be sure the model is mid-reply.
 const STREAMED_CHARS = 200
 
 const c = new Check()
@@ -57,7 +57,7 @@ try {
   const { id: sessionId } = await c.row('select id from sessions where conversation_id = $1', [conversationId])
   const turnsEnded = () => c.count(`select count(*) from events where session_id = $1 and kind = 'usage'`, [sessionId])
 
-  // The model is writing: its words are in the live stream, and its turn has not ended.
+  // The model is writing. Its words are in the live stream, and its turn has not ended.
   const url = `${PEOPLE}/v1/streams/sessions/${sessionId}`
   const asMe = { 'tailscale-user-login': login }
   const streamed = async () => {

@@ -1,6 +1,6 @@
 # Turns that survive a machine dying
 
-Designed, and being built on the durability branch. The resume note in `docs/design/durability-resume.md` says what is built and proven so far.
+Built on the durability branch. The resume note in `docs/design/durability-resume.md` says what is proven and what is left.
 
 When a person messages an agent, the API queues a `message` command, and the agent's machine runs the turn in a Claude session. The machine is this Mac's daemon or a box running the same daemon. This design makes a turn survive that machine dying. The work resumes, or the app shows it as interrupted, and nothing waits forever.
 
@@ -55,10 +55,10 @@ A message is one `message` command, such as a person's post, a pipeline stage's 
 
 Two rules make the table hold.
 
-- **The harness says which messages a turn answered.** The daemon sends each message to Claude with its command id as the `uuid`, and starts Claude with `--replay-user-messages`. When Claude prints a message back, that message has joined the running turn. The turn's result batch carries the command ids it took in, as `ended`. A message Claude has not taken in yet stays handed over, and joins the next turn.
+- **The harness says which messages a turn answered.** The harness sends each message to Claude under a fresh `uuid` that it maps to the message's command ids, and starts Claude with `--replay-user-messages`. When Claude prints a message back, that message has joined the running turn. The turn's result batch carries the command ids it took in, as `ended`. A message Claude has not taken in yet stays handed over, and joins the next turn. A continuation is one message that answers several commands, which is why the uuid is the harness's own and not a command id.
 - **The server ends the message.** The transaction that records a turn's `usage` event marks the commands in `ended` done. When the harness exits, the daemon's last batch lists every message the process still had, and the server marks them failed with the harness's error. A daemon that dies between the two writes can't leave a finished message looking unfinished, because there is only one write.
 
-The daemon's `busy` flag comes from the same ids: a harness is busy while it holds a message no result has ended. Today it counts one result per message, so after Claude answers two messages with one result it stays busy forever, and the agent's new setup never reaches it.
+The daemon's `busy` flag comes from the same ids. A harness is busy while it holds a message no result has ended. On main it counts one result per message, so after Claude answers two messages with one result it stays busy forever, and the agent's new setup never reaches it.
 
 ### A session
 
@@ -83,7 +83,7 @@ Only a session's current process sets its status. The daemon stops a session's p
 
 - Each message's command, claimed when the daemon hands the message to the harness and finished when the end of the turn that took it in is recorded.
 - Every event the harness prints, as today, keyed by client id so a retried post adds nothing.
-- At a restart, for each interrupted turn, a `notice` event with `body.subtype = 'interrupted'` that names the reason, the turn's command, and the tool calls and approvals left open. Then a `user` event with no author, holding the exact text the resumed session is sent.
+- At a restart, for each session with unfinished messages, a `notice` event with `body.subtype = 'interrupted'` that names the reason, the messages, and the tool calls and approvals left open. Then a `user` event with no author, holding the exact text the resumed session is sent.
 - When a machine stops answering, the same notice with the reason "the machine stopped answering", and the session's status `lost`.
 - For each approval, which harness request it is waiting on. `asks.request_ended_at` is set when the process that raised the request is gone, and cleared when a resumed session asks again.
 
@@ -101,7 +101,7 @@ The daemon does three things before it reads its queue.
 2. **Reports.** It calls `POST /v1/instance/recover`. In one transaction the server:
    - puts back claimed commands that are not messages (`setup_workspace`, `exec`, `push`), as requeue did;
    - fails each `answer` command still queued or claimed, since the request it answers died with the process, and leaves the decision on the ask;
-   - for each session with claimed messages, reads the record since the first of their user events and sorts each tool call that has no result. A call with an approval that never reached the harness is waiting for approval. Any other call without a result is in flight, which means it may or may not have taken effect;
+   - for each session with claimed messages, reads the record since the first of their user events and sorts each tool call that has no result. A call whose approval is still open, or whose allow never left the queue for the harness, has to be asked for again. One whose denial never left the queue is reported as denied. Any other call without a result is in flight, which means it may or may not have taken effect, and that includes a call whose answer the old daemon had claimed, since it may have reached Claude;
    - ends those messages as done, with a notice saying why, when an `interrupt` or `stop` for that session was waiting. Otherwise it records the interrupted notice and one continuation for all of them, sets the session `lost`, and returns the session with its messages.
 3. **Resumes.** For each returned session it starts the harness with the session's Claude id, or a fresh one when the crash came before Claude reported its id, and sends the continuation. The resumed turn's result ends every message the continuation covers. Their commands stay claimed until then.
 
@@ -113,11 +113,11 @@ before the stop is in this conversation, but the last part of it may be missing.
 
 These tool calls were still running when the machine stopped. Their results were never
 recorded, so each may or may not have taken effect. Check before you run any of them again.
-- Bash (toolu_ledger): echo entry-1 >> ledger.txt
+- Bash echo entry-1 >> ledger.txt (call toolu_ledger)
 
-These requests for approval ended when the machine stopped. Call the tool again with exactly
-the same input, and the answer reaches you then.
-- Bash: echo approved >> asked.txt. A person allowed it.
+These requests for approval ended when the machine stopped, before they ran. Call the tool
+again with exactly the same input, and the answer reaches you then.
+- Bash with input {"command":"echo approved >> asked.txt","description":"..."}. A person allowed it.
 
 Finish the turn. The message you were answering:
 
@@ -137,8 +137,8 @@ An ask is answered through the harness request that raised it, and that request 
 - Recovery sets `request_ended_at` on every ask whose decision never reached its process, open or answered.
 - The continuation tells the resumed session to call the tool again with the same input. When its new permission request arrives, the server looks for an ask of the session with an ended request, the same tool and the same input, ignoring Bash's free-text `description`. A match takes the new request instead of opening a second card. If the ask is already answered, the server records an `answer` event by the same person and queues the decision for the new request at once.
 - A decision that already reached a process is not carried. The call may have run, so asking again needs a person again.
-- A denial that never reached its process goes into the continuation as denied, and the ask is closed.
-- When a turn ends, the session's asks that are still open expire. Today an interrupted turn leaves its card open forever.
+- A denial that never reached its process goes into the continuation as denied, and is not asked for again.
+- When a turn ends, the session's asks that are still open expire, and a kept decision the resumed session never asked for is let go, so a later turn can't pick it up. On main an interrupted turn leaves its card open forever.
 
 ## Machines that stop answering
 
@@ -154,6 +154,8 @@ A machine that comes back without restarting, such as after a network outage, se
 
 ## Failures considered
 
+A row that names a check is proven by it. The other rows follow from the code, and no check covers them yet.
+
 | Failure | How it ends |
 |---|---|
 | Machine dies while the model writes | The restart reports the turn, resumes it with the continuation, and the reply lands. Check 1. |
@@ -166,16 +168,16 @@ A machine that comes back without restarting, such as after a network outage, se
 | The daemon dies after reading a line and before posting it | That line is lost from the record. The continuation lists every call without a recorded result, so the session is told. |
 | The daemon dies during recovery | The next start runs recovery again. Each run adds a notice, so the record shows every restart. |
 | A restart for a new setup fails to start | The session shows `failed` with the machine's reason, such as a plugin's missing secret, and stays that way. Check 6. |
-| A follow-up arrives mid-turn | It goes to the harness at once and joins the running turn, as today. If the machine dies before Claude takes it in, the continuation includes it. |
-| Claude answers two messages with one result | The result's batch ends both commands, and the harness is no longer busy. |
+| A follow-up arrives mid-turn | It goes to the harness at once and joins the running turn, as today. Check 7. If the machine dies before Claude takes it in, the continuation includes it. |
+| Claude answers two messages with one result | The result's batch ends both commands, and the harness is no longer busy, so the agent's next setup reaches the session. Check 7. |
 | A tool command outlives a killed Claude | On a box, removing the container ends it. On the Mac it runs to its end, unseen, and the continuation says the call may still be running. Not solved, see below. |
-| A person interrupts while the machine is down | The interrupt waits in the queue, and the restart ends the turn instead of resuming it. |
+| A person interrupts while the machine is down | The interrupt waits in the queue, and the restart ends the turn instead of resuming it. Check 2. |
 | A person answers while the machine is down | The decision is kept on the ask and delivered to the resumed session's new request. |
 | The resumed session asks for something different | No ask matches, so a new card opens, and the old one expires when the turn ends. |
 | The conversation to resume is missing from the machine | Claude exits with "No conversation found", and the session shows failed with that reason. Not solved, see below. |
 | The API restarts mid-turn | The daemon retries its posts until the API answers, so nothing is lost. The watchdog waits out its grace period. |
 | Postgres restarts mid-turn | As the API restarting. |
-| A session's machine is offline when a message arrives | The command waits in the queue. A new session's status stays `starting`, which the app shows as working. Not solved. |
+| A session's machine is offline when a message arrives | The command waits in the queue. Once the machine and the session have both been quiet past the threshold, the watchdog marks the session `lost`, by the same rule as above. No check covers this case. |
 
 ## The engine boundary
 
@@ -193,13 +195,16 @@ An engine whose sessions are durable on their own, so that a turn's loop runs on
 Each check starts its own API, daemon and team, prefixed `dur-`, on ports 8046 to 8059, kills only the processes it started, and removes what it made when it passes. Ports 8041 to 8045 are taken by another workstream's leftover processes, so the checks avoid them.
 
 1. `test/step18a.ts`, real Claude. A person asks for a forty-line poem. Once the live stream has text, the check kills the daemon, then Claude and its children. It restarts the daemon. The poem lands in the conversation, from the same Claude conversation, with the interrupted notice in the record.
-2. `test/step18b.ts`, the fake Claude. The agent appends a line to a ledger and is killed before the result. On restart the ledger still has one line, the record names the call as interrupted, the resumed session was told about it and checked, and the turn ends. A second turn kills only the daemon, and the old Claude is stopped before the turn resumes.
+2. `test/step18b.ts`, the fake Claude. The agent appends a line to a ledger and is killed before the result. On restart the ledger still has one line, the record names the call as interrupted, the resumed session was told about it and checked, and the turn ends. A second turn kills only the daemon, and the old Claude is stopped before the turn resumes. A third turn is killed, a person interrupts while the machine is down, and the restart ends that turn without resuming it.
 3. `test/step18c.ts`, the fake Claude. The agent asks to run a command and is killed while the ask waits. Once a person answers during the outage, and once after the restart. Each time the same card takes the answer, no second card opens, and the command runs once.
 4. `test/step18d.ts`, the fake Claude in a box. The box writes a file and is killed mid-turn by removing its container. While it is gone the session shows `lost`. A new container on the same home volume brings back the file and the session, and the turn finishes.
-5. `test/step18e.ts`, the fake Claude. A client that stays connected and one that reconnects both read the session, its events, its posts and its asks during the outage and after the restart, and both match the record. Checks 1 to 4 run the same comparison when they finish.
+5. `test/step18e.ts`, the fake Claude and the app in a browser. During the outage the app shows the interrupted line with its reason and the open card. After the restart the person answers that card in the app, and the app shows the reply with no card and no line. A client that stays connected and one that reconnects both read the session, its events, its posts and its asks at each point, and both match the record. Checks 1 to 4 and 6 run the same comparison when they finish.
 6. `test/step18f.ts`, the fake Claude. A person adds a plugin whose secret the machine lacks to an agent with a running session, then messages it. The restart fails, and the session shows `failed` with the reason after the old process has exited and the daemon has stopped. It shares ports with check 5, so the two run one after the other.
+7. `test/step18g.ts`, real Claude. A person's follow-up, sent while the agent runs a command, joins that turn, and one result answers both messages. Both commands end with that turn, and when the agent's instructions change, the next message gets a new Claude process. It shares ports with check 1.
 
-On main, checks 1 to 4 time out waiting for the turn to finish, check 5 sees the session working through the outage instead of `lost`, and check 6 sees the session `idle`.
+On main, checks 1 to 4 time out waiting for the turn to finish, check 5 sees the session working through the outage instead of `lost`, check 6 sees the session `idle`, and check 7 sees the same Claude process answer after the setup changed, since the session still looks busy.
+
+Claude 2.1.296 keeps a conversation's first system prompt and reuses it on every resume, unless started with `--system-prompt-snapshot off`. So a new process for a changed setup picks up new skills, plugins and model, but not new instructions. Check 7 tests that the process is replaced, not what it was told. This is outside durability and not changed here.
 
 ## Schema change
 
@@ -211,4 +216,5 @@ Migration `0010_durability.sql`, described in `docs/data-model.md`, adds one col
 - **Lines lost between Claude and the record.** A journal of the harness's lines on the machine's disk, written before each post and replayed on restart, would close that gap.
 - **A missing conversation.** The harness could start a fresh conversation and say so, instead of failing.
 - **A session whose machine is gone for good.** Nothing moves a session to another machine.
-- **Box images.** A box runs the daemon its image was built with. Boxes need their image rebuilt with `server/boxes.ts build` when this lands, or their daemon calls the old requeue endpoint and waits forever.
+- **Box images.** A box runs the daemon its image was built with. Boxes need their image rebuilt with `server/boxes.ts build` when this lands. An old daemon calls `/v1/instance/commands/requeue`, which is gone, and logs "waiting for the API" until its image is rebuilt.
+- **Statuses from the server and the harness are not ordered.** The watchdog can mark a session `lost` while a machine on the far side of a network outage is still working it. The machine's next line sets the status again, but a session waiting on an approval shows `lost` until the answer arrives.

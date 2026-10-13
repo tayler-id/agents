@@ -11,7 +11,7 @@ import pg from 'pg'
 export const ROOT = new URL('..', import.meta.url).pathname
 // How long a check waits for a turn to finish, with real Claude or the fake.
 export const TURN_SECONDS = 240
-// The watchdog's threshold the checks run the API with: two heartbeats.
+// The checks run the API's watchdog at two heartbeats, the least it allows.
 export const LOST_SEC = 30
 
 export class Check {
@@ -93,7 +93,7 @@ export async function until(label: string, seconds: number, test: () => Promise<
   throw new Error(`timed out after ${seconds}s waiting for ${label}`)
 }
 
-// A machine crash: the daemon dies first, so it can't report what happens to its
+// A machine crash. The daemon dies first, so it can't report what happens to its
 // Claude, then Claude and every process under it. Only processes the check
 // started are touched, by their PIDs.
 export async function killMachine(daemon: ChildProcess) {
@@ -167,7 +167,7 @@ const normal = (rows: readonly any[], pick: View['pick']) =>
 
 const shapeUrl = (people: string, view: View) => `${people}/v1/shape/${view.shape}?${new URLSearchParams(view.args).toString()}`
 
-// A client that stays connected: one live shape per view, opened once.
+// A client that stays connected, with one live shape per view, opened once.
 export function liveClient(people: string, login: string, conversationId: string, sessionId: string) {
   const abort = new AbortController()
   const shapes = viewsOf(conversationId, sessionId).map((view) => ({
@@ -180,7 +180,7 @@ export function liveClient(people: string, login: string, conversationId: string
   }
 }
 
-// Reads each view the way a client that just reconnected does: from scratch.
+// Reads each view from scratch, the way a client that just reconnected does.
 async function freshRead(people: string, login: string, view: View): Promise<Row[]> {
   return new Shape(new ShapeStream<Row>({ url: shapeUrl(people, view), headers: { 'tailscale-user-login': login }, subscribe: false })).rows
 }

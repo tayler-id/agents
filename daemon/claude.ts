@@ -257,7 +257,8 @@ class ClaudeSession implements HarnessSession {
       yield { events: [], status: 'idle' }
     } else {
       const stderr = this.stderr.join('').slice(-8000)
-      const reason = code === 0 ? 'Claude exited before it answered every message it was given.' : stderr
+      const reason = code === 0 ? 'Claude exited before it answered every message it was given.'
+        : stderr || `Claude exited ${code === null ? 'on a signal' : `with code ${code}`} and said nothing.`
       yield { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { exitCode: code, stderr } }], status: 'failed', ended }
     }
   }

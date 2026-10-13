@@ -2,7 +2,7 @@
 // a person adds a plugin whose secret its machine lacks. The next message makes
 // the daemon stop the session's process to start one with the new setup, and
 // that start fails. The session must show as failed, with the machine's reason,
-// and stay that way: the process stopped for the restart no longer speaks for
+// and stay that way. The process stopped for the restart no longer speaks for
 // the session, so its clean exit can't set the session idle over the failure.
 // It shares ports with step18e, so the two run one after the other.
 //   node --env-file=.env --env-file=.env.test test/step18f.ts
