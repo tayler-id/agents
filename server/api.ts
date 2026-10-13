@@ -56,6 +56,9 @@ function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   return result.data
 }
 
+// The message commands a batch finishes, by id.
+const EndedMessages = z.array(z.uuid()).optional()
+
 function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
   const events: NewEvent[] = raw.events.map((e, i) => {
@@ -80,11 +83,14 @@ function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (raw.status !== undefined && !SESSION_STATUSES.includes(raw.status as SessionStatus)) {
     throw new HttpError(400, 'status is not a session status')
   }
+  const ended = EndedMessages.safeParse(raw.ended)
+  if (!ended.success) throw new HttpError(400, 'ended must be a list of command ids')
   return {
     events,
     raw: rawLines,
     status: raw.status as SessionStatus | undefined,
     harnessSessionId: optionalText(raw.harnessSessionId, 'harnessSessionId'),
+    ended: ended.data,
   }
 }
 
@@ -172,10 +178,11 @@ const routes: Route[] = [
   }],
 
   // A daemon that starts up puts back anything it had claimed but not finished.
+  // A message is never put back, since handing it over again would run its turn twice.
   ['machines', 'POST', /^\/v1\/instance\/commands\/requeue$/, async (req) => {
     const instance = await instanceFrom(req)
     const { rowCount } = await pool.query(
-      `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed'`,
+      `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed' and kind <> 'message'`,
       [instance.id])
     return { requeued: rowCount }
   }],
@@ -198,6 +205,7 @@ const routes: Route[] = [
          where id = $1 and instance_id = $2 and status = 'claimed' returning kind, session_id, payload`,
         [commandId, instance.id, body.status, error, JSON.stringify(scrub(body.result ?? null))])
       if (!command) throw new HttpError(404, 'no such claimed command on this instance')
+      if (command.kind === 'message' && body.status === 'done') throw new HttpError(400, 'a message is done when the turn that answers it ends')
       // The machine could not hand the session its message, so the agent never got
       // it. The session fails with the machine's reason, as it does when Claude exits.
       if (command.kind === 'message' && body.status === 'failed' && command.session_id) {

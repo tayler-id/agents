@@ -1,5 +1,6 @@
 // What the daemon needs from an agent harness. Claude is the first; Codex can
-// implement the same interface later.
+// implement the same interface later. docs/design/durability.md says what an
+// engine must do for a turn to survive its machine dying.
 
 import type { AnswerPayload, EventBatch } from '../shared/types.ts'
 
@@ -24,10 +25,15 @@ export type HarnessStart = {
 export interface HarnessSession {
   // False once the harness process has exited. A dead session cannot take a message.
   readonly alive: boolean
-  // True from a message until the harness reports that turn's result.
+  // True while it holds a message that no turn's result has ended.
   readonly busy: boolean
-  send(text: string): void
-  // Answers a permission request the harness raised as an ask event.
+  // The process to stop before this session runs anywhere else.
+  readonly pid: number | undefined
+  // Hands over a message. A message sent while a turn runs may join that turn.
+  // `id` comes back in `ended` on the batch that finishes the message.
+  send(text: string, id: string): void
+  // Answers a permission request the harness raised as an ask event. Throws when
+  // no such request is waiting in this process.
   answer(answer: AnswerPayload): void
   // Stops the current turn. The session stays open for the next message.
   interrupt(): void

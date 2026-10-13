@@ -306,12 +306,12 @@ async function apply(command: Command): Promise<unknown> {
     // the new setup, resuming the same conversation. One mid-turn finishes first.
     if (live?.alive && !live.busy && command.payload.harnessSessionId && setups.get(command.sessionId) !== setupOf(command.payload)) live.stop()
     if (live?.alive) {
-      live.send(command.payload.text)
+      live.send(command.payload.text, command.id)
       return null
     }
     const { workspaceId } = command.payload
     if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
-    startSession(command).send(command.payload.text)
+    startSession(command).send(command.payload.text, command.id)
     return null
   }
   if (command.kind === 'stop') {
@@ -327,7 +327,8 @@ async function apply(command: Command): Promise<unknown> {
 async function handle(command: Command) {
   try {
     const result = await apply(command)
-    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
+    // A message is finished by the turn that answers it, which the harness reports.
+    if (command.kind !== 'message') await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
   } catch (error) {
     const message = scrub(error instanceof Error ? error.message : String(error))
     console.error(`command ${command.id} failed:`, message)
@@ -510,12 +511,17 @@ function followSignIns(signal: AbortSignal) {
   new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
 }
 
+// A session mid-turn is left as a crash leaves it: the next start stops its
+// process and resumes its messages. The others end cleanly.
 async function shutdown() {
   if (stopping) return
   stopping = true
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
-  for (const session of sessions.values()) session.stop()
+  for (const [id, session] of sessions) {
+    if (session.busy) sessions.delete(id)
+    else session.stop()
+  }
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)

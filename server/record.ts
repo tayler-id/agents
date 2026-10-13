@@ -13,6 +13,7 @@ import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
+import { endMessages } from './durability.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -76,6 +77,7 @@ export async function appendEvents(
        cost_usd = case when $6::numeric > 0 then greatest(coalesce(cost_usd, 0), $6::numeric) else cost_usd end
      where id = $1`,
     [sessionId, seq, turnsEnded.length, batch.status ?? null, batch.harnessSessionId ?? null, cost])
+  await endMessages(client, sessionId, batch)
   if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
     const conversationId = session.conversation_id
     const room = await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [conversationId])

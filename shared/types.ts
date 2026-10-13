@@ -40,6 +40,11 @@ export type EventBatch = {
   live?: LiveDelta[]
   status?: SessionStatus
   harnessSessionId?: string
+  // The message commands this batch finishes. On a batch with the turn's usage
+  // event they are the messages that turn took in, and they are done. On the
+  // last batch of a harness that exited they are every message it still held,
+  // and they failed.
+  ended?: string[]
 }
 
 // What a session may do without asking a person, beyond the tools it is given.
