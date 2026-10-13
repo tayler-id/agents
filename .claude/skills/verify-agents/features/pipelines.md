@@ -48,8 +48,10 @@ Preconditions:
 ## Gotchas
 
 - The instance's pipelines come from its own forge org, named like its team, with bug-fix changed to run on the agents' home machine, since a box cannot reach an instance's port.
-- A run started from a forge issue needs the forge's webhook, which can reach only the live API's port. On an instance that entry point is unreachable: drive the pipeline's own webhook instead, which goes through the same start.
+- A run started from a forge issue needs the forge's webhook, which can reach only the live API's port. On an instance that entry point is unreachable, so drive the pipeline's own webhook instead, which goes through the same start.
 - The fake harness's bug-fix triage reports only after a reminder, as a model that forgets would. The run page shows that stage's session getting the reminder. improve's change fixes exactly that, which is what the proposals feature scores.
-- Run pages and the Runs list hold replays out of sight: replays show on their proposal's run.
+- Run pages and the Runs list leave replays out. Replays show on their proposal's run.
 - Each stage row reads stage, kind, outcome and time, so match a stage by `--text` with its name or outcome.
 - A $ in a value needs a backslash inside double quotes, as in the Details of the first run.
+- A known bug, seen 2026-10-13. The Start a run form leaves out the pipelines repo for every pipeline, so improve cannot be started from the app on the repo it changes. "Start improve from the app on the pipelines repo" fails until that is fixed.
+- A known accessibility bug, seen 2026-10-13. The pipeline file's box scrolls but cannot take keyboard focus (axe rule scrollable-region-focusable, serious), so "The pipeline page" fails its a11y check until that is fixed.

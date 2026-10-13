@@ -54,4 +54,5 @@ Preconditions:
 - An agent's reply is the last text of its turn. A turn that only uses tools posts nothing.
 - A room post queues a turn for every agent in the room, one after another, each up to 3 minutes. Wait on the turns in the record, not on a count of messages that are still arriving.
 - An agent whose plugin needs a missing secret fails at once and gives up its room turn. The stopped notice stays until that agent's next session in the conversation starts.
+- A known bug, seen 2026-10-13 and recorded twice. Once writer's session is running, adding the plugin again and sending a message brings back no notice naming the missing secret within 30 seconds. "A working agent that cannot restart says why" fails until that is fixed.
 - The sidebar is behind the Menu button at phone width.
