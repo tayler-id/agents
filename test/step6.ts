@@ -18,6 +18,7 @@ import { forge, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { hookSecret } from '../server/hooks.ts'
 import { lastFire } from '../shared/cron.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7821
@@ -97,7 +98,7 @@ function startApi() {
   api = spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
     // No Claude token for boxes here, whatever this Mac has, so box runs stop at once.
-    env: { ...process.env, AGENTS_BOX_TOKEN_FILE: join(home, 'no-box-token'), AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams') },
+    env: { ...process.env, AGENTS_BOX_TOKEN_FILE: join(home, 'no-box-token'), AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams') },
   })
   children.push(api)
   return within(20, () => fetch(API).then(() => true, () => false))
@@ -188,6 +189,7 @@ try {
 
   const scenario = join(home, 'scenario.json')
   writeFileSync(scenario, JSON.stringify(SCENARIO).replaceAll('SHOP/', `${SHOP}/`))
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   await startApi()
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],

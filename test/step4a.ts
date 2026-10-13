@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7795
@@ -70,8 +71,9 @@ try {
   const folder = join(home, 'agents', agentId)
   mkdirSync(folder, { recursive: true })
 
-  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7796', AGENTS_STREAMS_DIR: join(home, 'streams') }
+  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: '7796', AGENTS_STREAMS_DIR: join(home, 'streams') }
   children.push(spawn(process.execPath, ['server/api.ts'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] }))
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   await within(20, async () => fetch(API).then(() => true, () => false))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, env: { ...process.env, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home }, stdio: ['ignore', 'ignore', 'inherit'],

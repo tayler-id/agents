@@ -16,6 +16,7 @@ import { makeScrub } from '../shared/scrub.ts'
 import type { LiveDelta } from '../shared/types.ts'
 import { LiveScrubber, LiveStream } from '../daemon/live.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7792
@@ -91,7 +92,8 @@ try {
   mkdirSync(join(home, 'agents', agentId), { recursive: true })
   writeFileSync(join(home, 'agents', agentId, 'notes.txt'), `Deploy password: ${envSecret}\n`)
 
-  run('server/api.ts', { AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7793', AGENTS_STREAMS_DIR: join(home, 'streams') })
+  run('server/api.ts', { AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: '7793', AGENTS_STREAMS_DIR: join(home, 'streams') })
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   await until('api', 20, async () => fetch(API).then(() => true, () => false))
   run('daemon/agentsd.ts', { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home, AGENTS_TEST_SECRET: envSecret })
   await until('instance online', 20, async () =>

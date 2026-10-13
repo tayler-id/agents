@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7807
@@ -93,8 +94,9 @@ try {
     `insert into approval_rules (team_id, tool_name, decision) select id, unnest($2::text[]), 'allow' from teams where name = $1`,
     [team, ['Edit', 'Write', 'Bash', 'MultiEdit']])
 
-  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7808', AGENTS_STREAMS_DIR: join(machines.a.home, 'streams') }
+  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(machines.a.home, 'people.sock'), AGENTS_STREAMS_PORT: '7808', AGENTS_STREAMS_DIR: join(machines.a.home, 'streams') }
   children.push(spawn(process.execPath, ['server/api.ts'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] }))
+  await servePeople(PORT + 100, join(machines.a.home, 'people.sock'))
   await within(20, async () => fetch(API).then(() => true, () => false))
   for (const machine of [machines.a, machines.b]) {
     children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {

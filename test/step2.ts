@@ -13,6 +13,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, isControlMessage, ShapeStream, type Message, type Offset, type Row } from '@electric-sql/client'
 import pg from 'pg'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 import { workspaces } from '../daemon/workspace.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -104,11 +105,13 @@ try {
 
   const apiDb = new URL(must(process.env.DATABASE_URL, 'DATABASE_URL'))
   apiDb.searchParams.set('application_name', `step2-api-${id}`)
+  const home = mkdtempSync(join(tmpdir(), 'agents-step2-'))
   const api = spawn(process.execPath, ['server/api.ts'], {
-    cwd: ROOT, env: { ...process.env, DATABASE_URL: apiDb.toString(), AGENTS_RUNNER_TEAMS: `${teamA},${teamB}`, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7798', AGENTS_STREAMS_DIR: mkdtempSync(join(tmpdir(), 'agents-step2-')) },
+    cwd: ROOT, env: { ...process.env, DATABASE_URL: apiDb.toString(), AGENTS_RUNNER_TEAMS: `${teamA},${teamB}`, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: '7798', AGENTS_STREAMS_DIR: join(home, 'streams') },
     stdio: ['ignore', 'ignore', 'inherit'],
   })
   children.push(api)
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   for (let i = 0; i < 40 && !(await fetch(API).then(() => true, () => false)); i++) await sleep(250)
 
   const as = (login: string) => ({ 'tailscale-user-login': login })
@@ -227,7 +230,7 @@ try {
   // Started before Postgres accepts connections, as after a reboot, the API waits for it instead of exiting.
   const early = spawn(process.execPath, ['server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, DATABASE_URL: 'postgres://agents:none@127.0.0.1:1/agents_test', AGENTS_RUNNER: 'off', AGENTS_API_PORT: '7792', AGENTS_PEOPLE_PORT: '7892', AGENTS_STREAMS_PORT: '7793', AGENTS_STREAMS_DIR: mkdtempSync(join(tmpdir(), 'agents-step2-early-')) },
+    env: { ...process.env, DATABASE_URL: 'postgres://agents:none@127.0.0.1:1/agents_test', AGENTS_RUNNER: 'off', AGENTS_API_PORT: '7792', AGENTS_PEOPLE_SOCKET: join(home, 'early.sock'), AGENTS_STREAMS_PORT: '7793', AGENTS_STREAMS_DIR: mkdtempSync(join(tmpdir(), 'agents-step2-early-')) },
   })
   children.push(early)
   let earlyLog = ''

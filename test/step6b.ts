@@ -18,6 +18,7 @@ import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
@@ -251,8 +252,9 @@ try {
   writeFileSync(scenarioFile, JSON.stringify(Object.fromEntries(engines.flatMap((engine) =>
     Object.entries(scenarioFor(shopOf(engine))).map(([name, steps]) => [`${name}-${engine}`, steps])))))
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
-  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams') }
+  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams') }
   children.push(spawn(process.execPath, ['server/api.ts'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] }))
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   for (let i = 0; i < 80 && !(await fetch(API).then(() => true, () => false)); i++) await sleep(250)
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],

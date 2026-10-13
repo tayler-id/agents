@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { makeScrub } from '../shared/scrub.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7790
@@ -98,7 +99,8 @@ try {
   writeFileSync(join(agentDir, 'notes.txt'),
     `Deploy password: ${envSecret}\nBackup token: ${githubToken}\nThe word to remember is pelican.\n`)
 
-  run('server/api.ts', { AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7797', AGENTS_STREAMS_DIR: join(home, 'streams') })
+  run('server/api.ts', { AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: '7797', AGENTS_STREAMS_DIR: join(home, 'streams') })
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   await until('api', 20, async () => fetch(API).then(() => true, () => false))
   const daemon = run('daemon/agentsd.ts', { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home, AGENTS_TEST_SECRET: envSecret })
   const instanceIs = (status: string) => async () =>

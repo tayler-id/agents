@@ -15,6 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { forge, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // The forge container reaches this Mac only on 7700 and 7701.
@@ -80,8 +81,9 @@ try {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step8-')))
   children.push(spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
-    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 1), AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams') },
+    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams') },
   }))
+  await servePeople(PORT + 1, join(home, 'people.sock'))
   await within(20, () => fetch(API).then(() => true, () => false))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home },
