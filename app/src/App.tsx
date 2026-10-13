@@ -5,6 +5,7 @@ import {
   useSnapshot, useSnapshotOf,
 } from './data.ts'
 import { TeamPage, Waiting } from './Team.tsx'
+import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -14,7 +15,7 @@ import { AgentPage, NewAgent } from './AgentPage.tsx'
 import { NewRoom, NewTask, TaskView } from './Work.tsx'
 
 // Pages with no id of their own, such as the team.
-const PAGES = ['team'] as const
+const PAGES = ['team', 'tailscale'] as const
 type Page = (typeof PAGES)[number]
 
 // Where the app is: a conversation, run, task, pipeline, agent, page or
@@ -91,8 +92,10 @@ function Workspace({ me }: { me: Me }) {
         <span className="topbar-title">{me.team.name}</span>
       </header>
       <Sidebar me={me} route={route} runs={runs} />
-      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
+      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale'
+        : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
+          : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
@@ -137,8 +140,10 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const { rows: conversationSessions } = useSnapshot<Session>('sessions', { of: 'conversations' }, 3000)
   const { rows: taskSessions } = useSnapshot<Session>('sessions', { of: 'tasks' }, 3000)
   const sessions = [...conversationSessions, ...taskSessions]
-  // Logins waiting for an admin, which only admins can read.
-  const { rows: waitingToJoin } = useSnapshotOf(JoinRequestRow, 'join_requests', me.person.role === 'admin' ? {} : null, 10000)
+  // Logins waiting for an admin, and the Tailscale key's expiry, which only admins can read.
+  const admin = me.person.role === 'admin'
+  const { rows: waitingToJoin } = useSnapshotOf(JoinRequestRow, 'join_requests', admin ? {} : null, 10000)
+  const keyAlert = keyWarning(useTailscaleView(admin))
   const [opening, setOpening] = useState('')
   const [boxError, setBoxError] = useState('')
 
@@ -209,7 +214,13 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         <button type="button" className={`link small${route.page === 'team' ? ' current' : ''}`} onClick={() => go({ page: 'team' })}>
           Team{waitingToJoin.length ? ` · ${waitingToJoin.length} ${waitingToJoin.length === 1 ? 'wants' : 'want'} to join` : ''}
         </button>
+        {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
       </div>
+      {keyAlert && (
+        <p className="sidebar-note small">
+          <button type="button" className="link" onClick={() => go({ page: 'tailscale' })}>{keyAlert.short}</button>
+        </p>
+      )}
       <div className="new-links">
         <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
         <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>

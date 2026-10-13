@@ -5,7 +5,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
-import { Done, InviteLink, InviteMade, InviteResent, MeView, PersonAdded, type MemberView, type TeamRole } from '../../shared/onboarding.ts'
+import {
+  Done, InviteLink, InviteMade, InviteResent, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
+  type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
+} from '../../shared/onboarding.ts'
 
 export type Me = MemberView
 
@@ -226,6 +229,17 @@ export const api = {
   cancelInvite: (inviteId: string) => call(Done, 'POST', `/v1/invites/${inviteId}/cancel`, {}),
   inviteLink: (inviteId: string) => call(InviteLink, 'GET', `/v1/invites/${inviteId}/link`),
   addToTeam: (login: string, name: string | null) => call(PersonAdded, 'POST', '/v1/team/people', { login, name }),
+  tailscale: () => call(TailscaleView, 'GET', '/v1/tailscale'),
+  saveTailscaleKey: (key: string, expires: string | null) => call(TailscaleView, 'POST', '/v1/tailscale/key', { key, expires }),
+  removeTailscaleKey: () => call(TailscaleView, 'POST', '/v1/tailscale/key/delete', {}),
+  tailnetUsers: () => call(TailnetUsers, 'GET', '/v1/tailscale/users'),
+  tailnetUser: (userId: string, action: UserAction) => call(Done, 'POST', `/v1/tailscale/users/${encodeURIComponent(userId)}/${action}`, {}),
+  tailnetRole: (userId: string, role: TailscaleRole) => call(Done, 'POST', `/v1/tailscale/users/${encodeURIComponent(userId)}/role`, { role }),
+  tailnetDevices: () => call(TailnetDevices, 'GET', '/v1/tailscale/devices'),
+  tailnetDevice: (deviceId: string, action: DeviceAction) => call(Done, 'POST', `/v1/tailscale/devices/${encodeURIComponent(deviceId)}/${action}`, {}),
+  tailnetInvites: () => call(TailnetInvites, 'GET', '/v1/tailscale/invites'),
+  tailnetInvite: (inviteId: string, action: TailnetInviteAction) =>
+    call(Done, 'POST', `/v1/tailscale/invites/${encodeURIComponent(inviteId)}/${action}`, {}),
   openDm: (agent: string) => request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'dm', agent }),
   send: (conversationId: string, text: string, clientId: string) =>
     request('POST', `/v1/conversations/${conversationId}/messages`, { text, clientId }),
@@ -280,4 +294,8 @@ export function parseTime(text: string | null): Date | null {
 
 export function clock(text: string | null): string {
   return parseTime(text)?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? ''
+}
+
+export function day(text: string | null): string {
+  return parseTime(text)?.toLocaleDateString([], { month: 'short', day: 'numeric' }) ?? ''
 }

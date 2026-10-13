@@ -76,6 +76,21 @@ async function fits(page: Page, selectors: string[]) {
     && list.every((selector) => [...document.querySelectorAll(selector)].every((el) => el.getBoundingClientRect().right <= window.innerWidth + 1)), selectors)
 }
 
+// Types an email into the invite form and sends it. If the button never becomes
+// clickable, the error says what the field held and what the button was, which
+// tells lost typing from a form that was reset.
+async function invite(page: Page, email: string) {
+  await page.getByLabel('Email').fill(email)
+  await page.getByRole('button', { name: 'Invite', exact: true }).click({ timeout: 15_000 }).catch(async (error: unknown) => {
+    const seen = await page.evaluate(() => ({
+      field: document.querySelector<HTMLInputElement>('#invite-email')?.value,
+      button: [...document.querySelectorAll('button')].find((b) => b.textContent === 'Invite')?.disabled ? 'disabled' : 'enabled',
+      focused: document.activeElement?.id,
+    }))
+    throw new Error(`the Invite button could not be clicked (${JSON.stringify(seen)}): ${error instanceof Error ? error.message.split('\n')[0] ?? '' : String(error)}`)
+  })
+}
+
 async function run(engine: string) {
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
@@ -97,16 +112,14 @@ async function run(engine: string) {
     const admin = await open(owner)
     await admin.getByRole('button', { name: /^Team/ }).click()
     check(await visible(admin, '.page-head h1', 15, new RegExp(team)), `${engine}: the Team link opens the team's page`)
-    await admin.getByLabel('Email').fill(invited)
-    await admin.getByRole('button', { name: 'Invite', exact: true }).click()
+    await invite(admin, invited)
     const said = await visible(admin, '.result', 15, new RegExp(`Invited ${invited.toLowerCase()}`))
     const made = [...tailscale.state.invites.values()].find((i) => i.email === invited.toLowerCase())
     check(said && made?.inviteUrl && await admin.getByLabel('Invite link, to send yourself').inputValue() === made.inviteUrl,
       `${engine}: inviting says who was invited and shows the link Tailscale made`)
     check(await visible(admin, 'ul[aria-label="Invited"] li', 15, new RegExp(invited.toLowerCase())), `${engine}: the invite is listed as open`)
     const doomed = `cancel12b-${engine}-${id}@mail.test`
-    await admin.getByLabel('Email').fill(doomed)
-    await admin.getByRole('button', { name: 'Invite', exact: true }).click()
+    await invite(admin, doomed)
     await admin.getByRole('button', { name: `Cancel the invite for ${doomed}` }).click()
     check(await visible(admin, '[role="status"]', 10, /Cancelled the invite/)
       && await within(15, async () => !(await admin.locator('ul[aria-label="Invited"] li', { hasText: doomed }).count())),
@@ -157,20 +170,106 @@ async function run(engine: string) {
       && !(await memberPage.locator('ul[aria-label="Wants to join"]').count()) && !(await memberPage.locator('ul[aria-label="Invited"]').count()),
     `${engine}: a member sees the team's people but no invites, no waiting list and no invite form`)
 
+    // The tailnet, from the Tailscale page. Each browser has users and devices of its own.
+    const tag = `${engine}-${id}`
+    const pending = `pend12b-${tag}@mail.test`
+    const loose = `loose12b-${tag}@mail.test`
+    const gone = `gone12b-${tag}@mail.test`
+    tailscale.user(pending, `Pending ${engine}`, 'member', 'needs-approval')
+    const looseUser = tailscale.user(loose, `Loose ${engine}`)
+    const goneUser = tailscale.user(gone, `Gone ${engine}`)
+    const tablet = tailscale.device(pending, `tablet-${tag}`, 'android', false, false)
+    const old = tailscale.device(owner, `old-${tag}`, 'linux', true, false)
+    const consoleInvite = {
+      id: String(88000 + engines.indexOf(engine)), role: 'member', tailnetId: 1, inviterId: 1,
+      email: `console12b-${tag}@mail.test`, inviteUrl: `https://login.tailscale.com/admin/invite/console-${tag}`,
+    }
+    tailscale.state.invites.set(consoleInvite.id, consoleInvite)
+    await admin.getByRole('button', { name: 'Tailscale', exact: true }).click()
+    check(await visible(admin, 'section[aria-label="Tailscale"] dl.facts', 15, new RegExp(`ends in ${key.slice(-4)}`))
+      && await visible(admin, 'ul[aria-label="Tailnet users"] li', 15, new RegExp(`${pending}.*needs approval.*not on the team`)),
+    `${engine}: the Tailscale page shows the key's last four characters and the tailnet's users with their standing`)
+    const users = admin.getByRole('list', { name: 'Tailnet users' })
+    await users.getByRole('button', { name: `Approve ${pending}` }).click()
+    check(await visible(admin, '[role="status"]', 15, new RegExp(`Approved ${pending}`))
+      && await visible(admin, 'ul[aria-label="Tailnet users"] li', 15, new RegExp(`${pending}.*active`)), `${engine}: approving a user shows them active`)
+    await users.getByRole('button', { name: `Add ${loose} to the team` }).click()
+    // " · on the team", since "not on the team" also holds the words.
+    check(await visible(admin, '[role="status"]', 15, new RegExp(`Added ${loose} to the team`))
+      && await visible(admin, 'ul[aria-label="Tailnet users"] li', 15, new RegExp(`${loose}.* · on the team`)),
+    `${engine}: one click adds a tailnet user to the team`)
+    await users.getByLabel(`Tailscale role for ${loose}`).selectOption('auditor')
+    check(await visible(admin, '[role="status"]', 15, new RegExp(`${loose} is now auditor`))
+      && await within(10, async () => tailscale.state.users.get(looseUser.id)?.role === 'auditor'), `${engine}: changing a tailnet role goes to Tailscale`)
+    await users.getByRole('button', { name: `Remove ${gone}` }).click()
+    await users.getByRole('button', { name: 'Yes, remove' }).click()
+    check(await visible(admin, '[role="status"]', 15, new RegExp(`Removed ${gone}`)) && !tailscale.state.users.has(goneUser.id)
+      && await within(10, async () => !(await users.locator('li', { hasText: gone }).count())), `${engine}: removing a user asks first, then takes them off the tailnet`)
+    const devices = admin.getByRole('list', { name: 'Tailnet devices' })
+    await devices.getByRole('button', { name: `Authorize tablet-${tag}` }).click()
+    check(await visible(admin, '[role="status"]', 15, new RegExp(`Authorized tablet-${tag}`)) && tailscale.state.devices.get(tablet.nodeId)?.authorized === true,
+      `${engine}: authorizing a device goes to Tailscale`)
+    await devices.getByRole('button', { name: `Remove old-${tag}` }).click()
+    await devices.getByRole('button', { name: 'Yes, remove' }).click()
+    check(await within(15, async () => !tailscale.state.devices.has(old.nodeId) && !(await devices.locator('li', { hasText: `old-${tag}` }).count())),
+      `${engine}: removing a device asks first, then takes it off the tailnet`)
+    const tailnetInvites = admin.getByRole('list', { name: 'Tailnet invites' })
+    check(await admin.getByLabel(`Invite link for ${consoleInvite.email}`).inputValue() === consoleInvite.inviteUrl,
+      `${engine}: invites made in Tailscale's console are listed with their links`)
+    await tailnetInvites.getByRole('button', { name: `Cancel the invite for ${consoleInvite.email}` }).click()
+    check(await within(15, async () => !tailscale.state.invites.has(consoleInvite.id) && !(await tailnetInvites.locator('li', { hasText: consoleInvite.email }).count())),
+      `${engine}: cancelling a tailnet invite takes it off Tailscale and the list`)
+    await admin.screenshot({ path: join(SHOTS, `${engine}-tailscale-light.png`), fullPage: true })
+    check(await serious(admin) === 0, `${engine}: the Tailscale page has no serious accessibility problems`)
+
+    // A key close to its expiry is replaced from the page, and admins are warned.
+    const shortKey = `tskey-api-k${id}${engine.slice(0, 2)}CNTRL-${randomBytes(12).toString('hex')}`
+    tailscale.useKey(shortKey, 5.5)
+    await admin.getByText('Replace the key').click()
+    await admin.getByLabel('API access token').fill(shortKey)
+    await admin.getByRole('button', { name: 'Save key' }).click()
+    check(await visible(admin, '[role="note"][aria-label="Tailscale key"]', 15, /expires in 5 days/)
+      && await visible(admin, '[role="note"][aria-label="Tailscale key"]', 5, /Settings, then Keys/)
+      && await visible(admin, 'section[aria-label="Tailscale"] dl.facts', 5, new RegExp(`ends in ${shortKey.slice(-4)}`)),
+    `${engine}: replacing the key from the page works, and a key five days from expiry warns how to make a new one`)
+    await admin.reload()
+    check(await visible(admin, 'nav .sidebar-note button', 15, /The Tailscale key expires in 5 days/), `${engine}: the sidebar warns admins the key expires soon`)
+    await admin.screenshot({ path: join(SHOTS, `${engine}-tailscale-warning-light.png`), fullPage: true })
+    await admin.getByRole('button', { name: /^Team/ }).click()
+    check(await visible(admin, 'section[aria-label="Team"] [role="note"]', 15, /expires in 5 days/), `${engine}: the Team page shows the warning too`)
+
+    // Members never see the tailnet.
+    await memberPage.goto('/#/tailscale')
+    check(await visible(memberPage, 'section[aria-label="Tailscale"] p', 15, /Only team admins manage the tailnet/)
+      && !(await memberPage.getByRole('button', { name: 'Tailscale', exact: true }).count()) && !(await memberPage.locator('.sidebar-note').count()),
+    `${engine}: a member has no Tailscale link, no key warning, and is told the page is for admins`)
+
     const dark = await open(owner, { colorScheme: 'dark' })
     await dark.goto('/#/team')
     await visible(dark, 'ul[aria-label="People"] li', 15)
     await dark.screenshot({ path: join(SHOTS, `${engine}-team-dark.png`), fullPage: true })
+    await dark.goto('/#/tailscale')
+    await visible(dark, 'ul[aria-label="Tailnet users"] li', 15)
+    await dark.screenshot({ path: join(SHOTS, `${engine}-tailscale-dark.png`), fullPage: true })
     const phone = await open(owner, phoneOf(engine))
     await phone.goto('/#/team')
     await visible(phone, 'ul[aria-label="People"] li', 15)
     const teamFits = await fits(phone, ['.page-head', '.page-body', '.items', '#invite-email', '#invite-role', 'button.primary'])
     await phone.screenshot({ path: join(SHOTS, `${engine}-team-phone.png`), fullPage: true })
+    await phone.goto('/#/tailscale')
+    await visible(phone, 'ul[aria-label="Tailnet users"] li', 15)
+    const tailscaleFits = await fits(phone, ['.page-head', '.page-body', '.items', '.notice', 'select.compact'])
+    await phone.screenshot({ path: join(SHOTS, `${engine}-tailscale-phone.png`), fullPage: true })
     const phoneStranger = await open(`gh12b-phone-${engine}-${id}@github`, phoneOf(engine))
     await visible(phoneStranger, 'main[aria-label="Waiting to join"] h1', 15)
     const waitingFits = await fits(phoneStranger, ['main'])
     await phoneStranger.screenshot({ path: join(SHOTS, `${engine}-waiting-phone.png`) })
-    check(teamFits && waitingFits, `${engine}: at phone width the Team page and the waiting screen fit without sideways scrolling`)
+    check(teamFits && tailscaleFits && waitingFits, `${engine}: at phone width the Team page, the Tailscale page and the waiting screen fit without sideways scrolling`)
+
+    // The next browser starts with the long-lived key again.
+    tailscale.useKey(key, 60)
+    const restored = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key, expires: null })
+    if (restored.status !== 200) throw new Error(`could not put the long-lived key back: ${restored.text}`)
 
     check(errors.length === 0, `${engine}: no page errors${errors.length ? ` (${errors.join('; ')})` : ''}`)
   } finally {
@@ -186,6 +285,7 @@ try {
   for (const engine of engines) node('server/admin.ts', 'add-person', team, memberOf(engine))
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   await tailscale.listen(TAILSCALE_PORT)
+  tailscale.user(owner, 'Owner 12b', 'owner')
   await within(20, () => fetch(PEOPLE).then(() => true, () => false))
   const saved = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key, expires: null })
   if (saved.status !== 200) throw new Error(`could not save the Tailscale key: ${saved.text}`)

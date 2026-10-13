@@ -178,6 +178,67 @@ try {
   const ownBox = must(boxes[0], 'the box').id
   check((await asPerson(PEOPLE, invitee, 'POST', `/v1/instances/${ownBox}/release`)).status === 409, 'a person cannot release their own box into the pool')
 
+  // The tailnet, from the Tailscale page's routes.
+  const otherTeam = `onboard-12x-${id}`
+  const outsider = `other12-${id}@mail.test`
+  node('server/admin.ts', 'add-team', otherTeam, outsider)
+  tailscale.user(owner, 'Owner Twelve', 'owner')
+  const memberUser = tailscale.user(member, 'Member Twelve')
+  const pending = tailscale.user(`pend12-${id}@mail.test`, 'Pending Twelve', 'member', 'needs-approval')
+  tailscale.user(outsider, 'Outsider Twelve')
+  const laptop = tailscale.device(owner, `laptop-${id}`, 'macOS', true, true)
+  const phone = tailscale.device(`pend12-${id}@mail.test`, `phone-${id}`, 'iOS', false, false)
+  check((await asPerson(PEOPLE, member, 'GET', '/v1/tailscale/users')).status === 403 && (await asPerson(PEOPLE, member, 'GET', '/v1/tailscale/devices')).status === 403
+    && (await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/users/${pending.id}/approve`)).status === 403,
+  'a member can neither see nor change the tailnet')
+  const users = (await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/users')).json?.users ?? []
+  const standing = (login: string) => JSON.stringify(users.find((u: any) => u.login === login)?.team)
+  check(standing(owner) === JSON.stringify({ on: 'this_team', role: 'admin' }) && standing(member) === JSON.stringify({ on: 'this_team', role: 'member' })
+    && standing(`pend12-${id}@mail.test`) === JSON.stringify({ on: 'no_team' }) && standing(outsider) === JSON.stringify({ on: 'other_team' })
+    && users.find((u: any) => u.login === `pend12-${id}@mail.test`)?.status === 'needs-approval',
+  "an admin sees the tailnet's users with their status, and which are on this team, another team, or none")
+  const acted = [
+    await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${pending.id}/approve`),
+    await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${memberUser.id}/suspend`),
+  ]
+  const suspended = tailscale.state.users.get(memberUser.id)?.status
+  acted.push(await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${memberUser.id}/restore`))
+  acted.push(await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${memberUser.id}/role`, { role: 'it-admin' }))
+  check(acted.every((a) => a.status === 200) && tailscale.state.users.get(pending.id)?.status === 'active' && suspended === 'suspended'
+    && tailscale.state.users.get(memberUser.id)?.status === 'active' && tailscale.state.users.get(memberUser.id)?.role === 'it-admin',
+  'an admin approves, suspends, restores and changes the role of tailnet users through Tailscale')
+  check((await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${memberUser.id}/role`, { role: 'owner' })).status === 400,
+    'nobody is made the tailnet owner from the app')
+  const removedUser = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/users/${pending.id}/delete`)
+  check(removedUser.status === 200 && !tailscale.state.users.has(pending.id), 'an admin removes a user from the tailnet')
+  const devices = (await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/devices')).json?.devices ?? []
+  const laptopView = devices.find((d: any) => d.id === laptop.nodeId)
+  const phoneView = devices.find((d: any) => d.id === phone.nodeId)
+  check(laptopView?.online === true && laptopView.lastSeen === null && laptopView.owner === owner && laptopView.name === `laptop-${id}`
+    && phoneView?.online === false && phoneView.authorized === false && phoneView.lastSeen === phone.lastSeen,
+  "an admin sees the tailnet's devices, whether each is online, when it was last seen and whether it is authorized")
+  const authorized = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/devices/${phone.nodeId}/authorize`)
+  const deletedDevice = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/devices/${laptop.nodeId}/delete`)
+  check(authorized.status === 200 && tailscale.state.devices.get(phone.nodeId)?.authorized === true
+    && tailscale.state.calls.some((c) => c.path === `/device/${phone.nodeId}/authorized` && JSON.stringify(c.body) === '{"authorized":true}')
+    && deletedDevice.status === 200 && !tailscale.state.devices.has(laptop.nodeId),
+  'an admin authorizes a device and removes one through Tailscale')
+  const fromConsole = { id: '77001', role: 'member', tailnetId: 12345, inviterId: 1, email: `console12-${id}@mail.test`, lastEmailSentAt: new Date(0).toISOString(), inviteUrl: 'https://login.tailscale.com/admin/invite/console' }
+  tailscale.state.invites.set(fromConsole.id, fromConsole)
+  const listedInvites = (await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/invites')).json?.invites ?? []
+  check(listedInvites.some((i: any) => i.id === fromConsole.id && i.link === fromConsole.inviteUrl && i.lastSentAt === fromConsole.lastEmailSentAt),
+    "an admin sees the tailnet's open invites, including ones made in Tailscale's console, with their links")
+  const consoleResend = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${fromConsole.id}/resend`)
+  const consoleCancel = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${fromConsole.id}/cancel`)
+  check(consoleResend.status === 200 && consoleCancel.status === 200 && !tailscale.state.invites.has(fromConsole.id),
+    'an admin resends and cancels a tailnet invite')
+  const ownInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: `tsown12-${id}@mail.test`, role: 'member' })
+  const ownTailscaleId: string = ownInvite.json?.invite?.tailscale_invite_id
+  const cancelledThere = await asPerson(PEOPLE, owner, 'POST', `/v1/tailscale/invites/${ownTailscaleId}/cancel`)
+  check(cancelledThere.status === 200 && (await row('select status from invites where email = $1', [`tsown12-${id}@mail.test`]))?.status === 'cancelled'
+    && !tailscale.state.invites.has(ownTailscaleId),
+  "cancelling one of the app's invites from the Tailscale page cancels it in the app too")
+
   // Tailscale off, and set by halves.
   const off = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: undefined, AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-off'))
   apis.push(off)
@@ -206,7 +267,7 @@ try {
   for (const { child } of apis) child.kill('SIGTERM')
   await tailscale.close()
   if (!failures.length) {
-    await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
+    await db.query('delete from teams where name = any($1)', [[team, `onboard-12x-${id}`]]).catch(() => undefined)
     await db.query('delete from join_requests where login = $1', [github]).catch(() => undefined)
     rmSync(home, { recursive: true, force: true })
   }

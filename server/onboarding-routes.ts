@@ -3,14 +3,18 @@
 
 import { adminFrom, loginFrom, nameFrom } from './auth.ts'
 import { parseBody, pathId, type Route } from './http.ts'
-import { addToTeam, arrive, cancelInvite, inviteLink, makeInvite, meOf, resendInvite } from './onboarding.ts'
-import { removeKey, saveKey, tailscaleView } from './tailscale.ts'
 import {
-  AddPersonBody, InviteBody, InviteId, TailscaleKeyBody,
-  type Done, type InviteMade, type MeView, type PersonAdded, type TailscaleView,
+  addToTeam, arrive, cancelInvite, cancelTailnetInvite, inviteLink, makeInvite, meOf, resendInvite, tailnetDevices, tailnetInvites, tailnetUsers,
+} from './onboarding.ts'
+import { removeKey, saveKey, tailscale, tailscaleView } from './tailscale.ts'
+import {
+  AddPersonBody, DeviceAction, InviteBody, InviteId, TailnetInviteAction, TailscaleKeyBody, TailscaleRoleBody, UserAction,
+  type Done, type InviteMade, type MeView, type PersonAdded, type TailnetDevices, type TailnetInvites, type TailnetUsers, type TailscaleView,
 } from '../shared/onboarding.ts'
 
 const UUID = '([0-9a-f-]{36})'
+// Tailscale's ids for users, devices and invites: digits, or letters and digits such as n292kg92CNTRL.
+const TAILSCALE_ID = '([A-Za-z0-9]+)'
 const done: Done = { ok: true }
 
 export const onboardingRoutes: Route[] = [
@@ -58,5 +62,45 @@ export const onboardingRoutes: Route[] = [
     await adminFrom(req)
     await removeKey()
     return tailscaleView()
+  }],
+
+  // The tailnet's users, devices and invites, read from Tailscale each time and never stored.
+  ['people', 'GET', /^\/v1\/tailscale\/users$/, async (req): Promise<TailnetUsers> => ({ users: await tailnetUsers(await adminFrom(req)) })],
+
+  ['people', 'POST', new RegExp(`^/v1/tailscale/users/${TAILSCALE_ID}/(approve|suspend|restore|delete)$`), async (req, [userId, action]): Promise<Done> => {
+    await adminFrom(req)
+    await tailscale.userAction(userId, UserAction.parse(action))
+    return done
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tailscale/users/${TAILSCALE_ID}/role$`), async (req, [userId]): Promise<Done> => {
+    await adminFrom(req)
+    await tailscale.setRole(userId, (await parseBody(req, TailscaleRoleBody)).role)
+    return done
+  }],
+
+  ['people', 'GET', /^\/v1\/tailscale\/devices$/, async (req): Promise<TailnetDevices> => {
+    await adminFrom(req)
+    return { devices: await tailnetDevices() }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tailscale/devices/${TAILSCALE_ID}/(authorize|delete)$`), async (req, [deviceId, action]): Promise<Done> => {
+    await adminFrom(req)
+    const asked = DeviceAction.parse(action)
+    if (asked === 'authorize') await tailscale.authorizeDevice(deviceId)
+    else await tailscale.deleteDevice(deviceId)
+    return done
+  }],
+
+  ['people', 'GET', /^\/v1\/tailscale\/invites$/, async (req): Promise<TailnetInvites> => {
+    await adminFrom(req)
+    return { invites: await tailnetInvites() }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tailscale/invites/${TAILSCALE_ID}/(resend|cancel)$`), async (req, [inviteId, action]): Promise<Done> => {
+    const admin = await adminFrom(req)
+    if (TailnetInviteAction.parse(action) === 'resend') await tailscale.resendInvite(inviteId)
+    else await cancelTailnetInvite(admin, inviteId)
+    return done
   }],
 ]

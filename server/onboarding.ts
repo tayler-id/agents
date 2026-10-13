@@ -5,14 +5,15 @@
 
 import type pg from 'pg'
 import { z } from 'zod'
-import { maybe, one, pool, tx } from './db.ts'
+import { many, maybe, one, pool, tx } from './db.ts'
 import { addPersonalBox } from './boxes.ts'
 import { HttpError, Person } from './record.ts'
 import { wakeRunner } from './runner.ts'
-import { tailscale, tailscaleConnected } from './tailscale.ts'
+import { lastSeenOf, sentAtOf, tailscale, tailscaleConnected } from './tailscale.ts'
 import {
   INVITE_MOVES, InviteRow, JOIN_REQUEST_MOVES, JoinRequestRow, movesInto, PersonId, TeamId, TeamRole,
   type InviteId, type InviteLink, type InviteMade, type InviteResent, type InviteStatus, type MeView,
+  type TailnetDevice, type TailnetInvite, type TailnetUser,
 } from '../shared/onboarding.ts'
 
 const INVITE = `id, team_id, email, role, tailscale_invite_id, invited_by, status, person_id,
@@ -177,6 +178,43 @@ export async function cancelInvite(admin: Person, inviteId: InviteId) {
     }
   }
   await tx((client) => moveInvite(client, invite.id, admin.team_id, 'cancelled', null))
+}
+
+const Standing = z.object({ login: z.string(), team_id: TeamId, role: TeamRole })
+
+// The tailnet's users, each with whether their login is on the asking admin's team.
+export async function tailnetUsers(admin: Person): Promise<TailnetUser[]> {
+  const users = await tailscale.users()
+  const rows = await many(pool, 'select lower(login) as login, team_id, role from people where lower(login) = any($1)',
+    [users.map((u) => u.loginName.toLowerCase())])
+  const people = new Map(rows.map((row) => Standing.parse(row)).map((p) => [p.login, p]))
+  return users.map((u) => {
+    const person = people.get(u.loginName.toLowerCase())
+    const team: TailnetUser['team'] = !person ? { on: 'no_team' }
+      : person.team_id === admin.team_id ? { on: 'this_team', role: person.role } : { on: 'other_team' }
+    return { id: u.id, name: u.displayName, login: u.loginName, role: u.role, status: u.status, team }
+  })
+}
+
+export async function tailnetDevices(): Promise<TailnetDevice[]> {
+  return (await tailscale.devices()).map((d) => ({
+    id: d.nodeId, name: d.hostname, owner: d.user, os: d.os, authorized: d.authorized, online: d.connectedToControl, lastSeen: lastSeenOf(d),
+  }))
+}
+
+export async function tailnetInvites(): Promise<TailnetInvite[]> {
+  return (await tailscale.invites()).map((i) => ({
+    // Tailscale gives no link for an email in the tailnet's own domain.
+    id: i.id, email: i.email, role: i.role, lastSentAt: sentAtOf(i), link: i.inviteUrl ?? null,
+  }))
+}
+
+// Cancels a tailnet invite. One the app made is cancelled in the app too.
+export async function cancelTailnetInvite(admin: Person, tailscaleInviteId: string) {
+  const ours = await maybe(pool, `select ${INVITE} from invites where tailscale_invite_id = $1 and team_id = $2 and status = 'open'`,
+    [tailscaleInviteId, admin.team_id])
+  if (ours) return cancelInvite(admin, InviteRow.parse(ours).id)
+  await tailscale.deleteInvite(tailscaleInviteId)
 }
 
 export async function inviteLink(admin: Person, inviteId: InviteId): Promise<InviteLink> {

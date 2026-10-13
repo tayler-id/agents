@@ -1,11 +1,12 @@
-import { useEffect, useId, useState, type SyntheticEvent } from 'react'
-import { InviteRow, JoinRequestRow, TeamRole, type InviteMade, type MeView } from '../../shared/onboarding.ts'
-import { act, api, messageOf, parseTime, useSnapshot, useSnapshotOf, type Instance, type Me, type Person } from './data.ts'
+import { useEffect, useState, type SyntheticEvent } from 'react'
+import { InviteRow, JoinRequestRow, TeamRole, type InviteMade, type MeView, type TailscaleView } from '../../shared/onboarding.ts'
+import { act, api, day, messageOf, useSnapshot, useSnapshotOf, type Instance, type Me, type Person } from './data.ts'
+import { LinkField } from './LinkField.tsx'
+import { KeyWarning, useTailscaleView } from './Tailscale.tsx'
+import { go } from './App.tsx'
 
 // How often a login waiting to join asks again whether it is on a team yet.
 const WAITING_POLL_MS = 5000
-
-const day = (text: string | null) => parseTime(text)?.toLocaleDateString([], { month: 'short', day: 'numeric' }) ?? ''
 
 // A login on no team. It asks again every few seconds, so the app opens as soon
 // as an admin adds it.
@@ -37,6 +38,7 @@ export function boxState(box: Instance): string {
 
 export function TeamPage({ me }: { me: Me }) {
   const admin = me.person.role === 'admin'
+  const tailscale = useTailscaleView(admin)
   const { rows: people } = useSnapshot<Person>('people', {}, 5000)
   const { rows: instances } = useSnapshot<Instance>('instances', {}, 5000)
   const boxOf = (personId: string) => instances.find((i) => i.personal && i.owner_id === personId)
@@ -51,7 +53,8 @@ export function TeamPage({ me }: { me: Me }) {
         </div>
       </header>
       <div className="page-body">
-        {admin && <InviteForm />}
+        {admin && <KeyWarning view={tailscale} />}
+        {admin && <InviteForm tailscale={tailscale} />}
         {admin && <WantsToJoin />}
         {admin && <Invited />}
         <h2 className="kicker section">People</h2>
@@ -71,7 +74,7 @@ export function TeamPage({ me }: { me: Me }) {
   )
 }
 
-function InviteForm() {
+function InviteForm({ tailscale }: { tailscale: TailscaleView | null }) {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<TeamRole>('member')
   const [made, setMade] = useState<InviteMade | null>(null)
@@ -93,6 +96,12 @@ function InviteForm() {
   return (
     <>
       <h2 className="kicker section">Invite someone</h2>
+      {(tailscale?.state === 'off' || tailscale?.state === 'no_key') && (
+        <p className="small">
+          Tailscale is not connected, so invites are made here without an email, for people already on the tailnet.{' '}
+          {tailscale.state === 'no_key' && <button type="button" className="link" onClick={() => go({ page: 'tailscale' })}>Connect Tailscale</button>}
+        </p>
+      )}
       <form className="form fitted" onSubmit={act(submit)} aria-label="Invite someone">
         <label htmlFor="invite-email">Email</label>
         <input id="invite-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="sam@example.com" autoComplete="off" />
@@ -124,16 +133,6 @@ function InviteResult({ made }: { made: InviteMade }) {
       {sent && link === null && <p className="small muted">Their email is in the tailnet's own domain, so they join by signing in to Tailscale. There is no link to send.</p>}
       {link !== null && <LinkField label="Invite link, to send yourself" link={link} />}
     </div>
-  )
-}
-
-function LinkField({ label, link }: { label: string; link: string }) {
-  const id = useId()
-  return (
-    <>
-      <label htmlFor={id} className="small muted">{label}</label>
-      <input id={id} className="link-field" readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
-    </>
   )
 }
 

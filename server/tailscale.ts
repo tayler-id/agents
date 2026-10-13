@@ -14,7 +14,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
-import { TailscaleKey, TailscaleRole, TailscaleStatus, type TailscaleView } from '../shared/onboarding.ts'
+import { NEW_KEY_HOWTO, TailscaleKey, TailscaleRole, TailscaleStatus, type TailscaleView } from '../shared/onboarding.ts'
 import { problems } from './http.ts'
 import { HttpError, scrub } from './record.ts'
 
@@ -38,9 +38,6 @@ const settings = (() => {
 const TAILSCALE_TIMEOUT_MS = 15_000
 const DAY_MS = 24 * 60 * 60 * 1000
 const OFF = 'Tailscale is off on this server. Set AGENTS_TAILSCALE_API and AGENTS_TAILSCALE_KEY_FILE for the API to turn it on.'
-
-export const NEW_KEY_HOWTO = 'In the Tailscale admin console, open Settings, then Keys, and generate an API access token. '
-  + 'Tailscale lets it last 1 to 90 days. Paste it on the Tailscale page here.'
 
 const KeyFile = z.object({
   key: TailscaleKey,

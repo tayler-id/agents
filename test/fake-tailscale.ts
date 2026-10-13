@@ -27,9 +27,14 @@ const RESEND_EVERY_MS = 60_000
 const DAY_MS = 24 * 60 * 60 * 1000
 const InviteRequest = z.array(z.object({ role: z.string().default('member'), email: z.string().optional() }))
 
-export function fakeTailscale(options: { key: string; keyExpiresInDays: number; domain: string }) {
-  const keyId = /^tskey-api-([A-Za-z0-9]+)-/.exec(options.key)?.[1]
+const keyIdOf = (key: string) => {
+  const keyId = /^tskey-api-([A-Za-z0-9]+)-/.exec(key)?.[1]
   if (!keyId) throw new Error('the fake needs a key shaped like tskey-api-<id>-<secret>')
+  return keyId
+}
+
+export function fakeTailscale(options: { key: string; keyExpiresInDays: number; domain: string }) {
+  keyIdOf(options.key)
   const state = {
     key: options.key,
     keyExpires: new Date(Date.now() + options.keyExpiresInDays * DAY_MS).toISOString(),
@@ -63,6 +68,12 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
     state.devices.set(added.nodeId, added)
     return added
   }
+  // A new key replaces the old one, as when an admin makes another in Tailscale's console.
+  const useKey = (key: string, expiresInDays: number) => {
+    keyIdOf(key)
+    state.key = key
+    state.keyExpires = new Date(Date.now() + expiresInDays * DAY_MS).toISOString()
+  }
   // The person accepts their invite: it closes, and they become a tailnet user.
   const accept = (email: string, displayName: string) => {
     for (const [inviteId, invite] of state.invites) if (invite.email === email) state.invites.delete(inviteId)
@@ -86,8 +97,8 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
     const route = (pattern: RegExp) => pattern.exec(path)
     let m: RegExpExecArray | null
     if (method === 'GET' && (m = route(/^\/tailnet\/-\/keys\/([^/]+)$/))) {
-      if (m[1] !== keyId) return send(res, 404, { message: 'key not found' })
-      return send(res, 200, { id: keyId, key: '', keyType: 'api', created: new Date().toISOString(), expires: state.keyExpires, scopes: ['all'], userId: 'u1' })
+      if (m[1] !== keyIdOf(state.key)) return send(res, 404, { message: 'key not found' })
+      return send(res, 200, { id: m[1], key: '', keyType: 'api', created: new Date().toISOString(), expires: state.keyExpires, scopes: ['all'], userId: 'u1' })
     }
     if (method === 'GET' && path === '/tailnet/-/users') return send(res, 200, { users: [...state.users.values()].filter((u) => u.type === 'member') })
     if (method === 'POST' && (m = route(/^\/users\/([^/]+)\/(approve|suspend|restore|delete|role)$/))) {
@@ -156,7 +167,7 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
     handle(req, res).catch((error: unknown) => { send(res, 500, { message: error instanceof Error ? error.message : String(error) }) })
   })
   return {
-    state, user, device, accept,
+    state, user, device, accept, useKey,
     listen: (port: number) => new Promise<void>((resolve) => { server.listen(port, '127.0.0.1', resolve) }),
     close: () => new Promise<void>((resolve) => { server.close(() => { resolve() }) }),
     url: (port: number) => `http://127.0.0.1:${port}/api/v2`,

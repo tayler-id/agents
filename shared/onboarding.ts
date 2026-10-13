@@ -170,6 +170,18 @@ export type TailscaleView = z.infer<typeof TailscaleView>
 // Admins are warned from this many days before the key expires.
 export const KEY_WARNING_DAYS = 14
 
+// How to make a new key, shown wherever the app asks for one.
+export const NEW_KEY_HOWTO = 'In the Tailscale admin console, open Settings, then Keys, and generate an API access token. '
+  + 'Tailscale lets it last 1 to 90 days. Paste it on the Tailscale page here.'
+
+// What an admin can ask Tailscale to do to a user, a device or an invite.
+export const UserAction = z.enum(['approve', 'suspend', 'restore', 'delete'])
+export type UserAction = z.infer<typeof UserAction>
+export const DeviceAction = z.enum(['authorize', 'delete'])
+export type DeviceAction = z.infer<typeof DeviceAction>
+export const TailnetInviteAction = z.enum(['resend', 'cancel'])
+export type TailnetInviteAction = z.infer<typeof TailnetInviteAction>
+
 export const InviteMade = z.object({
   invite: InviteRow,
   // Tailscale's invite link, returned once. Null when Tailscale is not connected,
@@ -208,8 +220,11 @@ export const TailnetInvite = z.object({
 })
 export type TailnetInvite = z.infer<typeof TailnetInvite>
 export const TailnetUsers = z.object({ users: z.array(TailnetUser) })
+export type TailnetUsers = z.infer<typeof TailnetUsers>
 export const TailnetDevices = z.object({ devices: z.array(TailnetDevice) })
+export type TailnetDevices = z.infer<typeof TailnetDevices>
 export const TailnetInvites = z.object({ invites: z.array(TailnetInvite) })
+export type TailnetInvites = z.infer<typeof TailnetInvites>
 export const Done = z.object({ ok: z.literal(true) })
 export type Done = z.infer<typeof Done>
 export const LoginStarted = z.object({ loginId: ClaudeLoginId })

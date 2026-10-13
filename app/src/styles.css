@@ -223,7 +223,7 @@ a { color: inherit; text-underline-offset: 2px; }
 .form label { font-size: 12.5px; color: var(--muted); }
 .form label.check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; }
 .form fieldset { border: 0; margin: 4px 0; padding: 0; display: grid; gap: 4px; }
-.form input:not([type]), .form input[type="text"], .form input[type="email"], .form textarea, .form select {
+.form input:not([type]), .form input[type="text"], .form input[type="email"], .form input[type="password"], .form input[type="date"], .form textarea, .form select {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
 }
 .form input:focus, .form textarea:focus, .form select:focus { outline: none; border-color: var(--text); }
@@ -249,9 +249,19 @@ button.link.current { font-weight: 700; text-decoration: none; }
 .result { display: grid; gap: 4px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .link-field { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; min-width: 0; }
 .link-field:focus { outline: none; border-color: var(--text); }
-.items.invites li { flex-wrap: wrap; }
-.items .actions { gap: 4px 14px; flex-shrink: 0; }
+.items.invites li, .items.tailnet li { flex-wrap: wrap; }
+.items .actions { gap: 4px 14px; flex-shrink: 0; align-items: baseline; }
 .invite-link { flex-basis: 100%; display: grid; gap: 4px; }
+
+/* The tailnet, and the Tailscale key's warning. A warning stands out by its
+   kicker and weight on a raised surface, never by a colored fill or border. */
+.notice { display: grid; gap: 4px; max-width: 720px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.confirm { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+/* A tailnet row's actions wrap within the screen rather than run past it. */
+.items.tailnet .actions { flex-shrink: 1; min-width: 0; }
+select.compact { font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+select.compact:focus { outline: none; border-color: var(--text); }
+.sidebar-note { padding: 6px 8px 0; font-weight: 600; }
 
 /* Phone width: the sidebar opens over the conversation, the panel replaces it. */
 @media (max-width: 760px) {
