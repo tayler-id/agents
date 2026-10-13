@@ -9,14 +9,17 @@ import type pg from 'pg'
 import { maybe, one } from './db.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import { agentKit, appendEvents, appendMessage, HttpError, scrub, type Person } from './record.ts'
-import { repoPath } from './forge.ts'
-import type { MessagePayload, SetupWorkspacePayload } from '../shared/types.ts'
+import { setTaskRepos } from './checkout.ts'
+import { draftSession } from './drafts.ts'
+import { launchTask } from './launch.ts'
+import type { MessagePayload } from '../shared/types.ts'
 
 const slugOf = (title: string) =>
   `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task'}-${randomBytes(2).toString('hex')}`
 
 export async function startTask(client: pg.PoolClient, person: Person, body: {
-  title: string; instructions: string; agentId: string; repoId?: string | null; conversationId?: string | null; messageId?: string | null
+  title: string; instructions: string; agentId: string; repoIds?: string[]; conversationId?: string | null; messageId?: string | null
+  draft?: boolean
 }): Promise<{ taskId: string; sessionId: string }> {
   const agent = await maybe<{ id: string; name: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client,
     'select id, name, home_instance_id, harness, model, instructions from agents where id = $1 and team_id = $2 and archived_at is null',
@@ -35,26 +38,9 @@ export async function startTask(client: pg.PoolClient, person: Person, body: {
       body.messageId ? 'message' : 'app'])
   if (body.messageId) await client.query('update messages set task_id = $2 where id = $1 and conversation_id = $3', [body.messageId, task.id, body.conversationId])
 
-  const repos: SetupWorkspacePayload['repos'] = []
-  if (body.repoId) {
-    const repo = await maybe<{ id: string; remote_url: string; default_branch: string; setup_command: string | null }>(client,
-      'select id, remote_url, default_branch, setup_command from repos where id = $1 and team_id = $2', [body.repoId, person.team_id])
-    if (!repo) throw new HttpError(404, 'no such repo')
-    await client.query('insert into task_repos (task_id, repo_id, is_primary) values ($1, $2, true)', [task.id, repo.id])
-    repos.push({ repoId: repo.id, name: repoPath(repo.remote_url).split('/')[1] ?? repo.id, branch: `task/${slug}`, base: repo.default_branch, setup: repo.setup_command })
-  }
-  const workspace = await one<{ id: string }>(client, 'the new workspace',
-    `insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`, [person.team_id, task.id, agent.home_instance_id])
-  await client.query(`insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'setup_workspace', $3)`,
-    [person.team_id, agent.home_instance_id, JSON.stringify({ workspaceId: workspace.id, repos })])
-  const session = await one<{ id: string }>(client, 'the new session',
-    `insert into sessions (team_id, task_id, workspace_id, instance_id, agent_id, started_by, harness, model)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
-    [person.team_id, task.id, workspace.id, agent.home_instance_id, agent.id, person.id, agent.harness, agent.model])
-  const [first] = repos
-  const intro = `${body.title}\n\n${body.instructions}\n\nYou are working in a task workspace.${first ? ` The repo is checked out in ./${first.name} on the branch ${first.branch}.` : ''} Put any documents you write for people in ./task, where they become versioned documents the team can read and comment on.`
-  await sendToSession(client, person, session.id, intro)
-  return { taskId: task.id, sessionId: session.id }
+  await setTaskRepos(client, person.team_id, task.id, body.repoIds ?? [])
+  if (body.draft) return { taskId: task.id, sessionId: await draftSession(client, person, task.id, agent.id) }
+  return launchTask(client, person, task.id)
 }
 
 // A person's message to a task's session. It runs once the workspace is set up,

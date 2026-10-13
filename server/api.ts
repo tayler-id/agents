@@ -31,6 +31,7 @@ import { syncPipelines } from './pipelines.ts'
 import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
 import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
+import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -41,6 +42,18 @@ import {
 
 // Kinds only a person can write. One from an instance would be handed back to it.
 const PERSON_KINDS: EventKind[] = ['user', 'answer']
+
+// The repos a task works in: `repoIds`, or the one `repoId` older clients send.
+function repoIdsOf(body: Record<string, unknown>): string[] {
+  if (body.repoIds === undefined || body.repoIds === null) {
+    const single = optionalText(body.repoId, 'repoId')
+    return single ? [single] : []
+  }
+  if (!Array.isArray(body.repoIds) || !body.repoIds.every((id): id is string => typeof id === 'string')) {
+    throw new HttpError(400, 'repoIds must be a list of repo ids')
+  }
+  return body.repoIds
+}
 
 function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
@@ -286,10 +299,26 @@ const routes: Route[] = [
     const body = await readJson(req)
     const result = await tx((client) => startTask(client, person, {
       title: text(body.title, 'title'), instructions: typeof body.instructions === 'string' ? body.instructions : '',
-      agentId: text(body.agentId, 'agentId'), repoId: optionalText(body.repoId, 'repoId'),
+      agentId: text(body.agentId, 'agentId'), repoIds: repoIdsOf(body),
       conversationId: optionalText(body.conversationId, 'conversationId'), messageId: optionalText(body.messageId, 'messageId'),
+      draft: body.draft === true,
     }))
     return result
+  }],
+
+  // A draft task: saved again, started, or discarded.
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/(draft|start|discard)$`), async (req, [taskId, action]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    if (action === 'start') return tx((client) => startDraft(client, person, taskId))
+    if (action === 'discard') await tx((client) => discardDraft(client, person, taskId))
+    else {
+      await tx((client) => editDraft(client, person, taskId, {
+        title: text(body.title, 'title'), instructions: typeof body.instructions === 'string' ? body.instructions : '',
+        agentId: text(body.agentId, 'agentId'), repoIds: repoIdsOf(body),
+      }))
+    }
+    return { ok: true }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
