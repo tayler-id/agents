@@ -13,11 +13,12 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { pickSessions, recordFindings, rulesOf } from '../server/evidence.ts'
 import { BUDGET_TOKENS, decideHunk, proposeHunks, settleHunks } from '../server/hunks.ts'
 import { answerRunAsk } from '../server/runner.ts'
+import { startSessionReplays } from '../server/refine.ts'
 import { pool, tx } from '../server/db.ts'
 import { appendEvents, type Person } from '../server/record.ts'
 import { recordVersion } from '../server/pipelines.ts'
 import { HunkDecisionBody, HunkId } from '../shared/evidence.ts'
-import { AgentId, RunId, TeamId } from '../shared/ids.ts'
+import { AgentId, ProposalId, RunId, TeamId } from '../shared/ids.ts'
 import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -262,6 +263,17 @@ try {
   }))
   const third = await propose([{ op: 'add', text: '- Use British spelling everywhere.', findings: [...british, await fid(s6, 'British')] }])
   check(third.proposalId !== null, `with a third occasion behind it, the hunk is proposed again: ${third.summary}`)
+
+  // A replay stage a person retries after a hand-off starts the replays over, once.
+  const thirdId = ProposalId.parse(third.proposalId)
+  const firstStart = await tx((client) => startSessionReplays(client, teamId, thirdId))
+  const firstSessions = (await all('select session_id from session_replays where proposal_id = $1', [thirdId])).map((r) => String(r.session_id))
+  const secondStart = await tx((client) => startSessionReplays(client, teamId, thirdId))
+  const replays = await all('select session_id from session_replays where proposal_id = $1', [thirdId])
+  const stopped = await one(`select count(*)::int as n from commands where kind = 'stop' and session_id = any($1)`, [firstSessions])
+  check(firstStart > 0 && secondStart === firstStart && replays.length === firstStart && !replays.some((r) => firstSessions.includes(String(r.session_id)))
+    && stopped?.n === firstStart,
+  `a retried replay stage starts the replays over once, and stops the earlier ones: ${firstStart} then ${secondStart}, ${replays.length} rows, ${String(stopped?.n)} stopped`)
 
   // Settling turns everything down when the gate is rejected, and refuses a
   // change whose rule moved on after it was proposed.

@@ -256,10 +256,17 @@ async function replayPrompt(client: pg.PoolClient, sessionId: string, upto: numb
   }
 }
 
+const stopSession = (client: pg.PoolClient, sessionId: string, kind: 'stop' | 'interrupt') => client.query(
+  `insert into commands (team_id, instance_id, session_id, kind) select team_id, instance_id, id, $2 from sessions where id = $1`, [sessionId, kind])
+
 // Starts the proposal's replays on the agent's home machine. Returns how many it
 // started. None when the change writes no text, since a check changes nothing a
 // replay could show.
 export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId, proposalId: ProposalId): Promise<number> {
+  // A retry after a hand-off starts over, so the earlier replays stop and go.
+  const earlier = await many<{ session_id: string; status: string }>(client,
+    'delete from session_replays where proposal_id = $1 returning session_id, status', [proposalId])
+  for (const r of earlier.filter((e) => e.status === 'running')) await stopSession(client, r.session_id, 'stop')
   const proposal = await one<{ agent_id: string }>(client, `proposal ${proposalId}`, 'select agent_id from proposals where id = $1', [proposalId])
   const agentId = AgentId.parse(proposal.agent_id)
   const agent = await one<{ home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client, `agent ${agentId}`,
@@ -358,9 +365,6 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
   }
   return runs.length
 }
-
-const stopSession = (client: pg.PoolClient, sessionId: string, kind: 'stop' | 'interrupt') => client.query(
-  `insert into commands (team_id, instance_id, session_id, kind) select team_id, instance_id, id, $2 from sessions where id = $1`, [sessionId, kind])
 
 // Takes each replay's reply once its turn ends, and fails one whose session
 // failed or that ran past its time. Returns how many are still running.
