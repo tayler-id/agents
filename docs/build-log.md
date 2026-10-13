@@ -176,6 +176,7 @@ An agent on another model reviewed the code on 2026-10-13. All eight of its find
 - **A rules file.** `AGENTS.md`, imported by a one-line `CLAUDE.md`. Asked a question only that file answers, Claude answered NONE without it and the exact command with it.
 - **Docs that overclaimed.** `docs/decisions.md` now says worktree isolation isn't built, the AWS export misses the boxes' home volumes, and the framework and verifier disagree on the evidence format. The build plan is marked as history.
 - **Node on this Mac.** The `node` first on this Mac's PATH, in `/usr/local/bin`, is a launcher that can't load native packages such as lmdb, so the API fails to start under it. The README's PATH rule matters, and `AGENTS.md` repeats it.
+- **Verified.** `npm run check` on main passed 17 of 18 checks. step7 failed one assertion, because I ran it on the new box image under a test tag and it expects `agents-box:latest`. With the new image tagged `agents-box:latest`, step7 passed in full. The previous image is kept as `agents-box:pre-review`.
 
 The rest goes to the agents that own the code:
 - the AWS export must move the boxes' volumes
