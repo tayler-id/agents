@@ -18,10 +18,11 @@ Where the security workstream stands, so the next session can pick it up. The de
 
 ## Checks run on this branch
 
-- Pass: step19, step2, step1, step3, step4a, step4b, step4c, step5, step6, step6b, step9, step9b, step10.
-- step4d and step10b failed only because other branches' checks held their people ports, 7905 and 7971. They are rerun when the ports are free.
-- step7 and step8 need the lock on 7701, held by another agent since 16:03. A job waits for it.
+- Pass: step19, step2, step1, step3, step4a, step4b, step4c, step4d, step5, step6, step6b, step9, step9b, step10, step10b.
+- step4d, step6 and step10b first failed only because other branches' checks held their people ports, 7905, 7921 and 7971. Each passed when rerun on free ports.
+- Not run: step7 and step8. They need the lock on 7701, which other agents held from 16:03 to at least 17:17 while running their own checks on that port.
 - Typecheck, lint and the names check pass.
+- Every test team the failed runs kept, and step6's two forge repos, were deleted by exact name.
 
 ## Not done
 
@@ -31,4 +32,4 @@ Where the security workstream stands, so the next session can pick it up. The de
 
 ## Next step
 
-Read the rerun results for step4d, step10b, step7 and step8.
+Take the lock on 7701 and run step7 and step8. Then the coordinator's landing gates.
