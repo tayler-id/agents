@@ -59,6 +59,20 @@ The same forwarding makes every service on this Mac's loopback a tailnet service
 
 A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
 
+### Inviting teammates from the app
+
+Don't invite anyone yet. Joining by invite trusts the login header on the people port, which a tailnet peer can currently send for itself, and a fix is in progress.
+
+A team's first login is its admin, and `admin.ts set-role <team> <login> <admin|member>` changes a role. An admin invites people from the app's Team page. A person joins on their first visit, gets a box of their own, and signs in to their own Claude account from the Your box page. A login nobody invited waits until an admin adds it from the Team page.
+
+For invites to go through Tailscale, add both settings to `.env`, restart the API, and save a user-owned API access token (`tskey-api-...`) on the app's Tailscale page:
+
+```sh
+printf 'AGENTS_TAILSCALE_API=https://api.tailscale.com/api/v2\nAGENTS_TAILSCALE_KEY_FILE=%s/.agents-app/tailscale-api.json\n' "$HOME" >> .env
+```
+
+Without them, invites are made in the app only and nobody is emailed. With only one, the API refuses to start. People's boxes run the daemon from the box image, so rebuild it with `server/boxes.ts build` after updating.
+
 ## Run a daemon
 
 On each machine, put `{"api": "<server URL>", "token": "<instance token>"}` in `~/.agents-app/daemon.json`, then run `npm run daemon`. Each agent whose home is this machine gets a folder under `~/.agents-app/agents/`, and each task a workspace under `~/.agents-app/workspaces/`. Secrets the agents' plugins need go in the daemon's environment or `~/.agents-app/secrets.json`. Their values never reach the server.
@@ -81,7 +95,7 @@ Boxes are Docker containers that run the daemon for unattended work, built from 
 node --env-file=.env server/boxes.ts build
 ```
 
-A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`).
+A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`). A person's own box never gets that token. Its agents run on the account its owner signs in with.
 
 ## Checks
 
