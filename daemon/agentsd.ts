@@ -20,7 +20,8 @@ import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onbo
 import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
 import { MessagePayload, PUSH_PAYLOAD, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
-import { workspaces } from './workspace.ts'
+import { workspaces, type TaskFile } from './workspace.ts'
+import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
@@ -298,12 +299,24 @@ async function sendChanges(workspaceId: string) {
 }
 
 // Files the agent wrote in the task folder become document versions. Sent at the
-// end of each turn, only when they changed.
+// end of each turn, only when they changed. Text goes in one request, scrubbed,
+// and each image in its own, since several could pass the API's request limit.
+// Pixels can't be scrubbed, which the standing instructions say.
 async function sendDocuments(sessionId: string, workspaceId: string) {
   const changed = ws.documents(workspaceId).filter((d) => sentDocuments.get(`${workspaceId}/${d.path}`) !== d.hash)
-  if (!changed.length) return
-  await api('POST', `/v1/sessions/${sessionId}/documents`, { documents: changed.map(({ path, content }) => ({ path, content: scrub(content) })) })
-  for (const d of changed) sentDocuments.set(`${workspaceId}/${d.path}`, d.hash)
+  const texts: TaskFile[] = []
+  const send = async (files: TaskFile[]) => {
+    const documents = files.map((file): DocumentUpload => (file.kind === 'text'
+      ? { path: file.path, content: scrub(file.content) }
+      : { path: file.path, image: { mediaType: file.mediaType, base64: file.bytes.toString('base64') } }))
+    await api('POST', `/v1/sessions/${sessionId}/documents`, { documents })
+    for (const file of files) sentDocuments.set(`${workspaceId}/${file.path}`, file.hash)
+  }
+  for (const file of changed) {
+    if (file.kind === 'text') texts.push(file)
+    else await send([file])
+  }
+  if (texts.length) await send(texts)
 }
 
 function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSession {

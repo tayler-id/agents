@@ -49,6 +49,7 @@ import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
 import { handBackScreen, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { Heartbeat, ScreenMove } from '../shared/screen.ts'
+import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
   EndedMessages, EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
@@ -254,16 +255,13 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // Files an agent wrote in its task's folder become document versions.
+  // Files an agent wrote in its task's folder become document versions: text,
+  // or images such as the screenshots it saved.
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/documents$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
-    const body = await readJson(req)
-    if (!Array.isArray(body.documents)) throw new HttpError(400, 'documents must be a list')
-    const documents = body.documents.map((d: unknown, i) => {
-      const content = fieldOf(d, 'content')
-      return { path: text(fieldOf(d, 'path'), `documents.${i}.path`), content: typeof content === 'string' ? content : '' }
-    })
-    return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, documents)) }
+    const body = DocumentUploads.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, body.data.documents)) }
   }],
 
   // Whether one of the asking machine's workspaces is still being set up: not yet
@@ -618,6 +616,25 @@ async function serveApp(res: ServerResponse, pathname: string) {
   res.writeHead(200, { 'content-type': TYPES['.html'] }).end(index)
 }
 const STREAM = new RegExp(`^/v1/streams/sessions/${UUID}$`)
+const IMAGE = new RegExp(`^/v1/artifacts/${UUID}/versions/([1-9][0-9]{0,8})/image$`)
+
+// An image document's bytes, for someone who can see its task. A version never
+// changes, so the browser may keep it. The type is the one sniffed when it was
+// saved, and the browser is told not to guess another.
+async function serveImage(req: IncomingMessage, res: ServerResponse, artifactId: string, version: number) {
+  const person = await personFrom(req)
+  const artifact = await maybe<{ task_id: string }>(pool, 'select task_id from artifacts where id = $1 and team_id = $2', [artifactId, person.team_id])
+  if (!artifact || !(await canSeeTask(person, artifact.task_id))) throw new HttpError(404, 'no such image')
+  const row = await maybe(pool,
+    `select b.media_type, b.data from artifact_versions v join blobs b on b.id = v.blob_id where v.artifact_id = $1 and v.version = $2`,
+    [artifactId, version])
+  if (!row) throw new HttpError(404, 'no such image')
+  const image = z.object({ media_type: ImageMediaType, data: z.instanceof(Buffer) }).parse(row)
+  res.writeHead(200, {
+    'content-type': image.media_type, 'content-length': image.data.length, 'cache-control': 'private, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'",
+  }).end(image.data)
+}
 const PIPELINE_HOOK = new RegExp(`^/v1/hooks/pipelines/${UUID}$`)
 let runner: ReturnType<typeof startRunner> | null = null
 const syncNow = async (repoIds: string[]) => { await (runner ? runner.sync(repoIds) : syncPipelines(repoIds)) }
@@ -654,6 +671,8 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
     }
     if (audience === 'people' && req.method === 'GET' && !url.pathname.startsWith('/v1/')) return await serveApp(res, url.pathname)
+    const image = audience === 'people' && req.method === 'GET' ? IMAGE.exec(url.pathname) : null
+    if (image?.[1] && image[2]) return await serveImage(req, res, image[1], Number(image[2]))
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)

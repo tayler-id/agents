@@ -350,6 +350,11 @@ The design is `docs/design/computers.md`.
 - **Solves now.** A person on the team watches a box's screen live through the people port, as their Tailscale login, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` is its state. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work.
 - **Helps later.** A Mac with the computer-use helper in the design can serve the same Screen view through the same tunnel.
 
+### Images as documents (`shared/documents.ts`, `server/record.ts`, `app/src/Document.tsx`)
+
+- **Solves now.** Images an agent writes in its task's folder, such as the screenshots it saves to show what it checked, become documents with versions and comments, beside the text ones. A file is an image when its bytes say so: PNG, JPEG, WebP or GIF, up to 5 MB. The bytes live in Postgres in `blobs`, a table sync never reads, and the app fetches them through the people port for anyone who can see the task.
+- **Helps later.** A run's report or pull request can show the screenshots its agents saved, from the same table.
+
 ### Checking their own work (`daemon/computer-guide.ts`)
 
 - **Solves now.** A session on a machine with a screen is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.

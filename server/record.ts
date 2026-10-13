@@ -2,9 +2,12 @@
 // transaction, so numbering, scrubbing and the links between messages, events
 // and commands stay consistent.
 
+import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
 import { z } from 'zod'
+import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
+import type { BlobId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
@@ -392,10 +395,25 @@ export async function claimCommand(client: pg.Pool | pg.PoolClient, instanceId: 
   return row ? ({ id: row.id, kind: row.kind, sessionId: row.session_id, payload: row.payload } as Command) : null
 }
 
+// An image document's bytes, kept once per team and content. Its id goes on the
+// version. The bytes must be the image type the machine says they are.
+async function saveImage(client: pg.PoolClient, teamId: string, path: string, image: { mediaType: ImageMediaType; base64: string }): Promise<BlobId> {
+  const bytes = Buffer.from(image.base64, 'base64')
+  if (bytes.length > MAX_IMAGE_BYTES) throw new HttpError(413, `${path} is ${bytes.length} bytes, and an image can be ${MAX_IMAGE_BYTES} at most`)
+  if (sniffImage(bytes) !== image.mediaType) throw new HttpError(400, `${path} is not the ${image.mediaType} it says it is`)
+  // A no-op update on a conflict, so the existing row's id comes back too.
+  const row = await one(client, 'the image',
+    `insert into blobs (team_id, sha256, media_type, size_bytes, data) values ($1, $2, $3, $4, $5)
+     on conflict (team_id, sha256) do update set sha256 = excluded.sha256 returning id`,
+    [teamId, createHash('sha256').update(bytes).digest('hex'), image.mediaType, bytes.length, bytes])
+  return BlobRow.pick({ id: true }).parse(row).id
+}
+
 // Files an agent wrote in its task's folder. Each file is one document on the
-// task, and each change to it is the document's next version.
+// task, and each change to it is the document's next version. A version holds
+// text, or points at an image's bytes and holds no text.
 export async function saveDocuments(
-  client: pg.PoolClient, instanceId: string, sessionId: string, documents: { path: string; content: string }[],
+  client: pg.PoolClient, instanceId: string, sessionId: string, documents: DocumentUpload[],
 ): Promise<{ path: string; version: number }[]> {
   const session = await maybe<{ team_id: string; task_id: string | null }>(client,
     'select team_id, task_id from sessions where id = $1 and instance_id = $2', [sessionId, instanceId])
@@ -404,18 +422,20 @@ export async function saveDocuments(
   const saved: { path: string; version: number }[] = []
   for (const document of documents) {
     const path = document.path.replace(/^\/+/, '')
-    const content = scrub(document.content)
     const artifact = await one<{ id: string; current_version: number | null }>(client, 'the document',
       `insert into artifacts (team_id, task_id, kind, path, title, made_by_session) values ($1, $2, 'document', $3, $4, $5)
        on conflict (task_id, path) where kind = 'document' do update set updated_at = artifacts.updated_at
        returning id, current_version`, [session.team_id, session.task_id, path, basename(path), sessionId])
-    const latest = await maybe<{ content: string }>(client,
-      'select content from artifact_versions where artifact_id = $1 and version = $2', [artifact.id, artifact.current_version])
-    if (latest?.content === content) continue
+    const next = 'content' in document
+      ? { content: scrub(document.content), blobId: null }
+      : { content: '', blobId: await saveImage(client, session.team_id, path, document.image) }
+    const latest = await maybe<{ content: string; blob_id: string | null }>(client,
+      'select content, blob_id from artifact_versions where artifact_id = $1 and version = $2', [artifact.id, artifact.current_version])
+    if (latest?.content === next.content && latest.blob_id === next.blobId) continue
     const version = (artifact.current_version ?? 0) + 1
     await client.query(
-      'insert into artifact_versions (artifact_id, version, content, author_session) values ($1, $2, $3, $4)',
-      [artifact.id, version, content, sessionId])
+      'insert into artifact_versions (artifact_id, version, content, blob_id, author_session) values ($1, $2, $3, $4, $5)',
+      [artifact.id, version, next.content, next.blobId, sessionId])
     await client.query('update artifacts set current_version = $2, updated_at = now() where id = $1', [artifact.id, version])
     saved.push({ path, version })
   }

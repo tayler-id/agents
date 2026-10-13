@@ -11,10 +11,16 @@ import { promisify } from 'node:util'
 import { workspaceChanges } from './changes.ts'
 import type { ExecPayload, ExecResult, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
 import type { RepoChanges } from '../shared/work.ts'
+import { MAX_IMAGE_BYTES, MAX_TEXT_BYTES, sniffImage, type ImageMediaType } from '../shared/documents.ts'
+
+// A file in a task's folder, as the daemon sends it to become a document version.
+export type TaskFile = { path: string; hash: string } & (
+  | { kind: 'text'; content: string }
+  | { kind: 'image'; mediaType: ImageMediaType; bytes: Buffer }
+)
 
 const run = promisify(execFile)
 const OUTPUT_LIMIT = 20_000
-const DOCUMENT_LIMIT = 1024 * 1024
 // A local ref in each checkout holding the commit this workspace last pushed a task
 // branch at. It never leaves the machine.
 const pushedRef = (branch: string) => `refs/agents/pushed/${branch}`
@@ -191,18 +197,21 @@ export function workspaces(home: string, api: string, token: string) {
     },
 
     // The documents in a task folder, by path, with a hash of each so only
-    // changed ones are sent.
-    documents(workspaceId: string): { path: string; hash: string; content: string }[] {
+    // changed ones are sent. A file whose bytes say it is an image is an image,
+    // whatever its name, and any other file is text.
+    documents(workspaceId: string): TaskFile[] {
       const root = join(dir(workspaceId), 'task')
-      const out: { path: string; hash: string; content: string }[] = []
+      const out: TaskFile[] = []
       const walk = (folder: string) => {
         for (const entry of existsSync(folder) ? readdirSync(folder, { withFileTypes: true }) : []) {
           const path = join(folder, entry.name)
           if (entry.isDirectory()) walk(path)
-          else if (entry.isFile() && statSync(path).size <= DOCUMENT_LIMIT) {
-            const content = readFileSync(path, 'utf8')
-            out.push({ path: relative(root, path), hash: createHash('sha256').update(content).digest('hex'), content })
-          }
+          if (!entry.isFile() || statSync(path).size > Math.max(MAX_IMAGE_BYTES, MAX_TEXT_BYTES)) continue
+          const bytes = readFileSync(path)
+          const file = { path: relative(root, path), hash: createHash('sha256').update(bytes).digest('hex') }
+          const mediaType = sniffImage(bytes)
+          if (mediaType && bytes.length <= MAX_IMAGE_BYTES) out.push({ ...file, kind: 'image', mediaType, bytes })
+          else if (!mediaType && bytes.length <= MAX_TEXT_BYTES) out.push({ ...file, kind: 'text', content: bytes.toString('utf8') })
         }
       }
       walk(root)

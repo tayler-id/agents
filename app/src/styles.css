@@ -207,6 +207,7 @@ a { color: inherit; text-underline-offset: 2px; }
 .source pre { margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 480px; overflow: auto; }
 .versions-pick { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .document { padding: 12px 16px 20px; overflow-y: auto; }
+.document-image { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
 .document:focus-visible { background: var(--surface); }
 .markdown { display: grid; gap: 8px; }
 .markdown p, .markdown li { white-space: pre-wrap; word-break: break-word; }

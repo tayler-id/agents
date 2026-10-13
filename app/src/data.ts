@@ -89,7 +89,11 @@ export type Memory = Row & { id: string; agent_id: string; scope: 'person' | 'te
 export type Template = Row & { id: string; name: string; version: number; share_slug: string; recipe: { title: string | null; instructions: string; skills: unknown[]; plugins: unknown[]; routines: unknown[] }; created_at: string }
 export type Turn = Row & { id: string; conversation_id: string; agent_id: string; requested_at: string; started_at: string | null; outcome: string | null; finished_at: string | null }
 export type Comment = Row & { id: string; artifact_id: string; version: number; anchor: { quote?: string } | null; author_person: string | null; body: string; status: string; sent_to_session: string | null; created_at: string }
-export type ArtifactVersion = Row & { artifact_id: string; version: number; content: string; author_session: string | null; created_at: string }
+// An image version has no text, and its bytes come from imageUrl.
+export type ArtifactVersion = Row & {
+  artifact_id: string; version: number; content: string; blob_id: string | null; author_session: string | null; created_at: string
+}
+export const imageUrl = (version: ArtifactVersion) => `/v1/artifacts/${version.artifact_id}/versions/${version.version}/image`
 
 const origin = () => window.location.origin
 
