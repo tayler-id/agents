@@ -457,6 +457,13 @@ try {
       && (await documentOf(runId, 'research.md'))?.current_version === 2,
     'sending research back gives the agent the note and each comment with its quote, and it writes a second version')
 
+    const read = (who: string, path: string) => fetch(PEOPLE + path, { headers: { 'tailscale-user-login': who } })
+    const revised = await read(amir, `/v1/artifacts/${doc.id}/versions/2/diff`)
+    const { diff } = revised.ok ? await revised.json() as { diff: string } : { diff: '' }
+    const hidden = await read(outsider, `/v1/artifacts/${doc.id}/versions/2/diff`)
+    check(diff.includes('\n-The discount lives in checkout.js.\n') && diff.includes('\n+The discount lives in checkout.js, in discount().\n') && hidden.status === 404,
+      "a teammate reads what changed in research.md from its first version, and another team's person cannot")
+
     await post(`/v1/asks/${must(second, 'the second research gate').id}/answer`, { decision: 'approve' })
     const planGate = await askAt(runId, 'review_plan')
     check(planGate && (await documentOf(runId, 'plan.md'))?.current_version === 1, 'the plan reaches its gate with plan.md')
