@@ -36,7 +36,7 @@ import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
 import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
-import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit } from '../shared/work.ts'
+import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
@@ -235,6 +235,22 @@ const routes: Route[] = [
       return { path: text(fieldOf(d, 'path'), `documents.${i}.path`), content: typeof content === 'string' ? content : '' }
     })
     return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, documents)) }
+  }],
+
+  // Whether one of the asking machine's workspaces is still being set up: not yet
+  // ready, with its setup queued or running, or not yet ended at all.
+  ['machines', 'GET', new RegExp(`^/v1/instance/workspaces/${UUID}/setup$`), async (req, [id]) => {
+    const instance = await instanceFrom(req)
+    const workspaceId = parsed(WorkspaceId, id)
+    const found = await maybe<{ setting_up: boolean }>(pool,
+      `select w.status = 'creating' and (
+         exists (select 1 from commands c where c.kind = 'setup_workspace' and c.payload->>'workspaceId' = w.id::text and c.status in ('queued', 'claimed'))
+         or not exists (select 1 from commands c where c.kind = 'setup_workspace' and c.payload->>'workspaceId' = w.id::text and c.status in ('done', 'failed'))
+       ) as setting_up
+       from workspaces w where w.id = $1 and w.instance_id = $2`, [workspaceId, instance.id])
+    if (!found) throw new HttpError(404, 'no such workspace on this machine')
+    const answer: WorkspaceSetup = { settingUp: found.setting_up }
+    return answer
   }],
 
   // What differs from the base branch in a workspace's repos, from its machine.

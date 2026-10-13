@@ -85,11 +85,16 @@ export function workspaces(home: string, api: string, token: string) {
 
     // The API writes a workspace's setup before the first message there, in one
     // transaction, but a daemon catching up on its queue can claim the two in
-    // either order. A message whose workspace this machine has neither set up
-    // nor started setting up waits for that setup, which is always on its way.
-    async ready(workspaceId: string) {
+    // either order. A message whose workspace this process has neither set up nor
+    // found on disk waits for the setup only while the server says it is queued or
+    // running. Otherwise the workspace is gone, and the message fails.
+    async ready(workspaceId: string, settingUp: () => Promise<boolean>) {
       if (!setups.has(workspaceId) && !existsSync(dir(workspaceId))) {
-        await new Promise<void>((resolve) => { waiting.set(workspaceId, [...(waiting.get(workspaceId) ?? []), resolve]) })
+        if (!(await settingUp())) throw new Error(`workspace ${workspaceId} is not set up on this machine`)
+        // The setup may have been claimed while the server answered.
+        if (!setups.has(workspaceId)) {
+          await new Promise<void>((resolve) => { waiting.set(workspaceId, [...(waiting.get(workspaceId) ?? []), resolve]) })
+        }
       }
       await setups.get(workspaceId)
     },

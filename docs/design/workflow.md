@@ -85,7 +85,7 @@ An action from a state it can't start from, such as holding a done task, is a 40
 
 **Shape.** One `task_repos` row per repo. The first one picked is the primary. Each repo's folder in the workspace is its name, such as `./shop`. When two repos share a name, both folders take the owner too, such as `./team-shop` and `./ops-shop`. `withFolders` in `server/checkout.ts` names the folders, and the API, the runner and the first message all use it.
 
-**What changes downstream.** The first message names every folder and its branch. Changes and pull requests are per repo. The runner's pipelines still start with one repo, so a pipeline's `ctx.repo` is the primary one.
+**What changes downstream.** The first message names every folder and its branch. A daemon can claim a workspace's first message before its setup, so a message for a workspace the machine has not set up waits, but only while the server says the workspace is still being set up: not yet ready, with its setup queued, running, or not yet ended. Otherwise the message fails with "workspace … is not set up on this machine", as it did before this branch, and an interrupt behind it is not held up. Changes and pull requests are per repo. The runner's pipelines still start with one repo, so a pipeline's `ctx.repo` is the primary one.
 
 **What each person sees.** New task and a draft list the team's repos as checkboxes. The task page groups its changes by repo, and each pull request's title names its repo.
 
@@ -214,9 +214,9 @@ Used for the first time, with no change to the schema: the `draft` session statu
 
 Run each with `node --env-file=.env --env-file=.env.test test/<file>`.
 
-- `test/step14.ts`, ports 7960 to 7962, against the API, daemon, forge and runner, with the stand-in for Claude in `test/fake-claude.ts`. It covers drafts, a task with two repos and twin folder names, a message claimed before its workspace's setup, changes (scrubbed on the machine, modified, deleted, binary, taken back out, not resent when unchanged, refused from another team's machine), pull requests per repo, the order of work and the agents' `ready_tasks` tool, the flags each kind of session starts with, the research, plan and implement pipeline end to end against a test repo, the version diff, and the documents shape.
+- `test/step14.ts`, ports 7962 to 7964, against the API, daemon, forge and runner, with the stand-in for Claude in `test/fake-claude.ts`. It covers drafts, a task with two repos and twin folder names, a message claimed before its workspace's setup, changes (scrubbed on the machine, modified, deleted, binary, taken back out, not resent when unchanged, refused from another team's machine), pull requests per repo, the order of work and the agents' `ready_tasks` tool, the flags each kind of session starts with, the research, plan and implement pipeline end to end against a test repo, the version diff, and the documents shape.
 - `test/step14b.ts`, ports 7965 to 7967, the README scenario in Chromium, Firefox and WebKit, at desktop and phone width, with an accessibility scan. A task asks for a README in a test repo. The person sees README.md in Changes, opens it rendered, sees its diff, clicks Open pull request, and sees the pull request on the task.
-- `test/step14c.ts`, ports 7970 to 7972, the other views in the three browsers at both widths: a draft saved, edited by a teammate and started, the order of work, the palette by keyboard alone, pinned comments, a pull request that stays once nothing differs, and a run's Changes and labeled gate.
+- `test/step14c.ts`, ports 7973 to 7975, the other views in the three browsers at both widths: a draft saved, edited by a teammate and started, the order of work, the palette by keyboard alone, pinned comments, a pull request that stays once nothing differs, and a run's Changes and labeled gate.
 
 Each check was seen failing with the thing it guards broken, then passing after a byte-for-byte restore. The commit messages that add step14 and step14b list their breaks, and `docs/build-log.md` describes step14c's.
 

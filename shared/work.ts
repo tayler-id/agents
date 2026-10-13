@@ -188,6 +188,11 @@ export type ChangesPost = z.infer<typeof ChangesPost>
 export const ChangesReply = z.object({ missing: z.array(z.object({ repoId: RepoId, path: z.string() })) })
 export type ChangesReply = z.infer<typeof ChangesReply>
 
+// GET /v1/instance/workspaces/:id/setup, for the workspace's machine: whether its
+// setup command is still queued or running.
+export const WorkspaceSetup = z.object({ settingUp: z.boolean() })
+export type WorkspaceSetup = z.infer<typeof WorkspaceSetup>
+
 const FileChangeFields = {
   id: FileChangeId,
   task_id: TaskId,

@@ -30,9 +30,9 @@ Each part, with the commits that built it and the commits that check it.
 
 Run each from the worktree with `node --env-file=.env --env-file=.env.test test/<file>`, with `~/.local/node/bin` first on the PATH. Set `AGENTS_UI_ENGINES=chromium` to run a browser check in one engine.
 
-- `test/step14.ts`, ports 7960 to 7962. The server and daemon.
+- `test/step14.ts`, ports 7962 to 7964. The server and daemon.
 - `test/step14b.ts`, ports 7965 to 7967. The README scenario in three browsers, desktop and phone.
-- `test/step14c.ts`, ports 7970 to 7972. Drafts, order of work, palette, pinned comments and a run's gate in three browsers, desktop and phone.
+- `test/step14c.ts`, ports 7973 to 7975. Drafts, order of work, palette, pinned comments and a run's gate in three browsers, desktop and phone.
 
 After the rebase all three passed: step14 "all passed (test teams and repos removed)", step14b "all passed (test team and repo removed)", step14c "all passed (test team and repos removed)" with 108 checks.
 

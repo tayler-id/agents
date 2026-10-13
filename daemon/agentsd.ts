@@ -19,7 +19,7 @@ import { Permissions, type Command, type EventBatch, type MessagePayload, type S
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
-import { ChangesReply } from '../shared/work.ts'
+import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -267,6 +267,10 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   return session
 }
 
+// Whether the server still has the workspace's setup queued or running for this machine.
+const settingUp = (workspaceId: string) => async () =>
+  WorkspaceSetup.parse(await api<unknown>('GET', `/v1/instance/workspaces/${workspaceId}/setup`)).settingUp
+
 // Does what a command asks, and returns what the API should record about it. A
 // message starts or resumes the session; an answer or an interrupt needs the
 // session's process to still be running.
@@ -274,14 +278,19 @@ async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'setup_workspace') return ws.setup(command.payload)
   if (command.kind === 'exec') return ws.exec(command.payload)
   if (command.kind === 'push') return ws.push(command.payload)
-  if (command.kind === 'message' && command.payload.workspaceId) await ws.ready(command.payload.workspaceId)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
     // A process keeps the setup it started with. Once the agent's instructions,
     // skills, plugins or model change, the next message restarts the session with
     // the new setup, resuming the same conversation. One mid-turn finishes first.
     if (live?.alive && !live.busy && command.payload.harnessSessionId && setups.get(command.sessionId) !== setupOf(command.payload)) live.stop()
-    ;(live?.alive ? live : startSession(command)).send(command.payload.text)
+    if (live?.alive) {
+      live.send(command.payload.text)
+      return null
+    }
+    const { workspaceId } = command.payload
+    if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
+    startSession(command).send(command.payload.text)
     return null
   }
   if (command.kind === 'stop') {
