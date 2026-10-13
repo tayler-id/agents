@@ -4,7 +4,8 @@
 // cannot start here, since its image does not exist, and they read why. A login
 // with no invite sees the waiting screen until an admin adds it with one click,
 // then the app opens by itself. Members see the team but none of the admin forms.
-// Scans for accessibility problems and takes screenshots (light, dark, phone).
+// Someone in a room adds a teammate from its People list. Scans for
+// accessibility problems and takes screenshots (light, dark, phone).
 //   node --env-file=.env --env-file=.env.test test/step12b.ts
 //   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step12b.ts
 
@@ -254,6 +255,29 @@ async function run(engine: string) {
       && !(await memberPage.getByRole('button', { name: 'Tailscale', exact: true }).count()) && !(await memberPage.locator('.sidebar-note').count()),
     `${engine}: a member has no Tailscale link, no key warning, and is told the page is for admins`)
 
+    // A room's people. Someone in the room adds a teammate from its head, and a
+    // member outside the room sees who is there but no way to add anyone.
+    const roomMade = await asPerson(PEOPLE, memberOf(engine), 'POST', '/v1/conversations', { kind: 'room', name: `room12b-${tag}`, people: [], agents: [] })
+    const roomId: string = must(roomMade.json?.conversationId, `the room (${roomMade.status} ${roomMade.text})`)
+    await memberPage.goto(`/#/c/${roomId}`)
+    await memberPage.getByRole('button', { name: 'People' }).click()
+    check(await visible(memberPage, 'ul[aria-label="In the room"] li', 15, /^You$/), `${engine}: the People button shows who is in the room`)
+    await memberPage.getByLabel('Teammate', { exact: true }).selectOption(invited.toLowerCase())
+    await memberPage.getByRole('form', { name: 'Add a teammate' }).getByRole('button', { name: 'Add', exact: true }).click()
+    const joined = async () => (await db.query(
+      `select 1 from conversation_members m join people p on p.id = m.person_id where m.conversation_id = $1 and p.login = $2`, [roomId, invited.toLowerCase()])).rows.length === 1
+    check(await visible(memberPage, 'section[aria-label="People in the room"] [role="status"]', 15, new RegExp(`Added Invited ${engine} to the room`))
+      && await visible(memberPage, 'ul[aria-label="In the room"] li', 15, new RegExp(`^Invited ${engine}$`)) && await joined(),
+    `${engine}: someone in the room adds a teammate from its People list, and the list shows them`)
+    await memberPage.screenshot({ path: join(SHOTS, `${engine}-room-people-light.png`) })
+    check(await serious(memberPage) === 0, `${engine}: a room with its People list open has no serious accessibility problems`)
+    await stranger.goto(`/#/c/${roomId}`)
+    await stranger.getByRole('button', { name: 'People' }).click()
+    check(await visible(stranger, 'section[aria-label="People in the room"] p', 15, /People in the room, and admins, can add a teammate/)
+      && await visible(stranger, 'ul[aria-label="In the room"] li', 15, new RegExp(`^Invited ${engine}$`))
+      && !(await stranger.getByRole('form', { name: 'Add a teammate' }).count()),
+    `${engine}: a member outside the room sees who is in it, and no way to add anyone`)
+
     const dark = await open(owner, { colorScheme: 'dark' })
     await dark.goto('/#/team')
     await visible(dark, 'ul[aria-label="People"] li', 15)
@@ -274,7 +298,14 @@ async function run(engine: string) {
     await visible(phoneStranger, 'main[aria-label="Waiting to join"] h1', 15)
     const waitingFits = await fits(phoneStranger, ['main'])
     await phoneStranger.screenshot({ path: join(SHOTS, `${engine}-waiting-phone.png`) })
-    check(teamFits && tailscaleFits && waitingFits, `${engine}: at phone width the Team page, the Tailscale page and the waiting screen fit without sideways scrolling`)
+    const phoneRoom = await open(memberOf(engine), phoneOf(engine))
+    await phoneRoom.goto(`/#/c/${roomId}`)
+    await phoneRoom.getByRole('button', { name: 'People' }).click()
+    await visible(phoneRoom, '#room-add', 15)
+    const roomFits = await fits(phoneRoom, ['.conversation-head', '.room-people', '.names', '#room-add', '.add-line button'])
+    await phoneRoom.screenshot({ path: join(SHOTS, `${engine}-room-people-phone.png`) })
+    check(teamFits && tailscaleFits && waitingFits && roomFits,
+      `${engine}: at phone width the Team page, the Tailscale page, the waiting screen and a room's People list fit without sideways scrolling`)
 
     // The next browser starts with the long-lived key again.
     tailscale.useKey(key, 60)

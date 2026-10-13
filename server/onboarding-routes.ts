@@ -1,14 +1,16 @@
-// The API's routes for onboarding: who you are, inviting and adding people, and
-// the Tailscale key. api.ts adds them to its own list.
+// The API's routes for onboarding: who you are, inviting and adding people to
+// the team and to rooms, and the Tailscale key. api.ts adds them to its own list.
 
-import { adminFrom, loginFrom, nameFrom } from './auth.ts'
+import { adminFrom, loginFrom, nameFrom, personFrom } from './auth.ts'
+import { tx } from './db.ts'
 import { parseBody, pathId, type Route } from './http.ts'
 import {
   addToTeam, arrive, cancelInvite, cancelTailnetInvite, inviteLink, makeInvite, meOf, resendInvite, tailnetDevices, tailnetInvites, tailnetUsers,
 } from './onboarding.ts'
+import { addRoomMember } from './rooms.ts'
 import { removeKey, saveKey, tailscale, tailscaleView } from './tailscale.ts'
 import {
-  AddPersonBody, DeviceAction, InviteBody, InviteId, TailnetInviteAction, TailscaleKeyBody, TailscaleRoleBody, UserAction,
+  AddPersonBody, ConversationId, DeviceAction, InviteBody, InviteId, RoomMemberBody, TailnetInviteAction, TailscaleKeyBody, TailscaleRoleBody, UserAction,
   type Done, type InviteMade, type MeView, type PersonAdded, type TailnetDevices, type TailnetInvites, type TailnetUsers, type TailscaleView,
 } from '../shared/onboarding.ts'
 
@@ -45,6 +47,13 @@ export const onboardingRoutes: Route[] = [
     const body = await parseBody(req, AddPersonBody)
     const person = await addToTeam(admin, body.login, body.name)
     return { personId: person.id }
+  }],
+
+  // An admin, or someone in the room, adds a teammate to it.
+  ['people', 'POST', new RegExp(`^/v1/conversations/${UUID}/members$`), async (req, [roomId]): Promise<PersonAdded> => {
+    const person = await personFrom(req)
+    const body = await parseBody(req, RoomMemberBody)
+    return { personId: await tx((client) => addRoomMember(client, person, pathId(ConversationId, roomId), body.login)) }
   }],
 
   ['people', 'GET', /^\/v1\/tailscale$/, async (req): Promise<TailscaleView> => {

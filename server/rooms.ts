@@ -4,9 +4,11 @@
 // add, or at its deadline. Each agent sees what the agents before it said.
 
 import type pg from 'pg'
+import { z } from 'zod'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, conversationSession, HttpError, type Person } from './record.ts'
 import type { MessagePayload } from '../shared/types.ts'
+import { PersonId, type ConversationId, type Login } from '../shared/onboarding.ts'
 
 const TURN_SECONDS = Number(process.env.AGENTS_TURN_SECONDS ?? 180)
 export const PASS = 'PASS'
@@ -29,6 +31,32 @@ export async function createRoom(client: pg.PoolClient, person: Person, name: st
     await client.query('insert into conversation_members (team_id, conversation_id, agent_id) values ($1, $2, $3)', [person.team_id, room.id, a.id])
   }
   return room.id
+}
+
+const RoomAccess = z.object({ visibility: z.enum(['team', 'private']), member: z.boolean() })
+const Teammate = z.object({ id: PersonId })
+
+// Adds a teammate to a room. Its agents then name them among the room's people on
+// their turns, with what they remember about them. An admin may add to any of the
+// team's rooms, anyone else only to a room they are in.
+export async function addRoomMember(client: pg.PoolClient, person: Person, roomId: ConversationId, login: Login): Promise<PersonId> {
+  const found = await maybe(client,
+    `select c.visibility, exists (select 1 from conversation_members m where m.conversation_id = c.id and m.person_id = $3) as member
+     from conversations c where c.id = $1 and c.team_id = $2 and c.kind = 'room' and c.archived_at is null`,
+    [roomId, person.team_id, person.id])
+  const room = found ? RoomAccess.parse(found) : undefined
+  const allowed = person.role === 'admin' || room?.member === true
+  // A private room is not shown to people outside it, so they are told it does not exist.
+  if (!room || (room.visibility === 'private' && !allowed)) throw new HttpError(404, 'no such room')
+  if (!allowed) throw new HttpError(403, 'Only people in the room, or an admin, can add someone to it.')
+  const teammate = await maybe(client, 'select id from people where team_id = $1 and login = $2', [person.team_id, login])
+  if (!teammate) throw new HttpError(404, `${login} is not on your team.`)
+  const { id } = Teammate.parse(teammate)
+  const added = await maybe(client,
+    `insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3)
+     on conflict do nothing returning id`, [person.team_id, roomId, id])
+  if (!added) throw new HttpError(409, `${login} is already in the room.`)
+  return id
 }
 
 // A person posted. Each agent the post mentions takes a turn, or every agent in

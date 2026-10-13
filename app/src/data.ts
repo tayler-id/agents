@@ -244,6 +244,7 @@ export const api = {
   startClaudeLogin: () => call(LoginStarted, 'POST', '/v1/me/claude-login', {}),
   sendClaudeCode: (loginId: string, code: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/code`, { code }),
   cancelClaudeLogin: (loginId: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/cancel`, {}),
+  addRoomMember: (conversationId: string, login: string) => call(PersonAdded, 'POST', `/v1/conversations/${conversationId}/members`, { login }),
   openDm: (agent: string) => request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'dm', agent }),
   send: (conversationId: string, text: string, clientId: string) =>
     request('POST', `/v1/conversations/${conversationId}/messages`, { text, clientId }),

@@ -263,6 +263,15 @@ select.compact { font: inherit; font-size: 12.5px; color: var(--text); backgroun
 select.compact:focus { outline: none; border-color: var(--text); }
 .sidebar-note { padding: 6px 8px 0; font-weight: 600; }
 
+/* A room's people, under its head. The open People button is a brighter surface. */
+button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600; }
+.room-people { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 20px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.in-room { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.in-room .kicker { margin: 0; }
+.names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; min-width: 0; }
+.names li { overflow-wrap: anywhere; min-width: 0; }
+.add-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; max-width: 520px; }
+
 /* A person's own box, their Claude sign-in, and a newcomer's first steps. A step
    done shows a check glyph and heavier type, never a colour. */
 .getting-started { margin: auto; max-width: 520px; padding: 0 16px; display: grid; gap: 10px; }
@@ -285,7 +294,7 @@ select.compact:focus { outline: none; border-color: var(--text); }
   .menu-open .sidebar { display: block; position: fixed; inset: 49px 0 0 0; z-index: 2; border-right: 0; }
   .shell.with-panel .main { display: none; }
   .panel { border-left: 0; }
-  .messages, .conversation-head { padding-left: 16px; padding-right: 16px; }
+  .messages, .conversation-head, .room-people { padding-left: 16px; padding-right: 16px; }
   .composer { padding: 10px 16px 14px; }
   .ask-card { margin: 0 16px 12px; }
   .page-head, .page-body { padding-left: 16px; padding-right: 16px; }

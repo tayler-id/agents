@@ -2,7 +2,8 @@
 // a file on this machine keeps, invites someone, and the invited person joins on
 // their first request, with their own box. A login with no invite waits until
 // an admin adds it with one click. Members cannot do what only admins may.
-// Tailscale is the stand-in in test/fake-tailscale.ts.
+// Someone in a room, or an admin, adds a teammate to it, and the room's agent
+// is told who is there. Tailscale is the stand-in in test/fake-tailscale.ts.
 //   node --env-file=.env --env-file=.env.test test/step12.ts
 
 import { execFileSync } from 'node:child_process'
@@ -255,6 +256,46 @@ try {
   check(cancelledThere.status === 200 && (await row('select status from invites where email = $1', [`tsown12-${id}@mail.test`]))?.status === 'cancelled'
     && !tailscale.state.invites.has(ownTailscaleId),
   "cancelling one of the app's invites from the Tailscale page cancels it in the app too")
+
+  // Adding a teammate to a room. The member makes a room with an agent in it.
+  const personIdOf = async (login: string): Promise<string> => must(await row('select id from people where login = $1', [login]), login).id
+  node('server/admin.ts', 'add-instance', team, `roombox-${id}`, 'mac', owner)
+  const roomie = `roomie-${id}`
+  node('server/admin.ts', 'add-agent', team, roomie, `roombox-${id}`)
+  const madeRoom = await asPerson(PEOPLE, member, 'POST', '/v1/conversations', { kind: 'room', name: `room12-${id}`, people: [], agents: [roomie] })
+  const roomId: string = must(madeRoom.json?.conversationId, `the room (${madeRoom.status} ${madeRoom.text})`)
+  const addTo = (by: string, room: string, login: string) => asPerson(PEOPLE, by, 'POST', `/v1/conversations/${room}/members`, { login })
+  const inRoom = async (room: string, personId: string) => Boolean(await row('select 1 from conversation_members where conversation_id = $1 and person_id = $2', [room, personId]))
+  const [inviteeId, githubId, ownerId] = [await personIdOf(invitee), await personIdOf(github), await personIdOf(owner)]
+  const byMember = await addTo(member, roomId, invitee)
+  const seen = await within(10, async () => (await shapeRows(PEOPLE, invitee, 'conversation_members')).rows.some((r) => r.conversation_id === roomId && r.person_id === inviteeId))
+  check(byMember.status === 200 && byMember.json?.personId === inviteeId && await inRoom(roomId, inviteeId) && seen,
+    `someone in a room adds a teammate to it, and the teammate's app sees them there (${byMember.status} ${byMember.text})`)
+  const twice = await addTo(member, roomId, invitee)
+  check(twice.status === 409 && /already in the room/.test(twice.json?.error), `adding someone already in the room is refused (${twice.status} ${twice.text})`)
+  const quiet: string = must((await asPerson(PEOPLE, member, 'POST', '/v1/conversations', { kind: 'room', name: `quiet12-${id}`, people: [], agents: [] })).json?.conversationId, 'a second room')
+  await db.query(`update conversations set visibility = 'private' where id = $1`, [quiet])
+  const notIn = await addTo(github, roomId, owner)
+  const hidden = await addTo(github, quiet, github)
+  check(notIn.status === 403 && hidden.status === 404 && !(await inRoom(roomId, ownerId)) && !(await inRoom(quiet, githubId)),
+    `a member outside a room cannot add anyone to it, and a private room they are not in does not exist for them (${notIn.status}, ${hidden.status})`)
+  const byAdmin = await addTo(owner, roomId, github)
+  check(byAdmin.status === 200 && await inRoom(roomId, githubId) && !(await inRoom(roomId, ownerId)),
+    `an admin adds a teammate to a room the admin is not in, without joining it (${byAdmin.status} ${byAdmin.text})`)
+  const stranger = await addTo(member, roomId, outsider)
+  const fromOutside = await addTo(outsider, roomId, outsider)
+  const dm: string = must((await asPerson(PEOPLE, member, 'POST', '/v1/conversations', { kind: 'dm', agent: roomie })).json?.conversationId, 'a DM')
+  const intoDm = await addTo(member, dm, invitee)
+  check(stranger.status === 404 && /not on your team/.test(stranger.json?.error) && fromOutside.status === 404 && intoDm.status === 404 && !(await inRoom(dm, inviteeId)),
+    `only teammates can be added, only by their team, and only to rooms (${stranger.status}, ${fromOutside.status}, ${intoDm.status})`)
+  await db.query('update conversations set archived_at = now() where id = $1', [quiet])
+  const intoArchived = await addTo(member, quiet, invitee)
+  check(intoArchived.status === 404 && !(await inRoom(quiet, inviteeId)), `an archived room takes no one, even from someone in it (${intoArchived.status})`)
+  const posted = await asPerson(PEOPLE, member, 'POST', `/v1/conversations/${roomId}/messages`, { text: 'Who is here?', clientId: `room12-${id}` })
+  const prompt = await row(`select c.payload->>'text' as text from commands c join sessions s on s.id = c.session_id
+    where s.conversation_id = $1 and c.kind = 'message' order by c.created_at desc limit 1`, [roomId])
+  check(posted.status === 200 && [member, invitee, github].every((login) => String(prompt?.text).includes(login)) && !String(prompt?.text).includes(owner),
+    `the room's agent is told who is in the room, the added teammates among them (${posted.status})`)
 
   // Tailscale off, and set by halves.
   const off = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: undefined, AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-off'))
