@@ -200,6 +200,16 @@ export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args
   }, [schema, rows, name])
 }
 
+// How lists name a conversation: a room by its name, a DM by its agent and its
+// people. A person or agent not loaded yet reads as someone or agent.
+export function conversationLabel(c: Conversation, names: { me: Me; members: Member[]; agentName: Map<string, string>; login: Map<string, string> }): string {
+  if (c.kind === 'room') return `# ${c.name ?? 'room'}`
+  const who = names.members.filter((m) => m.conversation_id === c.id)
+    .flatMap((m) => (m.person_id ? [m.person_id === names.me.person.id ? 'you' : names.login.get(m.person_id) ?? 'someone'] : []))
+  const agent = c.agent_id ? names.agentName.get(c.agent_id) ?? 'agent' : null
+  return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
+}
+
 // The message of anything thrown.
 export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 

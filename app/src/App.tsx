@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import {
-  act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
+  act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
 } from './data.ts'
 import { TeamPage, Waiting } from './Team.tsx'
 import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
 import { BoxPage, GettingStarted } from './Box.tsx'
 import { FilePanel } from './FilePanel.tsx'
+import { Palette, paletteKey, useShortcuts } from './Palette.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -90,6 +91,9 @@ function Workspace({ me }: { me: Me }) {
   const menuOpen = menuOpenOn === here
   const setMenuOpen = (open: boolean) => { setMenuOpenOn(open ? here : null) }
   const { rows: runs } = useSnapshot<Run>('runs', {}, 4000)
+  const [palette, setPalette] = useState(false)
+  const togglePalette = useCallback(() => setPalette((open) => !open), [])
+  useShortcuts(togglePalette)
   const side = Boolean(route.session || route.document || route.file)
   // Documents and files hold lines of text, so their panel takes more of the width.
   const wide = Boolean(route.document || route.file)
@@ -100,9 +104,11 @@ function Workspace({ me }: { me: Me }) {
       <header className="topbar">
         <button type="button" className="ghost" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Menu</button>
         <span className="topbar-title">{me.team.name}</span>
+        <button type="button" className="ghost push" onClick={togglePalette}>Go to</button>
       </header>
-      <Sidebar me={me} route={route} runs={runs} />
-      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
+      <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
+      {palette && <Palette me={me} onClose={() => setPalette(false)} />}
+      <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
         : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
@@ -142,7 +148,7 @@ function Welcome({ me }: { me: Me }) {
 
 const LIVE = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
 
-function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
+function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs: Run[]; openPalette: () => void }) {
   const { rows: agents } = useSnapshot<Agent>('agents')
   const { rows: conversations } = useSnapshot<Conversation>('conversations')
   const { rows: members } = useSnapshot<Member>('conversation_members')
@@ -166,12 +172,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const current = conversations.find((c) => c.id === route.conversation)
   const taskTitle = (taskId: string) => tasks.find((t) => t.id === taskId)?.title ?? 'Run'
 
-  const label = (c: Conversation) => {
-    if (c.kind === 'room') return `# ${c.name ?? 'room'}`
-    const who = members.filter((m) => m.conversation_id === c.id).flatMap((m) => (m.person_id ? [m.person_id === me.person.id ? 'you' : login.get(m.person_id) ?? 'someone'] : []))
-    const agent = c.agent_id ? agentName.get(c.agent_id) ?? 'agent' : null
-    return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
-  }
+  const label = (c: Conversation) => conversationLabel(c, { me, members, agentName, login })
 
   const open = async (agent: Agent) => {
     setOpening(agent.id)
@@ -241,6 +242,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
         <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>
         <button type="button" className="link small" onClick={() => go({ create: 'agent' })}>New agent</button>
+        <button type="button" className="link small" onClick={openPalette}>Go to <kbd>{paletteKey()}</kbd></button>
       </div>
 
       <h2 className="kicker">Agents</h2>
