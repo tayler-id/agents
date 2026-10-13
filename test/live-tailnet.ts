@@ -1,10 +1,12 @@
-// Read-only, against the live server and its tailnet node, like step 2b. In
-// userspace mode tailscaled hands a tailnet connection for any port serve does
-// not claim to 127.0.0.1 on the same port. So the tailnet policy must let peers
-// reach only serve's port and the machine port, serve must send people to the
-// API's socket, and no TCP port of the API may take a person's identity. Sends
-// only GET requests, naming a login that matches no person.
-//   node --env-file=.env --env-file=.env.test test/step19b.ts
+// Read-only, against the live server and its tailnet node. In userspace mode
+// tailscaled hands a tailnet connection for any port serve does not claim to
+// 127.0.0.1 on the same port. So the tailnet policy must let peers reach only
+// serve's port and the machine port, serve must send people to the API's
+// socket, and no TCP port of the API may take a person's identity. Sends only
+// GET requests across the tailnet, naming a login that matches no person.
+// It passes only once the live steps in docs/design/people-port.md are done,
+// so it is not a step of `npm run check`. It is the last of those live steps.
+//   node --env-file=.env --env-file=.env.test test/live-tailnet.ts
 
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -30,9 +32,9 @@ function check(ok: unknown, label: string) {
   if (!ok) failures.push(label)
 }
 
-function get(options: RequestOptions): Promise<{ status: number; type: string; body: string }> {
+function send(options: RequestOptions & { method: 'GET' | 'POST' }): Promise<{ status: number; type: string; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = request({ ...options, method: 'GET' }, (res) => {
+    const req = request(options, (res) => {
       let body = ''
       res.setEncoding('utf8')
       res.on('data', (chunk: string) => { body += chunk })
@@ -43,15 +45,17 @@ function get(options: RequestOptions): Promise<{ status: number; type: string; b
   })
 }
 
-async function localApi<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-  const reply = await get({ socketPath: TAILSCALED, path: `/localapi/v0/${path}`, headers: { host: 'local-tailscaled.sock' } })
+// tailscaled's local API. Its debug endpoint takes only POST, even for the
+// action that only reads.
+async function localApi<T>(method: 'GET' | 'POST', path: string, schema: z.ZodType<T>): Promise<T> {
+  const reply = await send({ method, socketPath: TAILSCALED, path: `/localapi/v0/${path}`, headers: { host: 'local-tailscaled.sock' } })
   if (reply.status !== 200) throw new Error(`tailscaled ${path}: ${reply.status} ${reply.body}`)
   return schema.parse(JSON.parse(reply.body))
 }
 
 // A GET sent across the tailnet to this node, as a peer would send it.
 const overTailnet = (host: string, port: number, path: string, headers: Record<string, string> = {}) =>
-  get({ host: '127.0.0.1', port: PROXY, path: `http://${host}:${port}${path}`, headers: { ...headers, host: `${host}:${port}` } })
+  send({ method: 'GET', host: '127.0.0.1', port: PROXY, path: `http://${host}:${port}${path}`, headers: { ...headers, host: `${host}:${port}` } })
 
 // What lsof reports as listening for a process: TCP ports, and Unix socket paths.
 function listening(pid: number, kind: '-iTCP' | '-U'): string[] {
@@ -61,20 +65,24 @@ function listening(pid: number, kind: '-iTCP' | '-U'): string[] {
 }
 
 const Status = z.object({ Self: z.object({ DNSName: z.string(), TailscaleIPs: z.array(z.string()) }) })
-const PacketFilter = z.array(z.object({
-  IPProto: z.array(z.number()),
-  Dsts: z.array(z.object({ Net: z.string(), Ports: z.object({ First: z.number(), Last: z.number() }) })).nullable(),
-}))
+const Netmap = z.object({
+  PacketFilter: z.array(z.object({
+    IPProto: z.array(z.number()),
+    Dsts: z.array(z.object({ Net: z.string(), Ports: z.object({ First: z.number(), Last: z.number() }) })).nullable(),
+  })).nullable(),
+})
 const ServeConfig = z.object({
   Web: z.record(z.string(), z.object({ Handlers: z.record(z.string(), z.object({ Proxy: z.string().optional() })) })).optional(),
 })
 
 try {
-  const { Self } = await localApi('status', Status)
+  const { Self } = await localApi('GET', 'status', Status)
   const host = Self.DNSName.replace(/\.$/, '')
 
-  // The packet filter tailscaled enforces before any packet reaches loopback.
-  const filter = await localApi('debug-packet-filter-matches', PacketFilter)
+  // The packet filter tailscaled enforces before any packet reaches loopback. A
+  // policy change can arrive without a new netmap. debug-packet-filter-matches
+  // then still shows the old filter, and only this action shows the live one.
+  const filter = (await localApi('POST', 'debug?action=current-netmap', Netmap)).PacketFilter ?? []
   const covers = (net: string, address: string) => {
     const [base = '', bits = ''] = net.split('/')
     const family = isIPv4(base) ? 'ipv4' : 'ipv6'
@@ -102,7 +110,7 @@ try {
   check(ports.includes(MACHINES) && replies.every(([, reply]) => reply.status !== 200 && !reply.body.includes(`${nobody} is not on a team`)),
     'a direct tailnet connection to any TCP port of the live API never looks up the login it names')
 
-  const serve = await localApi('serve-config', ServeConfig)
+  const serve = await localApi('GET', 'serve-config', ServeConfig)
   const target = serve.Web?.[`${host}:${SERVE}`]?.Handlers['/']?.Proxy ?? ''
   check(target.startsWith('unix:') && listening(pid, '-U').includes(target.slice('unix:'.length)),
     `serve sends people to the live API's Unix socket (${target || 'no handler'})`)
