@@ -1,0 +1,323 @@
+// The feature map, run as written. Each feature file's "Driving it with
+// agentsctl" section is a list of labelled steps, and each step's commands are
+// the `bin/agentsctl ...` code spans in it, in order. `map run` runs them against
+// an instance and reports each step, so the map a person reads is the map that
+// was proven. `map check` reads the files without running anything: the four
+// sections are there, the index lists every file, and every command parses.
+//
+// Commands are written as shell commands an agent could paste, in a small
+// subset: plain words, single and double quotes, backslash escapes, and
+// "$(bin/agentsctl ...)" to use one command's output in another. No other shell
+// is involved; the words go straight to agentsctl.
+
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { z } from 'zod'
+import { FEATURES_DIR, ROOT } from './config.ts'
+import { nextPath } from './evidence.ts'
+import type { Output } from './output.ts'
+import type { ReadyState } from './state.ts'
+import { Verdict } from './verdict.ts'
+
+export const SECTIONS = ['Sub-features', 'How to get to it (user POV)', 'Driving it with agentsctl', 'Gotchas'] as const
+const AGENTSCTL = 'bin/agentsctl'
+// A substitution's place in a command that is only being parsed, shaped like the ids most of them print.
+const STAND_IN = '00000000-0000-0000-0000-000000000000'
+// The step label that marks a step needing a real Claude session.
+const REAL = '(real Claude)'
+
+type Part = { kind: 'text'; text: string } | { kind: 'sub'; words: Word[] }
+type Word = Part[]
+
+// Splits one command into words, keeping each "$(...)" as a command of its own.
+export function tokenize(line: string): Word[] {
+  const [words, end] = read(line, 0, false)
+  if (end !== line.length) throw new Error(`unexpected ) at ${String(end)} in: ${line}`)
+  return words
+}
+
+// Adds text to the word being read, joining it to text already at its end.
+function withText(word: Word | null, text: string): Word {
+  const parts = word ?? []
+  const last = parts.at(-1)
+  return last?.kind === 'text' ? [...parts.slice(0, -1), { kind: 'text', text: last.text + text }] : [...parts, { kind: 'text', text }]
+}
+
+function read(line: string, start: number, inSub: boolean): [Word[], number] {
+  const words: Word[] = []
+  let word: Word | null = null
+  let i = start
+  while (i < line.length) {
+    const c = line.charAt(i)
+    if (inSub && c === ')') {
+      if (word) words.push(word)
+      return [words, i + 1]
+    }
+    if (/\s/.test(c)) {
+      if (word) words.push(word)
+      word = null
+      i++
+    } else if (c === "'") {
+      const close = line.indexOf("'", i + 1)
+      if (close < 0) throw new Error(`a single quote is not closed in: ${line}`)
+      word = withText(word, line.slice(i + 1, close))
+      i = close + 1
+    } else if (c === '"') {
+      i++
+      word = word ?? []
+      for (;;) {
+        if (i >= line.length) throw new Error(`a double quote is not closed in: ${line}`)
+        const d = line.charAt(i)
+        if (d === '"') {
+          i++
+          break
+        }
+        if (d === '\\' && '"\\$`'.includes(line.charAt(i + 1))) {
+          word = withText(word, line.charAt(i + 1))
+          i += 2
+        } else if (d === '$' && line.charAt(i + 1) === '(') {
+          const [inner, after] = read(line, i + 2, true)
+          word = [...word, { kind: 'sub', words: inner }]
+          i = after
+        } else {
+          word = withText(word, d)
+          i++
+        }
+      }
+    } else if (c === '$' && line.charAt(i + 1) === '(') {
+      const [inner, after] = read(line, i + 2, true)
+      word = [...(word ?? []), { kind: 'sub', words: inner }]
+      i = after
+    } else if (c === '\\') {
+      word = withText(word, line.charAt(i + 1))
+      i += 2
+    } else {
+      word = withText(word, c)
+      i++
+    }
+  }
+  if (inSub) throw new Error(`a $( is not closed in: ${line}`)
+  if (word) words.push(word)
+  return [words, i]
+}
+
+// A word's text, with each substitution replaced by what `fill` gives for it.
+async function expand(word: Word, fill: (words: Word[]) => Promise<string>): Promise<string> {
+  let out = ''
+  for (const part of word) out += part.kind === 'text' ? part.text : await fill(part.words)
+  return out
+}
+
+export type Step = { label: string; real: boolean; commands: string[] }
+export type Feature = {
+  id: string; file: string; title: string; sections: string[]
+  subFeatures: string[]; needs: { pipelines: boolean; real: boolean }; preconditions: string[]; steps: Step[]
+}
+
+const codeSpans = (text: string) => [...text.matchAll(/`([^`]+)`/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]))
+
+export function readFeature(file: string): Feature {
+  const lines = readFileSync(file, 'utf8').split('\n')
+  const title = lines.find((l) => l.startsWith('# '))?.slice(2).trim() ?? ''
+  const sections = lines.filter((l) => l.startsWith('## ')).map((l) => l.slice(3).trim())
+  const body = (heading: string) => {
+    const at = lines.findIndex((l) => l === `## ${heading}`)
+    if (at < 0) return []
+    const next = lines.findIndex((l, i) => i > at && l.startsWith('## '))
+    return lines.slice(at + 1, next < 0 ? undefined : next)
+  }
+  // A bullet and its indented continuation lines, as one string.
+  const bullets = (part: string[]) => {
+    const out: string[] = []
+    for (const line of part) {
+      if (line.startsWith('- ')) out.push(line.slice(2))
+      else if (line.startsWith('  ') && out.length) out[out.length - 1] = `${out.at(-1) ?? ''} ${line.trim()}`
+    }
+    return out
+  }
+  const driving = body('Driving it with agentsctl')
+  const all = bullets(driving)
+  const steps = all.filter((b) => b.startsWith('**')).map((b): Step => {
+    const label = /^\*\*(.+?)\*\*/.exec(b)?.[1] ?? ''
+    return { label: label.replace(/\.$/, ''), real: label.includes(REAL), commands: codeSpans(b).filter((c) => c.startsWith(`${AGENTSCTL} `)) }
+  })
+  const preconditions = all.filter((b) => !b.startsWith('**'))
+  const ups = preconditions.flatMap(codeSpans).filter((c) => c.startsWith(`${AGENTSCTL} up`))
+  return {
+    id: file.split('/').at(-1)?.replace(/\.md$/, '') ?? file,
+    file, title, sections,
+    subFeatures: bullets(body('Sub-features')),
+    needs: { pipelines: ups.some((c) => c.includes('--pipelines')), real: ups.some((c) => c.includes('--claude real')) },
+    preconditions, steps,
+  }
+}
+
+// The features in the order the index lists them.
+export function listMap(): Feature[] {
+  const index = readFileSync(join(FEATURES_DIR, 'README.md'), 'utf8')
+  return [...index.matchAll(/\]\(\.\/([a-z0-9-]+\.md)\)/g)].flatMap((m) => (m[1] ? [readFeature(join(FEATURES_DIR, m[1]))] : []))
+}
+
+export function checkMap(parseCommand: (argv: string[]) => void): string[] {
+  const problems: string[] = []
+  const indexFile = join(FEATURES_DIR, 'README.md')
+  if (!existsSync(indexFile)) return [`${relative(ROOT, indexFile)} is missing`]
+  const listed = new Set([...readFileSync(indexFile, 'utf8').matchAll(/\]\(\.\/([a-z0-9-]+\.md)\)/g)].flatMap((m) => (m[1] ? [m[1]] : [])))
+  const present = new Set(readdirSync(FEATURES_DIR).filter((f) => f.endsWith('.md') && f !== 'README.md'))
+  for (const f of present) if (!listed.has(f)) problems.push(`${f} is not in the index`)
+  for (const f of listed) if (!present.has(f)) problems.push(`the index lists ${f}, which does not exist`)
+  const parsesAs = (words: Word[], where: string) => {
+    const argv = words.map((w) => w.map((p) => (p.kind === 'text' ? p.text : STAND_IN)).join(''))
+    for (const w of words) for (const p of w) if (p.kind === 'sub') parsesAs(p.words, where)
+    if (argv[0] !== AGENTSCTL) {
+      problems.push(`${where}: a substituted command must be ${AGENTSCTL}`)
+      return
+    }
+    try {
+      parseCommand(argv.slice(1))
+    } catch (error) {
+      problems.push(`${where}: ${argv.join(' ')}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''}`)
+    }
+  }
+  for (const f of [...present].sort()) {
+    const feature = readFeature(join(FEATURES_DIR, f))
+    if (!feature.title) problems.push(`${f} has no # title`)
+    if (feature.sections.join('|') !== SECTIONS.join('|')) problems.push(`${f} has sections ${feature.sections.join(', ')}; it needs exactly ${SECTIONS.join(', ')}`)
+    if (!feature.subFeatures.length) problems.push(`${f} lists no sub-features`)
+    if (!feature.preconditions.length) problems.push(`${f} has no preconditions`)
+    if (!feature.steps.length) problems.push(`${f} has no labelled steps`)
+    for (const step of feature.steps) {
+      const where = `${f}, "${step.label}"`
+      if (!step.commands.length) problems.push(`${where} has no ${AGENTSCTL} command`)
+      for (const command of step.commands) {
+        let words: Word[]
+        try {
+          words = tokenize(command)
+        } catch (error) {
+          problems.push(`${where}: ${error instanceof Error ? error.message : String(error)}`)
+          continue
+        }
+        const verb = words[1]?.map((p) => (p.kind === 'text' ? p.text : '')).join('')
+        if (verb === 'up' || verb === 'down' || verb === 'map') problems.push(`${where}: a step never runs ${verb}; the run manages the instance`)
+        parsesAs(words, where)
+      }
+    }
+  }
+  return problems
+}
+
+// A step's verdict on the ladder in verdict.ts, or `not run` when an earlier step
+// failed and this one depends on what that one left.
+export const StepReport = z.object({
+  label: z.string(),
+  verdict: z.enum(['live-ui-verified', 'verifier-failed', 'verifier-blocked', 'not run']),
+  reason: z.string(),
+  commands: z.array(z.object({ command: z.string(), ok: z.boolean(), skipped: z.boolean(), summary: z.string() })),
+})
+export type StepReport = z.infer<typeof StepReport>
+export const FeatureReport = z.object({
+  id: z.string(), title: z.string(), verdict: Verdict, verified: z.number().int(), steps: z.array(StepReport),
+})
+export type FeatureReport = z.infer<typeof FeatureReport>
+export const MapReport = z.object({
+  ok: z.boolean(), instance: z.string(), harness: z.string(), pipelines: z.boolean(), visual: z.boolean(),
+  features: z.array(FeatureReport), file: z.string(), text: z.string(),
+})
+export type MapReport = z.infer<typeof MapReport>
+
+type Run = (argv: string[]) => Promise<{ code: number; output: Output }>
+// Whether the instance is healthy, and if not, why: the doctor's failing checks.
+type Health = () => Promise<{ ok: boolean; why: string }>
+
+// A feature is verified live only when every step was. One failed step fails it,
+// and otherwise any step that could not run leaves it blocked.
+function verdictOf(steps: StepReport[]): Verdict {
+  if (steps.some((s) => s.verdict === 'verifier-failed')) return 'verifier-failed'
+  return steps.every((s) => s.verdict === 'live-ui-verified') ? 'live-ui-verified' : 'verifier-blocked'
+}
+
+export async function runMap(state: ReadyState, targets: string[], options: { visual: boolean; keepGoing: boolean }, run: Run, health: Health): Promise<MapReport> {
+  const all = listMap()
+  const unknown = targets.filter((t) => t !== 'all' && !all.some((f) => f.id === t))
+  if (unknown.length) throw new Error(`no feature named ${unknown.join(', ')}. The map has: ${all.map((f) => f.id).join(', ')}`)
+  const features = targets.includes('all') ? all : all.filter((f) => targets.includes(f.id))
+  const withInstance = (argv: string[]) => (argv.includes('--instance') ? argv : [...argv, '--instance', state.name])
+  const fill = async (words: Word[]): Promise<string> => {
+    const argv = await Promise.all(words.map((w) => expand(w, fill)))
+    if (argv[0] !== AGENTSCTL) throw new Error(`a substituted command must be ${AGENTSCTL}: ${argv.join(' ')}`)
+    const { code, output } = await run(withInstance(argv.slice(1)))
+    if (code !== 0) throw new Error(`${argv.join(' ')} failed: ${output.summary}`)
+    return output.summary.trim()
+  }
+  const reports: FeatureReport[] = []
+  // Set once the instance itself stopped being healthy. Nothing after that can be judged.
+  let broken: string | null = null
+  for (const feature of features) {
+    const steps: StepReport[] = []
+    const blocked = feature.needs.pipelines && !state.pipelines
+      ? `needs an instance started with: ${AGENTSCTL} up --pipelines`
+      : feature.needs.real && state.harness !== 'real' ? `needs an instance started with: ${AGENTSCTL} up --claude real` : null
+    let stopped = false
+    for (const step of feature.steps) {
+      const unrun = broken ?? blocked
+      if (unrun) {
+        steps.push({ label: step.label, verdict: 'verifier-blocked', reason: unrun, commands: [] })
+        continue
+      }
+      if (step.real !== (state.harness === 'real')) {
+        steps.push({
+          label: step.label, verdict: 'verifier-blocked', commands: [],
+          reason: step.real ? `needs a real Claude session: ${AGENTSCTL} up --claude real` : 'follows the fake harness\'s scripted replies, so it runs on an instance without --claude real',
+        })
+        continue
+      }
+      if (stopped) {
+        steps.push({ label: step.label, verdict: 'not run', reason: 'an earlier step failed', commands: [] })
+        continue
+      }
+      const commands: StepReport['commands'] = []
+      let failure: string | null = null
+      for (const command of step.commands) {
+        try {
+          const argv = await Promise.all(tokenize(command).map((w) => expand(w, fill)))
+          if (argv[1] === 'visual' && argv[2] === 'shot' && !options.visual) {
+            commands.push({ command, ok: true, skipped: true, summary: 'skipped: map run --visual takes visual captures' })
+            continue
+          }
+          const { code, output } = await run(withInstance(argv.slice(1)))
+          commands.push({ command, ok: code === 0, skipped: false, summary: output.summary })
+          if (code !== 0) {
+            failure = `${command}: ${output.summary}`
+            break
+          }
+        } catch (error) {
+          failure = `${command}: ${error instanceof Error ? error.message : String(error)}`
+          commands.push({ command, ok: false, skipped: false, summary: failure })
+          break
+        }
+      }
+      if (failure) {
+        // A failure counts against the app only on a healthy instance. Otherwise the run is blocked.
+        const healthy = await health()
+        if (!healthy.ok) broken = `the instance stopped being healthy: ${healthy.why}`
+        steps.push({
+          label: step.label, verdict: healthy.ok ? 'verifier-failed' : 'verifier-blocked', commands,
+          reason: healthy.ok ? failure : `the instance stopped being healthy (${healthy.why}) after: ${failure}`,
+        })
+        if (!options.keepGoing) stopped = true
+      } else {
+        steps.push({ label: step.label, verdict: 'live-ui-verified', reason: '', commands })
+      }
+    }
+    reports.push({ id: feature.id, title: feature.title, verdict: verdictOf(steps), verified: steps.filter((s) => s.verdict === 'live-ui-verified').length, steps })
+  }
+  const text = reports.map((f) => [
+    `${f.verdict.padEnd(17)} ${f.id} (${String(f.verified)} of ${String(f.steps.length)} steps verified live)`,
+    ...f.steps.map((s) => `    ${s.verdict.padEnd(17)} ${s.label}${s.reason ? `: ${s.reason.split('\n')[0] ?? ''}` : ''}`),
+  ].join('\n')).join('\n')
+  const file = nextPath(state.evidence, 'map', features.map((f) => f.id).join('-').slice(0, 60), 'json')
+  const ok = reports.every((f) => f.verdict === 'live-ui-verified')
+  const report: MapReport = { ok, instance: state.name, harness: state.harness, pipelines: state.pipelines, visual: options.visual, features: reports, file, text }
+  writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`)
+  return report
+}

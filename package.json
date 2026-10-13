@@ -8,6 +8,7 @@
   "scripts": {
     "api": "node --env-file=.env server/api.ts",
     "app:build": "vite build --config app/vite.config.ts",
+    "ctl": "node ctl/main.ts",
     "check": "node test/names.ts && npm run typecheck && npm run lint && node test/all.ts",
     "check:names": "node test/names.ts",
     "check:step0": "node --env-file=.env --env-file=.env.test test/step0.ts",

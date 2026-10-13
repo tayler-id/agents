@@ -1,0 +1,191 @@
+// What an instance starts with, and the fixtures `agentsctl seed` adds. People,
+// machines and agents go in through server/admin.ts, the path an admin uses.
+// Repos go on the shared forge, in an org of the instance's own named like its
+// team, with the same repo names a real team has (shop and pipelines), and are
+// removed by `down`. The fake Claude harness follows the scenario written here.
+
+import { execFile } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
+import { z } from 'zod'
+import { childEnv, ROOT } from './config.ts'
+import { withClient } from './db.ts'
+import { ForgeError, forgeAdmin, forgeConfig } from '../server/forge.ts'
+import { AgentId, InstanceId, PersonId, readState, RepoId, saveState, TeamId, type ForgeRepo, type InstanceName, type ReadyState, type Seed } from './state.ts'
+
+const run = promisify(execFile)
+
+// The agents every instance has. fixer and improver are the agents the team's
+// pipelines name. Their model is the cheapest, for runs on real Claude.
+export const AGENTS: Record<string, string> = {
+  fixer: 'You fix bugs.',
+  writer: 'You write docs.',
+  improver: 'You improve pipelines.',
+}
+export const AGENT_MODEL = 'haiku'
+export const MACHINE = 'mac'
+export const loginOf = (who: 'ada' | 'ben', name: InstanceName) => `${who}-${name}@verify.local`
+export const orgOf = (name: InstanceName) => `verify-${name}`
+
+// A secret value the scenario's agent repeats, so a run can show it never
+// reaches the record. Only meaningful on an instance's own machine.
+export const SECRET_VALUE = 'verify-secret-0451'
+
+async function admin(...args: string[]): Promise<string> {
+  try {
+    return (await run(process.execPath, [join(ROOT, 'server', 'admin.ts'), ...args], { cwd: ROOT, env: childEnv({}) })).stdout
+  } catch (error) {
+    const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr.trim() : ''
+    throw new Error(`server/admin.ts ${args.join(' ')} failed: ${stderr || (error instanceof Error ? error.message : String(error))}`)
+  }
+}
+
+const NewInstance = z.object({ instance: z.string(), token: z.string().startsWith('machine_') })
+const NewAgent = z.object({ agent: z.string(), agentId: AgentId })
+
+export async function addPerson(team: string, login: string) {
+  await admin('add-person', team, login)
+}
+
+export async function addAgent(team: string, name: string, instructions: string): Promise<z.infer<typeof AgentId>> {
+  return NewAgent.parse(JSON.parse(await admin('add-agent', team, name, MACHINE, AGENT_MODEL, instructions))).agentId
+}
+
+export async function addBox(team: string, name: string, owner: string) {
+  NewInstance.parse(JSON.parse(await admin('add-instance', team, name, 'box', owner)))
+}
+
+// The team, its two people, its machine and its agents.
+export async function seedTeam(name: InstanceName, team: string): Promise<Seed> {
+  const [owner, teammate] = [loginOf('ada', name), loginOf('ben', name)]
+  await admin('add-team', team, owner)
+  await addPerson(team, teammate)
+  const { token } = NewInstance.parse(JSON.parse(await admin('add-instance', team, MACHINE, 'mac', owner)))
+  const agents: Record<string, z.infer<typeof AgentId>> = {}
+  for (const [agent, instructions] of Object.entries(AGENTS)) agents[agent] = await addAgent(team, agent, instructions)
+  return withClient(async (client) => {
+    const teamRow = z.object({ id: TeamId }).parse((await client.query('select id from teams where name = $1', [team])).rows[0])
+    const people = z.array(z.object({ id: PersonId, login: z.string() }))
+      .parse((await client.query('select id, login from people where team_id = $1', [teamRow.id])).rows)
+    const machine = z.object({ id: InstanceId }).parse((await client.query('select id from instances where team_id = $1 and name = $2', [teamRow.id, MACHINE])).rows[0])
+    const person = (login: string) => {
+      const found = people.find((p) => p.login === login)
+      if (!found) throw new Error(`the seeded person ${login} is not on ${team}`)
+      return found
+    }
+    return { teamId: teamRow.id, owner: person(owner), teammate: person(teammate), machine: { id: machine.id, name: MACHINE, token }, agents }
+  })
+}
+
+const shopFiles = () => Object.fromEntries(['checkout.js', 'package.json', 'test/checkout.test.js']
+  .map((f) => [f, readFileSync(join(ROOT, 'ops', 'seed', 'shop', f), 'utf8')]))
+
+async function addRepo(name: InstanceName, teamId: string, repo: string, files: Record<string, string>, role: ForgeRepo['role']): Promise<ForgeRepo> {
+  const org = orgOf(name)
+  await forgeAdmin.ensureOrg(org)
+  // No webhook: the forge can reach only the live API's port, never an instance's.
+  const path = await forgeAdmin.ensureRepo(repo, files, `verification instance ${name}`, false, org)
+  const remote = `${forgeConfig().url}/${path}.git`
+  const repoId = await withClient(async (client) => z.object({ id: RepoId }).parse((await client.query(
+    'insert into repos (team_id, remote_url) values ($1, $2) returning id', [teamId, remote])).rows[0]).id)
+  return { path, repoId, role }
+}
+
+// Another copy of the shop, for a task or a run on a repo of its own.
+export async function seedExtraRepo(state: ReadyState, repo: string): Promise<ForgeRepo> {
+  const made = await addRepo(state.name, state.seed.teamId, repo, shopFiles(), 'extra')
+  const latest = readState(state.name)
+  if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the repo was made`)
+  saveState({ ...latest, forgeRepos: [...latest.forgeRepos, made] })
+  return made
+}
+
+// The team's repos on the forge: shop, a small app with a known bug, and
+// pipelines, the team's pipeline files, run on the agents' home machine.
+export async function seedForge(name: InstanceName, teamId: string): Promise<ForgeRepo[]> {
+  const shop = shopFiles()
+  const bugFix = readFileSync(join(ROOT, 'pipelines', 'bug-fix.ts'), 'utf8')
+  // The team's bug-fix runs on boxes. An instance has no boxes that can reach it, so its runs stay home.
+  if (bugFix.split("runsOn: 'box'").length !== 2) throw new Error("pipelines/bug-fix.ts no longer says runsOn: 'box' exactly once")
+  const pipelines = {
+    'shared/pipeline.ts': readFileSync(join(ROOT, 'shared', 'pipeline.ts'), 'utf8'),
+    'pipelines/bug-fix.ts': bugFix.replace("runsOn: 'box'", "runsOn: 'home'"),
+    'pipelines/improve.ts': readFileSync(join(ROOT, 'pipelines', 'improve.ts'), 'utf8'),
+    'pipelines/coach.ts': readFileSync(join(ROOT, 'pipelines', 'coach.ts'), 'utf8'),
+  }
+  return [await addRepo(name, teamId, 'shop', shop, 'shop'), await addRepo(name, teamId, 'pipelines', pipelines, 'pipelines')]
+}
+
+// Removes the instance's org and every repo in it. The org is named after the
+// instance, so all of it is the instance's own, including a repo made by an `up`
+// that failed before it could record it.
+export async function removeForge(name: InstanceName): Promise<string[]> {
+  const org = orgOf(name)
+  const repos = await forgeAdmin.call<unknown>('GET', `/orgs/${org}/repos?limit=50`).catch((error: unknown) => {
+    if (error instanceof ForgeError && error.status === 404) return null
+    throw error
+  })
+  if (repos === null) return []
+  const removed: string[] = []
+  for (const { full_name: path } of z.array(z.object({ full_name: z.string() })).parse(repos)) {
+    await forgeAdmin.call('DELETE', `/repos/${path}`)
+    removed.push(path)
+  }
+  await forgeAdmin.call('DELETE', `/orgs/${org}`)
+  return removed
+}
+
+const TEST_FILE = `const test = require('node:test')
+const assert = require('node:assert')
+const { discount } = require('../checkout.js')
+
+test('TENOFF never goes below zero', () => assert.strictEqual(discount(5, 'TENOFF'), 0))
+`
+const PLAN = '# Plan\n\nMove tax rates into **one table** per country.\n\n- Add `rates.js`\n- Read it in `total()`\n'
+// The improve pipeline's change: a clearer triage prompt, which the replays score.
+export const CLEARER = 'Always call report_result when you finish.'
+const TRIAGE_LINE = 'Decide what this report is, without changing any code:'
+// Long enough to watch a stage run, in the run page and in Running now.
+const STAGE_MS = 3000
+
+// What the fake Claude harness does: replies in conversations by rule, and
+// steps through pipeline stages by the group a run's title names.
+export function scenario() {
+  return {
+    turns: [
+      { match: 'You are fixer', reply: 'I will take the **checkout** bug.' },
+      { match: 'You are writer', reply: 'PASS' },
+      { match: 'You are improver', reply: 'PASS' },
+      { match: 'Write the release notes', write: { 'task/notes.md': '# Release notes\n\n- TENOFF stops at zero.\n' }, reply: 'Wrote task/notes.md.' },
+      { match: 'commented on ./task/notes.md', write: { 'task/notes.md': '# Release notes\n\n- TENOFF never goes below zero.\n- Faster checkout.\n' }, reply: 'Revised notes.md.' },
+      { match: 'What is the token', reply: `The token is ${SECRET_VALUE}.` },
+    ],
+    TENOFF: {
+      'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', reportOnlyIf: CLEARER, summary: 'A new bug in discount().', sleepMs: STAGE_MS }],
+      'easy,hard,cannot_reproduce': [{ outcome: 'easy', sleepMs: STAGE_MS, write: { 'shop/test/tenoff.test.js': TEST_FILE }, data: { test_command: 'node --test test/tenoff.test.js', suite_command: 'npm test' } }],
+      'fixed,stuck': [{ outcome: 'fixed', summary: 'TENOFF now stops at **zero**.', sleepMs: STAGE_MS, replace: { 'shop/checkout.js': ['amount - 10', 'Math.max(0, amount - 10)'] } }],
+    },
+    PLANME: {
+      'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', summary: 'A new bug.' }],
+      'easy,hard,cannot_reproduce': [{ outcome: 'hard', summary: 'Needs a tax table per country.' }],
+      planned: [{ outcome: 'planned', write: { 'task/plan.md': PLAN } }],
+    },
+    STUCK: {
+      'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', summary: 'A new bug.' }],
+      'easy,hard,cannot_reproduce': [{ outcome: 'cannot_reproduce', summary: 'No test fails.' }],
+    },
+    Improve: {
+      'changed,nothing': [{ outcome: 'changed', summary: 'Both recent runs needed a reminder at triage, so the triage prompt now says to always call report_result.',
+        replace: { 'pipelines/pipelines/bug-fix.ts': [TRIAGE_LINE, `${CLEARER} ${TRIAGE_LINE}`] } }],
+    },
+    Coach: {
+      'changed,nothing': [{ outcome: 'changed', summary: 'Two people asked for British spelling in separate sessions.',
+        data: { agent: 'fixer', instructions: 'You fix bugs. Write in British English.' } }],
+    },
+  }
+}
+
+export function writeScenario(file: string) {
+  writeFileSync(file, `${JSON.stringify(scenario(), null, 2)}\n`)
+}
