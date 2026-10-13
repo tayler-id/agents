@@ -21,6 +21,7 @@ import {
 } from '../shared/evidence.ts'
 import { AgentId, PersonId, ProposalId, type PipelineId, type RunId, type TeamId } from '../shared/ids.ts'
 import { NAME } from '../shared/types.ts'
+import { messageOf } from '../shared/errors.ts'
 
 // At most five hunks in one change, as decided.
 export const MAX_HUNKS = 5
@@ -227,11 +228,16 @@ async function plan(client: pg.PoolClient, context: {
 const asCandidate = (id: string): CandidateId => CandidateId.parse(id)
 
 // The always-loaded text after some hunks: the instructions plus every skill description.
-function loadedAfter(instructions: string, skills: Map<string, { description: string }>, hunks: Pick<Planned, 'edit' | 'skill'>[]): number {
+// Team-wide skills load for every agent on the team, so their descriptions count
+// toward each agent's budget. Hunks change only the agent's own skills.
+const teamSkillDescriptions = async (db: Db, agentId: AgentId) => (await many<{ description: string }>(db,
+  `select s.description from skills s join agents a on a.team_id = s.team_id where a.id = $1 and s.agent_id is null`, [agentId])).map((s) => s.description)
+
+function loadedAfter(instructions: string, skills: Map<string, { description: string }>, team: string[], hunks: Pick<Planned, 'edit' | 'skill'>[]): number {
   const edits = hunks.flatMap((h) => (h.edit ? [h.edit] : []))
   const descriptions = new Map([...skills].map(([name, s]) => [name, s.description]))
   for (const h of hunks) if (h.skill) descriptions.set(h.skill.name, h.skill.description)
-  return tokensOf([editInstructions(instructions, edits), ...descriptions.values()])
+  return tokensOf([editInstructions(instructions, edits), ...descriptions.values(), ...team])
 }
 
 const budgetProblem = (before: number, after: number) => (before <= BUDGET_TOKENS
@@ -275,8 +281,8 @@ export async function proposeHunks(client: pg.PoolClient, input: {
     if (memory) refused.push({ finding: raw, reason: memory })
     else planned.push(result)
   }
-  const sizeBefore = loadedAfter(agent.instructions, skills, [])
-  const budget = budgetProblem(sizeBefore, loadedAfter(agent.instructions, skills, planned))
+  const team = await teamSkillDescriptions(client, input.agentId)
+  const budget = budgetProblem(loadedAfter(agent.instructions, skills, team, []), loadedAfter(agent.instructions, skills, team, planned))
   if (budget) {
     return { proposalId: null, kept: 0, refused: [...refused, { finding: planned.length, reason: budget }], summary: `Refused the whole change: ${budget}.` }
   }
@@ -393,33 +399,34 @@ async function applyAgentHunks(client: pg.PoolClient, teamId: string, agentId: A
   const agent = await one<{ instructions: string }>(client, `agent ${agentId}`, 'select instructions from agents where id = $1 for update', [agentId])
   const skills = new Map((await many<{ name: string; description: string; content: string }>(client,
     'select name, description, content from skills where agent_id = $1 for update', [agentId])).map((s) => [s.name, s]))
-  const edits: Edit[] = []
-  for (const h of kept.filter((k) => k.target === 'instructions')) {
+  const edits: Edit[] = kept.filter((k) => k.target === 'instructions').map((h) => {
     const rule = h.rule_hash === null ? null : RuleHash.parse(h.rule_hash)
-    if (h.op === 'add') edits.push({ op: 'add', after: rule, text: h.after })
-    else if (rule && h.op === 'change') edits.push({ op: 'change', rule, text: h.after })
-    else if (rule) edits.push({ op: 'delete', rule })
-  }
+    if (h.op === 'add') return { op: 'add', after: rule, text: h.after }
+    if (!rule) throw new Error(`hunk ${h.id} would ${h.op} a rule but names none`)
+    return h.op === 'change' ? { op: 'change', rule, text: h.after } : { op: 'delete', rule }
+  })
   let instructions: string
   try {
     instructions = editInstructions(agent.instructions, edits)
   } catch (error) {
-    throw new Error(`the instructions changed after this proposal, so it no longer applies: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`the instructions changed after this proposal, so it no longer applies: ${messageOf(error)}`)
   }
-  const skillHunks = kept.filter((h) => h.target === 'skill')
+  const skillHunks = kept.filter((h) => h.target === 'skill').map((h) => {
+    if (h.skill_name === null || h.skill_description === null) throw new Error(`skill hunk ${h.id} has no name or description`)
+    return { ...h, skill: { name: h.skill_name, description: h.skill_description } }
+  })
   for (const h of skillHunks) {
-    const name = h.skill_name ?? ''
-    const old = skills.get(name)
-    if (contentHash(old?.content ?? '') !== h.content_hash) throw new Error(`the skill ${name} changed after this proposal, so it no longer applies`)
+    if (contentHash(skills.get(h.skill.name)?.content ?? '') !== h.content_hash) {
+      throw new Error(`the skill ${h.skill.name} changed after this proposal, so it no longer applies`)
+    }
   }
-  const descriptions = new Map([...skills].map(([name, s]) => [name, s.description]))
-  for (const h of skillHunks) descriptions.set(h.skill_name ?? '', h.skill_description ?? '')
-  const problem = budgetProblem(tokensOf([agent.instructions, ...[...skills.values()].map((s) => s.description)]), tokensOf([instructions, ...descriptions.values()]))
+  const team = await teamSkillDescriptions(client, agentId)
+  const problem = budgetProblem(loadedAfter(agent.instructions, skills, team, []), loadedAfter(agent.instructions, skills, team, [...edits.map((edit) => ({ edit, skill: null })), ...skillHunks.map((h) => ({ edit: null, skill: h.skill }))]))
   if (problem) throw new Error(`the hunks kept break the size budget: ${problem}`)
 
   await client.query('update agents set instructions = $2 where id = $1', [agentId, instructions])
   for (const h of skillHunks) {
-    const values = [teamId, agentId, h.skill_name, h.skill_description, h.after]
+    const values = [teamId, agentId, h.skill.name, h.skill.description, h.after]
     const { rowCount } = await client.query(
       'update skills set description = $4, content = $5, updated_at = now() where team_id = $1 and agent_id = $2 and name = $3', values)
     if (!rowCount) await client.query('insert into skills (team_id, agent_id, name, description, content) values ($1, $2, $3, $4, $5)', values)
@@ -459,7 +466,7 @@ export async function writePrompt(db: Db, agentId: AgentId): Promise<string> {
   lines.push('', 'Ready candidates, corrections no rule covers, each with where code routed it:')
   for (const c of ready) lines.push(`candidate ${c.id} · ${countsLine(c.counts)} · goes to ${routeLine(c.route)}: ${c.correction}`, ...c.findings.map(finding))
   if (!ready.length) lines.push('none')
-  const size = tokensOf([agent.instructions, ...skills.map((s) => s.description)])
+  const size = tokensOf([agent.instructions, ...skills.map((s) => s.description), ...await teamSkillDescriptions(db, agentId)])
   lines.push('', `The always-loaded text, the rules plus every skill description, is ${size} of ${BUDGET_TOKENS} tokens.`)
   lines.push('', `Rules for a change, enforced in code: at most ${MAX_HUNKS} hunks. Every hunk cites finding ids. An add, change, skill, profile or check hunk `
     + `needs findings from ${FLOOR} occasions. Deleting a rule needs ${FLOOR} harm findings about it. A hunk citing a candidate goes where the candidate is routed: `

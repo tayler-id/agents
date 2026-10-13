@@ -175,7 +175,7 @@ Each rule has a check that was seen failing, and each number in them is a named 
 7. **A hunk cites findings.** A hunk with no finding ids is refused, as is one citing a finding that is not this subject's live evidence.
 8. **Floors.** An added or changed rule, skill, profile line or check needs findings from two occasions. Deleting a rule needs two harm findings about that rule, from two occasions.
 9. **At most five hunks.** A writer that sends more has its whole report refused.
-10. **A size budget.** The always-loaded text, the instructions plus every skill description at 4 characters a token, stays under 5,000 tokens, or shrinks when it is already over. Checked for the whole proposal and again for the hunks kept.
+10. **A size budget.** The always-loaded text, the instructions plus the description of every skill that loads for the agent, its own and the team's, at 4 characters a token, stays under 5,000 tokens, or shrinks when it is already over. Checked for the whole proposal and again for the hunks kept.
 11. **The server computes the hunks.** The writer names operations on rules by their hashes. The server applies them, so the text and diff of each hunk are measured by code, and a change cannot touch text the writer did not name.
 12. **A rejected hunk stays rejected.** A hunk is held back when the team turned down one with the same scope and content hash that shares a finding with it, unless more occasions back the new one.
 13. **Only a winner reaches the shepherd.** With the change, fewer replays still need the correction than without it, and no more unrelated replays get worse.

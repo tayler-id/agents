@@ -217,6 +217,12 @@ try {
   check(shrink.proposalId && grow.proposalId === null && grow.refused.some((r) => r.reason.includes('already')),
     'once over the budget, a change may shrink the text but not grow it')
   await pool.query('update agents set instructions = $2 where id = $1', [fixer, INSTRUCTIONS])
+  // Team-wide skills load for every agent on the team, so their descriptions count too.
+  const teamSkill = must(await one(`insert into skills (team_id, agent_id, name, description, content) values ($1, null, 'house-style', $2, 'Anything.') returning id`,
+    [teamId, 'Follow the house style. '.repeat(Math.ceil((BUDGET_TOKENS * 4) / 24))]), 'the team skill').id
+  const teamOver = await propose([{ op: 'add', text: '- One more rule.', findings: british }])
+  check(teamOver.proposalId === null && teamOver.refused.some((r) => r.reason.includes('over the budget')), "a team-wide skill's description counts toward an agent's budget")
+  await pool.query('delete from skills where id = $1', [teamSkill])
 
   // Deciding each hunk at the gate, and settling.
   const atGate = async (proposalId: string | null) => {

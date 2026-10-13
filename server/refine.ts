@@ -296,7 +296,7 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
     const changed = new Map(skills.map((s) => [s.name, s]))
     for (const h of hunks.filter((x) => x.target === 'skill')) {
       const name = must(h.skill_name ?? undefined, 'skill name')
-      changed.set(name, { name, description: h.skill_description ?? '', content: h.after })
+      changed.set(name, { name, description: must(h.skill_description ?? undefined, `description of skill ${name}`), content: h.after })
     }
     return { instructions: editInstructions(agent.instructions, edits), skills: [...changed.values()], profiles }
   }
