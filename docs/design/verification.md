@@ -74,7 +74,7 @@ Not done:
 
 - `test/step17.ts` is written and typechecks. It has never run.
 - `test/step17-breaks.ts` does not exist, so no subcommand's check has been seen failing under a break.
-- No visual baselines exist. `.claude/skills/verify-agents/baselines/` is made once a sweep with `--visual` is reviewed and accepted.
+- No visual baselines are committed. `test/names.ts` reads every file as text, and in two of six captures tried, the PNG's bytes happen to spell the studied app's abbreviation, so a committed baseline would fail the name guard. Skipping binary files there needs Tayler's approval, since `test/names.ts` is a protected file.
 - Never run live: `machine read` (its steps need real Claude), `browser trace` and `browser focus`. `map guard` has not run against a base that has the map, so it has not been seen failing.
 - No step tagged `(real Claude)` has run: the tool approvals and the two interrupts.
 - A UI bug counts once a second agent confirms its recordings. One bug has its two recordings, and nobody has confirmed them yet. The others have been seen once.
