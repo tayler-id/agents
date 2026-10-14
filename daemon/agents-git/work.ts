@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs'
 import { aheadOf, git, gitRun, isAncestor, latestRef, moveRef, Sha, short, snapshotTree, treeOf, uncommitted } from './git.ts'
 import { withLedger, type Name } from './ledger.ts'
-import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, reachable, refused, replace, savesOf, stampOf, type Report } from './repo.ts'
+import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, preSyncOf, reachable, refused, replace, savesOf, stampOf, type Report } from './repo.ts'
 
 export async function save(ledgerFile: string, cwd: string, name: Name): Promise<Report> {
   return withLedger(ledgerFile, `save ${name}`, async (ledger) => {
@@ -62,6 +62,8 @@ export async function sync(ledgerFile: string, cwd: string, name: Name): Promise
     // rewrite them and the branch could not be pushed again. Merging main in keeps them.
     const merging = entry.submitted !== null
     const how = merging ? 'merge' : 'rebase'
+    // The head it started from, kept first, since a rebase rewrites the commits and the reflog expires.
+    await moveRef(repo.main, `${preSyncOf(name)}${stampOf(new Date())}`, worktree.head, null)
     const ran = merging
       ? await gitRun(entry.path, ['merge', '--no-edit', '--no-gpg-sign', '-m', `Merge main ${short(main)} into ${name}`, main])
       : await gitRun(entry.path, ['rebase', '--no-autostash', '--no-autosquash', '--no-update-refs', main])

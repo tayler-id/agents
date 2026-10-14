@@ -28,6 +28,8 @@ export const refsOf = (name: Name) => `refs/agents-git/${name}`
 export const doneRef = (name: Name) => `${refsOf(name)}/done`
 // Each save is a ref named for when it was made, so the newest sorts last.
 export const savesOf = (name: Name) => `${refsOf(name)}/save-`
+// Where sync keeps the head it started from, named for when it started, since a rebase rewrites the commits.
+export const preSyncOf = (name: Name) => `${refsOf(name)}/pre-sync-`
 
 export type Repo = { main: string, others: GitWorktree[] }
 
