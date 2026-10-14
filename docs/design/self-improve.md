@@ -340,6 +340,7 @@ When a run starts from an issue on a repo with a policy, Agents owes the reporte
 - It closes only with proof of the promised kind, or when a person waives it by name with a reason.
 - An event already applied changes nothing.
 - A stale event, one for another place, one with the wrong kind of proof, or a new delivery to a kept promise fails closed and changes nothing.
+- A promise the runner fails to deliver waits before its next try, twice as long after each failure, up to an hour, and one that cannot be delivered holds none of the others up.
 - The API lists what is due and what is overdue. **Not built.** The app does not show them yet.
 
 `test/step16d.ts` shows each of these.
@@ -405,7 +406,8 @@ Each guard below was broken with a scripted edit whose anchor matched once, its 
 | An image passes unread only when its extension names the format its first bytes show | Any extension went with an image's first bytes | `test/step16b.ts` "a script that starts with GIF bytes fails, since .ts names no image (pass)", its size fixture, and the same for `server/helper.ts`, which opens with the `GIF89a:` label and holds a NUL byte, read from git |
 | Each protected path under `**/` is also named at the root | The policy lacked `AGENTS.md` at the root | `test/step16b.ts` "each protected path under **/ is also named at the root" |
 | A gzipped push whose request fails fails its reader | The request's error never reached the unzipping | `test/step16f.ts` "a gzipped push whose request fails partway fails its reader: still waiting" |
-| A promise that fails waits before its next try | Every tick tried it again | `test/step16d.ts` "a promise that fails waits before its next try: 5 tries so far" |
+| A promise that fails waits before its next try | Every tick tried it again | `test/step16d.ts` "a promise that fails waits before its next try: 5 tries so far". With the fixed sleep replaced by a wait for a later pass, "a promise that fails waits before its next try, through a later pass: 3 tries so far" |
+| A promise that failed 40 times waits an hour, and holds none of the others up | The exponent was not capped, so the cast overflowed at 31 tries and every pass rolled back | `test/step16d.ts` "a promise that failed 40 times waits an hour before its next try: 40 tries so far", and the outcome was never delivered |
 | A deployer that starts fails deploys left part done | It never looked for them | `test/step16c.ts` "a deploy left checking by a deployer that stopped fails when the next deployer starts: checking" |
 | The runner fails a deploy whose deployer never finished | Its cap was a thousand times longer | `test/step16c.ts` "the runner fails a deploy whose deployer started it and never finished: switching" |
 | The pull request fences the review findings and the decisions | The decisions were plain text | `test/step16.ts`, HAPPY, "the review findings and the decisions sit in fences" |

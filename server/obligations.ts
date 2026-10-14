@@ -92,8 +92,10 @@ export async function deliverOutcomes(client: pg.PoolClient, teamIds: string[] |
       await client.query('rollback to savepoint delivery')
       // Each failed try doubles the wait before the next, up to an hour, so a
       // promise that cannot be kept is not asked of the forge on every tick.
+      // The exponent stops at 6, already past the hour, since 2 to the 31st
+      // overflows the int cast and the error would undo the whole pass.
       const { attempts } = await one<{ attempts: number }>(client, `obligation ${o.id}`,
-        `update obligations set attempts = attempts + 1, retry_at = now() + make_interval(mins => least(60, power(2, attempts)::int))
+        `update obligations set attempts = attempts + 1, retry_at = now() + make_interval(mins => least(60, power(2, least(attempts, 6))::int))
          where id = $1 returning attempts`, [o.id])
       console.error(`obligation ${o.id} stays open after ${attempts} tries: ${messageOf(error)}`)
     }

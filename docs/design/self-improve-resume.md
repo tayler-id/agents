@@ -21,7 +21,7 @@ Blocking:
 2. Two files could share one path, since git's output is read as UTF-8. A path holding U+FFFD, or one git lists twice, now fails closed. Done.
 3. A person's message to a judge's session started it without its limits. `sendToSession` now refuses a message to any session a review or confirm row lists among its reviewers, with a 409. No column was added: the reviewers list is the mark, and a schema change to `agents_test` was refused by the permission system. Done.
 4. `JUDGE_PERMISSIONS` had no check. The fake harness logs `--permission-mode`, and step16 HAPPY checks judges start with none and authors with `acceptEdits`. Done.
-5. The obligation backoff overflowed at 31 tries. Not started.
+5. The obligation backoff overflowed at 31 tries. The exponent stops at 6, step16d seeds 40 tries, and its six second sleep is a wait on a later pass. The rerun on a database built from 0009 alone is not done: step16d needs the test Electric, which reads only `agents_test`, and changing `agents_test`'s schema was refused. A scratch database built from this branch's migrations showed the same 0009 objects as `agents_test`. Done but for that rerun.
 
 Not blocking:
 
