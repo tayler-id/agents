@@ -485,8 +485,8 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     return true
   }
   if (stage.kind === 'verify') return framework.startVerify(client, run, pipeline, row)
-  if (stage.kind === 'review') return framework.startReview(client, run, pipeline, rows, row, stage, ctx, workspace, spendCap - cost)
-  if (stage.kind === 'confirm') return framework.startConfirm(client, run, pipeline, rows, row, stage, ctx, workspace, spendCap - cost)
+  if (stage.kind === 'review') return framework.startReview(client, run, pipeline, rows, row, stage, forPrompt(ctx), workspace, spendCap - cost)
+  if (stage.kind === 'confirm') return framework.startConfirm(client, run, pipeline, rows, row, stage, forPrompt(ctx), workspace, spendCap - cost)
   if (stage.kind === 'suite') return framework.startSuite(client, run, pipeline, rows, row)
 
   if (stage.kind === 'check') {
