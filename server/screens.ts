@@ -25,6 +25,7 @@ import {
 import { PersonId, ScreenTakeoverId, SessionId, TunnelId } from '../shared/ids.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { parseJson } from '../shared/json.ts'
+import { WORKING } from '../shared/lifecycle.ts'
 import { bytesOf } from '../shared/websocket.ts'
 import { messageOf } from '../shared/errors.ts'
 
@@ -34,7 +35,6 @@ const TUNNEL_WAIT_MS = 10_000
 // A box that showed private work in the last day may still have it on screen,
 // in a tab or a terminal, so only people who can see that work may watch.
 const PRIVATE_WORK_HOURS = 24
-const WORKING = ['starting', 'running', 'needs_approval', 'needs_input']
 // A viewer sends keys, clicks and small protocol messages. The largest it may
 // send is clipboard text, which the filter caps at 1 MB and then drops.
 const VIEWER_MAX_FRAME = 2 * 1024 * 1024
