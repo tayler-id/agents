@@ -18,14 +18,13 @@ import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
 import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
-import { MessagePayload, OtherCommand, PUSH_PAYLOAD, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, OtherCommand, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces, type TaskFile } from './workspace.ts'
 import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from '../shared/framework.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -363,9 +362,9 @@ const settingUp = (workspaceId: string) => async () =>
 async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'setup_workspace') return ws.setup(command.payload)
   if (command.kind === 'exec') return ws.exec(command.payload)
-  if (command.kind === 'push') return ws.push(PUSH_PAYLOAD.parse(command.payload))
-  if (command.kind === 'verify') return checker.verify(VERIFY_PAYLOAD.parse(command.payload))
-  if (command.kind === 'suite') return checker.suite(SUITE_PAYLOAD.parse(command.payload))
+  if (command.kind === 'push') return ws.push(command.payload)
+  if (command.kind === 'verify') return checker.verify(command.payload)
+  if (command.kind === 'suite') return checker.suite(command.payload)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
     // A process keeps the setup it started with. Once the agent's instructions,
@@ -391,16 +390,21 @@ async function apply(command: Command): Promise<unknown> {
   return null
 }
 
+// Tells the API a command this machine claimed failed, and why.
+async function failCommand(commandId: string, why: string) {
+  const message = scrub(why)
+  console.error(`command ${commandId} failed:`, message)
+  await api('POST', `/v1/instance/commands/${commandId}`, { status: 'failed', error: message })
+    .catch(() => {})
+}
+
 async function handle(command: Command) {
   try {
     const result = await apply(command)
     // A message is finished by the turn that answers it, which the harness reports.
     if (command.kind !== 'message') await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
   } catch (error) {
-    const message = scrub(error instanceof Error ? error.message : String(error))
-    console.error(`command ${command.id} failed:`, message)
-    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'failed', error: message })
-      .catch(() => {})
+    await failCommand(command.id, error instanceof Error ? error.message : String(error))
   }
   // Setting up, a check or a push may have changed what differs from the base.
   // A suite runs in the check host's own clone, outside every workspace.
@@ -503,9 +507,10 @@ async function listen(signal: AbortSignal) {
   })
 }
 
-// What a claim answers with. A message's payload is read on its own, below.
+// What a claim answers with. A message's payload is read on its own, below. The
+// union is on the kind, so a command that doesn't parse names its own fields.
 const Claimed = z.object({
-  command: z.union([z.object({ id: z.string(), kind: z.literal('message'), sessionId: z.string(), payload: z.unknown() }), OtherCommand]),
+  command: z.discriminatedUnion('kind', [z.object({ id: z.string(), kind: z.literal('message'), sessionId: z.string(), payload: z.unknown() }), OtherCommand]),
 })
 
 // A message with its payload read. An API of another version can queue a payload
@@ -521,7 +526,14 @@ function readMessage(claimed: { id: string; sessionId: string; payload: unknown 
 
 async function claimAndHandle(commandId: string) {
   try {
-    const { command: claimed } = Claimed.parse(await api('POST', `/v1/instance/commands/${commandId}/claim`, {}))
+    const answer = Claimed.safeParse(await api('POST', `/v1/instance/commands/${commandId}/claim`, {}))
+    if (!answer.success) {
+      // The claim made the command this machine's. One it can't read fails with
+      // the reason, as one whose work throws does, so no run waits on it.
+      await failCommand(commandId, `This machine could not read the command: ${z.prettifyError(answer.error)}`)
+      return
+    }
+    const claimed = answer.data.command
     const command = claimed.kind === 'message' ? readMessage(claimed) : claimed
     if (command === null) return
     // Workspace work can take minutes, so it runs beside the queue rather than
