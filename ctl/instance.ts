@@ -12,7 +12,7 @@ import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { PageKey } from './driver.ts'
 import { z } from 'zod'
-import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX, scrubber } from './config.ts'
+import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, pageOrigins, redact, ROOT, SCRATCH_PREFIX, scrubber } from './config.ts'
 import { withClient } from './db.ts'
 import { call, readShape, type Reply } from './api.ts'
 import { CliError, EXIT, Refused, UsageError } from '../shared/cli/output.ts'
@@ -147,6 +147,8 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
         AGENTS_API_PORT: String(ports.machines), AGENTS_STREAMS_PORT: String(ports.streams),
         // People reach the API only on this socket, through the people process below.
         AGENTS_PEOPLE_SOCKET: socket,
+        // The API opens a screen's WebSocket only for a page of the app, and won't start without the origins those come from.
+        AGENTS_PEOPLE_ORIGINS: pageOrigins(ports.people).join(','),
         AGENTS_STREAMS_DIR: join(scratch, 'streams'), AGENTS_HOME: join(scratch, 'server'),
         // Boxes an instance starts never get the team's Claude token, nor the live image.
         AGENTS_BOX_TOKEN_FILE: join(scratch, 'no-box-claude-token'),

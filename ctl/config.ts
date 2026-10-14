@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
-import { EVIDENCE_MANIFEST_FILE } from '../shared/verification.ts'
+import { ENGINES, EVIDENCE_MANIFEST_FILE, type Engine } from '../shared/verification.ts'
 import { envSecrets, makeScrub, type Scrub } from '../shared/scrub.ts'
 import { Refused } from '../shared/cli/output.ts'
 
@@ -35,6 +35,18 @@ export const LATEST_MANIFEST = join(VERIFY_DIR, EVIDENCE_MANIFEST_FILE)
 export const PORT_RANGE = { first: 8020, last: 8039 } as const
 // The live system's ports. Nothing agentsctl starts or drives may use them.
 export const LIVE_PORTS: readonly number[] = [7700, 7701, 7710, 4437, 3000]
+
+// Over the tailnet the app is plain HTTP on a name that is not localhost, so
+// browsers withhold secure-page APIs such as crypto.randomUUID. Chromium,
+// Firefox and the desktop app reach an instance by a made-up name to match.
+// WebKit cannot map a name, so it uses the loopback address.
+export const INSECURE_HOST = 'agents.test'
+const LOOPBACK_HOST = '127.0.0.1'
+// The origin the pages of a browser's engine come from on an instance's people port.
+export const pageOrigin = (engine: Engine, peoplePort: number) =>
+  `http://${engine === 'webkit' ? LOOPBACK_HOST : INSECURE_HOST}:${String(peoplePort)}`
+// Every origin an instance's pages come from. Its API opens a screen's WebSocket only for these.
+export const pageOrigins = (peoplePort: number): string[] => [...new Set(ENGINES.map((engine) => pageOrigin(engine, peoplePort)))]
 
 const FileEnv = z.record(z.string(), z.string())
 

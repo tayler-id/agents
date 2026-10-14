@@ -11,7 +11,7 @@ import {
   type Browser, type BrowserContext, type ElectronApplication, type Locator, type Page, type Request,
 } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
-import { childEnv, ROOT } from './config.ts'
+import { childEnv, INSECURE_HOST, pageOrigin, ROOT } from './config.ts'
 import { describe, PageError, type Driver, type NetworkEntry, type PageKey } from './driver.ts'
 import type { Engine, Width } from '../shared/verification.ts'
 import type { Handle } from './protocol.ts'
@@ -20,11 +20,6 @@ import { instanceRules, VOLATILE } from './visual.ts'
 import { messageOf } from '../shared/errors.ts'
 
 const SIZES: Record<Width, { width: number; height: number }> = { desktop: { width: 1280, height: 820 }, phone: { width: 390, height: 844 } }
-// Over the tailnet the app is plain HTTP on a name that is not localhost, so
-// browsers withhold secure-page APIs such as crypto.randomUUID. Chromium and
-// Firefox reach the instance by a made-up name to match. WebKit cannot map a
-// name, so it uses the loopback address.
-const INSECURE_HOST = 'agents.test'
 const LAUNCH: Record<Engine, Parameters<typeof chromium.launch>[0]> = {
   chromium: { args: [`--host-resolver-rules=MAP ${INSECURE_HOST} 127.0.0.1`] },
   firefox: { firefoxUserPrefs: { 'network.dns.localDomains': INSECURE_HOST } },
@@ -95,7 +90,7 @@ const keyOf = (key: PageKey) => (key.target === 'desktop' ? `desktop|${key.width
 export function playwrightDriver(state: ReadyState, launched: () => Promise<void>): Driver {
   const browsers = new Map<Engine, Browser>()
   const holders = new Map<string, Holder>()
-  const origin = (engine: Engine) => `http://${engine === 'webkit' ? '127.0.0.1' : INSECURE_HOST}:${String(state.ports.people)}`
+  const origin = (engine: Engine) => pageOrigin(engine, state.ports.people)
 
   const watch = (holder: Holder) => {
     const { page } = holder
