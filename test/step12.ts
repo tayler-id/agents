@@ -485,6 +485,13 @@ try {
   const third = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a fourth sign-in')
   check((await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${third}/cancel`)).status === 200 && (await signInRow(third))?.status === 'cancelled',
     'the person can cancel a sign-in')
+  const checking = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a sign-in to cancel while it checks')
+  await asBox(boxToken, `/v1/instance/claude-logins/${checking}/link`, { url: signInLink })
+  await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${checking}/code`, { code })
+  const checkingCancel = await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${checking}/cancel`)
+  check(checkingCancel.status === 200 && (await signInRow(checking))?.status === 'cancelled'
+    && (await asBox(boxToken, `/v1/instance/claude-logins/${checking}/code`)).status === 404,
+  `a sign-in checking its code can be cancelled, and the box then gets no code (${checkingCancel.status})`)
   const codeInDb = await foundInDatabase(db, code)
   check(codeInDb.length === 0 && !off.text().includes(code), `the code is in no table and no log${codeInDb.length ? ` (found in ${codeInDb.join(', ')})` : ''}`)
 

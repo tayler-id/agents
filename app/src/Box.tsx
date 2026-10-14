@@ -172,7 +172,12 @@ function ClaudeSignIn({ box, login }: { box: Instance; login: ClaudeLoginRow | n
             </form>
           </>
         )}
-        {login?.status === 'checking' && <p role="status">Your box is checking the code with Claude.</p>}
+        {login?.status === 'checking' && (
+          <>
+            <p role="status">Your box is checking the code with Claude.</p>
+            <p><button type="button" className="link small" onClick={act(cancel)}>Cancel</button></p>
+          </>
+        )}
         {login?.status === 'signed_in' && (
           <>
             <p className="note-line" role="status"><span className="glyph" aria-hidden="true">✓</span> Signed in to Claude. Agents on your box run on your account.</p>

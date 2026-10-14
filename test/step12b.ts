@@ -164,6 +164,17 @@ async function run(engine: string) {
       && !(await newcomer.getByRole('button', { name: 'Sign in to Claude' }).count()),
     `${engine}: their box page says the box could not start and what Docker said, and offers no sign-in until it runs`)
     await newcomer.screenshot({ path: join(SHOTS, `${engine}-box-failed-light.png`), fullPage: true })
+    // A sign-in checking its code has a Cancel button. Its box can't run one here, so the row is made directly.
+    const checkingRow = (await db.query(
+      `insert into claude_logins (team_id, instance_id, person_id, status, url)
+       select i.team_id, i.id, i.owner_id, 'checking', $2 from instances i join people p on p.id = i.owner_id
+       where p.login = $1 and i.personal returning id`, [invited.toLowerCase(), 'https://claude.com/cai/oauth/authorize?state=12b'])).rows[0]?.id
+    const signInPart = newcomer.locator('[aria-label="Claude sign-in"]')
+    await visible(newcomer, '[aria-label="Claude sign-in"] p[role="status"]', 15, /checking the code/)
+    const cancelled = await signInPart.getByRole('button', { name: 'Cancel' }).click({ timeout: 15_000 }).then(() => true, () => false)
+    check(cancelled && await within(15, async () => (await db.query('select status from claude_logins where id = $1', [checkingRow])).rows[0]?.status === 'cancelled')
+      && await visible(newcomer, '[aria-label="Claude sign-in"] p', 15, /once your box is running/),
+    `${engine}: a sign-in checking its code can be cancelled from the box page`)
 
     // A login with no invite waits, and one click lets them in.
     const stranger = await open(waiting, {}, `Waiting ${engine}`)
