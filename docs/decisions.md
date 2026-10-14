@@ -27,6 +27,8 @@ Tayler went with the coordinator's picks on all of these.
   - The first build's Docker volumes are deleted, with a backup in `~/.agents-app/backups/first-build-volumes`.
   - The UI gets a design system and a new layout, since the current layout is poor. That work starts after every current branch lands.
   - The desktop app becomes one download, with the Mac connection and terminal-session capture built in. It is signed and notarized with Tayler's Apple Developer ID. Only whoever builds the app needs a developer ID, and teammates download it and open it. This also starts after the current branches land.
+  - The coding framework's section in `AGENTS.md`, its deployer `ops/deploy.ts` and this repo's policy `ops/policies/agents.json` are approved. On a repo with a policy, a change that adds a binary file other than a PNG, JPEG, GIF, WebP or ICO image fails the `opaque` gate. Its other options stay off: inline lint config, signed attestations, judges on their own machine, and a wider landing list.
+  - A browser page that can't give its text within 5 seconds, such as one held by an open alert, refuses every screenshot until it can.
   - Terminal sessions from a connected folder are seen by the team by default, and `connect --private` keeps them to the person. The daemon leaves out tool results for files outside the connected folder. It also learns the secret values in the person's login shell at start so it can scrub them, and those values never leave the Mac. Sessions from before a folder was connected stay on the Mac. Images stay on the Mac, with a note in the record that one was there.
 
 ## 2026-10-13, after the code review
