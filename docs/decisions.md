@@ -223,11 +223,11 @@ Tayler went with the coordinator's picks on all of these.
   - cleanup that previews by default
   
   Claude Code hooks route agents through it.
-- **Status.** `agents-git` v1 is built on branch `agents-git`, not merged. It starts a task's branch from local main with a worktree beside the repo and its own `npm ci`, keeps a ledger of every worktree, adopts the ones that exist, and finishes them with `done` and `prune`, which preview unless given `--yes` and keep each final commit under `refs/agents-git/<name>/done`. `test/step22.ts` checks it on a temp repo. Not built yet:
+- **Status.** `agents-git` is built on branch `agents-git`, not merged, and not yet run on the real repo. `start`, `list`, `adopt`, `done` and `prune` set up, track and finish worktrees beside the repo. `save` and `sync` keep work safe and on top of main. `check` runs steps under the run lock with main's env files, time limits and the docker rules. `submit` runs the framework's static gates and main's name guard on every new commit, then pushes copies to GitHub and opens the pull request. `land` runs the landing gates and the suite on the merge, then fast-forwards main and mirrors it. `docs/design/agents-git.md` maps each `AGENTS.md` rule to the command that enforces it, and `test/step22.ts` checks every command on a temp repo. Not built yet:
   - ports and a test database per worktree
-  - env file setup
-  - syncing, running checks, submitting and landing
+  - env file setup beyond the links `land` makes
   - the Claude Code hooks, which need Tayler's approval since they live under `.claude/`
+  - the one-time `refs/mirror/local-root` and `refs/mirror/github-root` setup on the real repo, in the design doc
 
 ### The repo on GitHub
 

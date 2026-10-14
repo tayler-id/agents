@@ -445,3 +445,27 @@ Main now holds durability (5556f3b), evidence (9ee5b17) and the stage budget fix
   - A commit made on a detached HEAD in the moment between done's last check and git's removal would be lost. Started worktrees are always on a branch, so only adopted detached ones are exposed.
   - A process killed while clearing a stale lock leaves `worktrees.json.lock.clearing`, which a person has to remove.
   - It has not been run against the real repo.
+
+### agents-git: save, sync, check, submit and land (not merged)
+
+- **What changed.** Five commands join v1, and each rule in `AGENTS.md` that a machine can check is a command that does it or refuses. `save` keeps uncommitted work in a ref, and `done` takes a dirty worktree only when the newest save holds its files. `sync` rebases onto local main. `check` runs steps under the run lock with main's env files, time limits per step and per docker build, logs and ledger counts. `submit` scans, copies the commits onto GitHub's history and opens the pull request. `land` runs the landing gates and the suite on a merge made in a throwaway worktree, then fast-forwards main and mirrors it. `docs/design/agents-git.md` maps each rule in `AGENTS.md` at `b2aa8b5` to the command that enforces it, and says why the rest stay prose.
+- **Decisions I made.**
+  - The branch merges main at `b2aa8b5`, so `submit` and `land` call the coding framework's own `staticGates`, `POLICY`, `changes` and glob matcher instead of copies. Only `docs/build-log.md` conflicted, and it keeps both sides.
+  - `check` loads main's `.env` and `.env.test` by absolute path. `land`'s suite is the policy's `npm run check`, whose `test/all.ts` reads `.env` from its own folder, so `land` links main's two files into its throwaway worktree. Neither command reads or copies them.
+  - A step's limit is the policy's 900 seconds and the suite's its 7200, and a check waits for the run lock as long as the longest of them. A docker build gets 20 minutes. `--limit` and `--build-limit` change them for one run.
+  - The docker every step sees is `daemon/agents-git/docker.ts`, started by a two-line script agents-git writes to `~/.agents-app/checks/agents-git/bin`. It is the only way to see a step's builds without changing the steps.
+  - The pair GitHub's history starts from lives in `refs/mirror/local-root` and `refs/mirror/github-root`, set once by hand, since the check's temp repo needs a pair of its own. The email swapped for the no-reply one is the one git is configured with, so no address is written into the code.
+  - `submit` runs main's `test/names.ts` on each new commit in a throwaway worktree, with the commit's message in an untracked file the guard reads, since the guard's patterns live only in that protected script.
+  - Approvals given at `submit` are kept in the ledger and count at `land`, as a person's decision every later step respects.
+  - `land` moves main in the main checkout with `git merge --ff-only`. Moving the ref alone would leave the live checkout's files behind, and its next commit would undo the landing.
+- **Seen failing.** 88 breaks, each in one of six clones of `8a6459e` running at once. A script asserted each anchor matched once, ran step22, and put the file back identical by sha256 before the next. Every guard's own line went red, with these exceptions, all expected:
+  - Three guards have another layer that catches the same failure, so breaking one alone turned no line red. The merged re-check before a branch is deleted sits behind the refusal of commits main lacks. `land`'s first look at the main checkout sits in front of its second look before the fast-forward. `check`'s `finally` has the exit handler, which also releases the run lock. With both layers out, "a clean worktree whose branch main lacks is still refused", "land refuses while the main checkout, where main fast-forwards, has uncommitted files" and "check lets go of it after" each went red.
+  - Two breaks turned an earlier line on the same code red, and step22 stopped before reaching the line named for them. Breaking the save rule in `done` turned "done refuses a worktree with uncommitted files" red, since both are one line of code now. Removing both run-lock releases turned "check lets go of it after" red, and the checks after it waited on the held lock.
+  - The slowest breaks wait out timeouts. The ledger lock's release took 429 seconds, and a check stopped by a signal 139.
+- **Verified.** Typecheck, lint, the name guard and the style check pass. step22 passes 123 checks in about 40 seconds, with no ports and no database. On a clone of the real repo, the graft rebuilt `f643a30` as `daa820c`, the commit GitHub has, in 4.8 seconds.
+- **Not covered.**
+  - `land`'s checks under the lock that main and the branch haven't moved while the suite ran have no line, since a check would have to move them mid-suite.
+  - The branch is 2,460 lines against main, over the framework's 400-line cap, so `submit` would refuse it on its own size gate.
+  - A branch synced after it was submitted can't be pushed again, since `submit` never forces.
+  - A SIGKILL leaves the run lock, as it does for `mkdir` by hand.
+  - None of it has run on the real repo, against GitHub, or with the Mac's Docker. The root pair refs are not set there.
