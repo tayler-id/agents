@@ -156,6 +156,7 @@ const OUT: [string, string, string][] = [
   ['a login on this Mac', 'From alice@local.', 'From [email removed].'],
   ['a login on this tailnet', 'From alice@agents-server.example.ts.net today.', 'From [email removed] today.'],
   ['a public link, ending a sentence', 'See https://github.com/a/b.', 'See https://github.com/a/b.'],
+  ['a link to this tailnet, ending a sentence', 'See http://agents-server.example.ts.net/r/1.', 'See [internal link removed].'],
 ]
 for (const [label, given, wanted] of OUT) {
   const sent = attempt(() => text.forPublic(given))

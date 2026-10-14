@@ -429,7 +429,9 @@ try {
   const mainThenTask = cloned.status === 0 ? await machineGit(machineToken, ['push', 'origin', 'HEAD:refs/heads/main', 'HEAD:refs/heads/task/proj-three'], clone) : noClone
   const deleteMain = cloned.status === 0 ? await machineGit(machineToken, ['push', 'origin', ':refs/heads/main'], clone) : noClone
   const twoPushes = [taskThenMain, mainThenTask, deleteMain]
-  check(twoPushes.every((p) => p.status !== 0) && ['task/proj-two', 'task/proj-three'].every((b) => onGithub(full, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`) === '')
+  // The API refuses each with a 403. Git on GitHub's side would refuse to delete main itself, so the 403 shows the API did.
+  check(twoPushes.every((p) => p.status !== 0 && /HTTP 403/.test(p.stderr))
+    && ['task/proj-two', 'task/proj-three'].every((b) => onGithub(full, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`) === '')
     && onGithub(full, 'rev-parse', 'main') === mainBefore,
   `a push of a task branch and main together, either way round, and a push that deletes main, are refused whole (${twoPushes.map((p) => p.stderr.trim().split('\n').at(-1) ?? '').join(' / ')})`)
   const stranger = await machineGit(outsiderMachine, ['ls-remote', `${API}/v1/git/${repo?.id}.git`])
