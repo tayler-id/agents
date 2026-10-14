@@ -16,7 +16,9 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import { MACHINE_PORT, PEOPLE_SOCKET_FILE, Role, SETTINGS_FILE, settingsFrom } from './aws/config.ts'
+import { hasCode } from '../shared/errors.ts'
+import { MACHINE_PORT, Port } from '../shared/listen.ts'
+import { PEOPLE_SOCKET_FILE, Role, SETTINGS_FILE, settingsFrom } from './aws/config.ts'
 import { isDryRun, run } from './aws/steps.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
@@ -25,14 +27,13 @@ const UNIT_DIR = '/etc/systemd/system'
 const FIREWALL_ENV = '/etc/agents/box-firewall.env'
 const SUDOERS = '/etc/sudoers.d/agents'
 
-const port = z.coerce.number().int().min(1).max(65535)
 const Settings = z.object({
   AGENTS_USER: z.string().regex(/^[a-z_][a-z0-9_-]*$/).default('agents'),
 })
 const AwsSettings = z.object({ AWS_REGION: z.string().regex(/^[a-z]{2}-[a-z]+-\d$/) })
 const BoxSettings = z.object({
   AGENTS_API_ADDRESS: z.ipv4(),
-  AGENTS_API_PORT: port.default(MACHINE_PORT),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
 })
 
 // A unit file: its name and its sections, each a list of directives in order.
@@ -206,7 +207,7 @@ function installed(program: string): boolean {
     execFileSync(program, ['version'], { stdio: 'ignore' })
     return true
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return false
+    if (hasCode(error, 'ENOENT')) return false
     throw error
   }
 }

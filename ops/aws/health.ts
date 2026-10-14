@@ -11,7 +11,8 @@ import { freemem, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { CloudWatchClient, PutMetricDataCommand, type MetricDatum, type StandardUnit } from '@aws-sdk/client-cloudwatch'
 import { z } from 'zod'
-import { BACKUP_STATE, BackupState, MACHINE_PORT, METRICS_NAMESPACE, Port, Role, settingsFrom } from './config.ts'
+import { MACHINE_PORT, Port } from '../../shared/listen.ts'
+import { BACKUP_STATE, BackupState, METRICS_NAMESPACE, Role, settingsFrom } from './config.ts'
 import { isDryRun } from './steps.ts'
 
 // What the server's report reads, from its .env. The box host reports disk and memory only, and reads none of it.

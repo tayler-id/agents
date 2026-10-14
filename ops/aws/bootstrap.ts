@@ -15,7 +15,7 @@ import pg from 'pg'
 import { z } from 'zod'
 import { hostConfig, readParameter } from './aws.ts'
 import {
-  APP_HOME, BOX_DNS, DOCKER_PLUGINS, HOME, NODE_DIR, REPO, Role, SECRET_PARAMETERS, SERVICE_USER, TAILNET, type HostConfig,
+  APP_HOME, BOX_DNS, DOCKER_PLUGINS, HOME, NODE_DIR, RDS_CA_FILE_NAME, REPO, Role, SECRET_PARAMETERS, SERVICE_USER, TAILNET, type HostConfig,
 } from './config.ts'
 import { isDryRun, output, perform, run, type Step } from './steps.ts'
 
@@ -102,7 +102,7 @@ async function rdsCertificates() {
   if (!res.ok || !body.includes('BEGIN CERTIFICATE')) throw new Error(`no RDS certificate bundle for ${region}: ${res.status}`)
   mkdirSync(APP_HOME, { recursive: true })
   run('chown', [`${SERVICE_USER}:${SERVICE_USER}`, APP_HOME])
-  place(join(APP_HOME, 'rds-ca.pem'), body, 0o644, SERVICE_USER)
+  place(join(APP_HOME, RDS_CA_FILE_NAME), body, 0o644, SERVICE_USER)
 }
 
 // Electric reads the database's change log through a replication slot, which on

@@ -14,10 +14,8 @@ export const VPC_CIDR = '10.40.0.0/16'
 export const SERVER_ADDRESS = '10.40.0.10'
 export const BOX_HOST_ADDRESS = '10.40.0.20'
 export const VPC_RESOLVER = '10.40.0.2'
-export const MACHINE_PORT = 7700
 export const POSTGRES_PORT = 5432
-// A TCP port, as a setting.
-export const Port = z.coerce.number().int().min(1).max(65535)
+// The machine port is MACHINE_PORT in shared/listen.ts, where the API reads it too.
 
 // A box is an agent's computer, so it reaches the public internet over any
 // protocol, as boxes on this Mac do, and nothing private except the server's
@@ -54,7 +52,8 @@ export const PEOPLE_SOCKET_FILE = 'people.sock'
 // value from here. fetch-secrets.ts rewrites .env at every boot and never this.
 export const SETTINGS_FILE = 'settings.env'
 export const NODE_DIR = '/opt/node'
-export const RDS_CA_FILE = `${APP_HOME}/rds-ca.pem`
+// The RDS certificate bundle, in the app's home, which the database URL names.
+export const RDS_CA_FILE_NAME = 'rds-ca.pem'
 // Compose's names for the forge's container and volume and Electric's volume,
 // the same from compose.yaml on this Mac and compose.server.yaml on the server.
 export const FORGE_CONTAINER = 'agents-forge-1'
@@ -67,10 +66,10 @@ export const RunnerTeams = z.string().optional().transform((value) => {
 })
 
 // Names on the tailnet. The server joins under a temporary name and takes
-// agents-server at cutover, when this Mac gives it up.
+// agents-server at cutover, when this Mac gives it up, with `tailscale set
+// --hostname`, as docs/aws.md says.
 export const TAILNET = {
   serverAtFirst: 'agents-aws',
-  server: 'agents-server',
   boxes: 'agents-boxes',
   serverTag: 'tag:agents-server',
   boxesTag: 'tag:agents-boxes',
@@ -100,7 +99,6 @@ export const SECRET_PARAMETERS: Record<SecretName, string> = {
 // from the publisher's checksum list. Node 24 matches this Mac's. Compose matches
 // this Mac's too. Buildx is the newest release at least two weeks old.
 export const NODE = {
-  version: 'v24.16.0',
   url: 'https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-arm64.tar.xz',
   sha256: '524659219d6a207a7400f2bde15d19ba060ffbe0d32a8643319ad67e3bb64c78',
 } as const

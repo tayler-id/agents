@@ -20,7 +20,7 @@ import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { hasCode, messageOf } from '../shared/errors.ts'
 import { accepts } from '../shared/socket.ts'
-import { MachineHosts } from '../shared/listen.ts'
+import { MACHINE_PORT, MachineHosts, Port } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
@@ -715,7 +715,7 @@ async function listenForPeople(server: Server, path: string) {
 // Where machines reach the API: the machine port, on each address in AGENTS_MACHINE_HOST.
 const Listen = z.object({
   AGENTS_MACHINE_HOST: MachineHosts,
-  AGENTS_API_PORT: z.coerce.number().int().min(1).max(65535).default(7700),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
 })
 const address = (host: string, at: number) => (host.includes(':') ? `[${host}]:${at}` : `${host}:${at}`)
 

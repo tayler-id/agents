@@ -15,8 +15,9 @@ import * as sns from 'aws-cdk-lib/aws-sns'
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions'
 import * as ssm from 'aws-cdk-lib/aws-ssm'
 import type { Construct } from 'constructs'
+import { MACHINE_PORT } from '../../shared/listen.ts'
 import {
-  BOX_HOST_ADDRESS, CODE_PARAMETER, CONFIG_PARAMETER, MACHINE_PORT, METRICS_NAMESPACE, NODE, NODE_DIR,
+  BOX_HOST_ADDRESS, CODE_PARAMETER, CONFIG_PARAMETER, METRICS_NAMESPACE, NODE, NODE_DIR,
   POSTGRES_PORT, REPO, SECRET_PARAMETERS, SERVER_ADDRESS, SERVICE_USER, TAG, VPC_CIDR, VPC_RESOLVER,
   type DeploySettings, type HostConfig, type Role, type SecretName,
 } from './config.ts'

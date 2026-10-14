@@ -21,7 +21,8 @@
 
 import { execFileSync } from 'node:child_process'
 import { z } from 'zod'
-import { BOX_CLOSED_RANGES, MACHINE_PORT, settingsFrom } from './config.ts'
+import { MACHINE_PORT, Port } from '../../shared/listen.ts'
+import { BOX_CLOSED_RANGES, settingsFrom } from './config.ts'
 
 const CHAIN = 'AGENTS-BOXES'
 // Docker's default bridge, where boxes run, and any network a box might be put on.
@@ -29,7 +30,7 @@ const BRIDGES = ['docker0', 'br-+']
 
 const Settings = z.object({
   AGENTS_API_ADDRESS: z.ipv4(),
-  AGENTS_API_PORT: z.coerce.number().int().min(1).max(65535).default(MACHINE_PORT),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
 })
 type Settings = z.infer<typeof Settings>
 

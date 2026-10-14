@@ -18,7 +18,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { SSMClient } from '@aws-sdk/client-ssm'
 import { z } from 'zod'
 import { hostConfig, readParameter } from './aws.ts'
-import { DatabaseSecret, PEOPLE_SOCKET_FILE, SECRET_PARAMETERS, SERVICE_USER, TAILNET, settingsFrom } from './config.ts'
+import { DatabaseSecret, PEOPLE_SOCKET_FILE, RDS_CA_FILE_NAME, SECRET_PARAMETERS, SERVICE_USER, TAILNET, settingsFrom } from './config.ts'
 import { isDryRun, perform } from './steps.ts'
 
 const Settings = z.object({ AGENTS_HOME: z.string().min(1).default(join(homedir(), '.agents-app')) })
@@ -26,7 +26,7 @@ const settings = settingsFrom(Settings, 'the secrets settings')
 const flag = process.argv.indexOf('--to')
 const envFile = flag === -1 ? undefined : process.argv[flag + 1]
 if (!envFile) throw new Error('usage: node ops/aws/fetch-secrets.ts --to <path to the .env to write> [--dry-run]')
-const caFile = join(settings.AGENTS_HOME, 'rds-ca.pem')
+const caFile = join(settings.AGENTS_HOME, RDS_CA_FILE_NAME)
 const forgeFile = join(settings.AGENTS_HOME, 'forge.json')
 const tokenFile = join(settings.AGENTS_HOME, 'box-claude-token')
 const peopleSocket = join(settings.AGENTS_HOME, PEOPLE_SOCKET_FILE)
