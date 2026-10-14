@@ -216,6 +216,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'shared/box-names.ts', anchor: 'export const homeVolumeName = (instanceId: string) => `${containerName(instanceId)}-home`', replace: 'export const homeVolumeName = (instanceId: string) => `${containerName(instanceId)}-homes`' }] },
   { name: 'person-dash', why: 'a person may be named with a dash, so loginOf can make a login that ends like another instance\'s', sections: 'seed', red: "--as refuses a person's name with a dash, so every login agentsctl makes is one down can tell is the instance's",
     edits: [{ file: 'ctl/seed.ts', anchor: 'z.string().regex(/^[a-z][a-z0-9]*$/, PERSON_RULE)', replace: 'z.string().regex(/^[a-z][a-z0-9-]*$/, PERSON_RULE)' }] },
+  { name: 'stale-reads', why: 'goto keeps the reads the old document had, which Chromium never ends', sections: 'visual', red: 'a read in flight when the page loads another document does not hold the next settle',
+    edits: [{ file: 'ctl/playwright.ts', anchor: 'if (fresh || !sameDocument(page.url(), target)) held(key).reads.clear()\n', replace: '' }] },
   { name: 'socket-source', why: 'the socket refusal says the shell whatever set the socket', sections: 'refuse', red: 'the people socket refusal says where the socket was set: the shell, .env.test or .env',
     edits: [{ file: 'ctl/config.ts', anchor: "if (key in layers.test) return '.env.test'", replace: "if (key in layers.test) return 'your shell'" }] },
 ]

@@ -10,6 +10,7 @@
 
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
+import { createServer, type ServerResponse } from 'node:http'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +29,8 @@ import { doctorParts } from '../ctl/cli.ts'
 import { MapReport } from '../ctl/map.ts'
 import { CompareResult } from '../ctl/visual.ts'
 import { Found } from '../ctl/protocol.ts'
+import { playwrightDriver } from '../ctl/playwright.ts'
+import type { PageKey } from '../ctl/driver.ts'
 import { Rows, withClient } from '../ctl/db.ts'
 import { forgeAdmin, ForgeError } from '../server/forge.ts'
 import { admin, removeForge } from '../ctl/seed.ts'
@@ -424,6 +427,34 @@ try {
     check(changed.code === 1 && desktopDiff?.status === 'different' && desktopDiff.regions.length > 0 && desktopDiff.diff && existsSync(desktopDiff.diff),
       'visual compare fails on a changed view, naming the region and writing a diff image')
     rmSync(baselines, { recursive: true, force: true })
+
+    // Chromium says nothing when a page loads another document while a read is in flight. That read must not hold the next capture.
+    const stalled: ServerResponse[] = []
+    const stall = createServer((request, response) => {
+      if (request.url?.startsWith('/v1/shape/')) {
+        stalled.push(response)
+        return
+      }
+      response.setHeader('content-type', 'text/html')
+      response.end('<!doctype html><title>stalls</title><nav aria-label="Workspace">stalls</nav><script>fetch("/v1/shape/stalls?offset=-1&log=full").catch(() => {})</script>')
+    })
+    await new Promise<void>((resolve) => { stall.listen(0, '127.0.0.1', resolve) })
+    const driver = playwrightDriver(state, async () => {})
+    const probe: PageKey = { target: 'browser', engine: 'chromium', width: 'desktop', login: state.seed.owner.login }
+    try {
+      await driver.open(probe)
+      const app = driver.url(probe)
+      await driver.goto(probe, `http://127.0.0.1:${String(z.object({ port: z.number() }).parse(stall.address()).port)}/`, 15_000, false)
+      const reading = await driver.settle(probe, 1_500).then(() => false, () => true)
+      await driver.goto(probe, app, 15_000, true)
+      const settled = await driver.settle(probe, 8_000).then(() => true, () => false)
+      check(reading && settled, 'a read in flight when the page loads another document does not hold the next settle')
+    } finally {
+      await driver.shutdown()
+      for (const response of stalled) response.destroy()
+      stall.closeAllConnections()
+      stall.close()
+    }
   }
 
   if (want('map')) {

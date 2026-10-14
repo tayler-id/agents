@@ -55,6 +55,9 @@ type Holder = {
 // A read of a shape that answers at once. Live reads (live=true) wait for changes, so they never count.
 const isRead = (url: string) => url.includes('/v1/shape/') && !url.includes('live=true')
 
+// Whether going from one address to the other only changes the hash, which keeps the document and its reads.
+const sameDocument = (from: string, to: string) => to.includes('#') && from.split('#')[0] === to.split('#')[0]
+
 export function locate(page: Page, handle: Handle): Locator {
   const { within } = handle
   const container = within ? page.getByRole(within.role, within.name === undefined ? {} : { name: within.name, exact: true }) : null
@@ -214,6 +217,9 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
     goto: (key, route, timeoutMs, fresh) => act(key, undefined, timeoutMs, async (page) => {
       // Relative to the app's address, which the desktop app knows only from the page it opened.
       const target = new URL(route.startsWith('#') ? `/${route}` : route, page.url()).href
+      // Chromium never says a read has ended when its page loads another document, so one in flight now would
+      // hold every later settle() for good. The reads the old document had are gone with it.
+      if (fresh || !sameDocument(page.url(), target)) held(key).reads.clear()
       if (fresh) await page.goto('about:blank')
       await page.goto(target, { timeout: timeoutMs })
       await loaded(page, timeoutMs)

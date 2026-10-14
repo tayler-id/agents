@@ -28,7 +28,7 @@ export const AGENTS: Record<string, string> = {
 export const AGENT_MODEL = 'haiku'
 export const MACHINE = 'mac'
 // A person an instance drives, by a short name: lowercase letters and digits, no dash.
-export const PERSON_RULE = 'a person is named in lowercase letters and digits, such as cy, or by a full login'
+export const PERSON_RULE = 'Use lowercase letters and digits, such as cy, or a full login with an @'
 export const PersonName = z.string().regex(/^[a-z][a-z0-9]*$/, PERSON_RULE).brand<'PersonName'>()
 export type PersonName = z.infer<typeof PersonName>
 // Every login an instance makes is <who>-<instance>@verify.local. who holds no

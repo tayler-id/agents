@@ -48,7 +48,7 @@ export function loginFor(state: ReadyState, who: string | undefined): string {
   if (who === undefined) return state.seed.owner.login
   if (who.includes('@')) return who
   const person = PersonName.safeParse(who)
-  if (!person.success) throw new UsageError(`${who} is not a person's name: ${PERSON_RULE}`)
+  if (!person.success) throw new UsageError(`${who} is not a person's name. ${PERSON_RULE}.`)
   return loginOf(person.data, state.name)
 }
 
@@ -559,7 +559,7 @@ const machineRead = command({
 const VisualArgs = Common.extend({ from: z.string().optional(), reason: z.string().optional(), view: z.array(z.string()).optional(), baselines: z.string().optional() })
 const FROM: Flags = {
   from: { kind: 'string', about: "a run's evidence folder (the instance's by default)" },
-  baselines: { kind: 'string', about: "a baselines folder (the skill's by default)" },
+  baselines: { kind: 'string', about: 'a baselines folder (.scratch/verify/baselines by default)' },
 }
 const fromRoot = (path: string) => (path.startsWith('/') ? path : join(ROOT, path))
 const evidenceOf = (values: z.infer<typeof VisualArgs>) => (values.from ? fromRoot(values.from) : resolve(values.instance).evidence)
@@ -778,7 +778,7 @@ const doctorCommand = command({
 
 const downCommand = command({
   name: 'down', args: '', about: 'stop what the instance started and remove its team, keeping its evidence',
-  flags: { 'keep-data': { kind: 'boolean', about: 'keep its team, repos and boxes' } }, schema: Common.extend({ 'keep-data': z.boolean().optional() }),
+  flags: { 'keep-data': { kind: 'boolean', about: 'keep its team, repos and boxes, until down runs again without it' } }, schema: Common.extend({ 'keep-data': z.boolean().optional() }),
   prepare: (values) => async () => {
     const done = await down(values.instance, { keepData: values['keep-data'] === true })
     if (!done) {

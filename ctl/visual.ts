@@ -1,10 +1,10 @@
 // Visual regression. `visual shot` captures a view in every engine at both
 // widths into the run's evidence, and lists each capture in the run's
 // evidence.json. `visual compare` diffs the captures that manifest lists against
-// the baselines in the skill, and fails on any that differs by more than the
-// tolerance, naming the region that changed. `visual baseline` replaces
-// baselines with a run's captures, and only with a reason, which it logs beside
-// them. Comparing never edits a baseline.
+// the baselines in .scratch/verify/baselines, and fails on any that differs by
+// more than the tolerance, naming the region that changed. `visual baseline`
+// replaces baselines with a run's captures, and only with a reason, which it
+// logs beside them. Comparing never edits a baseline.
 
 import { createHash } from 'node:crypto'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -158,7 +158,7 @@ export type CompareResult = z.infer<typeof CompareResult>
 const where = (box: Box) => `${String(box.width)}x${String(box.height)} at (${String(box.x)}, ${String(box.y)})`
 const COMBOS = new Set(ENGINES.flatMap((engine) => WIDTHS.map((width) => combo(engine, width))))
 
-// `baselines` is the skill's folder, or another for a check that must leave the skill's baselines alone.
+// `baselines` is the default folder, or another for a check that must leave the real baselines alone.
 export function compare(evidence: string, baselines = BASELINES_DIR): CompareResult {
   const results: Comparison[] = []
   const shots = shotsOf(evidence)

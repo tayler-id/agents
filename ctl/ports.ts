@@ -35,9 +35,11 @@ function stale(port: number): boolean {
   return !lock.success || !existsSync(lock.data.stateFile)
 }
 
-// Racy on a stale lock: two ups can both find it stale, both remove it, and both
-// claim it, so the block goes to both. Only one process can listen on each port,
-// so at least one of those ups fails and says so.
+// Racy. A lock is stale when its instance has no state file, and up writes that
+// file only after claimPorts returns, so a new lock looks stale for a few
+// milliseconds. A second up that starts then removes it and claims the same
+// ports, and the bind test below stops it only when the two tests overlap.
+// docs/design/verification.md has the numbers.
 function lockPort(port: number, name: InstanceName): boolean {
   mkdirSync(LOCKS, { recursive: true })
   const file = join(LOCKS, String(port))
