@@ -278,3 +278,18 @@ A second review on another model found no blockers, and asked for four fixes fir
 - **Research and plan ask before commands.** They keep no `allow` list, and the design doc says why a read-only one was left out.
 - **Seen failing.** Against the code before these fixes, step14 failed 6 of its new and changed checks: the index rewrite, the refusal's message, the push after merging, after a rewrite and after the branch was deleted, and the stuck push. The check that a second commit goes up passed there, and went red with the lease set to HEAD instead of the forge's tip. The rewrite check went red alone with the local ref no longer written. Both breaks went back byte for byte.
 - **Verified.** On the branch's head, typecheck, lint and the name guard pass, step14 passed all 74 checks, step14c all 132 in three browsers and step14b all 42.
+
+### Terminal sessions (on its branch, not merged)
+
+Built on `worktree-agent-ae6bff17618001d52`, for the first goal in `AGENTS.md`: the Claude Code sessions people open in their own terminals land in the record. The design, the calls waiting on Tayler and what is not done are in `docs/design/local-sessions.md`.
+
+- **The choice.** Prototypes of both candidates ran against the real `claude` 2.1.299 with haiku. Hooks needed a settings file in each folder, fired nothing for a session started in a subfolder of a plain folder, took about 40 ms each and two per tool call, and carried neither Claude's thinking nor its text between tool calls. The daemon reads Claude Code's transcripts instead, so nothing changes for the person.
+- **What is built.** `node daemon/folders.ts connect` on a Mac. Migration 0013's `connected_folders`, and sessions that serve a folder with no agent. The transcript reader in the daemon, with the folder's `.env` values scrubbed too and images left on the Mac. The API's routes and who sees what, in the shapes and in `search_record`. The sidebar's From terminals and a page for each terminal session.
+- **Verified.** step21 passed all 50 lines with the real CLI, headless. typecheck, lint and the name guard pass.
+- **Seen failing.** Every one of step21's 50 lines went red under a break of what it guards. A runner in the session's scratchpad applied each group of breaks, checked each anchor occurred once before writing, ran the check, and put every file back, compared by sha256. The first round ran 18 groups. 16 went red where expected. One went red on "ended idle" rather than the wait I had listed. One stopped early, because its cwd break gave two sessions the folder's name and the sidebar click matched both, so its page breaks ran again in a later round. The phone-width line stayed green with the page wider than a phone, since it measured only the document while the main area scrolls inside. It measures the page's own boxes now, and went red.
+- **Found on the way.**
+  - A headless prompt is marked `sdk` in the transcript, not `human`. step21's first run found both prompts recorded as notices.
+  - A `.env` link to a file that is gone would have stopped a folder's sessions, since reading it threw on every read.
+  - The interrupt route would have sent the Mac a command for a terminal session, which the daemon only reads.
+  - step21 searched every team for the stray sessions' words, so a red run's kept team turned later runs red. It searches its own team now, with words unique to the run.
+- **Not tried.** The live system: the real daemon under launchd, the real server and a teammate's Mac. No check drives an interactive session. One was typed through `expect` by hand, in the prototype and through the real API and daemon.

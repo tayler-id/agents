@@ -375,8 +375,11 @@ try {
     check(!axe.violations.some((v) => v.impact === 'serious' || v.impact === 'critical'), 'the page has no serious accessibility problems')
     const phone = await open(mate, 390)
     await phone.goto(`/#/l/${String(session.id)}`)
-    check(await visible(phone, '.page-head h1', 15, /^shop$/)
-      && await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'at phone width the page fits without scrolling sideways')
+    // Nothing scrolls sideways, neither the page nor a box inside it, and nothing is cut off at the right edge.
+    check(await visible(phone, '.page-head h1', 15, /^shop$/) && await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth
+      && [...document.querySelectorAll('.page-head, .page-body, .events')]
+        .every((el) => el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().right <= window.innerWidth + 1)),
+    'at phone width the page fits without scrolling sideways')
     const own = await open(owner, 1280)
     const ownList = own.getByRole('list', { name: 'From terminals' })
     check(await ownList.getByRole('button', { name: /^diary\s*your terminal$/ }).waitFor({ timeout: 30000 }).then(() => true, () => false)
