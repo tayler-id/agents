@@ -341,12 +341,13 @@ Tayler went with the coordinator's picks on all of these.
   - Documents can hold images.
   - A helper that lets agents use a Mac is designed but not built.
 - **Implementation.** On the agent computers branch, designed in `docs/design/computers.md`. Its checks, `test/step15.ts` and `test/step15b.ts`, run a real box with the stand-in for Claude, and both pass on its last commit. `docs/build-log.md` records what they proved.
-- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Five choices wait on Tayler, and the last two take away something boxes do today:
-  - what to do about secrets in saved screenshots, which the scrubber can't read
-  - the 24-hour window in which a box that ran private work can be watched only by people who can see that work
-  - whether agents keep the standing instruction never to type passwords or act on real accounts without a person, and the approval before five browser tools, both of which limit the browser for safety
-  - the box limits, since a box running three browser engines at once used 2.5 CPUs before the 2-CPU limit, and boxes had no limits before
-  - whether a box whose desktop can't come up should take no work, as it does now, or work without its computer, as it did before
+- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Tayler made every call it waited on, on 2026-10-14, as "2026-10-14, Tayler's calls" records:
+  - The 24-hour window stays, in which a box that ran private work can be watched only by people who can see that work.
+  - The browser limits stay: the standing instruction never to type passwords or act on real accounts without a person, and the approval before five browser tools.
+  - The box limits are accepted, though they take something away. A box running three browser engines at once used 2.5 CPUs before the 2-CPU limit, and boxes had no limits before.
+  - A box whose desktop can't come up takes no work, where before it worked without its computer. Accepted too.
+  - `ws`, `@types/ws` and `@novnc/novnc` are approved for the Screen view.
+  - The daemon is to refuse to save a screenshot while a page in the box's browser shows a known secret value. Not built yet.
 
 ### The cloud half moves to AWS
 

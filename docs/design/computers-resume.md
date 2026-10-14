@@ -34,9 +34,9 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 | Private work that starts on a box cuts off viewers who can't see it | The watch rule again every 5 s and on each session status, and hand-back without it |
 | The desktop's programs see none of the daemon's tokens | `PATH`, `HOME` and `DISPLAY` only |
 | Viewers and tunnels that stop answering pings are dropped | A ping every 15 s, dropped after 45 s without an answer |
-| A box takes no work until its desktop is up, a regression for Tayler to decide | The daemon waits, and exits with 1 when the desktop can't come up |
+| A box takes no work until its desktop is up, a regression for Tayler to decide | The daemon waits, and exits with 1 when the desktop can't come up. Tayler accepted it on 2026-10-14 |
 | A takeover stops the agent's browser call under way | The `computer` server asks every 250 ms and aborts the call |
-| Boxes run within memory, CPU and process limits, a regression for Tayler to decide | 4 GB with no swap, 2 CPUs and 4,096 processes |
+| Boxes run within memory, CPU and process limits, a regression for Tayler to decide | 4 GB with no swap, 2 CPUs and 4,096 processes. Tayler accepted them on 2026-10-14 |
 | Remove dead types, name every close code, and stop the sweep with the API | Cleanup the review asked for |
 | Declare a machine's id once, where main does | InstanceId from `shared/onboarding.ts`, and three ids added to main's `shared/ids.ts` |
 | Say people socket, not people port | Comments and labels |
@@ -46,11 +46,12 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 | Step 15 and 15b build their box image under a tag of their own | And remove it when they end, as `AGENTS.md` asks |
 | Step 15b waits for the saved screenshot to load | It read the image's width before WebKit had it, in one run |
 | Docs for the review round, the rebases, and two trades for Tayler | The design, the build log, decisions, data model, parts and this note |
+| Say what Tayler decided for agent computers on 2026-10-14 | The design, decisions, onboarding's resume note and this note |
 
 ## Before this lands
 
 - Every API now needs `AGENTS_PEOPLE_ORIGINS` to start, a comma-separated list of the origins the app's pages come from. The live API needs `http://agents-server.<tailnet>.ts.net` in main's `.env` before it restarts on this code. Main's checks start their APIs with what `.env` and `.env.test` hold, and none of them opens a screen, so any one origin in `.env.test` lets them run, such as `AGENTS_PEOPLE_ORIGINS=http://127.0.0.1`. Steps 15 and 15b set their own.
-- Two commits trade something away, and Tayler decides on both. The box limits slow a box that needs more than 2 CPUs and hold every box to 4 GB. A box whose desktop can't come up now restarts and takes no work, where before it worked without a computer.
+- Two commits trade something away, and Tayler accepted both on 2026-10-14. The box limits slow a box that needs more than 2 CPUs and hold every box to 4 GB. A box whose desktop can't come up now restarts and takes no work, where before it worked without a computer. Tayler also approved the packages this branch adds, `ws`, `@types/ws` and `@novnc/novnc`.
 
 ## Checks
 
@@ -77,4 +78,4 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 
 - The Mac helper is a design only.
 - No x86 image, nothing tried over the tailnet, and no real Claude session at the computer in a box.
-- Five choices for Tayler, listed at the end of the design doc.
+- The screenshot refusal Tayler chose on 2026-10-14. Every other call is made, as "Tayler's calls" in the design lists.

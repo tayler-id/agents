@@ -34,7 +34,7 @@ Every check was seen red under a deliberate break, with the file put back and it
 
 - **The guessed expiry.** When the CLI doesn't say how long a token lasts, the box reports a year. Reporting "not known" needs `claude_logins.valid_until` to allow null for a signed-in row, which migration 0005's check forbids, so it needs a new migration and its number from the coordinator.
 - **The box start loop.** A box that can't start runs `docker rm` and `docker run` on every runner tick. Spacing the tries out is easy, but no check can see how often Docker is called without a stand-in for Docker, so it is left as is.
-- **Container limits on always-on boxes.** Memory and CPU limits for personal boxes are Tayler's call, since the agent computers branch gives boxes a desktop and browsers.
+- **Container limits on always-on boxes.** The agent computers branch runs every box, personal ones included, within 4 GB of memory, 2 CPUs and 4,096 processes, which Tayler accepted on 2026-10-14.
 
 ## How to work here
 
@@ -66,7 +66,7 @@ Read `AGENTS.md` first. In short:
 
 - Add `AGENTS_TAILSCALE_API` and `AGENTS_TAILSCALE_KEY_FILE` to the real `.env`, then save a user-owned API access token from the Tailscale page. The README shows the line. Without both settings, invites are made in the app only.
 - Migration 0005 makes the earliest person of each team with no admin an admin. On the real server that is Tayler.
-- Personal boxes run all the time. Should they stop when idle, and should they have memory and CPU limits?
+- Personal boxes run all the time. Should they stop when idle?
 - Teammates can message agents on someone's box and add them to rooms, which spends that person's Claude usage, and the box's agents and their plugins' tools can read its token. Keep that, or let only the owner drive agents on their box?
 - Admins can't reach private rooms they aren't in. Should they?
 - Removing a person from the team is not built.
