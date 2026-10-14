@@ -36,8 +36,8 @@
       ]
     },
     {
-      "id": "agents",
-      "name": "Agents",
+      "id": "agent-setup",
+      "name": "Agent setup",
       "paths": [
         "app/src/AgentPage.tsx",
         "server/agents.ts",

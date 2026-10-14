@@ -31,7 +31,7 @@ A teammate opens the app over Tailscale and is already signed in: the server kno
 
 ## How to get to it (user POV)
 
-- Open the server's tailnet address in a browser, such as http://agents-server.tailcce7c3.ts.net.
+- Open the server's tailnet address in a browser, its MagicDNS name on the tailnet.
 - Open the desktop app with `npm run desktop`, which reads the server's address from `~/.agents-app/app.json`.
 - An admin adds a teammate on the server with `node --env-file=.env server/admin.ts add-person <team> <login>`.
 

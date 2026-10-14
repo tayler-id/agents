@@ -20,7 +20,7 @@ import { OUTPUT, type Output } from '../shared/cli/output.ts'
 import { conformance, runner } from '../shared/cli/conformance.ts'
 import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
-import { InstanceState, ProcessRecord, stateFile, type InstanceName } from '../ctl/state.ts'
+import { InstanceName, InstanceState, ProcessRecord, saveState, stateFile } from '../ctl/state.ts'
 import { childEnv } from '../ctl/config.ts'
 import { MapReport } from '../ctl/map.ts'
 import { CompareResult } from '../ctl/visual.ts'
@@ -28,6 +28,7 @@ import { Found } from '../ctl/protocol.ts'
 import { Rows, withClient } from '../ctl/db.ts'
 import { forgeAdmin, ForgeError } from '../server/forge.ts'
 import { admin, removeForge } from '../ctl/seed.ts'
+import { messageOf } from '../shared/errors.ts'
 
 // Up, doctor, the dashboard and down always run. These run unless --only names others.
 const SECTIONS = ['refuse', 'web', 'desktop', 'api', 'seed', 'conformance', 'visual', 'map', 'sick'] as const
@@ -38,7 +39,7 @@ const want = (section: z.infer<typeof Section>) => only.includes(section)
 
 const ROOT = new URL('..', import.meta.url).pathname
 const exec = promisify(execFile)
-const name = `s17-${randomBytes(3).toString('hex')}`
+const name = InstanceName.parse(`s17-${randomBytes(3).toString('hex')}`)
 const failures: string[] = []
 // Processes that must stop with down, gathered just before it.
 let started: Owned[] = []
@@ -87,7 +88,7 @@ function fences(stdout: string): { source: string; lines: string[]; closed: bool
   })
 }
 
-const stateNow = () => InstanceState.parse(JSON.parse(readFileSync(stateFile(name as InstanceName), 'utf8')))
+const stateNow = () => InstanceState.parse(JSON.parse(readFileSync(stateFile(name), 'utf8')))
 
 // Read straight from the test database, for what no instance can answer once it is down.
 const teamExists = (team: string) => withClient(async (client) => (await client.query('select 1 from teams where name = $1', [team])).rowCount === 1)
@@ -96,7 +97,10 @@ const orgExists = (org: string) => forgeAdmin.call('GET', `/orgs/${org}`).then((
   throw error
 })
 // Instances the refusal checks name, each refused before it saves any state.
-const refused = { team: `${name}-team`, org: `${name}-org`, socket: `${name}-sock`, database: `${name}-db`, port: `${name}-port` }
+const refused = {
+  team: InstanceName.parse(`${name}-team`), org: InstanceName.parse(`${name}-org`), socket: InstanceName.parse(`${name}-sock`),
+  database: InstanceName.parse(`${name}-db`), port: InstanceName.parse(`${name}-port`), kept: InstanceName.parse(`${name}-kept`),
+}
 
 try {
   if (want('refuse')) {
@@ -104,21 +108,32 @@ try {
     // what is not its own or the live system.
     await admin('add-team', `verify-${refused.team}`, `someone-${refused.team}@verify.local`)
     const team = await ctl(['up', '--instance', refused.team], { instance: false })
-    check(team.code === 3 && await teamExists(`verify-${refused.team}`) && !existsSync(stateFile(refused.team as InstanceName)),
+    check(team.code === 3 && await teamExists(`verify-${refused.team}`) && !existsSync(stateFile(refused.team)),
       'up refuses with exit 3 and no state when its team is already there, and leaves that team alone')
     await forgeAdmin.ensureOrg(`verify-${refused.org}`)
     const org = await ctl(['up', '--pipelines', '--instance', refused.org], { instance: false })
-    check(org.code === 3 && await orgExists(`verify-${refused.org}`) && !await teamExists(`verify-${refused.org}`) && !existsSync(stateFile(refused.org as InstanceName)),
+    check(org.code === 3 && await orgExists(`verify-${refused.org}`) && !await teamExists(`verify-${refused.org}`) && !existsSync(stateFile(refused.org)),
       'up --pipelines refuses with exit 3 and no state when its forge org is already there, and leaves that org alone')
     const socket = await ctl(['up', '--instance', refused.socket], { instance: false, env: { AGENTS_PEOPLE_SOCKET: join(tmpdir(), `step17-${name}`, 'people.sock') } })
-    check(socket.code === 3 && socket.out.head.includes('AGENTS_PEOPLE_SOCKET') && !existsSync(stateFile(refused.socket as InstanceName)),
+    check(socket.code === 3 && socket.out.head.includes('AGENTS_PEOPLE_SOCKET') && !existsSync(stateFile(refused.socket)),
       'up refuses with exit 3 a people socket it inherits from outside its scratch folder')
     const database = await ctl(['up', '--instance', refused.database], { instance: false, env: { DATABASE_URL: 'postgres://agents:unused@127.0.0.1:1/agents' } })
-    check(database.code === 3 && !existsSync(stateFile(refused.database as InstanceName)),
+    check(database.code === 3 && !existsSync(stateFile(refused.database)),
       'up refuses with exit 3 a DATABASE_URL naming the live database, before connecting to it')
     const port = await ctl(['up', '--instance', refused.port, '--port', '7700'], { instance: false })
-    check(port.code === 3 && port.out.head.includes('live system') && !existsSync(stateFile(refused.port as InstanceName)),
+    check(port.code === 3 && port.out.head.includes('live system') && !existsSync(stateFile(refused.port)),
       'up refuses with exit 3 a port block that holds a live port, before binding it')
+    // An instance that failed after another checkout made its team: down must leave that team alone.
+    await admin('add-team', `verify-${refused.kept}`, `someone-${refused.kept}@verify.local`)
+    const scratch = mkdtempSync(join(tmpdir(), `agentsctl-${refused.kept}-`))
+    saveState(InstanceState.parse({
+      phase: 'failed', name: refused.kept, team: `verify-${refused.kept}`, ports: { machines: 1, people: 2, streams: 3 }, scratch,
+      evidence: join(ROOT, '.scratch', 'verify', 'evidence', `${refused.kept}-step17`), harness: 'fake', pipelines: false,
+      createdAt: new Date().toISOString(), processes: [], forgeRepos: [], made: { team: false, org: false }, error: 'made by step 17',
+    }))
+    const kept = await ctl(['down', '--instance', refused.kept], { instance: false })
+    check(kept.code === 0 && await teamExists(`verify-${refused.kept}`) && !existsSync(stateFile(refused.kept)),
+      'down removes only what its up made, and leaves a team of the same name that another checkout made')
     const allowed = childEnv('daemon', {})
     check(!['DATABASE_URL', 'ELECTRIC_SECRET', 'AGENTS_HOOK_SECRET', 'POSTGRES_PASSWORD'].some((key) => key in allowed) && !('DATABASE_URL' in childEnv('session', {})),
       "the daemon and the browser session get no database URL or secret in their environment, so a session can't see the password")
@@ -127,7 +142,7 @@ try {
   // Launch, idempotent, and refusing to replace a different instance.
   const up = await ctl(['up', '--pipelines'])
   // The instance as its state file has it. up's own output leaves the machine token out.
-  const saved = existsSync(stateFile(name as InstanceName)) ? stateNow() : null
+  const saved = existsSync(stateFile(name)) ? stateNow() : null
   const state = saved?.phase === 'ready' ? saved : null
   check(up.code === 0 && state && state.team === `verify-${name}` && state.ports.machines >= 8020 && state.ports.streams <= 8039 && up.out.head.startsWith(`ok: up ${name} -> ready`),
     'up starts an instance on its own ports in 8020-8039, with a team of its own, and says it is ready')
@@ -268,7 +283,7 @@ try {
     const instances = await ctl(['list'], { instance: false })
     check(instances.out.ok && /^\d+ instances?$/.test(instances.out.head) && instances.out.detail.includes(`name=${name}`), 'list counts the instances in this checkout and shows this one')
     const done = await ctl(['evidence'])
-    check(done.out.ok && /^(\d+ of )?\d+ actions$/.test(done.out.head) && done.out.untrusted.length > 0, 'evidence counts the run\'s actions and fences their summaries as untrusted')
+    check(done.out.ok && /^(\d+ of )?\d+ actions$/.test(done.out.head) && done.out.outside.some((o) => o.source === 'action log') && done.out.untrusted.length > 0, 'evidence counts the run\'s actions and fences their summaries as untrusted')
   }
 
   if (want('conformance')) {
@@ -361,22 +376,22 @@ try {
   const kept = ['actions.jsonl', 'api.log', 'daemon.log', 'instance.json', ...(drove ? ['session.log'] : [])].every((f) => existsSync(join(evidence, f)))
     && folders.every((d) => existsSync(join(evidence, d)) && readdirSync(join(evidence, d)).length > 0)
   check(kept, `down keeps the evidence: the action log, logs, final state${folders.length ? ` and ${folders.join(', ')}` : ''}`)
-  check(!existsSync(stateFile(name as InstanceName)) && !await teamExists(`verify-${name}`), 'down removes the instance from this checkout, and its team from the database')
+  check(!existsSync(stateFile(name)) && !await teamExists(`verify-${name}`), 'down removes the instance from this checkout, and its team from the database')
   const leaked = ['instance.json', 'actions.jsonl'].filter((f) => existsSync(join(evidence, f)) && readFileSync(join(evidence, f), 'utf8').includes(token))
   check(!leaked.length, `the evidence keeps no copy of the machine's token${leaked.length ? `, and ${leaked.join(', ')} hold it` : ''}`)
   check(!want('seed') || !readFileSync(join(evidence, 'actions.jsonl'), 'utf8').includes('step17-value'), "the action log keeps no secret's value from the commands it records")
   const downAgain = await ctl(['down'])
   check(downAgain.code === 0 && downAgain.out.already, 'down again changes nothing and says already: true')
 } catch (error) {
-  failures.push(error instanceof Error ? error.message : String(error))
+  failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
 } finally {
   // Whatever happened, leave nothing running: down, then any process it missed, checked by start time.
-  if (existsSync(stateFile(name as InstanceName))) await ctl(['down'])
+  if (existsSync(stateFile(name))) await ctl(['down'])
   // What the refusal checks made for up to find, and any instance a broken refusal let start.
-  for (const other of Object.values(refused)) if (existsSync(stateFile(other as InstanceName))) await ctl(['down', '--instance', other], { instance: false })
-  await withClient(async (client) => { await client.query('delete from teams where name = $1', [`verify-${refused.team}`]) })
-  await removeForge(refused.org as InstanceName)
+  for (const other of Object.values(refused)) if (existsSync(stateFile(other))) await ctl(['down', '--instance', other], { instance: false })
+  await withClient(async (client) => { await client.query('delete from teams where name = any($1)', [[`verify-${refused.team}`, `verify-${refused.kept}`]]) })
+  await removeForge(refused.org)
   const survivors = []
   for (const p of started) if (await isOurs({ pid: p.pid, started: p.started, argv: [p.command] })) survivors.push(p)
   if (survivors.length) await stop(survivors, 10_000)
