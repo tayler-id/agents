@@ -9,9 +9,11 @@ import { many, maybe, one } from './db.ts'
 import { HttpError, type Person } from './record.ts'
 import { setTaskRepos } from './checkout.ts'
 import { launchTask } from './launch.ts'
+import { placeTask } from './projects.ts'
 import { lockedTask, refuseIfBlocking } from './order.ts'
 import type { DraftEdit, TaskFields } from '../shared/work.ts'
 import type { AgentId, SessionId, TaskId } from '../shared/ids.ts'
+import type { ProjectId } from '../shared/projects.ts'
 
 type HomedAgent = { id: AgentId; home_instance_id: string; harness: 'claude' | 'codex'; model: string | null }
 
@@ -62,6 +64,9 @@ export async function editDraft(client: pg.PoolClient, person: Person, taskId: T
   await client.query('update tasks set title = $2, instructions = $3, agent_id = $4 where id = $1',
     [taskId, fields.title, fields.instructions, agent.id])
   await setTaskRepos(client, person, taskId, fields.repoIds)
+  // As a new task: in a project it keeps to the project's repos, and outside one it joins its first repo's project.
+  const { project_id: projectId } = await one<{ project_id: ProjectId | null }>(client, "the draft's project", 'select project_id from tasks where id = $1', [taskId])
+  await placeTask(client, taskId, projectId ?? undefined)
   await client.query('update sessions set agent_id = $2, instance_id = $3, harness = $4, model = $5 where id = $1',
     [session, agent.id, agent.home_instance_id, agent.harness, agent.model])
 }
