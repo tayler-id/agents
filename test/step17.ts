@@ -180,7 +180,8 @@ try {
     check(rows.code === 0 && latest.success && latest.data[0]?.body === 'fake reply', 'db reads the reply back from the record')
     const write = await ctl(['db', 'update teams set name = name where id = {team}'])
     check(write.code === 3 && !write.out.ok, 'db refuses a write with exit 3')
-    const smuggled = await ctl(['db', "select 1; commit; update agents set title = 'written by db' where team_id = {team} and name = 'writer'"])
+    // No placeholder, so nothing makes it a parameterized query: plain text is what a simple query would run whole.
+    const smuggled = await ctl(['db', `select 1; commit; update agents set title = 'written by db' where name = 'writer' and team_id = (select id from teams where name = 'verify-${name}')`])
     const unchanged = await ctl(['db', "select count(*)::int as n from agents where team_id = {team} and title = 'written by db'", '--expect', 'n=0'])
     check(smuggled.code === 3 && unchanged.code === 0,
       'db refuses a second statement after a commit, with exit 3, and the row it would write is unchanged')

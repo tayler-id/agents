@@ -290,7 +290,10 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       const holder = await open(key)
       const deadline = Date.now() + timeoutMs
       while (holder.reads.size) {
-        if (Date.now() > deadline) throw new Error(`the page still had ${String(holder.reads.size)} reads in flight after ${String(timeoutMs / 1000)}s`)
+        if (Date.now() > deadline) {
+          const stuck = [...holder.reads].map((r) => new URL(r.url()).pathname + new URL(r.url()).search.replace(/(handle|cursor)=[^&]*/g, '$1=…'))
+          throw new Error(`the page still had ${String(holder.reads.size)} reads in flight after ${String(timeoutMs / 1000)}s: ${stuck.join(' | ')}`)
+        }
         await sleep(SETTLE_POLL_MS)
       }
     },
