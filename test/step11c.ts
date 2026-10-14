@@ -60,8 +60,8 @@ function serveMulticast(spec: string) {
 }
 
 // serve tcp:7700,3000 dns:53 listens on those ports on every address. A TCP
-// connection is closed as soon as it is accepted: the probe only needs the
-// handshake, and it closes at once, so anything written back could hit a reset.
+// connection is closed as soon as it is accepted. The probe needs only the
+// handshake and closes at once, so anything written back could hit a reset.
 function serve(specs: string[]) {
   for (const spec of specs) {
     if (spec.startsWith('mcast:')) {
@@ -309,7 +309,7 @@ async function main() {
     // The box host's own traffic never passes the boxes' chain. It still reaches
     // every stand-in and address the box cannot, so each "cannot reach" above is
     // the firewall, not a stand-in that stopped answering. The other box is the
-    // exception: its answers to the host come in from the box network, and the
+    // exception. Its answers to the host come in from the box network, and the
     // firewall drops them on their way to the host's address, as it would on the
     // real host. So the box sends to it directly instead, past the host.
     const blocked = Object.entries(TARGETS).filter(([target, { after: expected }]) => expected === 'blocked' && target !== OTHER_BOX_TARGET)

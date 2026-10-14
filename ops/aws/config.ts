@@ -21,8 +21,8 @@ export const POSTGRES_PORT = 5432
 // protocol, as boxes on this Mac do, and nothing private except the server's
 // machine port. ops/aws/box-firewall.ts drops every address the box host has, and
 // these ranges, which hold the VPC, RDS, the metadata endpoint, the tailnet and
-// Docker's networks, so other boxes too. Loopback is not listed: all of
-// 127.0.0.0/8 is the host's own, so the rule for the host's addresses drops it.
+// Docker's networks, so other boxes too. Loopback is not listed, since all of
+// 127.0.0.0/8 is the host's own and the rule for the host's addresses drops it.
 export const BOX_CLOSED_RANGES = [
   '0.0.0.0/8', // this network
   '10.0.0.0/8', // private: the VPC, the server and RDS

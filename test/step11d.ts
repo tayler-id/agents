@@ -1,6 +1,6 @@
-// AWS step 11d: the AWS stack, by its synthesized template. No AWS account is
-// needed: the two lookups the CDK CLI would make (the zones and the Amazon Linux
-// image) are filled in, as cdk.context.json fills them after the first deploy.
+// AWS step 11d: the AWS stack, by its synthesized template. It needs no AWS
+// account, since the check fills in the two lookups the CDK CLI would make, the
+// zones and the Amazon Linux image, as cdk.context.json does after the first deploy.
 // The template must have what docs/design/aws.md says: nothing open to the
 // internet, one rule to the machine port and one to Postgres, IMDSv2 with a hop
 // limit of 1, the database and bucket settings, the tag on every resource, roles
