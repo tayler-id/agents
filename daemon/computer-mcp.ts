@@ -196,10 +196,35 @@ browserTools.catch((error: unknown) => {
   process.exit(1)
 })
 
+// How often a browser call under way asks whether a person has taken over.
+const TAKEOVER_POLL_MS = 250
+
+// A browser call runs only while the agents hold the screen. A person who takes
+// over while one runs stops it, and the agent hears who did.
 async function browserCall(name: string, args: Record<string, unknown> | undefined): Promise<CallToolResult> {
   const now = await status()
   if (now.control.holder === 'person') return refusal(now.control)
-  return CallToolResultSchema.parse(await browser.callTool({ name, arguments: args }))
+  const abort = new AbortController()
+  // Set by the poll below while the call is awaited, so it is read through the object.
+  const taken: { by: ScreenControl | null } = { by: null }
+  const poll = setInterval(() => {
+    status().then((later) => {
+      if (later.control.holder !== 'person' || abort.signal.aborted) return
+      taken.by = later.control
+      abort.abort()
+    }, (error: unknown) => {
+      // The call goes on, and the next poll asks again.
+      console.error(`computer: asking who holds the screen: ${messageOf(error)}`)
+    })
+  }, TAKEOVER_POLL_MS)
+  try {
+    return CallToolResultSchema.parse(await browser.callTool({ name, arguments: args }, undefined, { signal: abort.signal }))
+  } catch (error) {
+    if (taken.by) return refusal(taken.by)
+    throw error
+  } finally {
+    clearInterval(poll)
+  }
 }
 
 const mcp = new McpServer({ name: 'computer', version: '1.0.0' })

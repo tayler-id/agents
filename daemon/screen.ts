@@ -117,9 +117,18 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
     }
   }
 
-  async function act(action: ComputerAction): Promise<ActDone> {
+  // Throws when a person holds the screen. setControl changes `control` between
+  // awaits, so this reads it when called.
+  const refuseIfTaken = () => {
     if (control.holder === 'person') throw new Refused(control)
+  }
+
+  async function act(action: ComputerAction): Promise<ActDone> {
+    refuseIfTaken()
     const client = await screen()
+    // A person may have taken over while the connection opened. From here to
+    // `running` below nothing waits, so a takeover after this check aborts the action.
+    refuseIfTaken()
     const steps = plan(action, pointer, desktop.size)
     const abort = new AbortController()
     running = abort
