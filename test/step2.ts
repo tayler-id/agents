@@ -201,6 +201,16 @@ try {
     && await taskSessions.until('the new task session', () => taskSessions.inserts.some((r) => r.task_id === taskId && r.agent_id === helper.id)),
   'a session that starts after the view opened arrives whole, for a new room and for a new task')
 
+  // A page on any site can make a person's browser post a form to the app, and serve
+  // signs it as that person. Such a post can't send a JSON content type without a
+  // CORS preflight, which this API never grants, so the API refuses anything else.
+  const crossSite = await fetch(`${PEOPLE}/v1/conversations`, {
+    method: 'POST', headers: { ...as(alice), 'content-type': 'text/plain' }, body: JSON.stringify({ kind: 'room', name: `cross-site-${id}` }),
+  })
+  await crossSite.body?.cancel()
+  const crossSiteRooms = (await db.query<{ n: number }>('select count(*)::int as n from conversations where name = $1', [`cross-site-${id}`])).rows[0]?.n
+  check(crossSite.status === 415 && crossSiteRooms === 0, "a person's post without a JSON content type is refused, so another site can't post as them")
+
   // A command's error goes into the record, so it must never carry the machine's token.
   const failedClone = await workspaces(mkdtempSync(join(tmpdir(), 'agents-step2-git-')), 'http://127.0.0.1:9', token)
     .setup({ workspaceId: randomUUID(), repos: [{ repoId: randomUUID(), name: 'shop', branch: 'task', base: 'main', setup: null }] })

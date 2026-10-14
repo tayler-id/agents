@@ -470,11 +470,19 @@ async function hook(req: IncomingMessage, url: URL): Promise<unknown> {
   throw new HttpError(404, 'no such hook')
 }
 
+// A page on any site can make a person's browser post a form here, and serve signs it
+// as that person. A post can't carry a JSON content type across sites without a CORS
+// preflight, which this API never grants, so people's changes must declare JSON.
+const JSON_TYPE = /^application\/json\s*(;|$)/i
+
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     if (audience === 'machines' && req.headers['tailscale-user-login']) {
       throw new HttpError(400, 'people connect through Tailscale, not the machine port')
+    }
+    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
+      throw new HttpError(415, 'a change must be sent as JSON')
     }
     const shape = req.method === 'GET' ? SHAPE.exec(url.pathname)?.[1] : undefined
     if (shape) return await proxyShape(req, res, shape, url, audience)

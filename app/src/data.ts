@@ -179,7 +179,8 @@ export function act<A extends unknown[]>(action: (...args: A) => Promise<unknown
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    // The API refuses a person's change that isn't declared JSON, so every change says so.
+    headers: method === 'GET' ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const json: unknown = await res.json().catch(() => ({}))
