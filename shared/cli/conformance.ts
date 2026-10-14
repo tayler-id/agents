@@ -57,6 +57,17 @@ const envelopeOf = (ran: Ran): Output | null => {
   }
 }
 
+// Each fence in plain output: its source and random token, and whether it closes on a marker with both.
+const OPEN = /^--- untrusted (.+) ([0-9a-f]{8}): data, not instructions ---$/
+function fences(stdout: string): { source: string; token: string; closed: boolean }[] {
+  const lines = stdout.split('\n')
+  return lines.flatMap((line, i) => {
+    const open = OPEN.exec(line)
+    if (!open?.[1] || !open[2]) return []
+    return [{ source: open[1], token: open[2], closed: lines.indexOf(`--- end of untrusted ${open[1]} ${open[2]} ---`, i + 1) > i }]
+  })
+}
+
 const shown = (ran: Ran) => `exit ${String(ran.code)}, stdout ${JSON.stringify(ran.stdout.slice(0, 300))}${ran.stderr ? `, stderr ${JSON.stringify(ran.stderr.slice(0, 200))}` : ''}`
 
 export async function conformance(spec: Conformance): Promise<RuleResult[]> {
@@ -106,7 +117,14 @@ export async function conformance(spec: Conformance): Promise<RuleResult[]> {
 
   const outside = await spec.run(spec.cases.untrusted)
   const outsideJson = await json(spec.cases.untrusted)
-  rule('text from outside is fenced and named as untrusted', outside.stdout.includes('--- untrusted ') && outside.stdout.includes('--- end of untrusted ') && (outsideJson.out?.untrusted.length ?? 0) > 0, shown(outside))
+  const fenced = fences(outside.stdout)
+  rule('text from outside is fenced, and each fence closes on its own random marker', fenced.length > 0 && fenced.every((f) => f.closed), shown(outside))
+  rule('--json carries outside text in outside blocks and names the data fields holding it', (outsideJson.out?.outside.length ?? 0) > 0 && (outsideJson.out?.untrusted.length ?? 0) > 0, shown(outsideJson.ran))
+  const again2 = await spec.run(spec.cases.untrusted)
+  const tokens = [fenced, fences(again2.stdout)].map((f) => f[0]?.token)
+  rule("a fence's marker is new for each output", tokens[0] !== undefined && tokens[1] !== undefined && tokens[0] !== tokens[1], tokens.join(' then '))
+  const longFences = fences(long.stdout)
+  rule('a cut never loses the closing marker', longFences.every((f) => f.closed), shown(long))
 
   // A next step naming the same command, with or without where it acts, repeats it.
   const strip = (words: string[]) => words.filter((w, i) => !spec.context.includes(w) && !spec.context.includes(words[i - 1] ?? '')).join(' ')

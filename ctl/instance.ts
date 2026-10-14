@@ -5,14 +5,14 @@
 
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { PageKey } from './driver.ts'
 import { z } from 'zod'
-import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX } from './config.ts'
+import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX, scrubber } from './config.ts'
 import { withClient } from './db.ts'
 import { call } from './api.ts'
 import { CliError, EXIT, Refused, UsageError } from '../shared/cli/output.ts'
@@ -404,10 +404,12 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
   }
   releasePorts(stopping.ports, stopping.name)
   const stopped = toStopped(stopping, { survivors: survivors.map((s) => ({ pid: s.pid, command: s.command })), removed })
-  // The final state goes with the evidence, and the instance leaves this checkout's list.
+  // The final state goes with the evidence, without the machine's token or any
+  // other secret, and the instance leaves this checkout's list.
   saveState(stopped)
   mkdirSync(stopping.evidence, { recursive: true })
-  renameSync(stateFile(stopping.name), join(stopping.evidence, 'instance.json'))
+  writeFileSync(join(stopping.evidence, 'instance.json'), `${JSON.stringify(scrubber()(stopped), null, 2)}\n`)
+  rmSync(stateFile(stopping.name))
   return stopped
 }
 

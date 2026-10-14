@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
 import { EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
+import { envSecrets, makeScrub, type Scrub } from '../shared/scrub.ts'
 import { Refused } from '../shared/cli/output.ts'
 
 export const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -94,6 +95,11 @@ export function config(): Config {
   loaded = { ...parsed.data, env }
   return loaded
 }
+
+// Takes the secrets in the env files and the shell out of anything agentsctl
+// prints or keeps, along with what shared/scrub.ts knows by pattern, such as a
+// machine's token. Before the config has loaded, only the patterns apply.
+export const scrubber = (): Scrub => makeScrub(loaded ? envSecrets(loaded.env) : [])
 
 // Who a process agentsctl starts is: each gets only the environment it needs.
 export type ChildRole = 'api' | 'admin' | 'daemon' | 'people' | 'session' | 'build'

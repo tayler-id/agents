@@ -13,8 +13,17 @@ import type { Seed } from './state.ts'
 export const Rows = z.array(z.record(z.string(), JSON_VALUE))
 export type Rows = z.infer<typeof Rows>
 
+// A read that runs longer than this, or a connection slower to open, fails the
+// command instead of hanging it. Every query agentsctl makes is a small read or
+// a seed, which take milliseconds on the test database.
+const STATEMENT_TIMEOUT_MS = 30_000
+const CONNECT_TIMEOUT_MS = 10_000
+
 export async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: config().DATABASE_URL })
+  const client = new pg.Client({
+    connectionString: config().DATABASE_URL, connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+    statement_timeout: STATEMENT_TIMEOUT_MS, query_timeout: STATEMENT_TIMEOUT_MS + CONNECT_TIMEOUT_MS,
+  })
   await client.connect()
   try {
     return await fn(client)
@@ -46,16 +55,24 @@ function plain(value: unknown): unknown {
 
 // Postgres's code for a write inside a read-only transaction.
 const READ_ONLY_VIOLATION = '25006'
+// A named statement goes through the extended protocol, where Postgres parses
+// exactly one statement. Sent as simple text, `select 1; commit; update ...`
+// would end the read-only transaction and run the update.
+const READ_STATEMENT = 'agentsctl-read'
+const MULTIPLE_COMMANDS = /cannot insert multiple commands into a prepared statement/
 
 export async function readOnly(sql: string, values: string[]): Promise<Rows> {
   return withClient(async (client) => {
     await client.query('begin transaction read only')
     try {
-      const result = await client.query<Record<string, unknown>>(sql, values)
+      const result = await client.query<Record<string, unknown>>({ name: READ_STATEMENT, text: sql, values })
       return Rows.parse(result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, plain(v)]))))
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === READ_ONLY_VIOLATION) {
         throw new Refused(`db reads only, so Postgres refused: ${error.message}`, ['Change the record the way a person or an agent does: through bin/agentsctl browser, desktop or api'])
+      }
+      if (error instanceof Error && MULTIPLE_COMMANDS.test(error.message)) {
+        throw new Refused('db runs one statement at a time, so Postgres refused a second', ['Run each select as its own db command'])
       }
       throw error
     } finally {

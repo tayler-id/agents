@@ -99,12 +99,16 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
     case 'check':
       await driver.check(key, op.handle, op.on, timeoutMs)
       return done(`${op.on ? 'checked' : 'unchecked'} ${describe(op.handle)}`)
-    case 'press':
+    case 'press': {
       await driver.press(key, op.key, op.handle, timeoutMs)
-      return done(`pressed ${op.key}${op.handle ? ` in ${describe(op.handle)}` : ''}`, { focus: await driver.focused(key) })
-    case 'type':
+      const focus = await driver.focused(key)
+      return done(`pressed ${op.key}${op.handle ? ` in ${describe(op.handle)}` : ''}`, { focus, outside: `focus: ${focus}` })
+    }
+    case 'type': {
       await driver.type(key, op.text)
-      return done(`typed "${op.text}" into ${await driver.focused(key)}`)
+      const focus = await driver.focused(key)
+      return done(`typed "${op.text}" where the focus is`, { focus, outside: `focus: ${focus}` })
+    }
     case 'wait':
       await driver.wait(key, op.handle, op.gone, timeoutMs)
       return done(`${describe(op.handle)} is ${op.gone ? 'gone' : 'there'}`)
@@ -116,7 +120,9 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
         text = await driver.text(key, op.handle, timeoutMs)
       }
       const pass = op.holds === undefined || text.includes(op.holds)
-      return { ...done(pass ? text : `expected ${describe(op.handle)} to hold "${op.holds ?? ''}", and it reads: ${text}`, { text }), pass }
+      const lines = text.split('\n').length
+      const holds = `${describe(op.handle)} holds ${String(lines)} ${lines === 1 ? 'line' : 'lines'} of text`
+      return { ...done(pass ? holds : `${holds}, without "${op.holds ?? ''}"`, { outside: text }), pass }
     }
     case 'count': {
       const deadline = Date.now() + timeoutMs
@@ -131,14 +137,14 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
     case 'snapshot': {
       const yaml = await driver.snapshot(key, timeoutMs)
       writeFileSync(op.path, `${yaml}\n`)
-      return done(`wrote the ARIA snapshot to ${op.path}`, { files: [op.path], text: yaml })
+      return done(`wrote the ARIA snapshot to ${op.path}`, { files: [op.path], outside: yaml })
     }
     case 'screenshot':
       await driver.screenshot(key, { path: op.path, fullPage: op.full, timeoutMs })
       return done(`wrote a screenshot to ${op.path}`, { files: [op.path] })
     case 'console': {
       const found = driver.console(key)
-      return { ...done(found.length ? `${String(found.length)} errors since the last check: ${found.join(' | ')}` : 'no page errors or console errors since the last check'), pass: !found.length, errors: found }
+      return { ...done(found.length ? `${String(found.length)} errors since the last check` : 'no page errors or console errors since the last check', { outside: found.join('\n') }), pass: !found.length, errors: found }
     }
     case 'network': {
       // Requests the page sent since the last look. Any that failed, or answered
@@ -149,9 +155,10 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
       writeFileSync(op.path, `${JSON.stringify(network, null, 2)}\n`)
       const cancelled = network.filter((n) => n.failed !== null && CANCELLED.test(n.failed))
       const failed = network.filter((n) => (n.failed !== null && !CANCELLED.test(n.failed)) || (n.status !== null && n.status >= 400))
-      const listed = failed.length ? `: ${failed.map((n) => `${n.method} ${n.url} ${n.failed ?? String(n.status)}`).join(' | ')}` : ''
       return {
-        ...done(`${String(network.length)} requests since the last look, ${String(failed.length)} failed${cancelled.length ? `, ${String(cancelled.length)} cancelled by the page` : ''}${listed}`, { files: [op.path], network }),
+        ...done(`${String(network.length)} requests since the last look, ${String(failed.length)} failed${cancelled.length ? `, ${String(cancelled.length)} cancelled by the page` : ''}`, {
+          files: [op.path], network, outside: failed.map((n) => `${n.method} ${n.url} ${n.failed ?? String(n.status)}`).join('\n'),
+        }),
         pass: !failed.length,
       }
     }
@@ -164,20 +171,24 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
       const overflow = await driver.overflow(key)
       const wide = overflow.scrollWidth > overflow.width
       return {
-        ...done(wide ? `the page is ${String(overflow.scrollWidth)}px wide in a ${String(overflow.width)}px window: ${overflow.offenders.map((o) => o.element).join(', ')}` : `no sideways scrolling at ${String(overflow.width)}px`),
+        ...done(wide ? `the page is ${String(overflow.scrollWidth)}px wide in a ${String(overflow.width)}px window` : `no sideways scrolling at ${String(overflow.width)}px`, {
+          outside: overflow.offenders.map((o) => `${o.element} reaches ${String(o.right)}px`).join('\n'),
+        }),
         pass: !wide, overflow,
       }
     }
     case 'a11y': {
       const violations = await driver.a11y(key)
       return {
-        ...done(violations.length ? violations.map((v) => `${v.impact} ${v.id}: ${v.help} (${String(v.nodes)}) ${v.target}`).join('\n') : 'no accessibility violations'),
+        ...done(violations.length ? `${String(violations.length)} accessibility violations, ${String(failing(violations).length)} serious or critical: ${violations.map((v) => `${v.impact} ${v.id}`).join(', ')}` : 'no accessibility violations', {
+          outside: violations.map((v) => `${v.impact} ${v.id} (${String(v.nodes)}): ${v.target}`).join('\n'),
+        }),
         pass: !failing(violations).length, violations,
       }
     }
     case 'focus': {
       const focus = await driver.focused(key)
-      return done(`focus is on ${focus}`, { focus })
+      return done('read where the focus is', { focus, outside: `focus: ${focus}` })
     }
     case 'tab-to': {
       // The element may still be rendering after the step before navigated.
@@ -187,10 +198,10 @@ export async function perform(driver: Driver, key: PageKey, op: PageOp, timeoutM
         await driver.press(key, 'Tab', undefined, timeoutMs)
         path.push(await driver.focused(key))
         if (await driver.isFocused(key, op.handle)) {
-          return done(`reached ${describe(op.handle)} in ${String(path.length)} tabs: ${path.join(' > ')}`, { path, focus: path.at(-1) })
+          return done(`reached ${describe(op.handle)} in ${String(path.length)} tabs`, { path, focus: path.at(-1), outside: path.join(' > ') })
         }
       }
-      return { ...done(`${describe(op.handle)} was not reached in ${String(op.max)} tabs: ${path.join(' > ')}`), pass: false, path }
+      return { ...done(`${describe(op.handle)} was not reached in ${String(op.max)} tabs`, { outside: path.join(' > ') }), pass: false, path }
     }
   }
 }

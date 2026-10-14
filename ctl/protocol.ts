@@ -93,7 +93,10 @@ export const Found = z.object({
   // True when the operation found its end state already in place and changed nothing.
   already: z.boolean().optional(),
   files: z.array(z.string()),
-  text: z.string().optional(),
+  // What the operation read from the page: text, a tree, errors, requests,
+  // element names. It is outside text, kept out of `summary`, which holds only
+  // what the tool knows.
+  outside: z.string().optional(),
   count: z.number().int().optional(),
   errors: z.array(z.string()).optional(),
   violations: z.array(Violation).optional(),

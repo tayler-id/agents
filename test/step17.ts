@@ -11,7 +11,7 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs, promisify } from 'node:util'
 import { z } from 'zod'
@@ -126,15 +126,15 @@ try {
 
   // Launch, idempotent, and refusing to replace a different instance.
   const up = await ctl(['up', '--pipelines'])
-  const ready = InstanceState.safeParse(up.out.data)
-  const state = ready.success && ready.data.phase === 'ready' ? ready.data : null
+  // The instance as its state file has it. up's own output leaves the machine token out.
+  const saved = existsSync(stateFile(name as InstanceName)) ? stateNow() : null
+  const state = saved?.phase === 'ready' ? saved : null
   check(up.code === 0 && state && state.team === `verify-${name}` && state.ports.machines >= 8020 && state.ports.streams <= 8039 && up.out.head.startsWith(`ok: up ${name} -> ready`),
     'up starts an instance on its own ports in 8020-8039, with a team of its own, and says it is ready')
   if (!state) throw new Error(`up did not start an instance, so nothing else can run: ${up.out.head}`)
   // The machine token runs the daemon, and stays in the instance's own state file only.
-  const saved = stateNow()
-  const token = saved.phase === 'ready' ? saved.seed.machine.token : ''
-  check(token.length > 0 && !JSON.stringify(up.out).includes(token), "up's output leaves out the machine's token")
+  const token = state.seed.machine.token
+  check(!JSON.stringify(up.out).includes(token), "up's output leaves out the machine's token")
   const again = await ctl(['up', '--pipelines'])
   check(again.code === 0 && again.out.already, 'up again changes nothing and says already: true')
   const other = await ctl(['up', '--claude', 'real'])
@@ -166,8 +166,8 @@ try {
     const write = await ctl(['db', 'update teams set name = name where id = {team}'])
     check(write.code === 3 && !write.out.ok, 'db refuses a write with exit 3')
     const smuggled = await ctl(['db', "select 1; commit; update agents set title = 'written by db' where team_id = {team} and name = 'writer'"])
-    const title = await ctl(['db', "select coalesce(title, '') as title from agents where team_id = {team} and name = 'writer'", '--value'])
-    check(smuggled.code === 3 && title.code === 0 && title.out.head !== 'written by db',
+    const unchanged = await ctl(['db', "select count(*)::int as n from agents where team_id = {team} and title = 'written by db'", '--expect', 'n=0'])
+    check(smuggled.code === 3 && unchanged.code === 0,
       'db refuses a second statement after a commit, with exit 3, and the row it would write is unchanged')
 
     // Text from the page is fenced with a random marker, and heads keep to what the tool knows.
@@ -262,7 +262,7 @@ try {
     const unsetAgain = await ctl(['secret', 'unset', 'STEP17_TOKEN'])
     const absent = await ctl(['machine', 'read', 'agents/nothing-here.txt', '--missing', '--timeout', '1'])
     const present = await ctl(['machine', 'read', 'secrets.json', '--missing', '--timeout', '1'])
-    check(secret.out.head.endsWith('-> held by the machine mac') && held.out.ok && held.out.untrusted.includes('file on the machine')
+    check(secret.out.head.endsWith('-> held by the machine mac') && held.out.ok && held.out.outside.some((o) => o.source === 'file on the machine')
       && unset.out.head.endsWith('-> not held by the machine mac') && unsetAgain.out.already && absent.out.ok && present.code === 1,
     'secret set and unset change what the machine holds, machine read prints its file as untrusted text, and --missing passes on an absent file and fails on a present one')
     const instances = await ctl(['list'], { instance: false })
@@ -285,7 +285,7 @@ try {
         emptyList: ['db', 'select 1 as n where false', ...here],
         failingRead: ['db', 'select * from no_such_table', ...here],
         write: ['seed', 'person', 'dee', ...here],
-        long: ['db', 'select generate_series(1, 100) as n', ...here],
+        long: ['db', "select repeat('x', 5000) as long", ...here],
         untrusted: ['api', 'GET', '/v1/me', ...here],
       },
     })

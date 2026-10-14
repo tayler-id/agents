@@ -11,7 +11,7 @@ import { z } from 'zod'
 import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row } from '../shared/cli/command.ts'
 import { JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
 import { ENGINE, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, FEATURE_MAP, WIDTH } from '../shared/evidence.ts'
-import { BASELINES_DIR, EVIDENCE_DIR, ROOT } from './config.ts'
+import { BASELINES_DIR, EVIDENCE_DIR, ROOT, scrubber } from './config.ts'
 import { bind, readOnly, withClient, type Rows } from './db.ts'
 import { call, Caller, Door, Method } from './api.ts'
 import { actions, nextPath, record } from './evidence.ts'
@@ -106,29 +106,29 @@ const CAPTURE: Flags = {
 // Each operation: what follows its name, one line of help, its own flags, and
 // whether it changes the page (a write, leading with ok:) or reads it. `outside`
 // names the page text it prints, which the output fences as untrusted.
-const DRIVE: Record<OpName, { args: string; about: string; flags: Flags; writes: boolean; outside?: string }> = {
-  goto: { args: '<route>', about: 'open a route, such as / or #/a/<agent id>, loading the page afresh', flags: {}, writes: true },
-  click: { args: '', about: 'click the element', flags: HANDLE, writes: true },
-  fill: { args: '', about: 'replace what the element holds with --value', flags: { ...HANDLE, value: { kind: 'string', about: 'the text to put in' } }, writes: true },
-  select: { args: '', about: 'pick a choice in a select box, by --option (its label) or --value', flags: { ...HANDLE, option: { kind: 'string', about: "the choice's label" }, value: { kind: 'string', about: "the choice's value" } }, writes: true },
-  check: { args: '', about: 'tick a checkbox', flags: HANDLE, writes: true },
-  uncheck: { args: '', about: 'untick a checkbox', flags: HANDLE, writes: true },
-  press: { args: '<key>', about: 'press a key, such as Enter or Tab, in the element or on the page', flags: HANDLE, writes: true },
-  type: { args: '<text>', about: 'type text where the keyboard focus is', flags: {}, writes: true },
-  wait: { args: '', about: 'wait until the element is there, or with --gone until it is not', flags: { ...HANDLE, gone: { kind: 'boolean', about: 'wait for it to go' } }, writes: false },
+const DRIVE: Record<OpName, { args: string; about: string; flags: Flags; writes: boolean; outside: string }> = {
+  goto: { args: '<route>', about: 'open a route, such as / or #/a/<agent id>, loading the page afresh', flags: {}, writes: true, outside: 'page text' },
+  click: { args: '', about: 'click the element', flags: HANDLE, writes: true, outside: 'page text' },
+  fill: { args: '', about: 'replace what the element holds with --value', flags: { ...HANDLE, value: { kind: 'string', about: 'the text to put in' } }, writes: true, outside: 'page text' },
+  select: { args: '', about: 'pick a choice in a select box, by --option (its label) or --value', flags: { ...HANDLE, option: { kind: 'string', about: "the choice's label" }, value: { kind: 'string', about: "the choice's value" } }, writes: true, outside: 'page text' },
+  check: { args: '', about: 'tick a checkbox', flags: HANDLE, writes: true, outside: 'page text' },
+  uncheck: { args: '', about: 'untick a checkbox', flags: HANDLE, writes: true, outside: 'page text' },
+  press: { args: '<key>', about: 'press a key, such as Enter or Tab, in the element or on the page', flags: HANDLE, writes: true, outside: 'page focus' },
+  type: { args: '<text>', about: 'type text where the keyboard focus is', flags: {}, writes: true, outside: 'page focus' },
+  wait: { args: '', about: 'wait until the element is there, or with --gone until it is not', flags: { ...HANDLE, gone: { kind: 'boolean', about: 'wait for it to go' } }, writes: false, outside: 'page text' },
   text: { args: '', about: "print the element's text; with --expect, wait until it holds that text", flags: { ...HANDLE, expect: { kind: 'string', about: 'text it must hold' } }, writes: false, outside: 'page text' },
-  count: { args: '', about: 'count the matching elements; with --expect, wait until there are that many', flags: { ...HANDLE, expect: { kind: 'string', about: 'how many there must be' } }, writes: false },
+  count: { args: '', about: 'count the matching elements; with --expect, wait until there are that many', flags: { ...HANDLE, expect: { kind: 'string', about: 'how many there must be' } }, writes: false, outside: 'page text' },
   snapshot: { args: '', about: "save and print the page's ARIA tree", flags: { aria: { kind: 'boolean', about: 'the ARIA tree, which is the one snapshot there is' }, ...CAPTURE }, writes: false, outside: 'page ARIA tree' },
-  screenshot: { args: '', about: 'save a screenshot', flags: { page: { kind: 'boolean', about: 'the whole page, not only what shows' }, ...CAPTURE }, writes: false },
+  screenshot: { args: '', about: 'save a screenshot', flags: { page: { kind: 'boolean', about: 'the whole page, not only what shows' }, ...CAPTURE }, writes: false, outside: 'page text' },
   console: { args: '', about: 'list page and console errors since the last look; fails on any', flags: {}, writes: false, outside: 'console messages' },
-  network: { args: '', about: 'list requests since the last look; fails on any that failed or answered 400 or more', flags: CAPTURE, writes: false },
-  trace: { args: 'start|stop', about: 'record a Playwright trace from start to stop', flags: CAPTURE, writes: true },
-  overflow: { args: '', about: 'fail when the page scrolls sideways, naming what sticks out', flags: {}, writes: false },
-  a11y: { args: '', about: 'run axe on the page; fail on serious or critical violations', flags: {}, writes: false },
+  network: { args: '', about: 'list requests since the last look; fails on any that failed or answered 400 or more', flags: CAPTURE, writes: false, outside: 'page requests' },
+  trace: { args: 'start|stop', about: 'record a Playwright trace from start to stop', flags: CAPTURE, writes: true, outside: 'page text' },
+  overflow: { args: '', about: 'fail when the page scrolls sideways, naming what sticks out', flags: {}, writes: false, outside: 'page elements' },
+  a11y: { args: '', about: 'run axe on the page; fail on serious or critical violations', flags: {}, writes: false, outside: 'page elements' },
   focus: { args: '', about: 'print what has the keyboard focus', flags: {}, writes: false, outside: 'page text' },
-  'tab-to': { args: '', about: 'press Tab until the element has the focus, or fail', flags: { ...HANDLE, max: { kind: 'string', about: `presses to try (${String(DEFAULT_MAX_TABS)} by default)` } }, writes: true },
-  record: { args: 'start|stop', about: 'record a video of the page from start to stop', flags: { label: { kind: 'string', about: 'what the recording shows' } }, writes: true },
-  close: { args: '', about: 'close this page', flags: {}, writes: true },
+  'tab-to': { args: '', about: 'press Tab until the element has the focus, or fail', flags: { ...HANDLE, max: { kind: 'string', about: `presses to try (${String(DEFAULT_MAX_TABS)} by default)` } }, writes: true, outside: 'page focus' },
+  record: { args: 'start|stop', about: 'record a video of the page from start to stop', flags: { label: { kind: 'string', about: 'what the recording shows' } }, writes: true, outside: 'page text' },
+  close: { args: '', about: 'close this page', flags: {}, writes: true, outside: 'page text' },
 }
 
 // The operation a drive command asks for. Paths for captures are chosen once
@@ -183,6 +183,9 @@ function opFor(name: OpName, values: DriveValues, word: string, evidence: string
   }
 }
 
+// The fields of what an operation found that hold what the page said.
+const PAGE_FIELDS = ['outside', 'errors', 'network', 'violations', 'overflow', 'focus', 'path', 'captures'] as const
+
 // What to try after a drive step, by what it did and how it went.
 function driveHelp(target: Target, name: OpName | 'visual', found: Found | null, failedShot: string | null): string[] {
   if (!found) {
@@ -218,11 +221,14 @@ function driveCommand(target: Target, name: OpName): Command {
         if (!reply.ok) return failed(reply.error, { help: driveHelp(target, name, null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence })
         const found = reply.found
         const [firstLine = '', ...more] = found.summary.split('\n')
-        const shared = { help: driveHelp(target, name, found, null), files: found.files, data: found, log: state.evidence }
-        if (!found.pass) return failed(firstLine, { ...shared, detail: more.join('\n') })
-        if (spec.writes) return { kind: 'write', did: firstLine, state: `the page is at ${routeOf(found.url)}${found.focus ? `, with the focus on ${found.focus}` : ''}`, already: found.already === true, detail: more.join('\n'), ...shared }
-        const outside = spec.outside && more.length ? { source: spec.outside, text: more.join('\n') } : undefined
-        return { kind: 'read', answer: firstLine, detail: outside ? undefined : more.join('\n'), outside, ...shared }
+        const shared = {
+          help: driveHelp(target, name, found, null), files: found.files, data: found, log: state.evidence, detail: more.join('\n'),
+          outside: found.outside ? [{ source: spec.outside, text: found.outside }] : [],
+          untrusted: PAGE_FIELDS.filter((field) => found[field] !== undefined).map((field) => ({ source: spec.outside, field: `data.${field}` })),
+        }
+        if (!found.pass) return failed(firstLine, shared)
+        if (spec.writes) return { kind: 'write', did: firstLine, state: `the page is at ${routeOf(found.url)}`, already: found.already === true, ...shared }
+        return { kind: 'read', answer: firstLine, ...shared }
       }
     },
   })
@@ -277,21 +283,22 @@ const apiCommand = command({
       const state = ready(values.instance)
       const reply = await call(state, { method: method.data, path, as: values.as, login: values.as === 'person' ? loginFor(state, values.login) : undefined, door: values.door, body })
       const file = nextPath(state.evidence, 'api', `${method.data}-${path}`, 'json')
-      writeFileSync(file, `${JSON.stringify({ request: { method: method.data, path, as: values.as, body: body ?? null }, reply }, null, 2)}\n`)
+      writeFileSync(file, `${JSON.stringify(scrubber()({ request: { method: method.data, path, as: values.as, body: body ?? null }, reply }), null, 2)}\n`)
       const statusOk = values.expect === undefined ? reply.status >= 200 && reply.status < 300 : reply.status === values.expect
       const shown = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body, null, 2)
       const wanted = values['expect-text']
       const missing = wanted !== undefined && !shown.includes(wanted) && !(typeof reply.body !== 'string' && JSON.stringify(reply.body).includes(wanted))
       const verb = `${method.data} ${path} as ${values.as}`
-      const outside = { source: 'API answer', text: shown }
+      const outside = [{ source: 'API answer', text: shown }]
+      const untrusted = [{ source: 'API answer', field: 'data.body' }]
       if (!statusOk || missing) {
         const why = !statusOk ? (values.expect === undefined ? 'a 2xx was expected' : `${String(values.expect)} was expected`) : `the answer lacks "${wanted ?? ''}"`
-        return failed(`${verb} answered ${String(reply.status)}, and ${why}`, { outside, files: [file], data: reply, help: [`Read the answer in ${relative(ROOT, file)}`], log: state.evidence })
+        return failed(`${verb} answered ${String(reply.status)}, and ${why}`, { outside, untrusted, files: [file], data: reply, help: [`Read the answer in ${relative(ROOT, file)}`], log: state.evidence })
       }
       if (method.data === 'POST') {
-        return { kind: 'write', did: verb, state: `the API answered ${String(reply.status)}`, already: false, outside, files: [file], data: reply, help: [run('db "<select>"', 'to read the side effect back from the record')], log: state.evidence }
+        return { kind: 'write', did: verb, state: `the API answered ${String(reply.status)}`, already: false, outside, untrusted, files: [file], data: reply, help: [run('db "<select>"', 'to read the side effect back from the record')], log: state.evidence }
       }
-      return { kind: 'read', answer: `${verb} answered ${String(reply.status)}`, outside, files: [file], data: reply, help: [], log: state.evidence }
+      return { kind: 'read', answer: `${verb} answered ${String(reply.status)}`, outside, untrusted, files: [file], data: reply, help: [], log: state.evidence }
     }
   },
 })
@@ -316,6 +323,9 @@ function checkRows(rows: Rows, values: z.infer<typeof DbArgs>): string | null {
   if (values.value && (rows.length !== 1 || Object.keys(rows[0] ?? {}).length !== 1)) return `--value needs one row with one column, and there are ${String(rows.length)} rows`
   return null
 }
+
+// What db --value may print alone: no spaces, quotes or line breaks, so it can't carry a sentence.
+const PLAIN_VALUE = /^[\w.@:/+=-]{1,200}$/
 
 const asRow = (row: Rows[number]): Row => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]))
 
@@ -343,15 +353,22 @@ const dbCommand = command({
         problem = checkRows(rows, values)
       }
       const file = nextPath(state.evidence, 'db', sql.slice(0, 40), 'json')
-      writeFileSync(file, `${JSON.stringify({ query: sql, rows }, null, 2)}\n`)
-      const shared = { files: [file], data: { rows }, log: state.evidence }
+      writeFileSync(file, `${JSON.stringify(scrubber()({ query: sql, rows }), null, 2)}\n`)
+      const untrusted = [{ source: 'record rows', field: 'data.rows' }]
+      const shared = { files: [file], data: { rows }, log: state.evidence, untrusted }
       const lines = rows.map((r) => Object.entries(asRow(r)).map(([k, v]) => `${k}=${v}`).join('  ')).join('\n')
       if (problem) {
-        return failed(problem, { ...shared, outside: { source: 'record rows', text: lines || '(no rows)' }, help: [values.wait ? 'The record never reached that state. Check the step that should have written it' : 'Add `--wait <seconds>` if the row is still on its way'] })
+        return failed(problem, { ...shared, outside: [{ source: 'record rows', text: lines }], help: [values.wait ? 'The record never reached that state. Check the step that should have written it' : 'Add `--wait <seconds>` if the row is still on its way'] })
       }
-      // --value prints the one value and nothing else, not even the evidence file, so a shell can put it in another command.
+      // --value prints the one value and nothing else, not even the evidence file,
+      // so a shell can put it in another command. It is the one head that holds a
+      // value from the record, so it must be plain: an id, a name, a number.
       const first = Object.values(rows[0] ?? {})[0]
-      if (values.value) return { kind: 'read', answer: typeof first === 'string' ? first : JSON.stringify(first ?? null), help: [], data: shared.data, log: shared.log }
+      if (values.value) {
+        const value = typeof first === 'string' ? first : JSON.stringify(first ?? null)
+        if (!PLAIN_VALUE.test(value)) return failed('the value is not plain enough to print alone (an id, a name or a number). Read it without --value', { ...shared, help: [] })
+        return { kind: 'read', answer: value, help: [], data: shared.data, log: shared.log, untrusted }
+      }
       return { kind: 'list', noun: 'rows', rows: rows.map(asRow), source: 'record rows', help: [], ...shared }
     }
   },
@@ -441,7 +458,7 @@ const seedTask = command({
     const had = await existing()
     if (!had) {
       const reply = await call(state, { method: 'POST', path: '/v1/tasks', as: 'person', body: { title: values.title, instructions: values.instructions ?? '', agentId } })
-      if (reply.status < 200 || reply.status >= 300) return failed(`POST /v1/tasks answered ${String(reply.status)}`, { outside: { source: 'API answer', text: JSON.stringify(reply.body) }, help: [run(`doctor${at(state)}`, 'to check the instance')], data: reply, log: state.evidence })
+      if (reply.status < 200 || reply.status >= 300) return failed(`POST /v1/tasks answered ${String(reply.status)}`, { outside: [{ source: 'API answer', text: JSON.stringify(reply.body) }], untrusted: [{ source: 'API answer', field: 'data.body' }], help: [run(`doctor${at(state)}`, 'to check the instance')], data: reply, log: state.evidence })
     }
     const task = await existing()
     if (!task) return failed(`no task titled "${values.title}" after starting it`, { help: [], data: null, log: state.evidence })
@@ -458,7 +475,7 @@ const readSecrets = (file: string) => (existsSync(file) ? z.record(z.string(), z
 function secretCommand(action: 'set' | 'unset'): Command {
   return command({
     name: `secret ${action}`, args: '<NAME>', about: action === 'set' ? "give the machine a secret's value, where a person keeps it" : "take a secret's value off the machine",
-    flags: action === 'set' ? { value: { kind: 'string', about: 'the value' } } : {},
+    flags: action === 'set' ? { value: { kind: 'string', about: 'the value, which no log or output repeats', secret: true } } : {},
     schema: Common.extend({ value: z.string().optional() }),
     prepare: (values, [key]) => {
       if (!key || !SECRET_NAME.test(key)) throw new UsageError(`secret ${action} <NAME>, in capitals, such as NOTES_TOKEN`)
@@ -511,7 +528,7 @@ const machineRead = command({
         text = look()
       }
       const shared = { help: [], data: { path, exists: text !== null }, log: state.evidence }
-      const outside = text === null ? undefined : { source: 'file on the machine', text }
+      const outside = text === null ? [] : [{ source: 'file on the machine', text }]
       if (values.missing) return text === null ? { kind: 'read', answer: `${path} is not on the machine`, ...shared } : failed(`${path} is on the machine, and should not be`, { ...shared, outside })
       if (text === null) return failed(`${path} is not on the machine`, shared)
       if (!holds(text)) return failed(`${path} does not hold "${values['expect-text'] ?? ''}"`, { ...shared, outside })
@@ -546,7 +563,10 @@ const visualShot = command({
       const found = reply.found
       const manifestFile = join(state.evidence, EVIDENCE_MANIFEST_FILE)
       const listed = existsSync(manifestFile) ? EVIDENCE_MANIFEST.parse(JSON.parse(readFileSync(manifestFile, 'utf8'))).shots.filter((s) => s.view === view).length : 0
-      const shared = { detail: found.summary, help: [run('visual compare', 'to diff the captures against the baselines')], files: found.files, data: found, log: state.evidence }
+      const shared = {
+        detail: found.summary, help: [run('visual compare', 'to diff the captures against the baselines')], files: found.files, data: found, log: state.evidence,
+        outside: found.outside ? [{ source: 'console messages', text: found.outside }] : [], untrusted: [{ source: 'console messages', field: 'data.captures' }],
+      }
       if (!found.pass) return failed('a capture had a problem', shared)
       return { kind: 'write', did: `visual shot ${view}`, state: `${String(listed)} captures of ${view} in ${relative(ROOT, manifestFile)}, each checked`, already: false, ...shared }
     }
@@ -658,8 +678,8 @@ const mapRun = command({
       const report = await runMap(state, positionals, { visual: values.visual === true, keepGoing: values['keep-going'] === true }, runCli, health)
       const failing = report.features.filter((f) => f.verdict === 'verifier-failed')
       // Step results quote what the page and the record said.
-      const outside = { source: 'step results, which quote the page and the record', text: report.text }
-      const shared = { outside, files: [report.file], data: report, log: state.evidence }
+      const source = 'step results, which quote the page and the record'
+      const shared = { outside: [{ source, text: report.text }], untrusted: [{ source, field: 'data.features' }, { source, field: 'data.text' }], files: [report.file], data: report, log: state.evidence }
       if (!report.ok) {
         return failed(`${String(failing.length)} features failed`, {
           ...shared, help: [
@@ -773,7 +793,7 @@ const evidenceCommand = command({
     if (!existsSync(state.evidence)) return failed(`the evidence folder ${relative(ROOT, state.evidence)} is missing`, { help: [], data: null })
     const done = actions(state.evidence)
     return {
-      kind: 'list', noun: 'actions', source: 'action summaries, which quote the page and the record', detail: `folder: ${relative(ROOT, state.evidence)}`,
+      kind: 'list', noun: 'actions', source: 'action log', detail: `folder: ${relative(ROOT, state.evidence)}`, untrusted: [{ source: 'action log', field: 'data.actions' }],
       rows: done.map((a) => ({ at: a.at, command: a.command, ok: String(a.ok), summary: a.summary.split('\n')[0] ?? '' })),
       help: [], data: { evidence: state.evidence, actions: done },
     }
@@ -850,6 +870,7 @@ export const CLI: Cli = {
     if (result.log) record(result.log, { command: output.command, args: argv, ok: output.ok, summary: output.head, files: output.files })
   },
   failureHelp: [run('doctor', 'to check the instance'), "If this keeps happening, read the logs in the instance's evidence folder"],
+  scrub: scrubber,
 }
 
 export const runCli = (argv: string[]) => dispatch(CLI, argv)

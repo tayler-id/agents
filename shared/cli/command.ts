@@ -6,9 +6,11 @@
 
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { CliError, counted, EXIT, fence, JSON_VALUE, OUTPUT, UsageError, type ExitCode, type Outside, type Output } from './output.ts'
+import type { Scrub } from '../scrub.ts'
+import { CliError, counted, EXIT, JSON_VALUE, OUTPUT, UsageError, type ExitCode, type Outside, type Output, type UntrustedField } from './output.ts'
 
-export type Flag = { kind: 'string' | 'boolean' | 'strings'; about: string }
+// `secret` marks a flag whose value is never logged or shown, such as a password.
+export type Flag = { kind: 'string' | 'boolean' | 'strings'; about: string; secret?: true }
 export type Flags = Record<string, Flag>
 
 // Flags every command of every CLI takes.
@@ -21,9 +23,12 @@ const DRY_RUN: Flags = { 'dry-run': { kind: 'boolean', about: 'check the command
 const FIELDS: Flags = { fields: { kind: 'string', about: 'the fields to show, comma separated' } }
 
 type Shared = {
+  // The tool's own words.
   detail?: string
-  // Text from outside the CLI, shown fenced and named in the envelope's untrusted list.
-  outside?: Outside
+  // Text from outside the CLI, which plain output fences.
+  outside?: Outside[]
+  // The fields of `data` that hold outside text.
+  untrusted?: UntrustedField[]
   help: string[]
   files?: string[]
   data: unknown
@@ -35,7 +40,7 @@ export type Row = Record<string, string>
 export type Result =
   | (Shared & { kind: 'read'; answer: string })
   // Every row there is; the dispatcher shows a few fields and rows, says how many of how many, and says when there are none.
-  // `source` names where the rows came from when they hold outside text.
+  // `source` names where the rows came from when they hold outside text, and the rows print fenced.
   | (Shared & { kind: 'list'; noun: string; rows: Row[]; source?: string })
   // `state` is what a read after the write found, never what the write meant to leave.
   | (Shared & { kind: 'write'; did: string; state: string; already: boolean })
@@ -76,8 +81,10 @@ export type Cli = {
   dashboard: Run
   // What a command would do, for --dry-run. Without it the CLI has no --dry-run.
   dryRun?: (command: Command, argv: string[], values: Record<string, unknown>) => Result
-  // Runs after every command, with what it returned and printed.
+  // Runs after every command, with what it returned and printed, and its arguments with secret values masked.
   after?: (result: Result, output: Output, argv: string[]) => void
+  // Takes known secrets out of everything the CLI prints or logs.
+  scrub?: () => Scrub
   // Next steps after a command fails with an error it did not expect.
   failureHelp: string[]
 }
@@ -198,26 +205,26 @@ function requestedFields(command: Command, requested: unknown): string[] | null 
   return names
 }
 
-// The detail of a list: the chosen fields of each row, all rows only with --full.
-function listDetail(result: Extract<Result, { kind: 'list' }>, command: Command, requested: string[] | null, full: boolean): string {
+// A list's rows: the chosen fields of each, all of them only with --full. Rows
+// from outside become a fenced block; the note on how many more there are is the tool's own.
+function listParts(result: Extract<Result, { kind: 'list' }>, command: Command, requested: string[] | null, full: boolean): { own: string; outside: Outside[] } {
   const shown = requested ?? command.fields?.shown ?? [...new Set(result.rows.flatMap((r) => Object.keys(r)))]
   const rows = full ? result.rows : result.rows.slice(0, LIST_ROWS)
   const lines = rows.map((r) => rowLine(r, shown)).join('\n')
-  const more = rows.length < result.rows.length ? `\n(${String(result.rows.length - rows.length)} more ${result.noun}. Add --full for all of them.)` : ''
-  return result.source ? `${fence({ source: result.source, text: lines })}${more}` : `${lines}${more}`
+  const more = rows.length < result.rows.length ? `(${String(result.rows.length - rows.length)} more ${result.noun}. Add --full for all of them.)` : ''
+  if (result.source) return { own: more, outside: lines ? [{ source: result.source, text: lines }] : [] }
+  return { own: [lines, more].filter(Boolean).join('\n'), outside: [] }
 }
 
 function envelope(result: Result, command: Command | null, commandName: string, requested: string[] | null, full: boolean): Output {
   const code: ExitCode = result.kind === 'failed' ? result.code : EXIT.done
-  const parts = [
-    result.detail ?? '',
-    result.kind === 'list' && command ? listDetail(result, command, requested, full) : '',
-    result.outside ? fence(result.outside) : '',
-  ].filter(Boolean)
-  const untrusted = [...(result.outside ? [result.outside.source] : []), ...(result.kind === 'list' && result.source ? [result.source] : [])]
+  const list = result.kind === 'list' && command ? listParts(result, command, requested, full) : { own: '', outside: [] }
   return OUTPUT.parse({
-    ok: code === EXIT.done, command: commandName, head: headOf(result, commandName), detail: parts.join('\n'),
-    already: result.kind === 'write' && result.already, code, files: result.files ?? [], help: result.help, untrusted,
+    ok: code === EXIT.done, command: commandName, head: headOf(result, commandName),
+    detail: [result.detail ?? '', list.own].filter(Boolean).join('\n'),
+    outside: [...list.outside, ...(result.outside ?? [])].filter((block) => block.text.length > 0),
+    untrusted: result.untrusted ?? [],
+    already: result.kind === 'write' && result.already, code, files: result.files ?? [], help: result.help,
     data: JSON_VALUE.parse(JSON.parse(JSON.stringify(result.data ?? null))),
   })
 }
@@ -233,8 +240,8 @@ const failure = (commandName: string, error: unknown, help: string[]): Output =>
   const code = known ? error.code : EXIT.failed
   const message = error instanceof Error ? error.message : String(error)
   return OUTPUT.parse({
-    ok: false, command: commandName, head: `error: ${commandName}: ${message}`, detail: '', already: false, code,
-    files: [], help: known && error.help.length ? error.help : help, untrusted: [], data: null,
+    ok: false, command: commandName, head: `error: ${commandName}: ${message}`, detail: '', outside: [], untrusted: [], already: false, code,
+    files: [], help: known && error.help.length ? error.help : help, data: null,
   })
 }
 
@@ -251,33 +258,45 @@ export function parseOnly(cli: Cli, argv: string[]): void {
   prepared(cli, command, rest)
 }
 
+// The arguments with each secret flag's value masked, for logs and dry runs.
+function masked(argv: string[], flags: Flags): string[] {
+  return argv.map((arg, i) => {
+    const before = argv[i - 1] ?? ''
+    if (before.startsWith('--') && flags[before.slice(2)]?.secret && !arg.startsWith('--')) return '[secret]'
+    const equals = arg.indexOf('=')
+    if (arg.startsWith('--') && equals > 0 && flags[arg.slice(2, equals)]?.secret) return `${arg.slice(0, equals)}=[secret]`
+    return arg
+  })
+}
+
 // Runs one command line. Never throws: a failure comes back as an envelope with its exit code.
 export async function dispatch(cli: Cli, argv: string[]): Promise<{ code: ExitCode; output: Output; json: boolean; full: boolean }> {
   const json = argv.includes('--json')
   const full = argv.includes('--full')
   const words = argv.filter((a) => !a.startsWith('--'))
   let commandName = words[0] ?? 'dashboard'
+  const finish = (result: Result | null, built: Output, shownArgv: string[]) => {
+    const output = cli.scrub ? OUTPUT.parse(cli.scrub()(built)) : built
+    if (result) cli.after?.(result, output, shownArgv)
+    return { code: output.code, output, json, full }
+  }
   try {
     if (!argv.length || argv.every((a) => a.startsWith('--'))) {
       if (argv.includes('--help')) return { code: EXIT.done, output: helpOutput(cliHelp(cli), 'help'), json, full: true }
       parseFlags({ ...cli.global, ...OWN }, argv, `Run \`${cli.invoke} help\` for every command`)
       const result = await cli.dashboard()
-      const output = envelope(result, null, commandName, null, full)
-      cli.after?.(result, output, argv)
-      return { code: output.code, output, json, full }
+      return finish(result, envelope(result, null, commandName, null, full), argv)
     }
     if (argv[0] === 'help') return { code: EXIT.done, output: helpOutput(cliHelp(cli), 'help'), json, full: true }
     const { command, rest } = find(cli, argv)
     commandName = command.name
     if (rest.includes('--help')) return { code: EXIT.done, output: helpOutput(commandHelp(cli, command), `${command.name} --help`), json, full: true }
     const { run, own, requested, dry } = prepared(cli, command, rest)
-    const result = dry && cli.dryRun ? cli.dryRun(command, argv, own) : await run()
-    const output = envelope({ ...result, help: withoutSelf(cli, result.help, argv) }, command, command.name, requested, full)
-    cli.after?.(result, output, argv)
-    return { code: output.code, output, json, full }
+    const shownArgv = masked(argv, flagsOf(cli, command))
+    const result = dry && cli.dryRun ? cli.dryRun(command, shownArgv, own) : await run()
+    return finish(result, envelope({ ...result, help: withoutSelf(cli, result.help, argv) }, command, command.name, requested, full), shownArgv)
   } catch (error) {
-    const output = failure(commandName, error, error instanceof UsageError ? [`Run \`${cli.invoke} help\` for every command`] : cli.failureHelp)
-    return { code: output.code, output, json, full }
+    return finish(null, failure(commandName, error, error instanceof UsageError ? [`Run \`${cli.invoke} help\` for every command`] : cli.failureHelp), argv)
   }
 }
 
