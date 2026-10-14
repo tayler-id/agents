@@ -312,7 +312,9 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
       </ul>
 
       <h2 className="kicker">Repos</h2>
-      <ul className="list" aria-label="Repos">
+      {/* No label of its own, unlike the lists around it: a page's Repo picker is
+          found by its label, which a list named Repos would match too. */}
+      <ul className="list">
         <li>
           <button type="button" className={`row${route.page === 'repos' ? ' selected' : ''}`} onClick={() => go({ page: 'repos' })}>
             <span>All repos</span>

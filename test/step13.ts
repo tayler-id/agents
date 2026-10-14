@@ -19,7 +19,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -762,9 +762,10 @@ try {
     for (const name of [PIPES, SHOP]) {
       await forgeAdmin.call('DELETE', `/repos/${giteaOrg}/${name}`).catch((error: unknown) => { console.error(`removing ${name}:`, error) })
     }
+    rmSync(home, { recursive: true, force: true })
   }
   await db.end()
 }
 
-console.log(`\n${failures.length ? `${failures.length} failed (teams ${team}, ${otherTeam}, forge repos and ${home} kept)` : 'all passed (test teams and repos removed)'}`)
+console.log(`\n${failures.length ? `${failures.length} failed (teams ${team}, ${otherTeam}, forge repos and ${home} kept)` : 'all passed (test teams, repos and folder removed)'}`)
 process.exit(failures.length ? 1 : 0)

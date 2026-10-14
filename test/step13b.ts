@@ -9,7 +9,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -130,7 +130,7 @@ async function run(engine: string, github: FakeGithub) {
     const page = await open()
 
     // The Repos page, from the sidebar, says what it is and lists every repo.
-    const reposEntry = page.getByRole('list', { name: 'Repos' }).getByRole('button', { name: /All repos/ })
+    const reposEntry = page.getByRole('navigation', { name: 'Workspace' }).getByRole('button', { name: /^All repos/ })
     const hasEntry = await reposEntry.waitFor({ timeout: 15_000 }).then(() => true, () => false)
     if (hasEntry) await reposEntry.click()
     check(hasEntry && await visible(page, '.page-head p', 15, /Every repo your team shares is listed here/) && await visible(page, '.page-head h1', 15, /\d+ repos?/),
@@ -280,9 +280,10 @@ try {
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch((error: unknown) => { console.error('removing the team:', error) })
     await forgeAdmin.call('DELETE', `/repos/${giteaOrg}/${SHOP}`).catch((error: unknown) => { console.error(`removing ${SHOP}:`, error) })
+    rmSync(home, { recursive: true, force: true })
   }
   await db.end()
 }
 
-console.log(`\nscreenshots:\n${shots.join('\n')}\n${failures.length ? `${failures.length} failed (team ${team}, ${SHOP} and ${home} kept)` : 'all passed (test team and repo removed)'}`)
+console.log(`\nscreenshots:\n${shots.join('\n')}\n${failures.length ? `${failures.length} failed (team ${team}, ${SHOP} and ${home} kept)` : 'all passed (test team, repo and folder removed)'}`)
 process.exit(failures.length ? 1 : 0)
