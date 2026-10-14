@@ -720,7 +720,8 @@ const PeopleSocket = z.string().startsWith('/')
 // http://agents-server.<tailnet>.ts.net, separated by commas. Only pages from
 // these may open a screen's WebSocket, which carries a person's identity.
 const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin) => origin.trim()))
-  .pipe(z.array(z.url().refine((url) => new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
+  // Zod runs a refinement even when z.url() has failed, so this one must not throw.
+  .pipe(z.array(z.url().refine((url) => URL.canParse(url) && new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
 
 const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
 

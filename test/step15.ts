@@ -4,15 +4,16 @@
 // task's session in it gets the computer tools, the standing instructions and
 // the verify-work skill, and those tools drive the box's screen and browser.
 // People watch the screen through the API's people socket, from the app's own
-// origin only, and take it over. Only the one who holds it can type, the
-// agent's calls stop and are refused until they hand it back, the record shows
-// it, a view closed without handing back gives the screen back on its own, and
-// private work that starts on the box cuts off whoever can't see it. Dead viewers
-// and tunnels are dropped. A screenshot the agent saves becomes an image
-// document. When the box stops, its viewers are told. When it starts again,
-// is killed or is recreated, its screen and browser come back, and work that
-// was waiting for it gets its computer. A box whose desktop can't come up starts
-// again, and a connection reset mid-upgrade leaves the API up.
+// origins only, which the API won't start without, and take it over. Only the
+// one who holds it can type, the agent's calls stop and are refused until they
+// hand it back, the record shows it, a view closed without handing back gives
+// the screen back on its own, and private work that starts on the box cuts off
+// whoever can't see it. Dead viewers and tunnels are dropped. A screenshot the
+// agent saves becomes an image document. When the box stops, its viewers are
+// told. When it starts again, is killed or is recreated, its screen and browser
+// come back, and work that was waiting for it gets its computer. A box whose
+// desktop can't come up starts again, and a connection reset mid-upgrade leaves
+// the API up.
 // Prints the image's size, the time from a key press in a viewer to its pixels,
 // and the box's memory and CPU.
 // The box reaches this check's API only on 7701, the machine port the box
@@ -73,6 +74,8 @@ const LONG_CALL_MS = 10_000
 const DESKTOP_GIVES_UP_S = 30 + 30
 // How long a viewer or tunnel that stopped answering pings may stay open.
 const DEAD_SOCKET_S = (SCREEN_DEAD_MS + 2 * SCREEN_PING_MS) / 1000
+// How long an API missing a setting it needs may take to stop.
+const API_STOPS_MS = 20_000
 // The limits a box runs under, as server/boxes.ts sets them.
 const BOX_LIMITS = { memory: 4 * 1024 ** 3, nanoCpus: 2e9, pids: 4096 }
 
@@ -195,6 +198,15 @@ try {
   node('server/boxes.ts', 'build')
   const imageBytes = Number(docker('image', 'inspect', IMAGE, '--format', '{{.Size}}'))
   console.log(`      built ${IMAGE} in ${Math.round((Date.now() - built) / 1000)} s, ${(imageBytes / 1e9).toFixed(2)} GB compressed`)
+
+  // The API needs the origins the app's pages come from, and stops at once
+  // without them, naming the setting.
+  const noOrigins = spawnSync(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
+    cwd: ROOT, encoding: 'utf8', timeout: API_STOPS_MS, env: { ...process.env, ...checkEnv, AGENTS_PEOPLE_ORIGINS: '' },
+  })
+  const named = noOrigins.stderr.includes('AGENTS_PEOPLE_ORIGINS must list')
+  check(noOrigins.status === 1 && named,
+    `without AGENTS_PEOPLE_ORIGINS the API stops at once and names it (exit ${String(noOrigins.status)}, ${named ? 'named' : 'not named'})`)
 
   const api = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...checkEnv },
