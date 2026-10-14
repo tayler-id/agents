@@ -182,6 +182,7 @@ Tayler went with the coordinator's picks on all of these.
 - **Status.** Being built, on its branch. `test/step17.ts` checks the tool, and runs in `npm run check`. `test/step17-breaks.ts` has a break for 88 of the 106 checks its control runs make, and watches each go red against a control run with nothing broken.
   - **Approved by Tayler on 2026-10-14.** The `tsconfig.json` and `eslint.config.js` changes that add `ctl/`, the skill in `.claude/skills/verify-agents/`, step17 in `npm run check`, skipping binary files in `test/names.ts`, and keeping known product bugs as failing steps in the feature map.
   - **Not done.** The skip is not made, so baseline screenshots are captured but not committed, because the name guard reads PNG bytes as text. The steps that need real Claude have not run. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
+  - **Waiting on Tayler.** The framework's policy names its own stand-in skill and map, `.claude/skills/verify/`, and an evidence file, `test/ui-shots/evidence.json`. This branch has its skill and map in `.claude/skills/verify-agents/`, and agentsctl copies the latest manifest to `.scratch/verify/evidence.json`. So the framework's gates read neither this branch's map nor its manifest. Either the policy moves to this branch's paths, or this branch moves to the policy's. Both edit protected files.
 
 ### How our CLIs talk to agents
 

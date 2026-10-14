@@ -52,6 +52,8 @@ The last full `node test/step17.ts`, on `1a0542b`, passed all 97 of its checks i
 
 The last full sweep, `map run all --keep-going` on instance `sw4`, ran on `360c16e` with an earlier round's fixes in 4 minutes 39 seconds. Of its 100 steps, 90 passed live, 4 failed on product bugs 1 to 4, and the 6 that need real Claude were blocked. machines passed all 6 steps again on `94cd4b1`, after boxes moved to their own image tag. No sweep has run since.
 
+The rebase onto `b2aa8b5` ends at `78f8c15`, and docs come after it. On `78f8c15`, the typecheck of both projects, lint, the name guard and `test/style.ts` pass. step17 passed all 97 checks in 78 seconds, step16b all 144 and step16 all 95, and `test/step17-breaks.ts --check` finds all 84 anchors once. No break was rerun, because the rebase changed no check line. The build log's rebase entry says how each conflict was resolved.
+
 ## In progress
 
 Nothing is running, and no instance is left.
@@ -59,6 +61,12 @@ Nothing is running, and no instance is left.
 One lead stays open:
 
 - The stale-lock race in `ctl/ports.ts`. A port lock counts as stale when its instance has no state file, and `up` writes the state file only after `claimPorts` returns. For those few milliseconds a new lock looks stale, so a second `up` removes it and claims the same ports, and the bind test stops it only when the two tests overlap. Only one process can listen on each port, so the two instances' processes fight over them. A test of `claimPorts` in two processes, the second starting up to 12 ms after the first, gave both the same block in 104 of 120 tries. Of 31 pairs of real `up`s started up to 30 ms apart, 24 pinned to `--port 8020`, one pair took the same block, and both failed with exit 1, each on `EADDRINUSE` (a people process and an API). The rest took different blocks or one was refused. It is not fixed. A fix is to call a lock stale only when the process that wrote it is gone as well.
+
+The rebase showed three more, none changed:
+
+- The framework's policy, `ops/policies/agents.json`, names its stand-in, `.claude/skills/verify/`, as the verification skill and map. Main's docs say this branch's skill replaces it once it has its own map, which it now has. The swap edits the policy, which is protected.
+- The policy reads the suite's evidence at `test/ui-shots/evidence.json`. agentsctl copies the latest manifest to `.scratch/verify/evidence.json`, and no existing UI check calls agentsctl, so the check host finds no shots. Either side can move.
+- The proposals feature and the coach scenario in `ctl/seed.ts` drive the coach as it was before main's evidence merge, and were not run on main. Run `map run proposals` before trusting those steps.
 
 Never build or tag `agents-box:latest`: the live server starts its boxes from it. agentsctl builds no image, and an instance's boxes use their own tag. After any check that builds an image, run `docker image prune -f`.
 
