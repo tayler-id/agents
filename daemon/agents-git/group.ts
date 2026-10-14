@@ -52,8 +52,10 @@ export function killGroup(pid: number, signal: NodeJS.Signals) {
   try {
     process.kill(-pid, signal)
   } catch (error) {
-    // The group has no process left, which is what stopping it wants.
-    if (errorCode(error) !== 'ESRCH') throw error
+    // ESRCH says the group has no process left, which is what stopping it wants. macOS
+    // answers EPERM when every member has exited and waits to be reaped, which is the same.
+    const code = errorCode(error)
+    if (code !== 'ESRCH' && code !== 'EPERM') throw error
   }
 }
 
