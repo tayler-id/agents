@@ -32,7 +32,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 - **Solves now.** It is the only door into Postgres. People open a DM with an agent and post messages. Machines claim their commands, report them done, and post their sessions' events. It checks who is calling: a machine by its token, a person by their Tailscale login.
 - **Helps later.** The app, webhooks and pipelines all write through this door.
-- **Survives Postgres restarting.** It waits for Postgres when it starts, replaces connections Postgres drops, and its runner listens again, so restarting colima or the Mac needs nothing from you. `check:step2` drops its connections to prove it.
+- **Survives Postgres restarting.** It waits for Postgres when it starts, replaces connections Postgres drops, and its runner listens again, so restarting colima or the Mac needs nothing from you. `check:step2` drops its connections to prove it. A connection Postgres drops in the middle of a transaction fails that transaction and leaves the pool, and the process keeps running. `test/step18i.ts` drops one inside `tx` in `server/db.ts`. Every connection the server takes from the pool, for a transaction or for the migrations, comes through `withConnection` there and listens the same way, except the runner's listening connection, which has its own listener.
 
 ### Commands (`commands` table)
 
@@ -308,7 +308,7 @@ The design is `docs/design/durability.md`.
 ### Messages finish with their turn (`daemon/claude.ts`, `server/durability.ts`, `shared/lifecycle.ts`)
 
 - **Solves now.** Claude prints each message back when a turn takes it in, and the turn's result says which messages it answered. The server marks those done in the same transaction that records the turn's end, and marks a message failed when its Claude exits first. A follow-up a person sends mid-turn still joins that turn. The daemon's busy flag no longer sticks after Claude answers two messages with one result.
-- **Helps later.** A message's state is a typed transition table, so a path that would run a turn twice by putting its message back in the queue throws.
+- **Helps later.** A new path that changes a message's status has to call `moveMessages`, which moves it only along the table in `shared/lifecycle.ts` and otherwise throws, so no path can put a handed-over message back in the queue and run its turn twice. `test/step18i.ts` checks the refusals.
 
 ### Restart and resume (`daemon/fence.ts`, `POST /v1/instance/recover`)
 

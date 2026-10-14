@@ -51,7 +51,7 @@ A message is one `message` command, such as a person's post, a pipeline stage's 
 | interrupted to handed over | the daemon | the restarted machine resumes the session with every unfinished message |
 | interrupted to done | the server | the machine restarts and a person's interrupt or a run's stop was waiting for it |
 
-`shared/lifecycle.ts` holds this table as code. The server checks every move it makes against it and throws on any other.
+`shared/lifecycle.ts` holds this table as code, and `moveMessages` in `server/durability.ts` is the only writer of a message command's status. The claim endpoint, the end of a turn, a daemon's failure report and a machine's recovery all go through it. Its update matches only commands in a status the table allows the move from, and when any command it was given doesn't match, it moves none of them and throws. A move between handed over and interrupted changes only the session's status. `test/step18i.ts` checks that a refused move throws and changes nothing.
 
 Two rules make the table hold.
 

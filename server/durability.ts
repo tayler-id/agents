@@ -7,30 +7,60 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { many, pool, tx } from './db.ts'
+import { many, pool, tx, type Db } from './db.ts'
 import {
-  MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, messageState, moveMessage, WORKING, type CommandStatus,
+  COMMAND_STATUS_OF, commandSources, MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, WORKING, type CommandStatus,
 } from '../shared/lifecycle.ts'
-import type { EndedMessages, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
+import type { EndedMessages, MessagePayload, Recovery, ResumeTurn } from '../shared/types.ts'
 import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
+
+// A move of a message's command that the lifecycle table doesn't allow from its
+// status, or of a command that isn't a message on the machine named.
+export class MessageMoveRefused extends Error {}
+
+export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
+
+// The only writer of a message command's status. It moves every command in `ids`
+// to `to`'s status, or none of them: each must be a message in a status
+// MESSAGE_MOVES allows that move from, and on `instanceId` when it is given.
+// Otherwise it throws, having changed nothing.
+export async function moveMessages(
+  db: Db, ids: string[], to: 'handed_over' | 'done' | 'failed', options: { instanceId?: string; error?: string | null } = {},
+): Promise<MovedMessage[]> {
+  const wanted = [...new Set(ids)]
+  const sources = commandSources(to)
+  const moved = await many<MovedMessage>(db,
+    `with movable as (
+       select id from commands
+       where id = any($1) and kind = 'message' and status = any($3) and ($4::uuid is null or instance_id = $4)
+       for update
+     )
+     update commands set status = $2::text,
+       claimed_at = case when $2::text = 'claimed' then now() else claimed_at end,
+       done_at = case when $2::text = 'claimed' then done_at else now() end,
+       error = case when $2::text = 'failed' then $5 else error end
+     where id in (select id from movable) and (select count(*) from movable) = cardinality($1::uuid[])
+     returning id, kind, session_id, payload`,
+    [wanted, COMMAND_STATUS_OF[to], sources, options.instanceId ?? null, options.error ?? null])
+  if (moved.length !== wanted.length) {
+    throw new MessageMoveRefused(`a message moves to ${to} only from ${sources.join(' or ')}, so none of ${wanted.join(', ')} moved`)
+  }
+  return moved
+}
 
 // Finishes the messages a batch names. They are done when the batch ends the
 // turn that took them in, and failed when their harness exited first. A retried
 // batch finds them finished already and changes nothing.
 export async function endMessages(client: pg.PoolClient, sessionId: string, finished: EndedMessages) {
   const ended = finished.ids
-  const to = finished.how === 'answered' ? 'done' : 'failed'
-  const rows = await many<{ id: string; command: CommandStatus; session: SessionStatus }>(client,
-    `select c.id, c.status as command, s.status as session from commands c join sessions s on s.id = c.session_id
-     where c.id = any($1) and c.session_id = $2 and c.kind = 'message' for update of c`, [ended, sessionId])
+  const rows = await many<{ id: string; status: CommandStatus }>(client,
+    `select id, status from commands where id = any($1) and session_id = $2 and kind = 'message' for update`, [ended, sessionId])
   const unknown = ended.filter((id) => !rows.some((row) => row.id === id))
   if (unknown.length) console.error(`a batch for session ${sessionId} finished messages it does not have: ${unknown.join(', ')}`)
-  const open = rows.filter((row) => row.command === 'claimed')
-  for (const row of open) moveMessage(messageState(row.command, row.session), to)
+  const open = rows.filter((row) => row.status === 'claimed').map((row) => row.id)
   if (!open.length) return
-  const reason = finished.how === 'answered' ? null : scrub(finished.reason)
-  await client.query(`update commands set status = $2, error = $3, done_at = now() where id = any($1)`,
-    [open.map((row) => row.id), to, reason])
+  if (finished.how === 'answered') await moveMessages(client, open, 'done')
+  else await moveMessages(client, open, 'failed', { error: scrub(finished.reason) })
 }
 
 // When a turn ends, an ask still open has no request waiting on it, and a
@@ -104,9 +134,7 @@ const STOPPED_ANSWERING = 'The machine running this session stopped answering.'
 // Marks a machine that has stopped answering stale, and each working session on
 // it lost, when the session has been quiet as long too. The second condition
 // keeps a box that is still starting from losing the session it is about to run.
-const LOST_SESSIONS = `select s.id, s.status,
-       exists (select 1 from commands c where c.session_id = s.id and c.kind = 'message' and c.status = 'claimed') as claimed
-     from sessions s join instances i on i.id = s.instance_id
+const LOST_SESSIONS = `select s.id from sessions s join instances i on i.id = s.instance_id
      where s.status = any($1) and ($3::uuid[] is null or s.team_id = any($3))
        and (i.last_seen_at is null or i.last_seen_at < now() - make_interval(secs => $2))
        and coalesce(s.last_active_at, s.created_at) < now() - make_interval(secs => $2)
@@ -117,14 +145,11 @@ export async function markLostMachines(teamIds: string[] | null) {
   await pool.query(
     `update instances set status = 'stale' where status = 'online' and last_seen_at < now() - make_interval(secs => $1)
        and ($2::uuid[] is null or team_id = any($2))`, [LOST_AFTER_SEC, teamIds])
-  // A transaction's connection has no error listener, so a Postgres restart
-  // during one stops the API. Most ticks find nothing to mark, and look without one.
+  // Most ticks find nothing to mark, and look without opening a transaction.
   if (!(await many(pool, LOST_SESSIONS, [WORKING, LOST_AFTER_SEC, teamIds])).length) return
   await tx(async (client) => {
-    const sessions = await many<{ id: string; status: SessionStatus; claimed: boolean }>(client,
-      `${LOST_SESSIONS} for update of s skip locked`, [WORKING, LOST_AFTER_SEC, teamIds])
+    const sessions = await many<{ id: string }>(client, `${LOST_SESSIONS} for update of s skip locked`, [WORKING, LOST_AFTER_SEC, teamIds])
     for (const session of sessions) {
-      if (session.claimed) moveMessage(messageState('claimed', session.status), 'interrupted')
       await appendEvents(client, session.id, {
         events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_ANSWERING, body: { subtype: 'interrupted', reason: STOPPED_ANSWERING } }],
         status: 'lost',
@@ -221,8 +246,8 @@ async function openThreads(client: pg.PoolClient, sessionId: string, from: numbe
 // fail, keeping their decisions on the asks, and its other commands go back in
 // the queue.
 export async function recoverMachine(client: pg.PoolClient, instanceId: string): Promise<Recovery> {
-  const sessions = await many<{ id: string; status: SessionStatus; harness_session_id: string | null }>(client,
-    `select s.id, s.status, s.harness_session_id from sessions s
+  const sessions = await many<{ id: string; harness_session_id: string | null }>(client,
+    `select s.id, s.harness_session_id from sessions s
      where s.instance_id = $1
        and exists (select 1 from commands c where c.session_id = s.id and c.kind = 'message' and c.status = 'claimed')
      order by s.id for update of s`, [instanceId])
@@ -232,16 +257,14 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
     const messages = await many<{ id: string; payload: MessagePayload; seq: string | null }>(client,
       `select c.id, c.payload, e.seq from commands c left join events e on e.id = c.event_id
        where c.session_id = $1 and c.kind = 'message' and c.status = 'claimed' order by c.created_at, c.id`, [session.id])
-    const state = messageState('claimed', session.status)
-    if (state !== 'interrupted') moveMessage(state, 'interrupted')
     const ids = messages.map((message) => message.id)
     // A person's interrupt, or a run's stop, sent after these messages and never carried out.
     const stops = await many<{ id: string }>(client,
       `select id from commands where session_id = $1 and kind in ('interrupt', 'stop') and status in ('queued', 'claimed')
          and created_at >= (select min(created_at) from commands where id = any($2))`, [session.id, ids])
     if (stops.length) {
-      moveMessage('interrupted', 'done')
-      await client.query(`update commands set status = 'done', done_at = now() where id = any($1)`, [[...ids, ...stops.map((stop) => stop.id)]])
+      await moveMessages(client, ids, 'done')
+      await client.query(`update commands set status = 'done', done_at = now() where id = any($1) and kind <> 'message'`, [stops.map((stop) => stop.id)])
       await appendEvents(client, session.id, {
         events: [{ clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: STOPPED_FIRST, body: { subtype: 'interrupted', reason: STOPPED_FIRST, messages: ids } }],
         status: 'idle',

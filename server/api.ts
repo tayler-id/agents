@@ -21,7 +21,7 @@ import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
-import { recoverMachine } from './durability.ts'
+import { MessageMoveRefused, moveMessages, recoverMachine } from './durability.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
@@ -197,20 +197,26 @@ const routes: Route[] = [
     if (body.status !== 'done' && body.status !== 'failed') throw new HttpError(400, 'status must be done or failed')
     await tx(async (client) => {
       const error = scrub(optionalText(body.error, 'error') ?? null)
-      const command = await maybe<{ kind: string; session_id: string | null; payload: { workspaceId?: string; repos?: { repoId: string; branch: string }[] } }>(client,
-        `update commands set status = $3, error = $4, result = $5, done_at = now()
-         where id = $1 and instance_id = $2 and status = 'claimed' returning kind, session_id, payload`,
-        [commandId, instance.id, body.status, error, JSON.stringify(scrub(body.result ?? null))])
-      if (!command) throw new HttpError(404, 'no such claimed command on this instance')
-      if (command.kind === 'message' && body.status === 'done') throw new HttpError(400, 'a message is done when the turn that answers it ends')
-      // The machine could not hand the session its message, so the agent never got
-      // it. The session fails with the machine's reason, as it does when Claude exits.
-      if (command.kind === 'message' && body.status === 'failed' && command.session_id) {
+      const kind = (await maybe<{ kind: string }>(client, 'select kind from commands where id = $1 and instance_id = $2', [commandId, instance.id]))?.kind
+      if (kind === 'message') {
+        if (body.status === 'done') throw new HttpError(400, 'a message is done when the turn that answers it ends')
+        // The machine could not hand the session its message, so the agent never got
+        // it. The session fails with the machine's reason, as it does when Claude exits.
+        const [message] = await moveMessages(client, [commandId], 'failed', { instanceId: instance.id, error }).catch((refused: unknown) => {
+          throw refused instanceof MessageMoveRefused ? new HttpError(404, 'no such claimed command on this instance') : refused
+        })
+        if (!message) throw new Error(`message ${commandId} moved, and returned no row`)
         const reason = scrub(error ?? 'The machine could not start the session.')
-        await appendEvents(client, command.session_id, {
+        await appendEvents(client, message.session_id, {
           events: [{ clientId: `command:${commandId}`, kind: 'error', text: reason, body: { commandId, reason } }], status: 'failed',
         })
+        return
       }
+      const command = await maybe<{ kind: string; payload: { workspaceId?: string; repos?: { repoId: string; branch: string }[] } }>(client,
+        `update commands set status = $3, error = $4, result = $5, done_at = now()
+         where id = $1 and instance_id = $2 and status = 'claimed' and kind <> 'message' returning kind, payload`,
+        [commandId, instance.id, body.status, error, JSON.stringify(scrub(body.result ?? null))])
+      if (!command) throw new HttpError(404, 'no such claimed command on this instance')
       // A workspace is ready once its machine has cloned every repo.
       const result = body.result as { path?: string; worktrees?: { repoId: string; baseCommit: string }[] } | null
       if (command.kind === 'setup_workspace' && body.status === 'done' && result?.path) {

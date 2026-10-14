@@ -13,7 +13,7 @@ import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
-import { closeTurnAsks, endMessages, takeOverEndedAsk } from './durability.ts'
+import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -359,12 +359,20 @@ export async function conversationSession(
   return created
 }
 
-// Claims one queued command for its machine. Only one claim can win.
+// Claims one queued command for its machine. Only one claim can win. A message
+// is handed over through moveMessages, like every other change to its status.
 export async function claimCommand(client: pg.Pool | pg.PoolClient, instanceId: string, commandId: string): Promise<Command | null> {
-  const row = await maybe<{ id: string; kind: Command['kind']; session_id: string; payload: never }>(client,
-    `update commands set status = 'claimed', claimed_at = now()
-     where id = $1 and instance_id = $2 and status = 'queued'
-     returning id, kind, session_id, payload`, [commandId, instanceId])
+  const found = await maybe<{ kind: Command['kind'] }>(client, 'select kind from commands where id = $1 and instance_id = $2', [commandId, instanceId])
+  if (!found) return null
+  const row = found.kind === 'message'
+    ? (await moveMessages(client, [commandId], 'handed_over', { instanceId }).catch((error: unknown) => {
+        if (error instanceof MessageMoveRefused) return []
+        throw error
+      }))[0]
+    : await maybe<{ id: string; kind: Command['kind']; session_id: string; payload: never }>(client,
+      `update commands set status = 'claimed', claimed_at = now()
+       where id = $1 and instance_id = $2 and status = 'queued' and kind <> 'message'
+       returning id, kind, session_id, payload`, [commandId, instanceId])
   return row ? ({ id: row.id, kind: row.kind, sessionId: row.session_id, payload: row.payload } as Command) : null
 }
 

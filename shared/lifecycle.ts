@@ -1,5 +1,6 @@
 // The lifecycle of a message an agent is asked to answer, and the session
-// statuses it depends on. docs/design/durability.md explains both.
+// statuses it depends on. docs/design/durability.md explains both, and
+// moveMessages in server/durability.ts is the only writer of a message's status.
 
 import type { SessionStatus } from './types.ts'
 
@@ -33,18 +34,19 @@ export const MESSAGE_MOVES = {
 
 export type CommandStatus = 'queued' | 'claimed' | 'done' | 'failed'
 
-// A message's state, from its command's status and its session's status.
-export function messageState(command: CommandStatus, session: SessionStatus): MessageState {
-  switch (command) {
-    case 'queued': return 'queued'
-    case 'claimed': return session === 'lost' ? 'interrupted' : 'handed_over'
-    case 'done': return 'done'
-    case 'failed': return 'failed'
-  }
-}
+// A message's command's status in each state. Handed over and interrupted differ
+// only in the session's status, which is lost when interrupted.
+export const COMMAND_STATUS_OF = {
+  queued: 'queued', handed_over: 'claimed', interrupted: 'claimed', done: 'done', failed: 'failed',
+} as const satisfies Record<MessageState, CommandStatus>
 
-export function moveMessage(from: MessageState, to: MessageState): MessageState {
-  const allowed: readonly MessageState[] = MESSAGE_MOVES[from]
-  if (!allowed.includes(to)) throw new Error(`a message cannot go from ${from} to ${to}`)
-  return to
+// The statuses MESSAGE_MOVES lets a message's command leave for the status of
+// `to`. A move that keeps the command's status, such as a machine stopping,
+// changes only the session's.
+export function commandSources(to: MessageState): CommandStatus[] {
+  const from = MESSAGE_STATES.filter((state) => {
+    const moves: readonly MessageState[] = MESSAGE_MOVES[state]
+    return moves.includes(to) && COMMAND_STATUS_OF[state] !== COMMAND_STATUS_OF[to]
+  })
+  return [...new Set(from.map((state) => COMMAND_STATUS_OF[state]))]
 }
