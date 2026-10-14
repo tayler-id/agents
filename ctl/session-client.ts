@@ -58,7 +58,7 @@ async function ensure(state: ReadyState): Promise<void> {
   try {
     if (mine) {
       const record = await spawnRecorded('session', [process.execPath, join(ROOT, 'ctl', 'session-server.ts'), stateFile(state.name)], {
-        cwd: ROOT, env: childEnv({}), log: join(state.evidence, 'session.log'),
+        cwd: ROOT, env: childEnv('session', {}), log: join(state.evidence, 'session.log'),
       })
       const latest = readState(state.name)
       if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while its browser session started`)

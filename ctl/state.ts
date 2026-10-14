@@ -31,7 +31,7 @@ export type Harness = z.infer<typeof Harness>
 
 // A process the instance started, with what tells it apart from a later process
 // that reuses its pid: when it started, as ps prints it, and its command line.
-export const ProcessRole = z.enum(['api', 'daemon', 'session'])
+export const ProcessRole = z.enum(['api', 'people', 'daemon', 'session'])
 export type ProcessRole = z.infer<typeof ProcessRole>
 export const ProcessRecord = z.object({
   role: ProcessRole, pid: z.number().int().positive(), started: z.string().min(1), argv: z.array(z.string()).min(1), log: z.string(),
@@ -65,6 +65,9 @@ const Common = z.object({
   createdAt: z.iso.datetime(),
   processes: z.array(ProcessRecord),
   forgeRepos: z.array(ForgeRepo),
+  // What this instance made, and so may remove: its team and its forge org.
+  // Another checkout's instance of the same name may own them otherwise.
+  made: z.object({ team: z.boolean(), org: z.boolean() }),
 })
 
 const Starting = Common.extend({ phase: z.literal('starting'), seed: Seed.optional() })

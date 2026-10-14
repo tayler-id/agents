@@ -30,7 +30,8 @@ export async function call(state: ReadyState, options: {
   if (!options.path.startsWith('/v1/') && options.path !== '/') throw new Error(`the path must start with /v1/: ${options.path}`)
   const headers: Record<string, string> = {}
   const body = options.body === undefined ? undefined : JSON.stringify(options.body)
-  if (body !== undefined) headers['content-type'] = 'application/json'
+  // The API refuses a person's change that is not declared JSON, body or not, as the app sends it.
+  if (options.method !== 'GET' && options.method !== 'HEAD') headers['content-type'] = 'application/json'
   const door = options.door ?? (options.as === 'person' ? 'people' : 'machines')
   if (options.as === 'person') headers['tailscale-user-login'] = options.login ?? state.seed.owner.login
   if (options.as === 'machine') headers.authorization = `Bearer ${state.seed.machine.token}`

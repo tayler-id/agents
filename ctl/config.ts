@@ -4,8 +4,9 @@
 // and Electric are the ones .env.test names, so an instance never touches the
 // live system's data.
 
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
@@ -32,6 +33,12 @@ export const PORT_RANGE = { first: 8020, last: 8039 } as const
 export const LIVE_PORTS: readonly number[] = [7700, 7701, 7710, 4437, 3000]
 
 const FileEnv = z.record(z.string(), z.string())
+
+// An instance's scratch folders are made under the temporary folder with this
+// prefix. Its people socket lives in its own, never anywhere else.
+export const SCRATCH_PREFIX = 'agentsctl-'
+const SCRATCH_ROOTS = [...new Set([tmpdir(), realpathSync(tmpdir())])].map((root) => join(root, SCRATCH_PREFIX))
+export const inScratch = (path: string) => SCRATCH_ROOTS.some((root) => resolve(path).startsWith(root))
 
 function readEnvFile(name: string): Record<string, string> {
   const path = join(ROOT, name)
@@ -76,21 +83,43 @@ export function config(): Config {
   }
   const database = new URL(parsed.data.DATABASE_URL).pathname.slice(1)
   if (!database.endsWith('_test')) throw new Refused(`the database ${database} is not a test database (its name must end in _test)`)
+  // A people socket from the shell or the env files could be the live one. An
+  // instance makes its own in its scratch folder, so any other is refused.
+  const socket = env.AGENTS_PEOPLE_SOCKET
+  if (socket && !inScratch(socket)) {
+    throw new Refused(`AGENTS_PEOPLE_SOCKET is ${socket}, outside agentsctl's scratch folders, and could be the live server's`, [
+      'Unset AGENTS_PEOPLE_SOCKET in your shell: each instance makes its own socket in its scratch folder',
+    ])
+  }
   loaded = { ...parsed.data, env }
   return loaded
 }
 
-// The environment for the processes an instance starts: this one's, with the
-// test database and Electric, and the Node that runs agentsctl first on the PATH,
-// since another program on this Mac answers to `node` in /usr/local/bin.
-export function childEnv(extra: Record<string, string>): Record<string, string> {
-  const { env, DATABASE_URL, ELECTRIC_URL, ELECTRIC_SECRET, AGENTS_HOOK_SECRET } = config()
-  const path = env.PATH
+// Who a process agentsctl starts is: each gets only the environment it needs.
+export type ChildRole = 'api' | 'admin' | 'daemon' | 'people' | 'session' | 'build'
+// What every process may see from this one's environment: where home is, who
+// runs it, and the locale. Nothing else is passed on, whatever the shell or the
+// env files hold.
+const PASSED = ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL'] as const
+// Only the API and the admin script talk to the database. The daemon, and the
+// sessions it starts, never see its URL or the secrets.
+const SECRETS: Record<ChildRole, readonly ('DATABASE_URL' | 'ELECTRIC_URL' | 'ELECTRIC_SECRET' | 'AGENTS_HOOK_SECRET')[]> = {
+  api: ['DATABASE_URL', 'ELECTRIC_URL', 'ELECTRIC_SECRET', 'AGENTS_HOOK_SECRET'],
+  admin: ['DATABASE_URL'],
+  daemon: [], people: [], session: [], build: [],
+}
+
+// The environment for a process an instance starts, with the Node that runs
+// agentsctl first on the PATH, since another program on this Mac answers to
+// `node` in /usr/local/bin.
+export function childEnv(role: ChildRole, extra: Record<string, string>): Record<string, string> {
+  const loaded = config()
+  const path = loaded.env.PATH
   if (!path) throw new Error('PATH is not set, so the processes an instance starts could not find git or claude')
-  return {
-    ...env,
-    PATH: `${dirname(process.execPath)}:${path}`,
-    DATABASE_URL, ELECTRIC_URL, ELECTRIC_SECRET, AGENTS_HOOK_SECRET,
-    ...extra,
-  }
+  const passed = Object.fromEntries(PASSED.flatMap((key) => {
+    const value = loaded.env[key]
+    return value === undefined ? [] : [[key, value]]
+  }))
+  const secrets = Object.fromEntries(SECRETS[role].map((key) => [key, loaded[key]]))
+  return { ...passed, PATH: `${dirname(process.execPath)}:${path}`, ...secrets, ...extra }
 }

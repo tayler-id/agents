@@ -144,7 +144,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
     const app = await electron.launch({
       args: [`--host-resolver-rules=MAP ${INSECURE_HOST} 127.0.0.1`, `--user-data-dir=${join(home, 'profile')}`, join(ROOT, 'desktop', 'main.cjs')],
       cwd: ROOT,
-      env: childEnv({ HOME: home, AGENTS_SERVER: origin('chromium'), AGENTS_DEV_LOGIN: key.login, AGENTS_PROXY: '' }),
+      env: childEnv('session', { HOME: home, AGENTS_SERVER: origin('chromium'), AGENTS_DEV_LOGIN: key.login, AGENTS_PROXY: '' }),
       ...(recording ? { recordVideo: { dir: recording.dir, size: SIZES[key.width] } } : {}),
     })
     await launched()

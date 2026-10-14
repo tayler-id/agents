@@ -33,9 +33,9 @@ export const orgOf = (name: InstanceName) => `verify-${name}`
 // reaches the record. Only meaningful on an instance's own machine.
 export const SECRET_VALUE = 'verify-secret-0451'
 
-async function admin(...args: string[]): Promise<string> {
+export async function admin(...args: string[]): Promise<string> {
   try {
-    return (await run(process.execPath, [join(ROOT, 'server', 'admin.ts'), ...args], { cwd: ROOT, env: childEnv({}) })).stdout
+    return (await run(process.execPath, [join(ROOT, 'server', 'admin.ts'), ...args], { cwd: ROOT, env: childEnv('admin', {}) })).stdout
   } catch (error) {
     const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr.trim() : ''
     throw new Error(`server/admin.ts ${args.join(' ')} failed: ${stderr || (error instanceof Error ? error.message : String(error))}`)
@@ -76,9 +76,40 @@ export async function addBox(team: string, name: string, owner: string): Promise
 }
 
 // The team, its two people, its machine and its agents.
+// Whether the test database holds a team of that name, and the forge an org.
+export const teamTaken = (team: string) => withClient(async (client) => (await client.query('select 1 from teams where name = $1', [team])).rowCount === 1)
+export const orgTaken = (org: string) => forgeAdmin.call('GET', `/orgs/${org}`).then(() => true, (error: unknown) => {
+  if (error instanceof ForgeError && error.status === 404) return false
+  throw error
+})
+
+// Makes the instance's team, failing if anyone made it first. Gitea and Postgres
+// each let only one maker win, so a team or org this made is this instance's.
+export async function makeTeam(name: InstanceName, team: string): Promise<void> {
+  try {
+    await admin('add-team', team, loginOf('ada', name))
+  } catch (error) {
+    if (await teamTaken(team) && error instanceof Error && error.message.includes('duplicate key')) {
+      throw new Refused(`the team ${team} was made by someone else while this up ran`, ['Pick another name with --instance'])
+    }
+    throw error
+  }
+}
+
+export async function makeOrg(name: InstanceName): Promise<void> {
+  const org = orgOf(name)
+  try {
+    await forgeAdmin.call('POST', '/orgs', { username: org, visibility: 'private' })
+  } catch (error) {
+    // Gitea answers 422 for a name that is taken.
+    if (error instanceof ForgeError && error.status === 422) throw new Refused(`the forge org ${org} is already there, so it is not this instance's`, ['Pick another name with --instance'])
+    throw error
+  }
+}
+
+// The team's second person, its machine and its agents, on a team makeTeam made.
 export async function seedTeam(name: InstanceName, team: string): Promise<Seed> {
   const [owner, teammate] = [loginOf('ada', name), loginOf('ben', name)]
-  await admin('add-team', team, owner)
   await addPerson(team, teammate)
   const { token } = NewInstance.parse(JSON.parse(await admin('add-instance', team, MACHINE, 'mac', owner)))
   const agents: Record<string, z.infer<typeof AgentId>> = {}
@@ -102,7 +133,6 @@ const shopFiles = () => Object.fromEntries(['checkout.js', 'package.json', 'test
 
 async function addRepo(name: InstanceName, teamId: string, repo: string, files: Record<string, string>, role: ForgeRepo['role']): Promise<ForgeRepo> {
   const org = orgOf(name)
-  await forgeAdmin.ensureOrg(org)
   // No webhook: the forge can reach only the live API's port, never an instance's.
   const path = await forgeAdmin.ensureRepo(repo, files, `verification instance ${name}`, false, org)
   const remote = `${forgeConfig().url}/${path}.git`
@@ -115,6 +145,13 @@ async function addRepo(name: InstanceName, teamId: string, repo: string, files: 
 export async function seedExtraRepo(state: ReadyState, repo: string): Promise<{ repo: ForgeRepo; already: boolean }> {
   const had = state.forgeRepos.find((r) => r.path === `${orgOf(state.name)}/${repo}`)
   if (had) return { repo: had, already: true }
+  // An instance started without --pipelines has no org yet. It makes one, strictly, and records it.
+  if (!state.made.org) {
+    await makeOrg(state.name)
+    const latest = readState(state.name)
+    if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while its org was made`)
+    saveState({ ...latest, made: { ...latest.made, org: true } })
+  }
   const made = await addRepo(state.name, state.seed.teamId, repo, shopFiles(), 'extra')
   const latest = readState(state.name)
   if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the repo was made`)
@@ -138,9 +175,9 @@ export async function seedForge(name: InstanceName, teamId: string): Promise<For
   return [await addRepo(name, teamId, 'shop', shop, 'shop'), await addRepo(name, teamId, 'pipelines', pipelines, 'pipelines')]
 }
 
-// Removes the instance's org and every repo in it. The org is named after the
-// instance, so all of it is the instance's own, including a repo made by an `up`
-// that failed before it could record it.
+// Removes the instance's org and every repo in it. Called only for an org this
+// instance made (`made.org`), so every repo in it is the instance's own, including
+// one made by an `up` that failed before it could record it.
 export async function removeForge(name: InstanceName): Promise<string[]> {
   const org = orgOf(name)
   const repos = await forgeAdmin.call<unknown>('GET', `/orgs/${org}/repos?limit=50`).catch((error: unknown) => {

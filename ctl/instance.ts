@@ -12,14 +12,14 @@ import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { PageKey } from './driver.ts'
 import { z } from 'zod'
-import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT } from './config.ts'
+import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX } from './config.ts'
 import { withClient } from './db.ts'
 import { call } from './api.ts'
 import { CliError, EXIT, Refused, UsageError } from '../shared/cli/output.ts'
 import { playwrightDriver } from './playwright.ts'
 import { claimPorts, releasePorts } from './ports.ts'
 import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
-import { removeForge, seedForge, seedTeam, writeScenario } from './seed.ts'
+import { makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
 import { stopSessionServer } from './session-client.ts'
 import {
   InstanceName, listStates, ProcessRecord, readState, saveState, stateFile, toFailed, toReady, toStopped, toStopping,
@@ -45,15 +45,20 @@ const USABLE_MS = 15_000
 
 const Me = z.object({ person: z.object({ id: z.string(), login: z.string() }), team: z.object({ id: z.string(), name: z.string() }) })
 
-async function until<T>(what: string, ms: number, look: () => Promise<T | null>): Promise<T> {
+// Waits for `look` to find something, failing at once if a process it needs has exited.
+async function until<T>(what: string, ms: number, needs: ProcessRecord[], look: () => Promise<T | null>): Promise<T> {
   const deadline = Date.now() + ms
   for (;;) {
+    for (const record of needs) if (!(await isOurs(record))) throw new Error(`the ${record.role} process exited. Its log is ${record.log}`)
     const found = await look()
     if (found !== null) return found
     if (Date.now() > deadline) throw new Error(`${what} within ${String(ms / 1000)} seconds`)
     await sleep(LOOK_MS)
   }
 }
+
+// A Unix socket's path may be at most 103 bytes on macOS.
+const MAX_SOCKET_PATH = 103
 
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
 
@@ -81,32 +86,54 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
     throw new Refused(`instance ${named.name} is already here, and ${why}`, [`Run \`bin/agentsctl down --instance ${named.name}\` to stop it, then up again`])
   }
   const name = options.name ?? InstanceName.parse(`v${randomBytes(3).toString('hex')}`)
+  // What up makes must not be there already. Another checkout's instance of the
+  // same name would own it, and a failed up would remove it.
+  const team = `verify-${name}`
+  const pick = ['Pick another name with --instance, or run `bin/agentsctl list` in the checkout that owns it']
+  if (await teamTaken(team)) throw new Refused(`the team ${team} is already in the test database, so it is not this instance's to make or remove`, pick)
+  if (options.pipelines && await orgTaken(orgOf(name))) throw new Refused(`the forge org ${orgOf(name)} is already there, so it is not this instance's to make or remove`, pick)
   const ports = await claimPorts(name, options.port)
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), `agentsctl-${name}-`)))
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), `${SCRATCH_PREFIX}${name}-`)))
+  const socket = join(scratch, 'people.sock')
+  if (socket.length > MAX_SOCKET_PATH) {
+    rmSync(scratch, { recursive: true, force: true })
+    releasePorts(ports, name)
+    throw new Refused(`the people socket's path, ${socket}, is longer than the ${String(MAX_SOCKET_PATH)} bytes a socket may have`, ['Pick a shorter name with --instance'])
+  }
   const evidence = join(EVIDENCE_DIR, `${name}-${stamp()}`)
   mkdirSync(evidence, { recursive: true })
   let state: StartingState = {
-    phase: 'starting', name, team: `verify-${name}`, ports, scratch, evidence, harness: options.harness, pipelines: options.pipelines,
-    createdAt: new Date().toISOString(), processes: [], forgeRepos: [],
+    phase: 'starting', name, team, ports, scratch, evidence, harness: options.harness, pipelines: options.pipelines,
+    createdAt: new Date().toISOString(), processes: [], forgeRepos: [], made: { team: false, org: false },
   }
   saveState(state)
   try {
-    const seed = await seedTeam(name, state.team)
+    await makeTeam(name, team)
+    state = { ...state, made: { ...state.made, team: true } }
+    saveState(state)
+    const seed = await seedTeam(name, team)
     state = { ...state, seed }
     saveState(state)
     if (options.pipelines) {
+      await makeOrg(name)
+      state = { ...state, made: { ...state.made, org: true } }
+      saveState(state)
       // Before the API starts, so its runner reads the pipelines when it first syncs.
       state = { ...state, forgeRepos: await seedForge(name, seed.teamId) }
       saveState(state)
     }
-    if (options.build) await run(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
+    if (options.build) {
+      await run(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT, env: childEnv('build', {}) })
+    }
     if (!existsSync(join(ROOT, 'app', 'dist', 'index.html'))) throw new Error('the app is not built. Run up without --no-build.')
 
     const api = await spawnRecorded('api', [process.execPath, join(ROOT, 'server', 'api.ts')], {
       cwd: ROOT, log: join(evidence, 'api.log'),
-      env: childEnv({
-        AGENTS_RUNNER_TEAMS: state.team,
-        AGENTS_API_PORT: String(ports.machines), AGENTS_PEOPLE_PORT: String(ports.people), AGENTS_STREAMS_PORT: String(ports.streams),
+      env: childEnv('api', {
+        AGENTS_RUNNER_TEAMS: team,
+        AGENTS_API_PORT: String(ports.machines), AGENTS_STREAMS_PORT: String(ports.streams),
+        // People reach the API only on this socket, through the people process below.
+        AGENTS_PEOPLE_SOCKET: socket,
         AGENTS_STREAMS_DIR: join(scratch, 'streams'), AGENTS_HOME: join(scratch, 'server'),
         // Boxes an instance starts never get the team's Claude token.
         AGENTS_BOX_TOKEN_FILE: join(scratch, 'no-box-claude-token'),
@@ -115,27 +142,29 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
     })
     state = { ...state, processes: [...state.processes, api] }
     saveState(state)
+    const people = await spawnRecorded('people', [process.execPath, join(ROOT, 'ctl', 'people.ts'), String(ports.people), socket], {
+      cwd: ROOT, log: join(evidence, 'people.log'), env: childEnv('people', {}),
+    })
+    state = { ...state, processes: [...state.processes, people] }
+    saveState(state)
     const ready = toReady(state, seed)
-    await until(`the API did not answer /v1/me for ${seed.owner.login} (see ${api.log})`, API_READY_MS, async () => {
+    await until(`the API did not answer /v1/me for the instance's owner through its people port (see ${api.log})`, API_READY_MS, [api, people], async () => {
       const reply = await call(ready, { method: 'GET', path: '/v1/me', as: 'person' }).catch(() => null)
       const me = reply?.status === 200 ? Me.safeParse(reply.body) : null
-      return me?.success && me.data.team.name === state.team ? true : null
+      return me?.success && me.data.team.name === team ? true : null
     })
 
-    const daemonEnv = childEnv({ AGENTS_API: `http://127.0.0.1:${String(ports.machines)}`, AGENTS_TOKEN: seed.machine.token, AGENTS_HOME: join(scratch, 'daemon') })
-    if (options.harness === 'fake') {
-      writeScenario(join(scratch, 'scenario.json'))
-      daemonEnv.AGENTS_CLAUDE_BIN = join(ROOT, 'test', 'fake-claude.ts')
-      daemonEnv.AGENTS_FAKE_SCENARIO = join(scratch, 'scenario.json')
-    } else {
-      // A real session runs `claude` from the PATH, whatever the shell had set for checks.
-      delete daemonEnv.AGENTS_CLAUDE_BIN
-      delete daemonEnv.AGENTS_FAKE_SCENARIO
-    }
+    const fake = options.harness === 'fake'
+    if (fake) writeScenario(join(scratch, 'scenario.json'))
+    // A real session runs `claude` from the PATH. The fake one follows the scenario.
+    const daemonEnv = childEnv('daemon', {
+      AGENTS_API: `http://127.0.0.1:${String(ports.machines)}`, AGENTS_TOKEN: seed.machine.token, AGENTS_HOME: join(scratch, 'daemon'),
+      ...(fake ? { AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(scratch, 'scenario.json') } : {}),
+    })
     const daemon = await spawnRecorded('daemon', [process.execPath, join(ROOT, 'daemon', 'agentsd.ts')], { cwd: ROOT, env: daemonEnv, log: join(evidence, 'daemon.log') })
     state = { ...state, processes: [...state.processes, daemon] }
     saveState(state)
-    await until(`the daemon did not come online (see ${daemon.log})`, DAEMON_ONLINE_MS, async () => (await machineStatus(seed.machine.id)).status === 'online' ? true : null)
+    await until(`the daemon did not come online (see ${daemon.log})`, DAEMON_ONLINE_MS, [api, people, daemon], async () => (await machineStatus(seed.machine.id)).status === 'online' ? true : null)
 
     const done = toReady(state, seed)
     saveState(done)
@@ -261,10 +290,11 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
   let session: ProcessRecord | null = null
   for (const record of sessions) if (await isOurs(record)) session = record
   add('browser session', true, session ? `pid ${String(session.pid)} holds the browsers` : 'not running. The next browser or desktop command starts it')
-  const api = state.processes.find((p) => p.role === 'api')
-  for (const [door, port] of [['machine door', state.ports.machines], ['people door', state.ports.people], ['stream server', state.ports.streams]] as const) {
+  // The API listens on the machine door and the stream server, and the people process on the people door.
+  for (const [door, port, role] of [['machine door', state.ports.machines, 'api'], ['people door', state.ports.people, 'people'], ['stream server', state.ports.streams, 'api']] as const) {
+    const owner = state.processes.find((p) => p.role === role)
     const pid = await listener(port)
-    add(door, pid !== null && pid === api?.pid, pid === null ? `nothing listens on ${String(port)}` : pid === api?.pid ? `the API (pid ${String(pid)}) listens on ${String(port)}` : `pid ${String(pid)} listens on ${String(port)}, not the instance's API`)
+    add(door, pid !== null && pid === owner?.pid, pid === null ? `nothing listens on ${String(port)}` : pid === owner?.pid ? `the ${role} process (pid ${String(pid)}) listens on ${String(port)}` : `pid ${String(pid)} listens on ${String(port)}, not the instance's ${role} process`)
   }
   if (state.phase === 'ready') {
     const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ status: 0, body: error instanceof Error ? error.message : String(error) }))
@@ -342,7 +372,7 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
   const found: Owned[] = await owned([...stopping.processes, ...children])
   if (stopping.processes.some((p) => p.role === 'session')) await stopSessionServer(stopping)
   // The daemon first, so it can say it is going offline while the API still listens.
-  const order: ProcessRecord['role'][] = ['session', 'daemon', 'api']
+  const order: ProcessRecord['role'][] = ['session', 'daemon', 'api', 'people']
   for (const role of order) {
     const record = stopping.processes.find((p) => p.role === role)
     if (record && await isOurs(record)) await stop(found.filter((p) => p.pid === record.pid), STOP_GRACE_MS)
@@ -351,7 +381,7 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
   const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], scratch: false }
   if (!options.keepData) {
     const seed = stopping.seed
-    if (seed) {
+    if (seed && stopping.made.team) {
       const boxes = await withClient(async (client) => z.array(z.object({ id: z.string() }))
         .parse((await client.query(`select id from instances where team_id = $1 and kind = 'box'`, [seed.teamId])).rows))
       for (const box of boxes) {
@@ -363,9 +393,9 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
         }
       }
     }
-    if (stopping.pipelines || stopping.forgeRepos.length) removed.repos = await removeForge(stopping.name)
+    if (stopping.made.org) removed.repos = await removeForge(stopping.name)
     const team = stopping.team
-    removed.team = await withClient(async (client) => {
+    removed.team = stopping.made.team && await withClient(async (client) => {
       const { rowCount } = await client.query('delete from teams where name = $1', [team])
       return rowCount !== null && rowCount > 0
     })
