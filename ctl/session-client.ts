@@ -17,11 +17,14 @@ import { readState, saveState, stateFile, type InstanceState, type ReadyState } 
 const START_MS = 30_000
 // The longest one request may take. A visual capture opens six pages and scans each.
 const REQUEST_MS = 10 * 60_000
+// A request's own timeout runs inside the session, so the client waits this much
+// longer for the session's answer, and a wait as long as REQUEST_MS times out there.
+const ANSWER_SLACK_MS = 60_000
 const LOOK_MS = 200
 
 const socketOf = (state: InstanceState) => join(state.scratch, 'session.sock')
 
-function post(socket: string, body: string): Promise<string> {
+function post(socket: string, body: string, limitMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = request({ socketPath: socket, path: '/', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
       const chunks: Buffer[] = []
@@ -29,14 +32,15 @@ function post(socket: string, body: string): Promise<string> {
       res.on('end', () => { resolve(Buffer.concat(chunks).toString('utf8')) })
       res.on('error', reject)
     })
-    req.setTimeout(REQUEST_MS, () => { req.destroy(new Error(`the browser session did not answer within ${String(REQUEST_MS / 60_000)} minutes`)) })
+    req.setTimeout(limitMs, () => { req.destroy(new Error(`the browser session did not answer within ${String(Math.round(limitMs / 1000))}s`)) })
     req.on('error', reject)
     req.end(body)
   })
 }
 
 async function send(state: InstanceState, message: SessionRequest): Promise<SessionReply> {
-  return SessionReply.parse(JSON.parse(await post(socketOf(state), JSON.stringify(message))))
+  const limitMs = Math.max(REQUEST_MS, message.timeoutMs + ANSWER_SLACK_MS)
+  return SessionReply.parse(JSON.parse(await post(socketOf(state), JSON.stringify(message), limitMs)))
 }
 
 const PING: SessionRequest = { target: 'browser', engine: 'chromium', width: 'desktop', login: '', timeoutMs: 1000, op: { op: 'ping' } }
