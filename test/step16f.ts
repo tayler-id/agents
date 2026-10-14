@@ -35,6 +35,10 @@ try {
   check(refs.join(' ') === 'refs/heads/task/one refs/heads/main', `the refs a push updates are read from its command lines: ${refs.join(' ')}`)
   check((await drain(stream)).equals(whole), 'every byte of a push read in seven-byte chunks comes through, in order')
 
+  const wide = pkt(`${'0'.repeat(64)} ${'1'.repeat(64)} refs/heads/task/wide\0report-status`) + '0000'
+  const sha256Refs = (await readCommands(Readable.from([Buffer.from(wide, 'latin1')]))).refs
+  check(sha256Refs.join(' ') === 'refs/heads/task/wide', `a push from a repo with SHA-256 object ids is read the same: ${sha256Refs.join(' ')}`)
+
   const zipped = await readCommands(chunked(gzipSync(whole), 4096).pipe(createGunzip()))
   check(zipped.refs.length === 2 && (await drain(zipped.stream)).equals(whole), 'a gzipped push reads the same once unzipped')
 

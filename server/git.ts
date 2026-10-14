@@ -24,7 +24,8 @@ const DROPPED = ['content-encoding', 'content-length', 'transfer-encoding', 'www
 // them streams through. The lines are a few hundred bytes for each ref.
 const COMMANDS_LIMIT_BYTES = 1024 * 1024
 const FLUSH = '0000'
-const COMMAND = /^(?:[0-9a-f]{40}) (?:[0-9a-f]{40}) (\S+)$/
+// An object id is 40 hex digits, or 64 in a repo that hashes with SHA-256.
+const COMMAND = /^[0-9a-f]{40,64} [0-9a-f]{40,64} (\S+)$/
 
 // The refs a receive-pack request updates: the pkt-lines before the first flush,
 // each "<old> <new> <ref>", the first followed by NUL and the capabilities.
