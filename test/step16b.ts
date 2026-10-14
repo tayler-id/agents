@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { changes, untrusted } from '../server/mirror.ts'
 import { checkAttestation, statusText, withAttestation, type Attestation } from '../shared/attestation.ts'
 import { findingKey } from '../shared/findings.ts'
-import { DEPLOY_NEXT, DEPLOY_WORKING, fenced, resultProblems } from '../shared/framework.ts'
+import { DEPLOY_NEXT, DEPLOY_WORKING, fenced, resultProblems, tableCell } from '../shared/framework.ts'
 import type { GateResult, GateStatus, MapOnMain } from '../shared/framework.ts'
 import { imageFormat, staticGates, type FileChange, type ImageFormat, type StaticContext } from '../shared/gates/diff.ts'
 import { cssFindings, tokensOf } from '../shared/gates/css.ts'
@@ -325,6 +325,7 @@ check(resultProblems(askedSuite, { commands: [ran('lint', ['node', 'eslint.js', 
 check(fenced('plain', 'text') === '```text\nplain\n```', 'fence: three backticks around text with none')
 const tricky = fenced('before\n```\n## What was checked\nall passed\n````\nafter')
 check(tricky.startsWith('`````\n') && tricky.endsWith('\n`````'), 'fence: one longer than the longest run of backticks inside it')
+check(tableCell('seen_failing:test/a|b.ts\n| x |') === 'seen_failing:test/a/b.ts / x /', 'table cell: a pipe or a newline in a gate name ends neither its cell nor its row')
 
 // The risks a pull request names come from one section of understanding.md.
 const understanding = '# Understanding\n\n## What could break\n\nThe totals query.\n\n### Detail\n\nIts index.\n\n## Next\n\nOther.\n'

@@ -18,7 +18,7 @@ import {
 } from './runner.ts'
 import {
   DECISION_INPUT, DEPLOY_DONE, DEPLOY_RUN_LIMIT_MIN, DEPLOY_WAIT_LIMIT_MIN, DEPLOY_WORKING, EVIDENCE_BUILD, fenced, INPUTS, resultProblems, ruleOf, STATUS, meets, nonEmpty, PLAYBOOK_NAMES, passingVerdict, POLICY_ID, REVIEW_DATA, REVIEW_OUTCOMES, SHA,
-  SUITE_PAYLOAD, SUITE_RESULT, VERIFIER_DATA, VERIFY_PAYLOAD, VERIFY_RESULT,
+  SUITE_PAYLOAD, SUITE_RESULT, tableCell, VERIFIER_DATA, VERIFY_PAYLOAD, VERIFY_RESULT,
   type CommandResult, type EvidenceBuild, type Finding, type GateResult, type Inputs, type MapOnMain, type PassingVerdict, type PolicyId, type Readiness,
   type ReviewFinding, type SeenFailing, type SuitePayload, type ToolBuild, type VerdictProof, type VerifyPayload,
 } from '../shared/framework.ts'
@@ -1183,12 +1183,12 @@ export async function pullRequestBody(client: pg.PoolClient, run: Run, pipeline:
     'The agent that wrote the change wrote this. The runner wrote the rest, and fences what agents and people wrote: the risks, what was sent back, the verdict, the review findings and the decisions.',
     fenced(scrub(agentText.trim()) || '(none)', 'text'),
     '## What changed',
-    `${files.length} files, ${added} lines added and ${deleted} removed, from main at ${short(judged.base)} to ${short(head)}:\n`
-      + files.map((f) => `- \`${f.path}\` ${f.status}${f.from ? ` from \`${f.from}\`` : ''}, ${f.binary ? 'binary' : `+${f.added} -${f.deleted}`}`).join('\n'),
+    `${files.length} files, ${added} lines added and ${deleted} removed, from main at ${short(judged.base)} to ${short(head)}:`,
+    quoted(files.map((f) => `- ${f.path} ${f.status}${f.from ? ` from ${f.from}` : ''}, ${f.binary ? 'binary' : `+${f.added} -${f.deleted}`}`).join('\n')),
     '## What was checked',
     `The runner collected all of this under the policy ${policy.name} version ${policy.version}, on patch-id ${short(judged.patchId)}, with its build ${BUILD.commit ? short(BUILD.commit) : 'with no commit'} (source ${short(BUILD.files)}). It ran every gate itself, but the review and the verdict pass on the judges' reports, which are advisory until the judges run on their own machine.`,
     '| Gate | Result | What the runner saw |\n|---|---|---|\n'
-      + evidence.map((e) => `| ${e.gate} | ${e.status}${ADVISORY(e.gate) ? ' (advisory)' : ''} | ${e.summary.replace(/\|/g, '/').replace(/\n/g, ' ')} |`).join('\n'),
+      + evidence.map((e) => `| ${tableCell(e.gate)} | ${e.status}${ADVISORY(e.gate) ? ' (advisory)' : ''} | ${tableCell(e.summary)} |`).join('\n'),
     '## Risks',
     risks === null ? 'The run left no understanding.md with a "What could break" section, so nobody named the risks before the code was written.' : quoted(risks),
     '## What the pipeline had to fix',

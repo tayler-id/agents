@@ -417,7 +417,7 @@ try {
 
     const pr = must(happyStages.find((s: any) => s.stage === 'open_pr')?.data.pullRequest, 'the pull request')
     const prBody = (await forgeCall('GET', `/repos/${org}/${APP}/pulls/${pr}`)).json.body
-    check(prBody.includes('## What changed') && prBody.includes('`shared/tidy.ts` added') && prBody.includes('## What was checked') && prBody.includes(`seen_failing:${tidy.check}`)
+    check(prBody.includes('## What changed') && prBody.includes('- shared/tidy.ts added') && prBody.includes('## What was checked') && prBody.includes(`seen_failing:${tidy.check}`)
       && prBody.includes('## Risks\n\n```text\nNothing else imports it.\n```') && prBody.includes('## What the pipeline had to fix\n\n```text\n- review, try 1')
       && prBody.includes('## Verdict') && prBody.includes('## Review findings') && prBody.includes('## Decisions') && prBody.includes('Put the tidy part in shared/'),
     'the pull request is written for a reviewer who was not there: what changed, what was checked, the risks, what the pipeline sent back, the verdict, the findings and the decisions')
@@ -426,6 +426,7 @@ try {
     const fencedSection = (title: string, holds: string) => /^[^\n]*\n\n(`{3,})text\n[\s\S]*\n\1$/.test(sectionOfBody(title)) && sectionOfBody(title).includes(holds)
     check(fencedSection('Review findings', '- Round 1') && fencedSection('Decisions', 'Put the tidy part in shared/'),
       'the review findings and the decisions sit in fences, since agents wrote them')
+    check(fencedSection('What changed', '- shared/tidy.ts added'), 'the changed paths sit in a fence, since an agent chose them')
     check(/\| review:[^|]+ \| pass \(advisory\) \|/.test(prBody) && prBody.includes('| verdict | pass (advisory) |') && prBody.includes('advisory until the judges run on their own machine'),
       'the pull request marks the review and the verdict advisory')
     const builds = await all('select gate, build from evidence where run_id = $1 and commit = $2', [happy, head])

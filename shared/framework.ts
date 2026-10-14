@@ -131,6 +131,10 @@ export function fenced(text: string, language = ''): string {
   return `${fence}${language}\n${text}\n${fence}`
 }
 
+// Text for one cell of a Markdown table. A pipe would end the cell and a
+// newline the row, and a gate's name can hold a path an agent chose.
+export const tableCell = (text: string) => text.replace(/\|/g, '/').replace(/\n/g, ' ')
+
 // What a machine reports must answer what it was asked: every command it was
 // sent, in order and with the same arguments, after the repo's setup command
 // when there is one, and every check once. A result that differs is no
