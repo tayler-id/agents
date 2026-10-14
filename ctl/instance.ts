@@ -321,8 +321,10 @@ export async function doctor(name: InstanceName | undefined): Promise<DoctorRepo
       !shape.ok ? shape.why
         : unlisted.length ? `the agents shape lacks ${unlisted.join(', ')}, which the database holds, so Electric has stopped following the database. Its container's log says why`
           : `the agents shape lists all ${String(held.length)} of the team's agents: ${held.join(', ')}`)
-    const commands = await call(state, { method: 'GET', path: '/v1/shape/commands?offset=-1', as: 'machine' }).catch(() => ({ status: 0, body: null }))
-    add('machine token', commands.status === 200, commands.status === 200 ? "the machine's token reads its command queue" : `the command queue answered ${String(commands.status)}`)
+    const commands = await call(state, { method: 'GET', path: '/v1/shape/commands?offset=-1', as: 'machine' }).then(
+      (reply) => ({ ok: reply.status === 200, why: `the command queue answered ${String(reply.status)}` }),
+      (error: unknown) => ({ ok: false, why: `reading the command queue failed: ${messageOf(error)}` }))
+    add('machine token', commands.ok, commands.ok ? "the machine's token reads its command queue" : commands.why)
     const machine = await machineStatus(state.seed.machine.id)
     const fresh = machine.status === 'online' && machine.seenMsAgo !== null && machine.seenMsAgo < 2 * DAEMON_HEARTBEAT_MS + 5_000
     add('daemon online', fresh, `the machine ${state.seed.machine.name} is ${machine.status}${machine.seenMsAgo === null ? '' : `, seen ${String(Math.round(machine.seenMsAgo / 1000))}s ago`}`)
@@ -330,8 +332,10 @@ export async function doctor(name: InstanceName | undefined): Promise<DoctorRepo
       `select count(*)::int as n from commands where instance_id = $1 and status = 'queued' and created_at < now() - make_interval(secs => $2)`,
       [state.seed.machine.id, STUCK_COMMAND_S])).rows[0]).n)
     add('daemon takes commands', stuck === 0, stuck ? `${String(stuck)} commands have waited more than ${String(STUCK_COMMAND_S)}s for the machine. Its log is ${state.processes.find((p) => p.role === 'daemon')?.log ?? 'missing'}` : 'nothing waits on the machine')
-    const page = await call(state, { method: 'GET', path: '/', as: 'person' }).catch(() => ({ status: 0, body: '' }))
-    add('app served', page.status === 200 && JSON.stringify(page.body).includes('<title>Agents</title>'), `GET / answered ${String(page.status)}`)
+    const page = await call(state, { method: 'GET', path: '/', as: 'person' }).then(
+      (reply) => ({ ok: reply.status === 200 && JSON.stringify(reply.body).includes('<title>Agents</title>'), why: `GET / answered ${String(reply.status)}` }),
+      (error: unknown) => ({ ok: false, why: `GET / failed: ${messageOf(error)}` }))
+    add('app served', page.ok, page.why)
     const usable = await appUsable(state)
     add('app usable', usable.ok, usable.detail)
     const built = join(ROOT, 'app', 'dist', 'index.html')
