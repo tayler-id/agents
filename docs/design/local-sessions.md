@@ -29,7 +29,7 @@ There were two candidates: Claude Code hooks, and the daemon reading the transcr
 
 ### What the transcripts showed
 
-- Claude Code writes every session, headless or interactive, to `~/.claude/projects/<folder name>/<session id>.jsonl`. The folder name is the path the session started in, with every character other than a letter or a digit made a dash. `~/.no-mistakes` became `-Users-taylerramsay--no-mistakes`.
+- Claude Code writes every session, headless or interactive, to `~/.claude/projects/<folder name>/<session id>.jsonl`. The folder name is the path the session started in, with every character other than a letter or a digit made a dash. `/Users/example/.no-mistakes` becomes `-Users-example--no-mistakes`.
 - Every conversation line carries `cwd`, `sessionId`, `timestamp` and its own `uuid`, so the reader can check where a session started and the record can skip a line it already has.
 - A headless `claude -p` run with one Read call wrote 33 lines in 6.2 s. Only 4 were the conversation: the prompt, the tool call, the tool result and the reply. The rest were Claude Code's bookkeeping: 17 `attachment` lines, `queue-operation`, `last-prompt`, `atis-latch`, `cost-state` and a `stop_hook_summary` from a plugin's Stop hook.
 - Headless mode writes its transcript when the process ends. All 33 lines appeared at once, 0.6 to 5.7 s after their own timestamps.

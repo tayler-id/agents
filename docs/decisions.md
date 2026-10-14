@@ -30,6 +30,10 @@ Tayler went with the coordinator's picks on all of these.
   - The coding framework's section in `AGENTS.md`, its deployer `ops/deploy.ts` and this repo's policy `ops/policies/agents.json` are approved. On a repo with a policy, a change that adds a binary file other than a PNG, JPEG, GIF, WebP or ICO image fails the `opaque` gate. Its other options stay off: inline lint config, signed attestations, judges on their own machine, and a wider landing list.
   - A browser page that can't give its text within 5 seconds, such as one held by an open alert, refuses every screenshot until it can.
   - Terminal sessions from a connected folder are seen by the team by default, and `connect --private` keeps them to the person. The daemon leaves out tool results for files outside the connected folder. It also learns the secret values in the person's login shell at start so it can scrub them, and those values never leave the Mac. Sessions from before a folder was connected stay on the Mac. Images stay on the Mac, with a note in the record that one was there.
+- **The last merges, at 17:10.** Tayler said to finish the coding and merge all of it, which the coordinator took as the yes it had asked for twice.
+  - Verification's `ctl` script in `package.json`.
+  - AWS's seven dev packages, at exact versions. `aws-cdk` 2.1145.0, `aws-cdk-lib` 2.273.0 and `constructs` 10.8.1 write and deploy the stack. The `@aws-sdk` clients for CloudWatch, S3, Secrets Manager and SSM, at 3.1150.0, serve the host scripts.
+  - This repo's policy keeps its stand-in skill and map in `.claude/skills/verify/` for now. Its plans name parts of the code, such as `framework`, and the verify-agents map names what a person does, such as `conversations`, so switching the policy to it takes a design call. No live repo has a policy yet.
 
 ## 2026-10-13, after the code review
 
@@ -149,7 +153,7 @@ Tayler went with the coordinator's picks on all of these.
   - a clean merge against current main
 - **Grading and the ledger.** Verdicts are graded, from verified in the live UI down to type-checked only. "Couldn't verify" is kept apart from pass and fail. The ledger is keyed by pull request and head commit. After a rebase, a verdict survives only if the patch itself is unchanged.
 - **Implementation.** `docs/design/self-improve.md`, with the rules merged into `AGENTS.md`, on the framework agent's branch. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
-- **Status.** Built on the framework agent's branch, not on main. It sends a failure back to its author, with bounds, and the design says why. The gates and the verifier parse evidence with one schema, `shared/verification.ts`, though the runner does not check screenshots yet. It does not hold changes to this repo until the repo is registered with its policy. The design lists what is not enforced.
+- **Status.** On main since b2aa8b5, and loaded by the running server since the restart on 2026-10-14. It sends a failure back to its author, with bounds, and the design says why. The gates and the verifier parse evidence with one schema, `shared/verification.ts`, though the runner does not check screenshots yet. It does not hold changes to this repo until the repo is registered with its policy. The design lists what is not enforced.
 
 ### Size and time limits per task
 
@@ -179,7 +183,7 @@ Tayler went with the coordinator's picks on all of these.
   - fixtures, evidence capture, and visual compare and baseline
   
   The browser driver sits behind one interface, so a second driver can slot in.
-- **Status.** Being built, on its branch. `test/step17.ts` checks the tool, and runs in `npm run check`. `test/step17-breaks.ts` has a break for 88 of the 106 checks its control runs make, and watches each go red against a control run with nothing broken.
+- **Status.** Merged on 2026-10-14. `test/step17.ts` checks the tool, and runs in `npm run check`. `test/step17-breaks.ts` has a break for 88 of the 106 checks its control runs make, and watches each go red against a control run with nothing broken.
   - **Approved by Tayler on 2026-10-14.** The `tsconfig.json` and `eslint.config.js` changes that add `ctl/`, the skill in `.claude/skills/verify-agents/`, step17 in `npm run check`, skipping binary files in `test/names.ts`, and keeping known product bugs as failing steps in the feature map.
   - **Not done.** The skip is not made, so baseline screenshots are captured but not committed, because the name guard reads PNG bytes as text. The steps that need real Claude have not run. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
   - **Waiting on Tayler.** The framework's policy names its own stand-in skill and map, `.claude/skills/verify/`, and an evidence file, `test/ui-shots/evidence.json`. This branch has its skill and map in `.claude/skills/verify-agents/`, and agentsctl copies the latest manifest to `.scratch/verify/evidence.json`. So the framework's gates read neither this branch's map nor its manifest. Either the policy moves to this branch's paths, or this branch moves to the policy's. Both edit protected files.
@@ -226,7 +230,7 @@ Tayler went with the coordinator's picks on all of these.
   - cleanup that previews by default
   
   Claude Code hooks route agents through it.
-- **Status.** `agents-git` is built on branch `agents-git`, not merged, and not yet run on the real repo. `start`, `list`, `adopt`, `done` and `prune` set up, track and finish worktrees beside the repo, and `done` copies the ignored files it would otherwise delete to `~/.agents-app/backups/agents-git/` first. `save` and `sync` keep work safe and on top of main, and `sync` merges main in instead of rebasing once a branch is submitted. `check` runs steps under the run lock with main's env files, time limits and the docker rules. `submit` runs the framework's static gates and main's name guard on every commit a push would publish and on the pull request's text, then pushes copies to GitHub and opens the pull request. `land` runs the landing gates and the suite on the merge, then fast-forwards main and mirrors it. `docs/design/agents-git.md` maps each `AGENTS.md` rule to the command that enforces it, and `test/step22.ts` checks every command on a temp repo. Not built yet:
+- **Status.** `agents-git` is merged on 2026-10-14, and not yet run on the real repo. `start`, `list`, `adopt`, `done` and `prune` set up, track and finish worktrees beside the repo, and `done` copies the ignored files it would otherwise delete to `~/.agents-app/backups/agents-git/` first. `save` and `sync` keep work safe and on top of main, and `sync` merges main in instead of rebasing once a branch is submitted. `check` runs steps under the run lock with main's env files, time limits and the docker rules. `submit` runs the framework's static gates and main's name guard on every commit a push would publish and on the pull request's text, then pushes copies to GitHub and opens the pull request. `land` runs the landing gates and the suite on the merge, then fast-forwards main and mirrors it. `docs/design/agents-git.md` maps each `AGENTS.md` rule to the command that enforces it, and `test/step22.ts` checks every command on a temp repo. Not built yet:
   - ports and a test database per worktree
   - env file setup beyond the links `land` makes
   - the Claude Code hooks, which need Tayler's approval since they live under `.claude/`
@@ -348,7 +352,7 @@ Tayler went with the coordinator's picks on all of these.
   - Documents can hold images.
   - A helper that lets agents use a Mac is designed but not built.
 - **Implementation.** On the agent computers branch, designed in `docs/design/computers.md`. Its checks, `test/step15.ts` and `test/step15b.ts`, run a real box with the stand-in for Claude, and both pass on its last commit. `docs/build-log.md` records what they proved.
-- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Tayler made every call it waited on, on 2026-10-14, as "2026-10-14, Tayler's calls" records:
+- **Status.** Live since the restart on 2026-10-14. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Tayler made every call it waited on, on 2026-10-14, as "2026-10-14, Tayler's calls" records:
   - The 24-hour window stays, in which a box that ran private work can be watched only by people who can see that work.
   - The browser limits stay: the standing instruction never to type passwords or act on real accounts without a person, and the approval before five browser tools.
   - The box limits are accepted, though they take something away. A box running three browser engines at once used 2.5 CPUs before the 2-CPU limit, and boxes had no limits before.
@@ -364,11 +368,11 @@ Tayler went with the coordinator's picks on all of these.
   - Postgres moves to RDS.
   - One server instance runs the API, Electric and the forge.
   - One instance hosts boxes.
-  - Nothing has a public port. Everything goes through the tailnet.
+  - Nothing has a public port. Everything goes through the tailnet, except boxes reaching the server's machine port inside the VPC, which Tayler approved on 2026-10-14.
   - Boxes reach the web like any computer, so every agent has its own browser. They never reach the metadata endpoint, the private network, the tailnet or other boxes, and they reach the server only on its machine port.
-  - The cutover takes about 10 minutes, and the Mac's stack stays as the rollback.
+  - The cutover takes the app down for the export, the restore and a build of the box image. It has not been timed, so the plan allows an hour, and the Mac's stack stays as the rollback.
 - **Implementation.** The AWS stack is written in the CDK in TypeScript, on the AWS agent's branch.
-- **Status.** Built on the AWS agent's branch, not ready to run. Its export moves Postgres, the forge and the secrets but not the boxes' home volumes, so agents would lose their workspaces, sessions and browser logins. The export must move those too, proven by a rehearsal in which tasks resume. The branch also limits boxes to an allowlist that blocks browsing, which Tayler rejected on 2026-10-13, and it is being changed to the rule above. One choice waits on Tayler, box-to-server traffic inside the VPC rather than over the tailnet. It costs about $217 a month, $119 of it the box host running all day.
+- **Status.** Merged on 2026-10-14, and not yet run on AWS. Its export moves Postgres, the forge, the secrets and every box's home volume, and a rehearsal on this Mac, `test/step11f.ts`, resumes a task on a box restored from the export. The nightly backup does not cover the boxes' homes yet. Boxes reach the web as above, and the allowlist that blocked browsing is gone. On 2026-10-14 Tayler approved the `ops/` files, box-to-server traffic inside the VPC, dropping `NET_RAW` from boxes, colima on this Mac dropping the box host's private ranges, and the cost, about $217 a month once it runs, $119 of it the box host running all day. Boxes now run without `NET_RAW`, checked by `test/step11b.ts`. Colima's script and `test/step11g.ts` are written and were tried in a throwaway copy of the VM, and the live steps in `docs/aws.md` wait for Tayler. Nothing is deployed until the Mac version settles.
 
 ### Under evaluation
 

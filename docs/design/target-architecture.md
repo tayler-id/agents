@@ -229,7 +229,7 @@ A turn waits, with its reason, while its computer starts, while no seat is free,
 **One action.** `scout`'s 9:00 routine fires while Alice's computer is stopped.
 
 1. `server/routines.ts` writes the routine's post and calls `requestTurn` with source `routine` and lane `background`.
-2. The scheduler finds the computer stopped. It marks the turn `waiting` with `computer_starting` and starts the container (`startContainer` in `server/boxes.ts`).
+2. The scheduler finds the computer stopped. It marks the turn `waiting` with `computer_starting` and starts the container (`startClaimedBoxes` in `server/boxes.ts`).
 3. The daemon reports its desktop up. The scheduler opens `scout`'s seat and writes the `message` command, with the budget left as `maxBudgetUsd`.
 4. The daemon claims the command, and durability keeps it claimed until the turn ends (`server/durability.ts`).
 5. The turn's usage event arrives. The meter writes its row, and the turn is `done`.

@@ -105,11 +105,12 @@ async function post(login: string, path: string, body: unknown = {}) {
 }
 
 // A person's Screen view, as the app opens it. It is a WebSocket on the people
-// port carrying the screen as binary frames and who holds it as text frames.
+// port carrying the screen as binary frames and who holds it as text frames. A
+// null login sends no identity header at all.
 type View = { ws: WebSocket; stream: Duplex; controls: any[]; closed: { code: number; reason: string; at: number } | null }
-function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PEOPLE_PORT}`, headers: Record<string, string> = {}): Promise<View | number> {
+function openView(login: string | null, instanceId: string, base = `ws://127.0.0.1:${PEOPLE_PORT}`, headers: Record<string, string> = {}): Promise<View | number> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`${base}/v1/screens/${instanceId}`, { headers: { 'tailscale-user-login': login, origin: ORIGIN, ...headers } })
+    const ws = new WebSocket(`${base}/v1/screens/${instanceId}`, { headers: { ...(login === null ? {} : { 'tailscale-user-login': login }), origin: ORIGIN, ...headers } })
     const view: View = {
       ws, controls: [], closed: null,
       stream: new Duplex({ read() { /* frames are pushed as they arrive */ }, write(chunk, _encoding, done) { ws.send(chunk, done) } }),
@@ -526,7 +527,8 @@ try {
   // Who may watch and take over.
   check(await outcome(carol, instanceId) === 'closed 4403 no such screen' && (await post(carol, `/v1/screens/${instanceId}/take`, { sessionId: null })).status === 404,
     "a person on another team can't watch the screen or take it over")
-  check(await openView(alice, instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 400 && await openView('', instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 404,
+  // The machine port refuses every header named tailscale-*, an empty one too, so the caller with no identity sends none.
+  check(await openView(alice, instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 400 && await openView(null, instanceId, `ws://127.0.0.1:${MACHINE_PORT}`) === 404,
     'the machine port refuses a person, and has no screen view to open')
   // Bob is watching, and holds the screen, when private work of alice's starts
   // on the box. His view closes as if he had opened it then, and the screen goes

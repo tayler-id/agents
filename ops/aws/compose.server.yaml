@@ -1,0 +1,14 @@
+# On the AWS server, over compose.yaml: Postgres is RDS, so Electric follows it
+# there and waits for no local Postgres, and the local Postgres and the checks'
+# Electric are never started. The forge's webhooks go to host.docker.internal,
+# which on Linux needs naming as the Docker host's gateway, where the API's
+# machine port listens.
+#   docker compose -f compose.yaml -f ops/aws/compose.server.yaml up -d --wait electric forge
+services:
+  electric:
+    environment:
+      DATABASE_URL: ${ELECTRIC_DATABASE_URL}
+    depends_on: !reset {}
+  forge:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

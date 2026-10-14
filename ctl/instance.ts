@@ -20,7 +20,7 @@ import { playwrightDriver } from './playwright.ts'
 import { claimPorts, releasePorts } from './ports.ts'
 import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
 import { isLoginOf, LOGIN_DOMAIN, makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
-import { containerName, homeVolumeName } from '../shared/box-names.ts'
+import { boxContainer, boxHomeVolume } from '../shared/boxes.ts'
 import { stopSessionServer } from './session-client.ts'
 import { hasCode, messageOf } from '../shared/errors.ts'
 import {
@@ -400,7 +400,7 @@ async function removeMade(instance: StoppingState): Promise<StoppedState['remove
     const boxes = await withClient(async (client) => z.array(z.object({ id: z.string() }))
       .parse((await client.query(`select id from instances where team_id = $1 and kind = 'box'`, [seed.teamId])).rows))
     for (const box of boxes) {
-      for (const [kind, thing] of [['container', containerName(box.id)], ['volume', homeVolumeName(box.id)]] as const) {
+      for (const [kind, thing] of [['container', boxContainer(box.id)], ['volume', boxHomeVolume(box.id)]] as const) {
         if (!(await dockerHas(kind, thing))) continue
         await docker(kind === 'container' ? 'rm' : 'volume', ...(kind === 'container' ? ['-f', thing] : ['rm', thing]))
         removed.containers.push(thing)

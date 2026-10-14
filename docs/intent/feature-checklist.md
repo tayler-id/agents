@@ -16,7 +16,7 @@ The statuses are:
 - Partly. A named part exists, and the row says which.
 - Not built. No code does it.
 
-The landing branches are the computers branch (`.claude/worktrees/agent-aa64f68e84a6f9786`), the projects branch (`.claude/worktrees/agent-a9f12f8ca4798f55b`), the verification branch (`.claude/worktrees/agent-ae995231ee16af626`), the terminal sessions branch (`.claude/worktrees/agent-ae6bff17618001d52`), the AWS branch (`.claude/worktrees/agent-a28035877f2a5a41d`) and agents-git (`~/Projects/agents-worktrees/agents-git`). The computers and projects branches are also merged together in `~/Projects/agents-worktrees/land-batch1`.
+The landing branches are the computers, projects, verification, terminal sessions and AWS branches, and agents-git.
 
 Counts. Table A has 65 rows, with 17 Live, 9 Landing, 10 Partly and 29 Not built. Table B has 34 rows, with 21 Live, 4 Merged, 3 Landing, 2 Partly and 4 Not built. Table C has 36 rows, with 13 Live, 3 Landing, 10 Partly and 10 Not built. Many rows in C repeat a row in A, so the areas overlap.
 

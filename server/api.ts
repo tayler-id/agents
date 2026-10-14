@@ -1,13 +1,15 @@
 // The server's one door. Writes go to Postgres through the record module, and
 // reads go through the sync proxy to Electric. People reach it through tailscale
 // serve, which proxies to a Unix socket and sets Tailscale-User-Login. Machines,
-// boxes included, reach it on a loopback port with a bearer token instead.
+// boxes included, send a bearer token to the machine port, which listens on
+// loopback unless AGENTS_MACHINE_HOST names other addresses, such as a VPC or
+// tailnet address.
 
 import { BUILD } from './build.ts'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
-import { connect, type Server } from 'node:net'
+import type { Server } from 'node:net'
 import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -19,6 +21,8 @@ import { ConnectFolder, DisconnectFolder, TerminalSessionAsk, type FolderList } 
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { hasCode, messageOf } from '../shared/errors.ts'
+import { accepts } from '../shared/socket.ts'
+import { MACHINE_PORT, MachineHosts, Port } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
@@ -813,15 +817,6 @@ const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin
   // Zod runs a refinement even when z.url() has failed, so this one must not throw.
   .pipe(z.array(z.url().refine((url) => URL.canParse(url) && new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
 
-// Whether something accepts connections on the socket at this path.
-function accepts(path: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const probe = connect(path)
-    probe.once('connect', () => { probe.destroy(); resolve(true) })
-    probe.once('error', (error) => { if (hasCode(error, 'ECONNREFUSED')) resolve(false); else reject(error) })
-  })
-}
-
 // An API that stops without closing its socket leaves the file behind, and it
 // refuses connections. A socket that accepts them belongs to a running API, and
 // taking it over would send people to this one instead, so that stops this one.
@@ -853,7 +848,17 @@ async function listenForPeople(server: Server, path: string) {
   await chmod(path, 0o600)
 }
 
+// Where machines reach the API: the machine port, on each address in AGENTS_MACHINE_HOST.
+const Listen = z.object({
+  AGENTS_MACHINE_HOST: MachineHosts,
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
+})
+const address = (host: string, at: number) => (host.includes(':') ? `[${host}]:${at}` : `${host}:${at}`)
+
 if (import.meta.main) {
+  const listen = Listen.safeParse(process.env)
+  if (!listen.success) throw new Error(`the API's listen settings are wrong\n${z.prettifyError(listen.error)}`)
+  const { AGENTS_MACHINE_HOST: machineHosts, AGENTS_API_PORT: machines } = listen.data
   const people = PeopleSocket.safeParse(process.env.AGENTS_PEOPLE_SOCKET)
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
@@ -878,9 +883,10 @@ if (import.meta.main) {
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
-  const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
-    .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
+  for (const host of machineHosts) {
+    createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
+      .listen(machines, host, () => { console.log(`machines on ${address(host, machines)}`) })
+  }
   if (process.env.AGENTS_RUNNER !== 'off') {
     runner = startRunner()
     githubWorker = startGithubWorker()

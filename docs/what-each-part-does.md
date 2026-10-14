@@ -138,10 +138,11 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** A bug report becomes a reviewed pull request. Triage checks for duplicates and whether the bug is already fixed. The agent writes a failing test, and the runner confirms it fails before any fix. The agent fixes it or writes a plan, the runner confirms the tests pass, opens the pull request and asks the shepherd. Approving merges it, which closes the issue.
 - **Helps later.** It is the first pipeline the improve pipeline works on.
 
-### Boxes (`box/Dockerfile`, `server/boxes.ts`, `shared/box-names.ts`, `ops/box-firewall.sh`)
+### Boxes (`box/Dockerfile`, `server/boxes.ts`, `shared/boxes.ts`, `ops/box-firewall.sh`)
 
-- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port. `shared/box-names.ts` names a box's container and its home volume, for the server that starts them and for agentsctl's `down` that removes an instance's. Changing a name leaves the containers and volumes already made under the old one.
+- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port. `shared/boxes.ts` names a box's container, its home volume and the label that ties it to its instance, for the server that starts them, the AWS cutover scripts that move their home folders, and agentsctl's `down` that removes an instance's. Changing a name leaves the containers and volumes already made under the old one.
 - **Helps later.** Boxes run Claude on your subscription once a token from `claude setup-token` is in `~/.agents-app/box-claude-token`.
+- **Fenced in.** Boxes run without `NET_RAW`, so a box cannot put raw frames on the shared bridge or capture packets. `ops/box-firewall.sh` keeps every container off this Mac except on the machine ports. It also keeps boxes off every private range and off the VM except for DNS, as the box host does on AWS. The script and its check are written. The live VM does not have that part until Tayler runs the live steps in `docs/aws.md`.
 
 ### Runs in the app (`app/src/Run.tsx`, `app/src/Pipeline.tsx`, `app/src/Document.tsx`)
 
@@ -541,3 +542,51 @@ The design is `docs/design/self-improve.md`. None of this holds changes to the A
 
 - **Solves now.** `step16` takes changes through the whole pipeline with a stand-in for Claude, including runs each gate must stop. `step16b` checks every static gate, the policy floors and the attestation on small fixtures, and runs in a box. `step16c` deploys to a stand-in server and rolls back a release that cannot start. `step16d` checks obligations. `step16f` checks the git proxy's push reader on pushes built in memory. `STEP16_ONLY` runs some of step16's sections alone, for watching one guard fail. `style` lints the whole repo's CSS and prose, and `types-framework` shows at compile time that no merge proof can be built without each part.
 - **Helps later.** Each new gate gets its fixture here before it can be called built.
+
+## The cloud half on AWS
+
+The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.md`.
+
+### The machine port's address (`server/api.ts`)
+
+- **Solves now.** `AGENTS_MACHINE_HOST` lists the IP addresses the machine port listens on, checked when the API starts, so the server on AWS can answer boxes on its VPC address and teammates' daemons on the tailnet. People still arrive only on the API's socket. The machine port refuses any Tailscale identity header, not only the login.
+- **Helps later.** Teammates' own computers can run daemons against the server.
+
+### Boxes on a box host (`server/boxes.ts`)
+
+- **Solves now.** `AGENTS_BOX_DOCKER_HOST` sends box commands, image builds included, to another host's Docker, such as `ssh://agents@agents-boxes`, without moving the server's own Compose there. A remote box host needs `AGENTS_BOX_API`, or the server refuses to start. One `docker ps` per runner pass reads every box's state, a box keeps its token while its host is unreachable, and tokens never reach the log through a failed `docker run`.
+- **Helps later.** Boxes can move to a bigger host, or several, by changing one setting.
+
+### The AWS stack (`ops/aws/stack.ts`, `ops/aws/app.ts`, `ops/aws/config.ts`)
+
+- **Solves now.** One CDK stack in TypeScript describes everything on AWS: the network with no inbound port from the internet, RDS PostgreSQL 17 with logical replication and backups, the server and the box host with IMDSv2 and a hop limit of 1, least-privilege roles, the backup bucket and 14 alarms, all tagged `app=agents`. `npx cdk synth` and `npx cdk diff` are the dry runs.
+- **Helps later.** Sizes, zones and the alarm address are settings, so growing the box host is one deploy.
+
+### First boot and services (`ops/aws/bootstrap.ts`, `ops/install-systemd.ts`, `ops/aws/compose.server.yaml`)
+
+- **Solves now.** A few lines of user data install Node and hand over to `bootstrap.ts`, which installs Docker and Tailscale, joins the tailnet with the host's own key, and installs the services. `ops/install-systemd.ts` is the Linux counterpart of the Mac's launch agents.
+- **Helps later.** Any Linux machine can run the server or a box host with the same units, with or without AWS.
+
+### Boxes' way out (`ops/aws/box-firewall.ts`)
+
+- **Solves now.** A box is an agent's computer, so its browser and tools reach the public internet over any protocol, and look names up at public resolvers. Inside, it reaches only the server's machine port. The firewall drops what a box sends to the box host at any of its addresses, loopback included, the VPC, RDS, the metadata endpoint, the tailnet, other boxes, every private range, multicast and the reserved ranges, and Docker cannot start without it.
+- **Helps later.** What boxes may not reach is one list, `BOX_CLOSED_RANGES`, and one update.
+
+### Secrets on AWS (`ops/aws/secrets.ts`, `ops/aws/fetch-secrets.ts`)
+
+- **Solves now.** Secrets go from this Mac to SSM without touching a command line or the screen, and the server writes them to files with mode 600 at every boot. The database password is generated by RDS and never leaves AWS.
+- **Helps later.** A new secret is a name in `SECRET_PARAMETERS`.
+
+### Backups, restore and health (`ops/aws/backup.ts`, `ops/aws/restore.ts`, `ops/aws/health.ts`)
+
+- **Solves now.** Every night the database and the forge go to S3, kept 35 days, beside RDS's own 7 days, staged on disk under `/var/tmp` after a check that they fit, and uploaded in parts, so a file can pass S3's 5 GiB limit for one upload. A restore says when its backup was taken, and changes nothing while the database holds teams, unless `--replace` names it, while anything is connected or a box runs, or when the backup will not fit. It removes the restored boxes' stopped containers, whose tokens the restored database does not know, so the runner starts each box with a new one. Every minute each host reports what the alarms watch, including whether the API answers and how old the last backup is.
+- **Helps later.** The restore is also how a rollback to this Mac works.
+- **Not done.** The nightly backup leaves out the boxes' home folders, so losing the box host's disk loses them, and a rollback leaves what boxes did on AWS behind.
+
+### Cutover, updates and teardown (`ops/aws/export.ts`, `ops/aws/update.ts`, `ops/aws/down.ts`)
+
+- **Solves now.** One command moves this Mac's data, every box's home folder and the secrets to AWS at cutover, and refuses while the API or a box is running. The restore puts each box's home back on the box host, so a task resumes in its workspace with the same Claude session. One command on each host moves it to the last deployed commit. One command takes everything down, keeping a final snapshot and the backups unless told otherwise, and naming any backup object S3 will not delete.
+
+### The AWS checks (`test/step11.ts` to `test/step11g.ts`, `test/netlab.ts`, `test/fake-aws.ts`)
+
+- **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, and through the one in colima's VM on this Mac, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.

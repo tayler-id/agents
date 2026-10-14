@@ -7,6 +7,11 @@
 // Claims are rows, written inside the run's transaction. Containers start only
 // after that commits, in startClaimedBoxes, so a claim that rolls back never
 // leaves a container behind.
+//
+// Boxes run on this machine's Docker, or on a box host's when
+// AGENTS_BOX_DOCKER_HOST (or DOCKER_HOST) names one, such as
+// ssh://agents@agents-boxes. Only box commands use that host, so `docker compose`
+// on the server still reaches the server's own Docker.
 //   node --env-file=.env server/boxes.ts build
 //   node --env-file=.env server/boxes.ts create <team> <name>
 //   node --env-file=.env server/boxes.ts recreate <team> <name>
@@ -24,7 +29,8 @@ import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
-import { containerName, homeVolumeName } from '../shared/box-names.ts'
+import { BOX_LABEL, BOX_STATE_FORMAT, BoxLine, boxContainer, boxHomeVolume, type ContainerState } from '../shared/boxes.ts'
+import { MACHINE_PORT, Port } from '../shared/listen.ts'
 import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
@@ -32,8 +38,6 @@ const ROOT = new URL('..', import.meta.url).pathname
 const IMAGE = process.env.AGENTS_BOX_IMAGE ?? 'agents-box:latest'
 const MAX_BOXES = Number(process.env.AGENTS_MAX_BOXES ?? 2)
 const IDLE_MIN = Number(process.env.AGENTS_BOX_IDLE_MIN ?? 30)
-// Boxes reach the API's machine port on this Mac, the one port the firewall allows.
-const API_FROM_BOX = process.env.AGENTS_BOX_API ?? `http://host.docker.internal:${process.env.AGENTS_API_PORT ?? 7700}`
 // A Claude token from `claude setup-token`, so agents in boxes run on the team's subscription.
 const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '.agents-app', 'box-claude-token')
 // Browsers keep their rendering buffers in /dev/shm. Docker's default of 64 MB
@@ -47,12 +51,57 @@ const BOX_MEMORY = '4g'
 const BOX_CPUS = '2'
 // Docker counts every thread against this, not only each process.
 const BOX_PIDS = '4096'
+// Room for `docker ps` over every box, and for a build's progress output.
+const DOCKER_OUTPUT_BYTES = 8 * 1024 * 1024
+const BUILD_OUTPUT_BYTES = 64 * 1024 * 1024
 
-const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
+// Where box commands go, and where boxes reach this server's machine port. A box
+// on this machine's Docker reaches it at host.docker.internal. A box on another
+// host cannot, so there AGENTS_BOX_API must say where the server is.
+const Settings = z.object({
+  AGENTS_BOX_DOCKER_HOST: z.string().min(1).optional(),
+  DOCKER_HOST: z.string().min(1).optional(),
+  AGENTS_BOX_API: z.url().optional(),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
+  // Extra `docker run` arguments, a JSON list of strings.
+  AGENTS_BOX_DOCKER_ARGS: z.string().default('[]').transform((text, ctx) => {
+    try {
+      const value: unknown = JSON.parse(text)
+      return value
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a JSON list of strings' })
+      return z.NEVER
+    }
+  }).pipe(z.array(z.string())),
+}).transform((env) => ({
+  dockerHost: env.AGENTS_BOX_DOCKER_HOST ?? env.DOCKER_HOST,
+  boxApi: env.AGENTS_BOX_API,
+  localApi: `http://host.docker.internal:${env.AGENTS_API_PORT}`,
+  extraArgs: env.AGENTS_BOX_DOCKER_ARGS,
+})).superRefine((settings, ctx) => {
+  if (settings.dockerHost && !settings.dockerHost.startsWith('unix://') && !settings.boxApi) {
+    ctx.addIssue({
+      code: 'custom', path: ['AGENTS_BOX_API'],
+      message: `boxes run on ${settings.dockerHost}, so set AGENTS_BOX_API to where they reach this server's machine port, such as http://10.40.0.10:${String(MACHINE_PORT)}`,
+    })
+  }
+})
+const settings = Settings.safeParse(process.env)
+if (!settings.success) throw new Error(`the box settings are wrong\n${z.prettifyError(settings.error)}`)
+const { dockerHost: DOCKER_HOST, extraArgs: EXTRA_ARGS } = settings.data
+const API_FROM_BOX = settings.data.boxApi ?? settings.data.localApi
+
+// The Docker CLI's environment for box commands. Secrets travel here, named but
+// never valued in the arguments, because a failed command's error message
+// repeats its arguments into the log.
+const dockerEnv = (secrets: Record<string, string> = {}): NodeJS.ProcessEnv =>
+  ({ ...process.env, ...(DOCKER_HOST ? { DOCKER_HOST } : {}), ...secrets })
+const docker = async (args: string[], secrets: Record<string, string> = {}) =>
+  (await run('docker', args, { maxBuffer: DOCKER_OUTPUT_BYTES, env: dockerEnv(secrets) })).stdout.trim()
 
 // What docker said went wrong, scrubbed and cut short, since its words can repeat
 // any value it was given. Never the error's message, which repeats the command
-// line and so the box's token.
+// line.
 function dockerProblem(error: unknown): string {
   const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr : ''
   // Docker ends with a usage hint, "Run 'docker run --help' for more information", which says nothing here.
@@ -61,29 +110,40 @@ function dockerProblem(error: unknown): string {
   return scrub(said || 'Docker could not start the container and gave no reason.').slice(0, START_ERROR_MAX)
 }
 
+// What starting a box does in each of Docker's container states.
+const START: Record<ContainerState, 'leave' | 'start' | 'replace'> = {
+  running: 'leave', restarting: 'leave', removing: 'leave', created: 'start', exited: 'start', paused: 'replace', dead: 'replace',
+}
+
+// Every box container's state, by instance id, from one `docker ps`. A box host
+// that cannot be reached throws, so an outage never looks like a missing container.
+async function boxStates(): Promise<Map<string, ContainerState>> {
+  const out = await docker(['ps', '--all', '--filter', `label=${BOX_LABEL}`, '--format', BOX_STATE_FORMAT])
+  return new Map(out.split('\n').filter((line) => line !== '').map((line) => BoxLine.parse(line)))
+}
+
 const BoxKind = z.object({ personal: z.boolean() })
 
 // Starts a fresh container for the box from the current image, on the box's volume.
-// The token is new each time, since only its hash is kept. A person's own box
-// never gets the team's Claude token: it runs Claude on its owner's own sign-in.
+// The token is new each time, since only its hash is kept. It changes only after
+// the old container is gone, so a container that is still running keeps working.
+// A person's own box never gets the team's Claude token: it runs Claude on its
+// owner's own sign-in.
 async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {
+  await docker(['rm', '-f', boxContainer(instanceId)])
   const token = `machine_${randomBytes(24).toString('base64url')}`
   await client.query('update instances set token_sha256 = $2 where id = $1', [instanceId, sha256(token)])
   const { personal } = BoxKind.parse(await one(client, 'the box', 'select personal from instances where id = $1', [instanceId]))
-  await docker('rm', '-f', containerName(instanceId)).catch(() => {})
-  const env = ['-e', `AGENTS_API=${API_FROM_BOX}`, '-e', `AGENTS_TOKEN=${token}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app']
-  if (!personal && existsSync(CLAUDE_TOKEN_FILE)) env.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()}`)
-  const extra = JSON.parse(process.env.AGENTS_BOX_DOCKER_ARGS ?? '[]') as string[]
-  await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped', '--shm-size', BOX_SHM_SIZE,
-    '--memory', BOX_MEMORY, '--memory-swap', BOX_MEMORY, '--cpus', BOX_CPUS, '--pids-limit', BOX_PIDS,
-    '--label', `agents.instance=${instanceId}`, '-v', `${homeVolumeName(instanceId)}:/home/agent`, ...env, ...extra, IMAGE)
-}
-
-async function startContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {
-  const state = await docker('inspect', '-f', '{{.State.Running}}', containerName(instanceId)).catch(() => null)
-  if (state === 'true') return
-  if (state === 'false') await docker('start', containerName(instanceId))
-  else await runContainer(client, instanceId)
+  const secrets: Record<string, string> = { AGENTS_TOKEN: token }
+  if (!personal && existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
+  // Without NET_RAW a box cannot put raw frames on the shared bridge, such as ARP
+  // replies that claim another box's address, and cannot capture packets or run
+  // raw-socket scans. A ping an agent installs still works, through ICMP sockets.
+  await docker(['run', '-d', '--name', boxContainer(instanceId), '--restart', 'unless-stopped', '--cap-drop', 'NET_RAW',
+    '--shm-size', BOX_SHM_SIZE, '--memory', BOX_MEMORY, '--memory-swap', BOX_MEMORY, '--cpus', BOX_CPUS, '--pids-limit', BOX_PIDS,
+    '--label', `${BOX_LABEL}=${instanceId}`, '-v', `${boxHomeVolume(instanceId)}:/home/agent`,
+    '-e', `AGENTS_API=${API_FROM_BOX}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app',
+    ...Object.keys(secrets).flatMap((name) => ['-e', name]), ...EXTRA_ARGS, IMAGE], secrets)
 }
 
 // A new box's token hash is a placeholder until its container starts with a real token.
@@ -148,8 +208,8 @@ export async function createBox(client: pg.Pool | pg.PoolClient, teamId: string,
 // Claude with the token in ~/.agents-app/box-claude-token, unless it is given its own
 // harness (AGENTS_CLAUDE_BIN in AGENTS_BOX_DOCKER_ARGS), as checks do.
 export function boxLoginProblem(): string | null {
-  if (existsSync(CLAUDE_TOKEN_FILE) || (process.env.AGENTS_BOX_DOCKER_ARGS ?? '').includes('AGENTS_CLAUDE_BIN=')) return null
-  return `Boxes have no Claude login yet. Run \`claude setup-token\` on the server Mac, save the token in ${CLAUDE_TOKEN_FILE}, and run the pipeline again.`
+  if (existsSync(CLAUDE_TOKEN_FILE) || EXTRA_ARGS.some((arg) => arg.startsWith('AGENTS_CLAUDE_BIN='))) return null
+  return `Boxes have no Claude login yet. Run \`claude setup-token\`, save the token in ${CLAUDE_TOKEN_FILE} on the server, and run the pipeline again.`
 }
 
 // People's own boxes are not in the pool: runs never claim them and the limit does not count them.
@@ -169,22 +229,29 @@ export async function claimBox(client: pg.PoolClient, teamId: string, runId: str
   return addBox(client, teamId, `box-${randomBytes(3).toString('hex')}`, { run: runId })
 }
 
-// Starts the container of every box a person or an active run holds, if it is
-// not running. Runs outside any run's transaction, after claims have committed.
 const HeldBox = z.object({ id: InstanceId, start_error: z.string().nullable() })
 
+// Starts the container of every box a person or an active run holds, if it is
+// not running. Runs outside any run's transaction, after claims have committed.
+// When the box host cannot be reached this throws before touching any box.
 export async function startClaimedBoxes(teamIds: string[] | null) {
   const rows = (await many(pool,
     `select i.id, i.start_error from instances i left join runs r on r.id = i.claimed_by_run
      where i.kind = 'box' and ($1::uuid[] is null or i.team_id = any($1))
        and (i.claimed_by is not null or r.status in ('queued', 'running', 'waiting'))`, [teamIds])).map((row) => HeldBox.parse(row))
+  if (!rows.length) return
+  const states = await boxStates()
   for (const box of rows) {
+    const state = states.get(box.id)
+    const action = state ? START[state] : 'replace'
     try {
-      await startContainer(pool, box.id)
+      if (action === 'start') await docker(['start', boxContainer(box.id)])
+      if (action === 'replace') await runContainer(pool, box.id)
       if (box.start_error !== null) await pool.query('update instances set start_error = null where id = $1', [box.id])
     } catch (error) {
-      // The runner tries again on its next tick, and the box's owner sees why it
-      // is not running. A reason is logged once, when it is new.
+      // One box that cannot start, such as from a missing image, must not keep the
+      // others from starting. The runner tries again on its next tick, and the
+      // box's owner sees why it is not running. A reason is logged once, when it is new.
       const problem = dockerProblem(error)
       if (problem !== box.start_error) {
         console.error(`starting box ${box.id}: ${problem}`)
@@ -207,7 +274,7 @@ export async function stopIdleBoxes(teamIds: string[] | null) {
      and ($2::uuid[] is null or team_id = any($2))
      and status <> 'offline' and idle_since < now() - make_interval(mins => $1)`, [IDLE_MIN, teamIds])
   for (const box of rows) {
-    await docker('stop', containerName(box.id)).catch((error: unknown) => { console.error(`stopping box ${box.id}:`, messageOf(error)) })
+    await docker(['stop', boxContainer(box.id)]).catch((error: unknown) => { console.error(`stopping box ${box.id}:`, messageOf(error)) })
   }
 }
 
@@ -215,8 +282,11 @@ if (import.meta.main) {
   const [command, team, name] = process.argv.slice(2)
   try {
     if (command === 'build') {
-      await run('docker', ['build', '-t', IMAGE, '-f', 'box/Dockerfile', '.'], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 })
-      console.log(`built ${IMAGE}`)
+      // On a box host, the image is built there, for its architecture. Its build
+      // steps use the host's network, outside the box firewall, and look names up
+      // as the host does, since the Dockerfile is ours, not an agent's.
+      await run('docker', ['build', '--network', 'host', '-t', IMAGE, '-f', 'box/Dockerfile', '.'], { cwd: ROOT, maxBuffer: BUILD_OUTPUT_BYTES, env: dockerEnv() })
+      console.log(`built ${IMAGE}${DOCKER_HOST ? ` on ${DOCKER_HOST}` : ''}`)
     } else if (command === 'create' && team && name) {
       const found = await maybe<{ id: string }>(pool, 'select id from teams where name = $1', [team])
       if (!found) throw new Error(`no team ${team}`)
