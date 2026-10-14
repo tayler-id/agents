@@ -1,9 +1,10 @@
 // The API's side of agents' computers (docs/design/computers.md). A box
 // with a desktop keeps one control connection open to the machine port. When a
-// person opens the Screen view on the people port, the API asks the box for a
-// tunnel and joins the two, reading what the person sends so that only the one
-// who holds the screen can type or click. Who holds it is the open row of
-// screen_takeovers, moved only by the handoff state machine in shared/screen.ts.
+// person opens the Screen view through the people socket, the API asks the box
+// for a tunnel and joins the two, reading what the person sends so that only the
+// one who holds the screen can type or click. The open row of screen_takeovers
+// records who holds it, and only the handoff state machine in shared/screen.ts
+// moves it.
 
 import { randomUUID } from 'node:crypto'
 import { STATUS_CODES, type IncomingMessage } from 'node:http'

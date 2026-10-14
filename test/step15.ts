@@ -248,7 +248,7 @@ try {
   await aliceScreen.refresh(false)
   const firstFrameMs = Date.now() - connectStarted
   check(aliceScreen.width === SCREEN.width && aliceScreen.height === SCREEN.height && aliceScreen.name === 'Agents box',
-    `alice, watching through the people port, gets the box's screen (${aliceScreen.width}x${aliceScreen.height}, first frame in ${firstFrameMs} ms)`)
+    `alice, watching through the people socket, gets the box's screen (${aliceScreen.width}x${aliceScreen.height}, first frame in ${firstFrameMs} ms)`)
   check(holderOf(aliceView)?.holder === 'agent', 'the view says the agent has the screen')
   // Only the app's own pages may open a screen. A page on another site, open in
   // a teammate's browser, would otherwise watch and take over as them.
@@ -322,7 +322,7 @@ try {
   const fetchedSha = createHash('sha256').update(Buffer.from(await fetched.arrayBuffer())).digest('hex')
   const outsider = await fetch(imageUrl, { headers: { 'tailscale-user-login': carol } })
   check(fetched.status === 200 && fetched.headers.get('content-type') === 'image/png' && fetchedSha === savedSha && outsider.status === 404,
-    "the task's people fetch the image through the people port, and a person on another team can't")
+    "the task's people fetch the image through the people socket, and a person on another team can't")
   const toolResults = (await db.query(`select body::text as body from events where session_id = $1 and kind = 'tool_result'`, [sessionId])).rows.map((r) => r.body as string)
   const rawLines = (await db.query('select line::text as line from raw_events where session_id = $1', [sessionId])).rows.map((r) => r.line as string)
   check(toolResults.some((body) => /"omitted": ?true/.test(body)) && ![...toolResults, ...rawLines].some((text) => text.includes('iVBORw0KGgo')),

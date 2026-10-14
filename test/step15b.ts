@@ -106,8 +106,8 @@ async function onPage(page: Page, x: number, y: number) {
   return { x: box.x + (x * box.width) / SCREEN.width, y: box.y + (y * box.height) / SCREEN.height }
 }
 
-// A person's page in one engine, signed in by the header the people port
-// reads, with any page error kept in `errors`.
+// A person's page in one engine, signed in by the header tailscale serve
+// would set, with any page error kept in `errors`.
 async function openPage(browser: Browser, engine: string, errors: string[], login: string, path: string, options: Record<string, unknown> = {}) {
   const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': login }, viewport: { width: 1440, height: 900 }, ...options })
   const page = await context.newPage()

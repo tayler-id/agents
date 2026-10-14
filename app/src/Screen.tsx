@@ -1,7 +1,7 @@
 // A box's screen, live, beside the work it runs. Anyone who may watch sees it;
 // one person at a time can take over its keyboard and mouse, which pauses the
-// agent's use of it, and hand it back. The screen arrives over a WebSocket on
-// the people port. The design is docs/design/computers.md.
+// agent's use of it, and hand it back. The screen arrives over a WebSocket that
+// tailscale serve passes to the API. The design is docs/design/computers.md.
 
 import { useEffect, useRef, useState } from 'react'
 import RFB, { type RfbChannel } from '@novnc/novnc'
