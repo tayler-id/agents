@@ -70,7 +70,8 @@ export async function asPerson(base: string, login: string, method: string, path
     method,
     headers: {
       'tailscale-user-login': login, ...(name ? { 'tailscale-user-name': name } : {}),
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      // The API refuses a person's change that isn't declared JSON, and the app always declares it.
+      ...(method === 'GET' ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
