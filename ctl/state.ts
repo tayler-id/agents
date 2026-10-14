@@ -78,7 +78,7 @@ export const Survivor = z.object({ pid: z.number().int(), command: z.string() })
 const Stopped = Common.extend({
   phase: z.literal('stopped'), seed: Seed.optional(), stoppedAt: z.iso.datetime(),
   survivors: z.array(Survivor),
-  removed: z.object({ team: z.boolean(), repos: z.array(z.string()), containers: z.array(z.string()), scratch: z.boolean() }),
+  removed: z.object({ team: z.boolean(), repos: z.array(z.string()), containers: z.array(z.string()), joinRequests: z.array(z.string()), scratch: z.boolean() }),
 })
 
 export const InstanceState = z.discriminatedUnion('phase', [Starting, Ready, Failed, Stopping, Stopped])

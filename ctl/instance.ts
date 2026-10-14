@@ -379,7 +379,7 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
     if (record && await isOurs(record)) await stop(found.filter((p) => p.pid === record.pid), STOP_GRACE_MS)
   }
   const survivors = await stop(found, STOP_GRACE_MS)
-  const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], scratch: false }
+  const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], joinRequests: [], scratch: false }
   if (!options.keepData) {
     const seed = stopping.seed
     if (seed && stopping.made.team) {
@@ -400,6 +400,14 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
       const { rowCount } = await client.query('delete from teams where name = $1', [team])
       return rowCount !== null && rowCount > 0
     })
+    // A login on no team asks to join when it opens the app, and that request
+    // belongs to no team, so it outlives the team. Every login an instance
+    // drives ends with its name, as loginFor makes them.
+    if (stopping.made.team) {
+      const suffix = `-${stopping.name}@verify.local`
+      removed.joinRequests = await withClient(async (client) => z.array(z.object({ login: z.string() })).parse((await client.query(
+        'delete from join_requests where right(login, length($1)) = $1 returning login', [suffix])).rows).map((row) => row.login))
+    }
     rmSync(stopping.scratch, { recursive: true, force: true })
     removed.scratch = true
   }

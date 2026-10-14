@@ -759,7 +759,10 @@ const downCommand = command({
       return { kind: 'write', did: 'down', state: values.instance ? `${values.instance} is not in this checkout` : 'no instance in this checkout', already: true, help: [run('up --pipelines', 'to start an instance')], data: null }
     }
     const kept = existsSync(stopped.evidence)
-    const removed = [stopped.removed.team ? `team ${stopped.team}` : '', ...stopped.removed.repos, ...stopped.removed.containers, stopped.removed.scratch ? 'its scratch folder' : ''].filter(Boolean)
+    const removed = [
+      stopped.removed.team ? `team ${stopped.team}` : '', ...stopped.removed.repos, ...stopped.removed.containers,
+      ...stopped.removed.joinRequests.map((login) => `the join request of ${login}`), stopped.removed.scratch ? 'its scratch folder' : '',
+    ].filter(Boolean)
     const detail = [
       stopped.survivors.length ? `still running: ${stopped.survivors.map((s) => `${String(s.pid)} ${s.command}`).join('; ')}` : 'still running: none',
       `removed: ${removed.length ? removed.join(', ') : 'nothing (--keep-data)'}`,

@@ -92,6 +92,9 @@ const stateNow = () => InstanceState.parse(JSON.parse(readFileSync(stateFile(nam
 
 // Read straight from the test database, for what no instance can answer once it is down.
 const teamExists = (team: string) => withClient(async (client) => (await client.query('select 1 from teams where name = $1', [team])).rowCount === 1)
+// The login agentsctl drives as `--as stranger`, which asks to join when it opens the app.
+const stranger = `stranger-${name}@verify.local`
+const asksToJoin = (login: string) => withClient(async (client) => (await client.query('select 1 from join_requests where login = $1', [login])).rowCount === 1)
 const orgExists = (org: string) => forgeAdmin.call('GET', `/orgs/${org}`).then(() => true, (error: unknown) => {
   if (error instanceof ForgeError && error.status === 404) return false
   throw error
@@ -350,6 +353,7 @@ try {
     const mapRun = MapReport.safeParse((await ctl(['map', 'run', 'getting-in'])).out.data)
     check(mapRun.success && mapRun.data.features[0]?.verdict === 'live-ui-verified' && mapRun.data.features[0].steps.every((s) => s.verdict === 'live-ui-verified'),
       'map run getting-in verifies every step live')
+    check(await asksToJoin(stranger), 'the stranger getting-in drives asks to join, a row of no team that down must remove')
   }
 
   if (want('sick')) {
@@ -378,6 +382,7 @@ try {
     && folders.every((d) => existsSync(join(evidence, d)) && readdirSync(join(evidence, d)).length > 0)
   check(kept, `down keeps the evidence: the action log, logs, final state${folders.length ? ` and ${folders.join(', ')}` : ''}`)
   check(!existsSync(stateFile(name)) && !await teamExists(`verify-${name}`), 'down removes the instance from this checkout, and its team from the database')
+  check(!want('map') || !await asksToJoin(stranger), "down removes the join request of the instance's stranger")
   const leaked = ['instance.json', 'actions.jsonl'].filter((f) => existsSync(join(evidence, f)) && readFileSync(join(evidence, f), 'utf8').includes(token))
   check(!leaked.length, `the evidence keeps no copy of the machine's token${leaked.length ? `, and ${leaked.join(', ')} hold it` : ''}`)
   check(!want('seed') || !readFileSync(join(evidence, 'actions.jsonl'), 'utf8').includes('step17-value'), "the action log keeps no secret's value from the commands it records")
@@ -392,6 +397,8 @@ try {
   // What the refusal checks made for up to find, and any instance a broken refusal let start.
   for (const other of Object.values(refused)) if (existsSync(stateFile(other))) await ctl(['down', '--instance', other], { instance: false })
   await withClient(async (client) => { await client.query('delete from teams where name = any($1)', [[`verify-${refused.team}`, `verify-${refused.kept}`]]) })
+  // The stranger's join request, should a broken down have left it.
+  await withClient(async (client) => { await client.query('delete from join_requests where login = $1', [stranger]) })
   await removeForge(refused.org)
   const survivors = []
   for (const p of started) if (await isOurs({ pid: p.pid, started: p.started, argv: [p.command] })) survivors.push(p)
