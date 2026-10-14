@@ -12,7 +12,7 @@ export const RepoId = z.uuid().brand<'RepoId'>()
 export type RepoId = z.infer<typeof RepoId>
 
 // The characters GitHub allows in a repo name. The migration checks the same.
-export const RepoName = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/, 'A repo name is letters, digits, dots, dashes and underscores.')
+export const RepoName = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/, 'A repo name can use letters, digits, ".", "-" and "_".')
 export type RepoName = z.infer<typeof RepoName>
 // A GitHub organization or account name.
 export const GithubOwner = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'An organization or account name is letters, digits and dashes.')
