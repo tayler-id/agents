@@ -685,6 +685,16 @@ try {
     && renamedTask.status === 200 && setUp && renamedSetup?.status === 'done' && renamedSetup.payload.repos[0]?.base === 'trunk'
     && (await one('select default_branch from repos where id = $1', [renamedRepo?.id]))?.default_branch === 'trunk',
   `after a repo's owner renames its default branch on GitHub, a new task's workspace starts from the new name (${renamedTask.status} ${renamedSetup?.status ?? 'no setup'}: ${renamedSetup?.error ?? renamedTask.json?.error ?? ''})`)
+  // A repo GitHub no longer has: a task on it still starts, and its workspace
+  // setup fails and says why, as before tasks asked the forge for the default branch.
+  const goneFull = `${org}/proj-gone-${id}`
+  const gone = await one('insert into repos (team_id, forge, remote_url, default_branch, project_id) values ($1, $2, $3, $4, $5) returning id',
+    [teamId, 'github', `${github.url}/${goneFull}.git`, 'main', projectId])
+  const goneTask = await as(admin, 'POST', '/v1/tasks', { title: `Proj gone ${id}`, instructions: '', agentId: fixerId, repoId: gone?.id })
+  const goneSetUp = await within(60, async () => ['done', 'failed'].includes((await setupOf(goneTask.json?.taskId))?.status))
+  const goneSetup = await setupOf(goneTask.json?.taskId)
+  check(goneTask.status === 200 && goneSetUp && goneSetup?.status === 'failed' && typeof goneSetup.error === 'string',
+    `a task on a repo GitHub no longer has still starts, and its workspace setup fails and says why (${goneTask.status} ${goneSetup?.status ?? 'no setup'}: ${String(goneSetup?.error ?? goneTask.json?.error ?? '')})`)
   // Renamed again, so only the run itself can find the newest name.
   github.renameBranch(renamedFull, 'trunk', 'develop')
   const renamedIssue = github.openIssue(renamedFull, 'GHRENAMED: add a file', 'Please add it.', [], gh.stranger)

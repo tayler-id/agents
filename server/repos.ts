@@ -65,13 +65,27 @@ export async function fromForge<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-// Brings a team's repos up to date with their forge's default branch before a
-// task's workspace is cloned from them, with no transaction open while a forge
-// is asked. A repo the team doesn't have is left for the task to refuse.
+// Brings a repo up to date with its forge's default branch before a task's
+// workspace is cloned from it. A forge that refuses or can't answer, such as for
+// a repo it no longer has, leaves the stored branch, and the task still starts.
+// Its clone then fails in the workspace setup, which says why, as it did before
+// tasks asked the forge.
+async function refreshDefaultBranch(repo: TeamRepo & { default_branch: string }): Promise<void> {
+  try {
+    await currentDefaultBranch(repo)
+  } catch (error) {
+    if (!(error instanceof ForgeError)) throw error
+    console.log(`kept the stored default branch of ${repoPath(repo.remote_url)}, since its forge said: ${error.message}`)
+  }
+}
+
+// A team's repos brought up to date before a task's workspace is cloned from
+// them, with no transaction open while a forge is asked. A repo the team doesn't
+// have is left for the task to refuse.
 export async function refreshDefaultBranches(teamId: string, repoIds: string[]): Promise<void> {
   const repos = await many<TeamRepo & { default_branch: string }>(pool,
     'select id, forge, remote_url, default_branch from repos where team_id = $1 and id = any($2)', [teamId, repoIds])
-  for (const repo of repos) await fromForge(() => currentDefaultBranch(repo))
+  for (const repo of repos) await refreshDefaultBranch(repo)
 }
 
 // The same for a draft's repos, before it starts.
@@ -79,7 +93,7 @@ export async function refreshTaskDefaultBranches(teamId: string, taskId: string)
   const repos = await many<TeamRepo & { default_branch: string }>(pool,
     `select r.id, r.forge, r.remote_url, r.default_branch from task_repos tr join repos r on r.id = tr.repo_id
      where tr.task_id = $1 and r.team_id = $2`, [taskId, teamId])
-  for (const repo of repos) await fromForge(() => currentDefaultBranch(repo))
+  for (const repo of repos) await refreshDefaultBranch(repo)
 }
 
 // How long the Repos page keeps a forge's answer, so however many people have it
