@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import { isWorking } from '../../shared/lifecycle.ts'
 import {
-  act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
+  act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Repo, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
 } from './data.ts'
 import { TeamPage, Waiting } from './Team.tsx'
@@ -18,9 +18,11 @@ import { PipelineView } from './Pipeline.tsx'
 import { DocumentPanel } from './Document.tsx'
 import { AgentPage, NewAgent } from './AgentPage.tsx'
 import { NewRoom, NewTask, TaskView } from './Work.tsx'
+import { NewProject, ProjectPage, ReposView } from './Projects.tsx'
+import { ProjectRow } from '../../shared/projects.ts'
 
-// Pages with no id of their own, such as the team.
-const PAGES = ['team', 'tailscale', 'box'] as const
+// Pages with no id of their own, such as the team and the team's repos.
+const PAGES = ['team', 'tailscale', 'box', 'repos'] as const
 type Page = (typeof PAGES)[number]
 
 // The VNC client and its schemas load only when someone opens a screen.
@@ -29,24 +31,30 @@ const ScreenPanel = lazy(async () => ({ default: (await import('./Screen.tsx')).
 // A box's screen open beside the work, and the session it was opened from.
 type ScreenRoute = { instance: string; session: string | null }
 
-// Where the app is: a conversation, run, task, pipeline, agent, page or new-thing
-// form in the middle, and maybe a session, a document, a changed file or a
-// screen beside it.
+// Where the app is: a conversation, run, task, pipeline, agent, project, page or
+// new-thing form in the middle, and maybe a session, a document, a changed file or
+// a screen beside it. A new task or room can be started inside a project.
 type Route = {
-  conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
-  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null; file: string | null
-  screen: ScreenRoute | null
+  conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null; project: string | null
+  create: 'agent' | 'room' | 'task' | 'project' | null; inProject: string | null; page: Page | null; session: string | null; document: string | null
+  file: string | null; screen: ScreenRoute | null
 }
 const EMPTY: Route = {
-  conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null, screen: null,
+  conversation: null, run: null, task: null, pipeline: null, agent: null, project: null, create: null, inProject: null, page: null, session: null, document: null,
+  file: null, screen: null,
 }
-const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
+const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent', project: 'project' } as const
+const CREATE = ['agent', 'room', 'task', 'project'] as const
+const isCreate = (value: string): value is (typeof CREATE)[number] => CREATE.some((kind) => kind === value)
 
 function readRoute(): Route {
   const [, kind = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
   const route = { ...EMPTY }
   if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
-  if (kind === 'n' && (id === 'agent' || id === 'room' || id === 'task')) route.create = id
+  if (kind === 'n' && isCreate(id)) {
+    route.create = id
+    route.inProject = sub || null
+  }
   // Null when the hash names no page.
   route.page = PAGES.find((page) => page === kind) ?? null
   if (sub === 's') route.session = subId || null
@@ -61,7 +69,9 @@ export function go(to: Partial<Route>) {
   const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}`
     : r.screen ? `/screen/${r.screen.instance}${r.screen.session ? `/${r.screen.session}` : ''}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
-  window.location.hash = r.page ? `#/${r.page}` : r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
+  window.location.hash = r.page ? `#/${r.page}`
+    : r.create ? `#/n/${r.create}${r.inProject ? `/${r.inProject}` : ''}`
+      : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
 
 function useRoute(): Route {
@@ -124,20 +134,24 @@ function Workspace({ me }: { me: Me }) {
       <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
       {palette && <Palette me={me} onClose={() => setPalette(false)} />}
       <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
-        : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
+        : route.page === 'repos' ? 'Repos' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
+          : route.project ? 'Project' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
+          : route.page === 'repos' ? <ReposView me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
-                  : route.create === 'agent' ? <NewAgent me={me} />
-                    : route.create === 'room' ? <NewRoom me={me} />
-                      : route.create === 'task' ? <NewTask />
-                        : <Welcome me={me} />}
+                  : route.project ? <ProjectPage key={route.project} projectId={route.project} />
+                    : route.create === 'agent' ? <NewAgent me={me} />
+                      : route.create === 'room' ? <NewRoom key={route.inProject} me={me} projectId={route.inProject} />
+                        : route.create === 'task' ? <NewTask key={route.inProject} projectId={route.inProject} />
+                          : route.create === 'project' ? <NewProject me={me} />
+                            : <Welcome me={me} />}
       </main>
       {route.session && (route.conversation || route.run || route.task) && (
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} onScreen={openScreen} />
@@ -175,6 +189,8 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   const { rows: instances } = useSnapshot<Instance>('instances')
   const { rows: pipelines } = useSnapshot<Pipeline>('pipelines', {}, 10000)
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
+  const { rows: projects } = useSnapshotOf(ProjectRow, 'projects', {}, 10000)
+  const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   // Polled, so the sidebar holds none of the browser's six connections.
   const { rows: conversationSessions } = useSnapshot<Session>('sessions', { of: 'conversations' }, 3000)
   const { rows: taskSessions } = useSnapshot<Session>('sessions', { of: 'tasks' }, 3000)
@@ -231,13 +247,18 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   }
 
   const running = sessions.filter((s) => isWorking(s.status))
+  // A project's rooms, tasks and runs show under it, and only what belongs to no project shows below.
+  const projectOf = new Map(tasks.map((t) => [t.id, t.project_id]))
   // Replays score proposals. They show on their proposal's run, not here.
-  const recentRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8)
+  const newestRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const recentRuns = newestRuns.filter((r) => !projectOf.get(r.task_id)).slice(0, 8)
   const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)
   // Tasks people started, outside pipelines.
   const runTasks = new Set(runs.map((r) => r.task_id))
-  const myTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6)
+  const peopleTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const myTasks = peopleTasks.filter((t) => !t.project_id).slice(0, 6)
+  const looseConversations = conversations.filter((c) => !c.project_id)
   const drafts = new Set(taskSessions.filter((s) => s.status === 'draft').map((s) => s.task_id))
   return (
     <nav className="sidebar" aria-label="Workspace">
@@ -258,11 +279,64 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
         </p>
       )}
       <div className="new-links">
+        <button type="button" className="link small" onClick={() => go({ create: 'project' })}>New project</button>
         <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
         <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>
         <button type="button" className="link small" onClick={() => go({ create: 'agent' })}>New agent</button>
         <button type="button" className="link small" onClick={openPalette}>Go to <kbd>{paletteKey()}</kbd></button>
       </div>
+
+      <h2 className="kicker">Projects</h2>
+      <ul className="list" aria-label="Projects">
+        {projects.map((p) => {
+          const rooms = conversations.filter((c) => c.project_id === p.id)
+          const work = peopleTasks.filter((t) => t.project_id === p.id).slice(0, 5)
+          const projectRuns = newestRuns.filter((r) => projectOf.get(r.task_id) === p.id).slice(0, 5)
+          return (
+            <li key={p.id}>
+              <button type="button" className={`row${p.id === route.project ? ' selected' : ''}`} onClick={() => go({ project: p.id })}>
+                <span>{p.name}</span>
+              </button>
+              <ul className="list nested" aria-label={`In ${p.name}`}>
+                {rooms.map((c) => (
+                  <li key={c.id}>
+                    <button type="button" className={`row${c.id === route.conversation ? ' selected' : ''}`} onClick={() => go({ conversation: c.id })}><span># {c.name ?? 'room'}</span></button>
+                  </li>
+                ))}
+                {work.map((t) => (
+                  <li key={t.id}>
+                    <button type="button" className={`row${t.id === route.task ? ' selected' : ''}`} onClick={() => go({ task: t.id })}>
+                      <span>{t.title}</span>
+                      {drafts.has(t.id) && <span className="muted small">draft</span>}
+                    </button>
+                  </li>
+                ))}
+                {projectRuns.map((r) => (
+                  <li key={r.id}>
+                    <button type="button" className={`row${r.id === route.run ? ' selected' : ''}`} onClick={() => go({ run: r.id })}>
+                      <span><span className={`dot ${r.status}`} aria-hidden="true" />{taskTitle(r.task_id)}</span>
+                      <span className="muted small">{shortRunLabel(r.status)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          )
+        })}
+        {!projects.length && <li className="muted small empty">No projects yet</li>}
+      </ul>
+
+      <h2 className="kicker">Repos</h2>
+      {/* No label of its own, unlike the lists around it: a page's Repo picker is
+          found by its label, which a list named Repos would match too. */}
+      <ul className="list">
+        <li>
+          <button type="button" className={`row${route.page === 'repos' ? ' selected' : ''}`} onClick={() => go({ page: 'repos' })}>
+            <span>All repos</span>
+            <span className="muted small">{repos.length}</span>
+          </button>
+        </li>
+      </ul>
 
       <h2 className="kicker">Agents</h2>
       <ul className="list" aria-label="Agents">
@@ -280,14 +354,14 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
 
       <h2 className="kicker">Conversations</h2>
       <ul className="list" aria-label="Conversations">
-        {[...conversations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => (
+        {[...looseConversations].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((c) => (
           <li key={c.id}>
             <button type="button" className={`row${c.id === route.conversation ? ' selected' : ''}`} onClick={() => go({ conversation: c.id })}>
               <span>{label(c)}</span>
             </button>
           </li>
         ))}
-        {!conversations.length && <li className="muted small empty">Nothing yet</li>}
+        {!looseConversations.length && <li className="muted small empty">Nothing yet</li>}
       </ul>
 
       <h2 className="kicker">Tasks</h2>

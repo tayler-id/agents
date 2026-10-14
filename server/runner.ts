@@ -13,6 +13,9 @@ import { appendEvents, appendMessage, HttpError, type Person } from './record.ts
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
+import { checkAsker, currentDefaultBranch, forgeFor, type RepoOnForge, type TeamRepo } from './repos.ts'
+import { placeTask } from './projects.ts'
+import { forPrompt } from './public-text.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
   advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, proposePipelineChange, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
@@ -49,7 +52,10 @@ const REVIEWER_SESSIONS = z.object({ reviewers: z.array(z.object({ sessionId: z.
 export const wakeRunner = () => pool.query(`select pg_notify('${CHANNEL}', '')`).then(() => undefined, () => undefined)
 
 // A replay also carries the commit each repo started from in the run it replays.
-type Payload = { report: Report; repoId: string; openIssues: { number: number; title: string }[]; once?: string; commits?: Record<string, string> }
+// `sender` is who asked for a run on GitHub, checked again before its pull request opens.
+type Payload = {
+  report: Report; repoId: string; openIssues: { number: number; title: string }[]; once?: string; commits?: Record<string, string>; sender?: string
+}
 export type Run = {
   id: string; team_id: string; pipeline_version_id: string; task_id: string; status: string; trigger: string
   trigger_payload: Payload; started_at: Date | null; created_at: Date; replay_of: string | null; proposal_id: string | null
@@ -62,7 +68,9 @@ export type Row = {
 }
 export type Task = { id: string; slug: string; title: string; agent_id: string | null; conversation_id: string | null }
 export type Workspace = { id: string; instance_id: string; path: string; status: string }
-type RepoRef = { repoId: string; name: string; remote_url: string; default_branch: string; setup_command: string | null }
+type RepoRef = RepoOnForge & { repoId: string; name: string; default_branch: string; setup_command: string | null }
+// A task's repo as the calls to its forge take it.
+const onForge = (repo: RepoRef): TeamRepo => ({ ...repo, id: repo.repoId })
 type Command = { status: string; error: string | null; result: unknown }
 export type AgentRow = { id: string; name: string; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 export type SessionRow = { id: string; harness_session_id: string | null; cost_usd: string | null }
@@ -134,7 +142,7 @@ function execResult(value: unknown): ExecResult {
 // event already started one.
 export async function startRun(client: pg.PoolClient, options: {
   pipelineId: string; trigger: string; report: Report; repoId: string; openIssues?: Payload['openIssues']
-  once?: string; startedBy?: string
+  once?: string; startedBy?: string; sender?: string
 }): Promise<string | null> {
   const pipeline = await maybe<{ team_id: string; name: string; current_version_id: string; conversation_id: string | null; source: string }>(client,
     `select p.team_id, p.name, p.current_version_id, p.conversation_id, v.source
@@ -159,7 +167,8 @@ export async function startRun(client: pg.PoolClient, options: {
     [pipeline.team_id, slug, options.report.title, options.report.body, options.startedBy ?? null, agent.id,
       pipeline.conversation_id, options.trigger])
   await client.query('insert into task_repos (task_id, repo_id, is_primary) values ($1, $2, true)', [task.id, options.repoId])
-  const payload: Payload = { report: options.report, repoId: options.repoId, openIssues: options.openIssues ?? [], once: options.once }
+  await placeTask(client, task.id)
+  const payload: Payload = { report: options.report, repoId: options.repoId, openIssues: options.openIssues ?? [], once: options.once, sender: options.sender }
   const run = await one<{ id: string }>(client, 'the new run',
     `insert into runs (team_id, pipeline_version_id, task_id, trigger, trigger_payload)
      values ($1, $2, $3, $4, $5) returning id`,
@@ -240,7 +249,7 @@ export const workspaceOf = (client: pg.PoolClient, run: Run) => maybe<Workspace>
 
 export async function reposOf(client: pg.PoolClient, run: Run): Promise<RepoRef[]> {
   const rows = await many<Omit<RepoRef, 'name'>>(client,
-    `select r.id as "repoId", r.remote_url, r.default_branch, r.setup_command from task_repos tr
+    `select r.id as "repoId", r.forge, r.remote_url, r.default_branch, r.setup_command from task_repos tr
      join repos r on r.id = tr.repo_id where tr.task_id = $1 order by tr.is_primary desc, r.remote_url`, [run.task_id])
   return withFolders(rows).map(({ folder, ...r }) => ({ ...r, name: folder }))
 }
@@ -381,7 +390,14 @@ async function begin(client: pg.PoolClient, run: Run, pipeline: Pipeline): Promi
   const workspace = await one<{ id: string }>(client, 'the new workspace',
     `insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`,
     [run.team_id, task.id, instanceId])
-  const repos = await reposOf(client, run)
+  // A repo's owner can rename its default branch, or make another branch the
+  // default, at any time, so the workspace starts from the one its forge names
+  // now. A forge that can't be asked fails this step, which rolls back and is
+  // tried again, up to the runner's limit.
+  const repos: RepoRef[] = []
+  for (const r of await reposOf(client, run)) {
+    repos.push({ ...r, default_branch: await currentDefaultBranch({ ...onForge(r), default_branch: r.default_branch }) })
+  }
   const payload: SetupWorkspacePayload = {
     workspaceId: workspace.id,
     repos: repos.map((r) => ({
@@ -463,14 +479,14 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     // the harness counts its whole session against the budget.
     const maxBudgetUsd = Number(session.cost_usd ?? 0) + spendCap - cost
     const seq = await sendPrompt(client, run, workspace, staged, session,
-      { text: stage.prompt(ctx) + REPORT_INSTRUCTION(outcomes), clientId: `stage:${row.id}`, stage: row.stage },
+      { text: stage.prompt(forPrompt(ctx)) + REPORT_INSTRUCTION(outcomes), clientId: `stage:${row.id}`, stage: row.stage },
       { outcomes, allow: stage.allow ?? [], maxBudgetUsd, isolated: false }, WORKSPACE_PERMISSIONS)
     await setRow(client, row, { status: 'running', session_id: session.id, from_seq: String(seq), started: true })
     return true
   }
   if (stage.kind === 'verify') return framework.startVerify(client, run, pipeline, row)
-  if (stage.kind === 'review') return framework.startReview(client, run, pipeline, rows, row, stage, ctx, workspace, spendCap - cost)
-  if (stage.kind === 'confirm') return framework.startConfirm(client, run, pipeline, rows, row, stage, ctx, workspace, spendCap - cost)
+  if (stage.kind === 'review') return framework.startReview(client, run, pipeline, rows, row, stage, forPrompt(ctx), workspace, spendCap - cost)
+  if (stage.kind === 'confirm') return framework.startConfirm(client, run, pipeline, rows, row, stage, forPrompt(ctx), workspace, spendCap - cost)
   if (stage.kind === 'suite') return framework.startSuite(client, run, pipeline, rows, row)
 
   if (stage.kind === 'check') {
@@ -530,7 +546,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
       case 'ask_reporter': {
         const issue = ctx.report.issue
         if (issue === undefined) throw new Error('the report came from no issue, so there is no reporter to ask')
-        await forge.comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) ?? '')
+        await forgeFor(onForge(repo)).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) ?? '')
         result = { outcome: 'done', summary: `Asked the reporter one question on issue #${issue}.` }
         break
       }
@@ -548,7 +564,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
         const opened = [...rows].reverse().find((r) => r.data.pullRequest !== undefined)
         if (!opened) throw new Error('there is no pull request to merge')
         const number = Number(opened.data.pullRequest)
-        const pr = await forge.merge(repoPath(repo.remote_url), number)
+        const pr = await forgeFor(onForge(repo)).merge(repoPath(repo.remote_url), number)
         if (!pr.merged) throw new Error(`pull request #${number} did not merge`)
         await client.query(`update artifacts set state = 'merged', updated_at = now() where task_id = $1 and url = $2`, [run.task_id, pr.html_url])
         // A merged pipeline change is approved, and its version becomes current now.
@@ -562,8 +578,8 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
       case 'close_issue': {
         const issue = ctx.report.issue
         if (issue) {
-          await forge.comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
-          await forge.closeIssue(repoPath(repo.remote_url), issue)
+          await forgeFor(onForge(repo)).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
+          await forgeFor(onForge(repo)).closeIssue(repoPath(repo.remote_url), issue)
         }
         result = { outcome: 'done', summary: issue ? `Closed issue #${issue}.` : 'There was no issue to close.' }
         break
@@ -785,13 +801,14 @@ async function openPullRequest(client: pg.PoolClient, run: Run, pipeline: Pipeli
   const repo = await repoOf(client, run)
   const ctx = await context(client, run, rows, row)
   try {
+    await checkAsker(onForge(repo), run.trigger_payload.sender)
     // On a repo with a policy the pull request is the commit the gates judged,
     // and its description is the runner's evidence, with the agent's summary in it.
     const governed = await framework.policyOf(client, run)
     const body = governed
       ? await framework.pullRequestBody(client, run, pipeline, rows, command.result, stage.text?.(ctx) ?? '')
       : stage.text?.(ctx) ?? ''
-    const pr = await forge.openPullRequest(repoPath(repo.remote_url), branchOf(run, task), repo.default_branch,
+    const pr = await forgeFor(onForge(repo)).openPullRequest(repoPath(repo.remote_url), branchOf(run, task), repo.default_branch,
       stage.title?.(ctx) ?? ctx.report.title, body)
     // A pull request opened on an earlier pass gets the evidence for this commit.
     if (governed) await forge.describe(repoPath(repo.remote_url), pr.number, body)

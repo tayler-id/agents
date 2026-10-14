@@ -12,6 +12,7 @@ import { appendMessage, HttpError, type Person } from './record.ts'
 import { setTaskRepos } from './checkout.ts'
 import { draftSession } from './drafts.ts'
 import { launchTask } from './launch.ts'
+import { placeTask } from './projects.ts'
 import { sendToSession } from './session-messages.ts'
 import { TaskId } from '../shared/ids.ts'
 import { CommentAnchor, type NewComment, type NewTask } from '../shared/work.ts'
@@ -39,6 +40,7 @@ export async function startTask(client: pg.PoolClient, person: Person, body: Omi
 
   const taskId = TaskId.parse(task.id)
   await setTaskRepos(client, person, taskId, body.repoIds)
+  await placeTask(client, taskId, body.projectId)
   if (body.draft) return { taskId, sessionId: await draftSession(client, person, taskId, body.agentId) }
   return launchTask(client, person, taskId)
 }

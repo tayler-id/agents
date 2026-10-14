@@ -121,6 +121,9 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* A row's status never wraps; the name gives way to it. */
 .row > span + span { flex-shrink: 0; white-space: nowrap; }
+/* A row whose details run long, such as a project's task and its repos, puts them on a line of their own. */
+.row.stacked { flex-direction: column; align-items: stretch; gap: 2px; }
+.row.stacked > span + span { white-space: normal; overflow-wrap: anywhere; }
 .row.selected { background: var(--raised); font-weight: 600; }
 .row.static { cursor: default; }
 .empty { padding: 4px 8px; }
@@ -415,3 +418,15 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; backgro
   .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }
   dialog.palette { margin-top: 8vh; }
 }
+
+/* Projects and repos. Repos are hairline-divided rows, and the sign-in code sits on a raised neutral surface. */
+.list.nested { padding-left: 14px; }
+.repo-list { list-style: none; margin: 0; padding: 0; }
+.repo-list > li { display: grid; gap: 3px; padding: 9px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.repo-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.repo-name, .repo-names, .repo-list p, .request { overflow-wrap: anywhere; }
+.github-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.device { display: grid; gap: 6px; justify-items: start; }
+.device-code { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; background: var(--raised); border-radius: 8px; padding: 8px 14px; }
+.task-place { margin-top: 2px; }
+.form input[type="password"] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }

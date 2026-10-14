@@ -100,6 +100,16 @@ Onboarding, in `server/migrations/0005_onboarding.sql`. The design is in `docs/d
 - **`instances.personal` and `instances.start_error`.** A personal box belongs to one person for good. Runs never claim it, the box limit does not count it, and it is never stopped for being idle. Each person has at most one. `start_error` says why its container did not start.
 - **Every team has an admin.** `people.role` existed but nothing set it. The migration makes the earliest person of each team that has no admin into one.
 
+Projects, in `server/migrations/0006_projects.sql`. The design is in `docs/design/projects.md`.
+
+- **`projects`, new.** A team's work on one thing: a name, a description, its room (`conversation_id`), who made it and when, and `archived_at`. A name is unique in a team among projects not archived. Everyone on the team sees every project.
+- **`repo_requests`, new.** A repo the app was asked to make on GitHub for a project: the organization or account it goes under, its name and description, `creating`, `done` or `failed`, GitHub's reason when it failed, and the `repos` row once made. Only a failed request has a reason and only a done one a repo. The app writes it before asking GitHub, so a crash or a refusal never leaves a repo nobody knows about, and trying again adopts a repo an earlier try made. A repo is asked for once per team.
+- **`repos.forge`.** The forge that holds the repo, `gitea` for this Mac's or `github`. Existing rows are `gitea`. The runner, the git proxy and the Repos page go by it.
+- **`repos.project_id`.** The project a repo belongs to, or none. A repo belongs to at most one project.
+- **`repos.polled_at`.** When the GitHub worker last read the repo's issue events. GitHub can't reach this server with webhooks, so the labels that ask for work are found by polling, and a restart carries on from here. No GitHub token is in Postgres: they live in mode 600 files on the server.
+- **`tasks.project_id`.** The project a task belongs to. Its runs and documents follow it, so they need no column of their own.
+- **`conversations.project_id`.** The project a room belongs to. Only a room can have one.
+
 The work layer, in `server/migrations/0007_workflow.sql`. The design is in `docs/design/workflow.md`.
 
 - **`file_changes`, new.** One row per file that differs from the base branch in one of a task workspace's repos. It holds the status (added, modified or deleted), the line counts, whether the file is binary or too large to show, its content now and its diff against the base, both scrubbed on the machine. It is the workspace's current state, so a row goes once its file stops differing. The task page lists these as Changes and opens each one beside the task.
@@ -128,7 +138,7 @@ The coding framework, in `server/migrations/0009_self_improve.sql`. Every agent 
 - **`decisions`, new.** The decision log. What an agent or a person decided, why, and the alternatives they weighed, tied to the task and the run.
 - **`lessons`, new.** A lesson the team learned, the incident behind it, and what enforces it. It stays "written" until it names the gate, lint rule or check that holds it.
 - **`obligations`, new.** A promise made outside Agents, such as the outcome owed to an issue's reporter: what is owed, where, by when, and the kind of proof that closes it. It closes only with that proof, or when a person waives it by name with a reason. A stale or conflicting delivery changes nothing. `attempts` counts failed tries at delivering it, and `retry_at` holds off the next try, twice as long after each failure, up to an hour.
-- **`refused_pushes`, new.** Every push the git proxy refused, such as a machine pushing to main. Verify stops the run whose machine did it.
+- **`refused_pushes`, new.** Every push the git proxy refused on a repo with a policy, such as a machine pushing to main. Verify stops the run whose machine did it. A push to the default branch of a repo without a policy is refused and not recorded.
 - **`deploys`, new.** A deploy of a repo's commit, who approved it, its steps' log, and how it ended: healthy, rolled back, or failed.
 - **`runs.playbook`, `.paused_at`, `.paused_by`, `.pause_note` and the status `paused`.** The playbook the router picked, and a pause a person asked for.
 - **New kinds.** Instances of kind `check` (the check host), stage kinds `route`, `verify`, `review` and `suite`, and command kinds `verify` and `suite`. The migration adds these to the lists already in the database, so other migrations that extend the same lists keep their values whichever runs first.

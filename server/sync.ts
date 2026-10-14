@@ -101,6 +101,18 @@ const personShapes: Record<string, PersonShape> = {
     table: 'tasks', where: `team_id = $1 and archived_at is null and ${VISIBLE_TASK}`, params: [p.team_id, p.id],
   }),
   repos: async (p) => ({ table: 'repos', where: 'team_id = $1', params: [p.team_id] }),
+  // Projects and the repos asked of GitHub for them. Everyone on the team sees every one.
+  projects: async (p) => ({ table: 'projects', where: 'team_id = $1 and archived_at is null', params: [p.team_id] }),
+  repo_requests: async (p) => ({ table: 'repo_requests', where: 'team_id = $1', params: [p.team_id] }),
+  // The documents and links that a project's tasks made.
+  project_artifacts: async (p, args) => {
+    const projectId = arg(args, 'project')
+    if (!(await maybe(pool, 'select 1 from projects where id = $1 and team_id = $2', [projectId, p.team_id]))) throw new HttpError(404, 'no such project')
+    return {
+      table: 'artifacts', where: `task_id in (select id from tasks where team_id = $1 and project_id = $3 and ${VISIBLE_TASK})`,
+      params: [p.team_id, p.id, projectId],
+    }
+  },
   pipelines: async (p) => ({ table: 'pipelines', where: 'team_id = $1', params: [p.team_id] }),
   proposals: async (p) => ({ table: 'proposals', where: 'team_id = $1', params: [p.team_id] }),
   // Hunks quote only team sessions, since coach reads no private ones.
@@ -153,8 +165,12 @@ const personShapes: Record<string, PersonShape> = {
     if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
     return { table: 'task_holds', where: 'task_id = $1', params: [taskId] }
   },
-  // A task's repos, for editing a draft.
+  // A task's repos, for editing a draft. Without `task`, the repos of every task
+  // the person may see, which the project pages show.
   task_repos: async (p, args) => {
+    if (!args.has('task')) {
+      return { table: 'task_repos', where: `task_id in (select id from tasks where team_id = $1 and ${VISIBLE_TASK})`, params: [p.team_id, p.id] }
+    }
     const taskId = arg(args, 'task')
     if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
     return { table: 'task_repos', where: 'task_id = $1', params: [taskId] }

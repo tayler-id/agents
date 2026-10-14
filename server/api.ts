@@ -12,8 +12,8 @@ import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { checkAudience, instanceFrom, personFrom } from './auth.ts'
-import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
+import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -27,7 +27,12 @@ import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecor
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
-import { forge, repoPath } from './forge.ts'
+import { repoPath } from './forge.ts'
+import { forgeFor, refreshDefaultBranches, refreshTaskDefaultBranches, reposOverview, type TeamRepo } from './repos.ts'
+import { githubStatus, setStopgap, signOut, startSignIn } from './github-auth.ts'
+import { startGithubWorker } from './github-worker.ts'
+import { addRepoToProject, askGithub, createProject, retryRepoRequest } from './projects.ts'
+import { AddRepoBody, NewProjectBody, ProjectId, RepoRequestId, StopgapBody } from '../shared/projects.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
@@ -63,6 +68,14 @@ const PERSON_KINDS: EventKind[] = ['user', 'answer']
 function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value)
   if (!result.success) throw new HttpError(400, z.prettifyError(result.error))
+  return result.data
+}
+
+// A project a room is started in. Leaving it out starts one outside any project.
+function optionalProject(value: unknown): ProjectId | undefined {
+  if (value === undefined || value === null) return undefined
+  const result = ProjectId.safeParse(value)
+  if (!result.success) throw new HttpError(400, 'projectId must be an id')
   return result.data
 }
 
@@ -322,7 +335,8 @@ const routes: Route[] = [
     const body = await readJson(req)
     if (body.kind === 'room') {
       const list = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
-      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents))) }
+      const projectId = optionalProject(body.projectId)
+      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)) }
     }
     if (body.kind !== 'dm') throw new HttpError(400, 'kind must be dm or room')
     const agent = text(body.agent, 'agent')
@@ -373,7 +387,10 @@ const routes: Route[] = [
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
     const { repoId, ...task } = parsed(NewTask, await readJson(req))
-    return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
+    const repoIds = repoId ? [repoId, ...task.repoIds] : task.repoIds
+    // The workspace is cloned from each repo's default branch, which its owner can rename on the forge.
+    if (!task.draft) await refreshDefaultBranches(person.team_id, repoIds)
+    return tx((client) => startTask(client, person, { ...task, repoIds }))
   }],
 
   // The order of work. Each command answers whether there was anything to change.
@@ -437,6 +454,7 @@ const routes: Route[] = [
     const action = parsed(TaskAction.extract(['edit', 'start', 'discard']), verb)
     switch (action) {
       case 'start':
+        await refreshTaskDefaultBranches(person.team_id, taskId)
         return tx((client) => startDraft(client, person, taskId))
       case 'discard':
         await tx((client) => discardDraft(client, person, taskId))
@@ -447,6 +465,51 @@ const routes: Route[] = [
         return { ok: true }
       }
     }
+  }],
+
+  // Projects and their repos. docs/design/projects.md has the whole design.
+  ['people', 'POST', /^\/v1\/projects$/, async (req) => {
+    const person = await personFrom(req)
+    return createProject(person, await parseBody(req, NewProjectBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/projects/${UUID}/repos$`), async (req, [projectId]) => {
+    const person = await personFrom(req)
+    return addRepoToProject(person, pathId(ProjectId, projectId), await parseBody(req, AddRepoBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/repo-requests/${UUID}/retry$`), async (req, [requestId]) => {
+    const person = await personFrom(req)
+    await retryRepoRequest(person, pathId(RepoRequestId, requestId))
+    return { ok: true }
+  }],
+
+  // Every repo of the team, with what its forge says is open on it.
+  ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview(await personFrom(req))],
+
+  // Whether GitHub is set up, and the person's own sign-in. Never a token.
+  ['people', 'GET', /^\/v1\/github$/, async (req) => githubStatus(await personFrom(req))],
+
+  // Signs the person in with GitHub's device flow. The answer has the code they enter on GitHub.
+  ['people', 'POST', /^\/v1\/github\/sign-in$/, async (req) => {
+    const person = await personFrom(req)
+    await askGithub(() => startSignIn(person.id))
+    return githubStatus(person)
+  }],
+
+  ['people', 'POST', /^\/v1\/github\/sign-out$/, async (req) => {
+    const person = await personFrom(req)
+    signOut(person.id)
+    return githubStatus(person)
+  }],
+
+  // The stopgap until people sign in: an admin's fine-grained personal access token for their whole team.
+  ['people', 'POST', /^\/v1\/github\/token$/, async (req) => {
+    const person = await adminFrom(req)
+    const body = await parseBody(req, StopgapBody)
+    // setStopgap's refusals are written for the admin to act on.
+    await setStopgap(person.team_id, body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
+    return githubStatus(person)
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
@@ -508,12 +571,12 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/pipelines/${UUID}/runs$`), async (req, [pipelineId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    const repo = await maybe<{ remote_url: string }>(pool,
-      'select remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
+    const repo = await maybe<TeamRepo>(pool,
+      'select id, forge, remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
     if (!repo) throw new HttpError(404, 'no such repo')
     const pipeline = await maybe(pool, 'select 1 from pipelines where id = $1 and team_id = $2', [pipelineId, person.team_id])
     if (!pipeline) throw new HttpError(404, 'no such pipeline')
-    const openIssues = (await forge.openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
+    const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
     const runId = await tx((client) => startRun(client, {
       pipelineId, trigger: 'manual', repoId: body.repoId as string, openIssues, startedBy: person.id,
       report: { title: text(body.title, 'title'), body: typeof body.body === 'string' ? body.body : '', author: person.login },
@@ -778,17 +841,23 @@ if (import.meta.main) {
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()
+  let githubWorker: ReturnType<typeof startGithubWorker> | null = null
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
+  // The GitHub worker finishes the round it is in and starts no other.
   const stop = () => {
     stopSweep()
-    setTimeout(() => { console.error('the stream server did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
-    streams.stop().then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the stream server: ${messageOf(error)}`); process.exit(1) })
+    setTimeout(() => { console.error('the API did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
+    Promise.all([githubWorker?.stop(), streams.stop()])
+      .then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the API: ${messageOf(error)}`); process.exit(1) })
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
   createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
     .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
-  if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
+  if (process.env.AGENTS_RUNNER !== 'off') {
+    runner = startRunner()
+    githubWorker = startGithubWorker()
+  }
 }
