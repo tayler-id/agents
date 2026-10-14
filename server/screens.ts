@@ -301,11 +301,18 @@ function refuse(socket: Duplex, status: number, message: string) {
     + `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
 }
 
-const accept = (sockets: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer, then: (ws: WebSocket) => void) => {
-  sockets.handleUpgrade(req, socket, head, then)
-}
-
 async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex, head: Buffer) {
+  // Node takes its own error listener off a socket before it hands over an
+  // upgrade, and ws adds one only once it has the socket. A client that resets
+  // the connection in between, while the API looks it up or refuses it, would
+  // raise an error nobody hears, which stops the API. The socket is already
+  // destroyed when this one hears it, so saying so is all there is to do.
+  const onError = (error: Error) => { console.error(`screen upgrade for ${req.url ?? '/'}: ${error.message}`) }
+  socket.on('error', onError)
+  const accept = (sockets: WebSocketServer, then: (ws: WebSocket) => void) => {
+    socket.off('error', onError)
+    sockets.handleUpgrade(req, socket, head, then)
+  }
   try {
     checkAudience(audience, req)
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
@@ -313,13 +320,13 @@ async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex,
       const instance = await instanceFrom(req)
       const id = InstanceId.parse(instance.id)
       await loadControl(id)
-      accept(machineSockets, req, socket, head, (ws) => { linkBox(id, ws) })
+      accept(machineSockets, (ws) => { linkBox(id, ws) })
       return
     }
     const tunnel = audience === 'machines' ? TUNNEL_PATH.exec(path)?.[1] : undefined
     if (tunnel) {
       const viewer = waitingViewer(tunnel, await instanceFrom(req))
-      accept(machineSockets, req, socket, head, (ws) => { joinTunnel(viewer, ws) })
+      accept(machineSockets, (ws) => { joinTunnel(viewer, ws) })
       return
     }
     const screenId = audience === 'people' ? VIEWER_PATH.exec(path)?.[1] : undefined
@@ -335,7 +342,7 @@ async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex,
         if (error instanceof HttpError) return { refused: error.message }
         throw error
       })
-      accept(peopleSockets, req, socket, head, (ws) => {
+      accept(peopleSockets, (ws) => {
         if ('refused' in allowed) ws.close(ScreenClose.notAllowed, allowed.refused)
         else watch(allowed.person, allowed.screen, ws)
       })
