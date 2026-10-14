@@ -262,6 +262,34 @@ try {
   check((await asPerson(PEOPLE, member, 'GET', '/v1/tailscale/users')).status === 403 && (await asPerson(PEOPLE, member, 'GET', '/v1/tailscale/devices')).status === 403
     && (await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/users/${pending.id}/approve`)).status === 403,
   'a member can neither see nor change the tailnet')
+  // The rest of the admin routes, each tried by a member, then this team's invites by another team's admin.
+  const stillOpen = must((await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: `gated12-${id}@mail.test`, role: 'member' })).json?.invite?.id, 'an open invite')
+  const consoleId = '77002'
+  tailscale.state.invites.set(consoleId, { id: consoleId, role: 'member', tailnetId: 12345, inviterId: 1, email: `gated12c-${id}@mail.test`, inviteUrl: 'https://login.tailscale.com/admin/invite/gated' })
+  const memberTries = [
+    await asPerson(PEOPLE, member, 'POST', `/v1/invites/${stillOpen}/resend`),
+    await asPerson(PEOPLE, member, 'POST', `/v1/invites/${stillOpen}/cancel`),
+    await asPerson(PEOPLE, member, 'GET', `/v1/invites/${stillOpen}/link`),
+    await asPerson(PEOPLE, member, 'POST', '/v1/tailscale/key/delete'),
+    await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/users/${memberUser.id}/role`, { role: 'it-admin' }),
+    await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/devices/${phone.nodeId}/authorize`),
+    await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/devices/${laptop.nodeId}/delete`),
+    await asPerson(PEOPLE, member, 'GET', '/v1/tailscale/invites'),
+    await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/invites/${consoleId}/resend`),
+    await asPerson(PEOPLE, member, 'POST', `/v1/tailscale/invites/${consoleId}/cancel`),
+  ]
+  check(memberTries.every((t) => t.status === 403) && existsSync(keyFile) && tailscale.state.devices.get(phone.nodeId)?.authorized === false
+    && tailscale.state.devices.has(laptop.nodeId) && tailscale.state.invites.has(consoleId) && tailscale.state.users.get(memberUser.id)?.role !== 'it-admin'
+    && (await row('select status from invites where id = $1', [stillOpen]))?.status === 'open',
+  `a member can't resend, cancel or read an invite, remove the key, change a tailnet role, authorize or remove a device, or list, resend or cancel tailnet invites (${memberTries.map((t) => t.status).join(', ')})`)
+  const outsiderTries = [
+    await asPerson(PEOPLE, outsider, 'POST', `/v1/invites/${stillOpen}/resend`),
+    await asPerson(PEOPLE, outsider, 'POST', `/v1/invites/${stillOpen}/cancel`),
+    await asPerson(PEOPLE, outsider, 'GET', `/v1/invites/${stillOpen}/link`),
+  ]
+  check(outsiderTries.every((t) => t.status === 404) && (await row('select status from invites where id = $1', [stillOpen]))?.status === 'open',
+    `another team's admin can't resend, cancel or read this team's invite (${outsiderTries.map((t) => t.status).join(', ')})`)
+  tailscale.state.invites.delete(consoleId)
   const users = (await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/users')).json?.users ?? []
   const standing = (login: string) => JSON.stringify(users.find((u: any) => u.login === login)?.team)
   check(standing(owner) === JSON.stringify({ on: 'this_team', role: 'admin' }) && standing(member) === JSON.stringify({ on: 'this_team', role: 'member' })
