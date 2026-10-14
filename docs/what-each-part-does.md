@@ -116,7 +116,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 ### The git proxy (`server/git.ts`)
 
 - **Solves now.** Machines clone and push through the API with their own instance tokens. The API checks the repo is their team's and adds the factory's credentials, so forge tokens never leave the server Mac. A box holds only its instance token.
-- **Helps later.** Branch rules for agents go in one place. On a repo with a policy it now takes a machine's push only to the task branches of that machine's own workspaces, records any other, and reads only a push's command lines before streaming the pack on. A repo without a policy takes pushes to any branch.
+- **Helps later.** Branch rules for agents go in one place. On a repo with a policy it now takes a machine's push only to the task branches of that machine's own workspaces, records any other, and reads only a push's command lines before streaming the pack on. A repo without a policy takes pushes to any branch but its default one, by the branch rule below.
 
 ### Workspaces (`daemon/workspace.ts`)
 

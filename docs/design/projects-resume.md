@@ -1,6 +1,6 @@
 # Projects work, where it stands
 
-A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `f643a30`, and has its own `node_modules` from `npm ci`.
+A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `b2aa8b5`, which holds the coding framework, and has its own `node_modules` from `npm ci`.
 
 ## Done, committed
 
@@ -18,6 +18,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
   - GitHub stays off on the real server until these have landed on main.
 - The review of `cb9b6b8`: the cut before the parse, drafts that couldn't be edited, titles the prompt called quoted that weren't, and small filter gaps, fixed in "Read an issue whole before cutting it, and quote titles in every prompt" and "Let a draft keep the repos it was started with". Main's step14 then found that a task on a repo its forge doesn't have no longer started, fixed in "Start a task when its forge can't name the default branch". The known gaps in tables and footnotes are in the design, and GitHub stays off until they close.
 - Checks, all green on `5f38aba`: `test/step13.ts` 68 checks, `test/step13c.ts` 83, `test/step13b.ts` 19 in each of three browsers, and main's step14, step14b and step14c. step13b's checks that wait for GitHub's sign-in or a page failed twice while other agents' checks kept this Mac at a load of 12 to 19, and passed at 8. Break runners in `.scratch/` (gitignored): `breaks13.ts` with file and schema breaks, sets U1 to U3 for this round, `breaks13c.ts` for the text filter, 47 breaks, `breaks13b.ts` for the app, set V1 for the draft's picker. After the rebase onto main at `f643a30`, the checks ran again on `4111510` and passed, with step13 at 68, step13c 83, step13b 19 in each of three browsers, step14 74, step14b 42, step14c 132, step18e 21 and step20b 31. Five commits conflicted, and the build log says how each was resolved.
+- Rebased onto main at `b2aa8b5`: eleven commits conflicted in six files, and the build log says how each was kept. A push meets the framework's task-branch rule on a repo with a policy, then the branch rule on every repo. The reviewer's and the verifier's prompts quote the report's title too. On `4eb2bef` step13 passed 69 checks, step13c 83, step13b 19 in each of three browsers, step16 96, step16b 144, step16c 18, step16d 16, step16f 7, and main's step14 74 and step20b 31.
 - The app: `app/src/Projects.tsx`, routes and sidebar in `app/src/App.tsx`, small hooks in `app/src/Work.tsx`, `app/src/data.ts`, `app/src/styles.css`.
 - Docs: `docs/what-each-part-does.md` section, `docs/build-log.md` section, a README section.
 
@@ -40,12 +41,14 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Team names start with `proj-`. Gitea test repos start with `proj-`. `.scratch/cleanup-proj.ts <id>` removes what a failed run kept.
 - GitHub's settings `AGENTS_GITHUB_DIR`, `AGENTS_GITHUB_API`, `AGENTS_GITHUB_GIT` have no defaults, and `AGENTS_GITHUB_CLIENT_ID` turns sign-in on. Checks strip any of them from the environment and set their own, so they never touch a real token.
 - The fake GitHub runs inside the check's own process, so a child that talks to it must be started without blocking (`spawn`, never `spawnSync`).
+- The framework's checks, step16 to step16f, listen on ports 8002 to 8019, and other agents run them without the lock. Look for a listener there before step16 starts. A step16 that finds its port taken stops and keeps its `self-` team, three forge repos and forge user, which are removed by name.
 - Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs. Its default list leaves out step7 and step12 to step12c, so name them to run them. Main's step7 builds, runs and removes a box image tag of its own since `94cd4b1`. After any check that builds an image, run `docker image prune -f`.
 - micromark's slowest inputs take time that grows with the square of their length. `READ_MS` in `server/public-text.ts`, 2 seconds, bounds them. The worker is stopped there, and the report says the text was left out. step13c's `HOSTILE_IN` times the slowest shapes found, which are left out at 65,536 characters, and the shapes it marks `read` must come back read. Add a slower shape there if one turns up.
 - Install packages with `npm ci` in this worktree. micromark came in with `npm install --save-exact micromark@4.0.3`, which added it and its 26 dependencies to the lockfile and changed no other package.
 
 ## Open questions for Tayler
 
+- A repo on GitHub can be given a policy with `set-policy`, but the framework's gates, statuses, approvals, merge and promises call this Mac's forge. Either `set-policy` refuses a repo that isn't on this Mac's forge, or the GitHub adapter gets the framework's calls first.
 - Register the Agents GitHub App (permissions in the design doc) and set its client id, or keep a stopgap token for now.
 - Make the existing team's person an admin: `node --env-file=.env server/admin.ts set-role <team> <login> admin`.
 - Approve `micromark-extension-gfm-table` and a package for GitHub's footnotes, so the filter can drop a table's cells past its header's width and footnote definitions nothing refers to. GitHub stays off until then.
