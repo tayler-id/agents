@@ -1,0 +1,4 @@
+{
+  "app": "node app.ts",
+  "output": "../../.scratch/cdk.out"
+}
