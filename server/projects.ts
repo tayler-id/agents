@@ -189,7 +189,10 @@ export async function addRepoToProject(person: Person, projectId: ProjectId, bod
 
 // Puts a task in its project: the one it was started in, or else the project
 // of its first repo. A task in a project works only in that project's repos.
-export async function placeTask(client: pg.PoolClient, taskId: string, projectId?: ProjectId) {
+// An edit to a draft checks only the repos it adds, given as `added`, since a
+// draft started outside a project takes its first repo's project and can hold
+// repos of other projects or of none.
+export async function placeTask(client: pg.PoolClient, taskId: string, projectId?: ProjectId, added?: readonly string[]) {
   if (!projectId) {
     await client.query(
       `update tasks set project_id = (select r.project_id from task_repos tr join repos r on r.id = tr.repo_id
@@ -202,7 +205,8 @@ export async function placeTask(client: pg.PoolClient, taskId: string, projectId
   if (!project) throw new HttpError(404, 'no such project')
   const outside = await maybe<{ remote_url: string }>(client,
     `select r.remote_url from task_repos tr join repos r on r.id = tr.repo_id
-     where tr.task_id = $1 and r.project_id is distinct from $2 order by r.created_at, r.id limit 1`, [taskId, projectId])
+     where tr.task_id = $1 and r.project_id is distinct from $2 and ($3::uuid[] is null or tr.repo_id = any($3))
+     order by r.created_at, r.id limit 1`, [taskId, projectId, added ?? null])
   if (outside) throw new HttpError(400, `${repoPath(outside.remote_url)} is not one of this project's repos. Add it to the project first.`)
   await client.query('update tasks set project_id = $2 where id = $1', [taskId, projectId])
 }

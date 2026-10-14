@@ -63,10 +63,12 @@ export async function editDraft(client: pg.PoolClient, person: Person, taskId: T
   const agent = await homedAgent(client, person, fields.agentId)
   await client.query('update tasks set title = $2, instructions = $3, agent_id = $4 where id = $1',
     [taskId, fields.title, fields.instructions, agent.id])
+  const added = fields.repoIds.filter((repoId) => !repoIds.includes(repoId))
   await setTaskRepos(client, person, taskId, fields.repoIds)
   // As a new task: in a project it keeps to the project's repos, and outside one it joins its first repo's project.
+  // Only the repos the edit adds must be the project's, so a draft keeps the repos it was started with.
   const { project_id: projectId } = await one<{ project_id: ProjectId | null }>(client, "the draft's project", 'select project_id from tasks where id = $1', [taskId])
-  await placeTask(client, taskId, projectId ?? undefined)
+  await placeTask(client, taskId, projectId ?? undefined, added)
   await client.query('update sessions set agent_id = $2, instance_id = $3, harness = $4, model = $5 where id = $1',
     [session, agent.id, agent.home_instance_id, agent.harness, agent.model])
 }

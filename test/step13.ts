@@ -478,6 +478,19 @@ try {
   const foreignRoom = await as(outsider, 'POST', '/v1/conversations', { kind: 'room', name: 'sneaky', people: [], agents: [], projectId })
   check(projectRoom.status === 200 && (await one('select project_id from conversations where id = $1', [projectRoom.json?.conversationId]))?.project_id === projectId
     && foreignRoom.status === 404, "a room started in a project belongs to it, and another team can't start one in it")
+  // A draft started outside a project, on the project's repo and a repo of none,
+  // takes the project of its first repo and can still be edited. An edit can't
+  // add a repo from outside the draft's project.
+  const loose2 = { title: `Proj draft ${id}`, instructions: '', agentId: fixerId, repoIds: [repo?.id, shopRepoId] }
+  const draft = await as(admin, 'POST', '/v1/tasks', { ...loose2, draft: true })
+  const retitled = await as(admin, 'POST', `/v1/tasks/${draft.json?.taskId}/edit`, { ...loose2, title: `Proj draft renamed ${id}`, loaded: loose2 })
+  const kept = await one('select t.title, t.project_id, count(tr.repo_id)::int as repos from tasks t join task_repos tr on tr.task_id = t.id where t.id = $1 group by t.id', [draft.json?.taskId])
+  const inside = { title: `Proj draft inside ${id}`, instructions: '', agentId: fixerId, repoIds: [repo?.id] }
+  const insideDraft = await as(admin, 'POST', '/v1/tasks', { ...inside, draft: true, projectId })
+  const widened = await as(admin, 'POST', `/v1/tasks/${insideDraft.json?.taskId}/edit`, { ...inside, repoIds: [repo?.id, shopRepoId], loaded: inside })
+  check(draft.status === 200 && retitled.status === 200 && kept?.title === `Proj draft renamed ${id}` && kept.project_id === projectId && kept.repos === 2
+    && insideDraft.status === 200 && widened.status === 400 && /not one of this project's repos/.test(widened.json?.error),
+  `a draft with its project's repo and a repo of none can be edited, and an edit can't add a repo from outside the draft's project (${String(retitled.json?.error ?? retitled.status)} / ${String(widened.json?.error ?? widened.status)})`)
   const moveShop = await as(member, 'POST', `/v1/projects/${projectId}/repos`, { repoId: shopRepoId })
   const moveAgain = await as(member, 'POST', `/v1/projects/${refused.json?.projectId}/repos`, { repoId: shopRepoId })
   const addNew = await as(admin, 'POST', `/v1/projects/${projectId}/repos`, { name: `proj-api-${id}`, owner: org })

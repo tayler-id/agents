@@ -192,6 +192,20 @@ async function run(engine: string, github: FakeGithub) {
     const options = (await picker.locator('label.check').allInnerTexts()).map((text) => text.trim())
     check(JSON.stringify(options) === JSON.stringify([repo]) && await visible(page, '.page-head', 5, new RegExp(`In ${name}`)),
       `${engine}: New task inside a project offers only that project's repos (${options.join(', ')})`)
+
+    // A draft saved inside the project says so, and its form offers only the project's repos too.
+    await taskForm.getByLabel('What needs doing?').fill(`Invoice draft ${engine}`)
+    await taskForm.getByLabel('Agent').selectOption({ label: `fixer${engine}` })
+    await picker.getByRole('checkbox', { name: repo }).check()
+    await taskForm.getByRole('button', { name: 'Save draft' }).click()
+    const draftForm = page.getByRole('form', { name: 'Edit the draft' })
+    const draftOpens = await visible(page, 'form[aria-label="Edit the draft"] fieldset label.check', 20, new RegExp(repo))
+    const draftOptions = draftOpens ? (await draftForm.getByRole('group', { name: 'Repos' }).locator('label.check').allInnerTexts()).map((text) => text.trim()) : []
+    check(draftOpens && JSON.stringify(draftOptions) === JSON.stringify([repo]) && await visible(page, '.page-head', 5, new RegExp(`In ${name}`)),
+      `${engine}: a draft saved inside a project says so, and offers only that project's repos (${draftOptions.join(', ')})`)
+    await projects.getByRole('button', { name, exact: true }).click()
+    await page.locator('.head-actions').getByRole('button', { name: 'New task' }).click()
+    await taskForm.waitFor()
     await taskForm.getByLabel('What needs doing?').fill(`Invoice page ${engine}`)
     await taskForm.getByLabel('Agent').selectOption({ label: `fixer${engine}` })
     await picker.getByRole('checkbox', { name: repo }).check()

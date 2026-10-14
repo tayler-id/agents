@@ -6,6 +6,7 @@ import { useState, type SyntheticEvent } from 'react'
 import type { z } from 'zod'
 import { go } from './App.tsx'
 import { act, api, messageOf, useSnapshotOf, useSnapshot, type Agent, type Person, type Task } from './data.ts'
+import { InProject } from './Projects.tsx'
 import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { TaskRepoRow, type DraftEdit, type TaskState } from '../../shared/work.ts'
@@ -21,6 +22,7 @@ export function DraftView({ task, state }: { task: Task; state: TaskState }) {
           <p className="kicker">Draft task</p>
           <h1>{task.title}</h1>
           <p className="muted small">{author ? `Written by ${author}. ` : ''}It starts when someone starts it.</p>
+          {task.project_id && <InProject projectId={task.project_id} />}
         </div>
       </header>
       <div className="page-body">
@@ -95,7 +97,7 @@ function DraftForm({ task, repoIds: saved }: { task: Task; repoIds: string[] }) 
       <select id="draft-agent" value={agentId ?? ''} onChange={(e) => setAgent(e.target.value)}>
         {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
       </select>
-      <RepoPicker value={repoIds} onChange={setRepoIds} />
+      <RepoPicker value={repoIds} onChange={setRepoIds} projectId={task.project_id} kept={loaded.repoIds} />
       <div className="actions">
         <button type="button" className="primary" disabled={busy || !title.trim() || !agentId} onClick={act(start)}>Start task</button>
         <button type="submit" disabled={busy || !title.trim() || !agentId}>Save draft</button>
