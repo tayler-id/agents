@@ -210,6 +210,14 @@ const STAGE_MS = 3000
 // Running now refreshes every 3 seconds, so a stage there must last several of those.
 const SLOW_STAGE_MS = 15_000
 
+// A bug-fix run on the TENOFF bug in one copy of the shop: the reproduction
+// test it writes, and the fix it makes.
+const tenoff = (repo: string) => ({
+  'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', reportOnlyIf: CLEARER, summary: 'A new bug in discount().', sleepMs: STAGE_MS }],
+  'easy,hard,cannot_reproduce': [{ outcome: 'easy', sleepMs: STAGE_MS, write: { [`${repo}/test/tenoff.test.js`]: TEST_FILE }, data: { test_command: 'node --test test/tenoff.test.js', suite_command: 'npm test' } }],
+  'fixed,stuck': [{ outcome: 'fixed', summary: 'TENOFF now stops at **zero**.', sleepMs: STAGE_MS, replace: { [`${repo}/checkout.js`]: ['amount - 10', 'Math.max(0, amount - 10)'] } }],
+})
+
 // What the fake Claude harness does: replies in conversations by rule, and
 // steps through pipeline stages by the group a run's title names.
 export function scenario() {
@@ -222,11 +230,10 @@ export function scenario() {
       { match: 'commented on ./task/notes.md', write: { 'task/notes.md': '# Release notes\n\n- TENOFF never goes below zero.\n- Faster checkout.\n' }, reply: 'Revised notes.md.' },
       { match: 'What is the token', reply: `The token is ${SECRET_VALUE}.` },
     ],
-    TENOFF: {
-      'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', reportOnlyIf: CLEARER, summary: 'A new bug in discount().', sleepMs: STAGE_MS }],
-      'easy,hard,cannot_reproduce': [{ outcome: 'easy', sleepMs: STAGE_MS, write: { 'shop/test/tenoff.test.js': TEST_FILE }, data: { test_command: 'node --test test/tenoff.test.js', suite_command: 'npm test' } }],
-      'fixed,stuck': [{ outcome: 'fixed', summary: 'TENOFF now stops at **zero**.', sleepMs: STAGE_MS, replace: { 'shop/checkout.js': ['amount - 10', 'Math.max(0, amount - 10)'] } }],
-    },
+    TENOFF: tenoff('shop'),
+    // The same bug in gate-shop, the copy the approvals feature's gate merges
+    // into, so the team's shop keeps the bug the pipelines feature fixes.
+    GATEOFF: tenoff('gate-shop'),
     PLANME: {
       'new,duplicate,already_fixed,not_a_bug': [{ outcome: 'new', summary: 'A new bug.' }],
       'easy,hard,cannot_reproduce': [{ outcome: 'hard', summary: 'Needs a tax table per country.' }],
