@@ -219,15 +219,18 @@ export async function interruptSession(client: pg.PoolClient, sessionId: string)
     [session.team_id, session.instance_id, sessionId])
 }
 
-// Only what a person writes carries an author, so a terminal session's batch
-// names its person on their prompts and on nothing Claude wrote.
+// In a terminal session only what the person writes carries their author, so its
+// batch names them on their prompts and on nothing Claude wrote. Any other
+// session takes the author its caller gives, such as the person a screen notice
+// says took over.
 async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
   const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
+  const authored = session.folder_id === null || PERSON_KINDS.includes(event.kind)
   await client.query(
     `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
        tool_use_id, tool_name, text, body, client_id)
      values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [session.team_id, session.id, seq, event.kind, PERSON_KINDS.includes(event.kind) ? author : null, event.parentToolUseId ?? null,
+    [session.team_id, session.id, seq, event.kind, authored ? author : null, event.parentToolUseId ?? null,
       event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
 }
 
