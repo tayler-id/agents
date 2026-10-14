@@ -137,7 +137,8 @@ try {
   // Long enough that the project name a .env file gives it counts as a secret's length.
   const shop = join(root, `shop-${id}`)
   const zdot = join(root, 'zdot')
-  for (const dir of [claudeDir, home, zdot, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  const diary = join(root, 'diary')
+  for (const dir of [claudeDir, home, zdot, diary, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -242,6 +243,22 @@ try {
   await restart()
   check(await until('the held session after a restart', LANDS_SEC, async () => (await turnsEnded(unshelled.session)) === 1),
     'the daemon started again with a working shell sends the session it held')
+
+  // Who sees a folder's sessions: connecting again keeps it, and only --team widens it, saying how many sessions that shows.
+  check(folders(token, root, ['connect', diary, '--private']).code === 0, 'a second folder connects as private')
+  const { rows: [diaryFolder] } = await db.query('select id, connected_at from connected_folders where path = $1', [diary])
+  const diaryRun = transcript(claudeDir, diary, new Date(Date.parse(must(diaryFolder, 'the diary folder').connected_at) + 1000))
+  diaryRun.turn({ prompt: 'Write in the diary.', reply: 'Written.' })
+  await until('the private session', LANDS_SEC, async () => (await turnsEnded(diaryRun.session)) === 1)
+  const visibilityOf = async (path: string) => String((await db.query('select visibility from connected_folders where path = $1', [path])).rows[0]?.visibility)
+  folders(token, root, ['disconnect', diary])
+  const bare = folders(token, root, ['connect', diary])
+  check(bare.code === 0 && bare.out.includes('only you see its sessions') && await visibilityOf(diary) === 'private',
+    `a private folder connected again with no flag stays private: ${bare.out.split('\n')[0] ?? ''}`)
+  check(folders(token, root, ['connect', diary, '--team', '--private']).code === 2, '--team and --private together are a usage error, exit 2')
+  const widened = folders(token, root, ['connect', diary, '--team'])
+  check(widened.code === 0 && widened.out.includes('The team now sees the 1 session already in the record from it.') && await visibilityOf(diary) === 'team',
+    `--team makes the folder the team's, and says how many sessions in the record that shows: ${widened.out.split('\n')[0] ?? ''}`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

@@ -11,7 +11,7 @@ import type { Instance } from './auth.ts'
 import { PersonId } from '../shared/ids.ts'
 import { EVENT_KINDS, type EventKind } from '../shared/types.ts'
 import {
-  FolderRow, insideFolder, type ConnectFolder, type DisconnectFolder, type FolderAnswer, type TerminalSessionAsk,
+  FolderRow, insideFolder, type ConnectAnswer, type ConnectFolder, type DisconnectFolder, type FolderAnswer, type TerminalSessionAsk,
 } from '../shared/terminal.ts'
 
 const FOLDER = `id, team_id, instance_id, path, visibility, connected_by, connected_at::text, disconnected_at::text`
@@ -25,23 +25,29 @@ async function macOwner(client: pg.PoolClient, instance: Instance): Promise<Pers
   return PersonId.parse(mac.owner_id)
 }
 
-export async function connectFolder(client: pg.PoolClient, instance: Instance, ask: ConnectFolder): Promise<FolderAnswer> {
+export async function connectFolder(client: pg.PoolClient, instance: Instance, ask: ConnectFolder): Promise<ConnectAnswer> {
   const owner = await macOwner(client, instance)
-  const found = await maybe(client, `select ${FOLDER} from connected_folders where instance_id = $1 and path = $2`, [instance.id, ask.path])
+  const found = await maybe(client, `select ${FOLDER} from connected_folders where instance_id = $1 and path = $2 for update`, [instance.id, ask.path])
   if (found) {
     const folder = FolderRow.parse(found)
-    if (folder.disconnected_at === null && folder.visibility === ask.visibility) return { folder, already: true }
+    // Only the person's own choice changes who sees a folder's sessions.
+    const visibility = ask.visibility ?? folder.visibility
+    if (folder.disconnected_at === null && folder.visibility === visibility) return { folder, already: true, exposed: 0 }
+    // Widening a private folder shows the team every session of it already in the record.
+    const exposed = folder.visibility === 'private' && visibility === 'team'
+      ? (await one<{ count: number }>(client, 'the count of the folder\'s sessions', 'select count(*)::int as count from sessions where folder_id = $1', [folder.id])).count
+      : 0
     // A folder connected again starts over: only sessions started from now on land.
     const again = await one(client, 'the folder connected again',
       `update connected_folders set visibility = $2, connected_by = $3,
          connected_at = case when disconnected_at is null then connected_at else now() end, disconnected_at = null
-       where id = $1 returning ${FOLDER}`, [folder.id, ask.visibility, owner])
-    return { folder: FolderRow.parse(again), already: false }
+       where id = $1 returning ${FOLDER}`, [folder.id, visibility, owner])
+    return { folder: FolderRow.parse(again), already: false, exposed }
   }
   const made = await one(client, 'the new folder',
     `insert into connected_folders (team_id, instance_id, path, visibility, connected_by) values ($1, $2, $3, $4, $5)
-     returning ${FOLDER}`, [instance.team_id, instance.id, ask.path, ask.visibility, owner])
-  return { folder: FolderRow.parse(made), already: false }
+     returning ${FOLDER}`, [instance.team_id, instance.id, ask.path, ask.visibility ?? 'team', owner])
+  return { folder: FolderRow.parse(made), already: false, exposed: 0 }
 }
 
 export async function disconnectFolder(client: pg.PoolClient, instance: Instance, ask: DisconnectFolder): Promise<FolderAnswer> {

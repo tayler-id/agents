@@ -22,8 +22,9 @@ export function insideFolder(folder: string, path: string): boolean {
   return path === folder || path.startsWith(`${folder}/`)
 }
 
-// What the Mac asks for when its person connects or disconnects a folder.
-export const ConnectFolder = z.object({ path: FolderPath, visibility: FolderVisibility })
+// What the Mac asks for when its person connects or disconnects a folder. With no
+// visibility, a folder connected before keeps its own, and a new one is the team's.
+export const ConnectFolder = z.object({ path: FolderPath, visibility: FolderVisibility.optional() })
 export type ConnectFolder = z.infer<typeof ConnectFolder>
 export const DisconnectFolder = z.object({ path: FolderPath })
 export type DisconnectFolder = z.infer<typeof DisconnectFolder>
@@ -39,6 +40,9 @@ export type FolderRow = z.infer<typeof FolderRow>
 // The answer to connecting or disconnecting. `already` is true when there was nothing to change.
 export const FolderAnswer = z.object({ folder: FolderRow, already: z.boolean() })
 export type FolderAnswer = z.infer<typeof FolderAnswer>
+// Connecting also says how many sessions already in the record a widening to the team showed it.
+export const ConnectAnswer = FolderAnswer.extend({ exposed: z.number().int().min(0) })
+export type ConnectAnswer = z.infer<typeof ConnectAnswer>
 export const FolderList = z.object({ folders: z.array(FolderRow) })
 export type FolderList = z.infer<typeof FolderList>
 

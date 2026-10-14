@@ -336,7 +336,7 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 
 ### Connected folders (`daemon/folders.ts`, `server/folders.ts`, the `connected_folders` table)
 
-- **Solves now.** A person connects a folder on their Mac once, with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it.
+- **Solves now.** A person connects a folder on their Mac once, with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again.
 - **Helps later.** The app can list a Mac's folders and disconnect one through the same rows.
 
 ### The transcript reader (`daemon/transcripts.ts`, `transcriptBatch` in `daemon/claude.ts`)

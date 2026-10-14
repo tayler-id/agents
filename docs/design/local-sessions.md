@@ -68,11 +68,12 @@ What hooks would have cost: a settings file written into each connected folder o
 
 ## Connecting a folder
 
-- `node daemon/folders.ts connect [folder] [--private]` connects the folder, by default the current one. `disconnect [folder]` disconnects it, and no arguments lists what is connected. `--json` prints the answer as JSON. It follows our CLI conventions: an `ok:` line first, `already: true` when nothing changed, and exit codes 0 done, 1 failed and safe to retry, 2 usage, 3 refused.
+- `node daemon/folders.ts connect [folder] [--private | --team]` connects the folder, by default the current one. `disconnect [folder]` disconnects it, and no arguments lists what is connected. `--json` prints the answer as JSON. It follows our CLI conventions: an `ok:` line first, `already: true` when nothing changed, and exit codes 0 done, 1 failed and safe to retry, 2 usage, 3 refused.
 - It runs on the Mac and calls the API with the daemon's machine token, read from `AGENTS_TOKEN` or `~/.agents-app/daemon.json`. No route lets a person connect a folder from the app, so nobody can make another person's sessions leave their Mac.
 - Only a Mac with an owner connects a folder, since the owner is the person whose terminal it is. Boxes are refused.
 - The folder is stored with links resolved, since Claude Code records the real path.
 - A folder connected again keeps its row, and only sessions started after the new connection land.
+- **Who sees a folder's sessions changes only when the person says so.** A folder is the team's when first connected, and `--private` keeps its sessions to the person. Connecting it again keeps whichever it is, unless `--private` or `--team` says otherwise, so a bare `connect` never shows the team a private folder's sessions. `--team` on a private folder prints how many of its sessions already in the record the team now sees. Both flags together are a usage error.
 
 ## What leaves the Mac
 
@@ -159,6 +160,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 `test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about 10 s, on ports 8110 to 8112, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
 
 - A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end.
+- Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
 ## Tayler's calls
