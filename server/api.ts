@@ -776,9 +776,11 @@ if (import.meta.main) {
   await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
+  const stopSweep = startScreenSweep()
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
   const stop = () => {
+    stopSweep()
     setTimeout(() => { console.error('the stream server did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
     streams.stop().then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the stream server: ${messageOf(error)}`); process.exit(1) })
   }
@@ -787,6 +789,5 @@ if (import.meta.main) {
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
   createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
     .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
-  startScreenSweep()
   if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
 }

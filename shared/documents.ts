@@ -41,4 +41,3 @@ export const BlobRow = z.object({
   id: BlobId, team_id: TeamId, sha256: z.string().regex(/^[0-9a-f]{64}$/), media_type: ImageMediaType,
   size_bytes: z.int().min(1).max(MAX_IMAGE_BYTES), created_at: z.date(),
 })
-export type BlobRow = z.infer<typeof BlobRow>

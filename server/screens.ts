@@ -260,7 +260,7 @@ function linkBox(instanceId: InstanceId, ws: WebSocket) {
     heard = Date.now()
     const message = isBinary ? null : parseJson(FromBox, bytesOf(data).toString('utf8'))
     if (!message?.ok) {
-      ws.close(1003, 'the control connection carries pings as JSON text only')
+      ws.close(ScreenClose.unsupported, 'the control connection carries pings as JSON text only')
       return
     }
     send(ws, { type: 'pong' })

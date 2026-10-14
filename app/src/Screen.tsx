@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import RFB, { type RfbChannel } from '@novnc/novnc'
-import { handoff, ScreenMoved, ToViewer, type ScreenControl } from '../../shared/screen.ts'
+import { handoff, ScreenClose, ScreenMoved, ToViewer, type ScreenControl } from '../../shared/screen.ts'
 import { PersonId } from '../../shared/ids.ts'
 import { parseJson } from '../../shared/json.ts'
 import { act, call, messageOf, useSnapshot, type Instance, type Me } from './data.ts'
@@ -38,7 +38,7 @@ class ScreenChannel implements RfbChannel {
       }
       const message = parseJson(ToViewer, event.data)
       if (message.ok) onControl(message.value.control)
-      else this.socket.close(4000, 'the app could not read who holds the screen')
+      else this.socket.close(ScreenClose.unreadable, 'the app could not read who holds the screen')
     }
     this.socket.onclose = (event) => {
       // The API closes with a sentence for the person. Anything else is the network.

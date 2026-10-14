@@ -3,7 +3,7 @@
 // it, and the actions agents take on it. The design is docs/design/computers.md.
 
 import { z } from 'zod'
-import { InstanceId, PersonId, ScreenTakeoverId, SessionId, TeamId, TunnelId } from './ids.ts'
+import { PersonId, SessionId, TunnelId } from './ids.ts'
 
 export const ScreenSize = z.object({ width: z.int().positive(), height: z.int().positive() })
 export type ScreenSize = z.infer<typeof ScreenSize>
@@ -91,18 +91,6 @@ export function handoff(control: ScreenControl, event: HandoffEvent): Handoff {
   }
 }
 
-// One row of screen_takeovers. Open while the person holds the screen, closed
-// with how it ended.
-const TakeoverBase = z.object({
-  id: ScreenTakeoverId, team_id: TeamId, instance_id: InstanceId, person_id: PersonId,
-  session_id: SessionId.nullable(), started_at: z.date(),
-})
-export const ScreenTakeoverRow = z.union([
-  TakeoverBase.extend({ ended_at: z.null(), ended_by: z.null() }),
-  TakeoverBase.extend({ ended_at: z.date(), ended_by: z.enum(['handed_back', 'left']) }),
-])
-export type ScreenTakeoverRow = z.infer<typeof ScreenTakeoverRow>
-
 // The box's control connection to the API's machine port. The API sends every
 // change of control and asks for a tunnel per viewer. The box pings, and the
 // API answers, so either side notices a dead connection.
@@ -113,7 +101,6 @@ export const ToBox = z.discriminatedUnion('type', [
 ])
 export type ToBox = z.infer<typeof ToBox>
 export const FromBox = z.object({ type: z.literal('ping') })
-export type FromBox = z.infer<typeof FromBox>
 // Colima's port forwarding and cloud load balancers drop TCP connections idle
 // for about a minute. A ping every 15 seconds keeps a screen's connections
 // open, and three missed answers mean one is gone. The box pings its control
@@ -136,14 +123,20 @@ export type ScreenMoved = z.infer<typeof ScreenMoved>
 export const ToViewer = z.object({ type: z.literal('control'), control: ScreenControl })
 export type ToViewer = z.infer<typeof ToViewer>
 
-// Why the API closed a person's Screen view, as WebSocket close codes in the
-// range left for applications, with a sentence as the close reason.
+// Why a screen's WebSocket closed, with a sentence as the close reason. The
+// 4000s are the range left for applications.
 export const ScreenClose = {
+  // The API closing a person's Screen view.
   notAllowed: 4403,
   notConnected: 4404,
   badInput: 4400,
   boxClosed: 4502,
   boxSilent: 4504,
+  // The app closing its view on a control message it could not read.
+  unreadable: 4000,
+  // Either end of a box's control connection, on a message it could not read.
+  // RFC 6455 names 1003 for data an endpoint can't accept.
+  unsupported: 1003,
 } as const
 
 // Actions on the screen, named and shaped as in Claude's computer-use tool.
@@ -185,8 +178,7 @@ export const ComputerAction = z.discriminatedUnion('action', [
 ])
 export type ComputerAction = z.infer<typeof ComputerAction>
 
-export const Point = z.object({ x: z.int().min(0), y: z.int().min(0) })
-export type Point = z.infer<typeof Point>
+const Point = z.object({ x: z.int().min(0), y: z.int().min(0) })
 
 // The box's screen service, which the `computer` MCP server calls over a Unix
 // socket. An action runs only while the agents hold the screen. `epoch` counts

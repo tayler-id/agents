@@ -6,7 +6,7 @@
 import { connect } from 'node:net'
 import { pipeline } from 'node:stream'
 import WebSocket, { createWebSocketStream } from 'ws'
-import { FromBox, SCREEN_DEAD_MS, SCREEN_PING_MS, ToBox, type ScreenControl } from '../shared/screen.ts'
+import { FromBox, SCREEN_DEAD_MS, SCREEN_PING_MS, ScreenClose, ToBox, type ScreenControl } from '../shared/screen.ts'
 import { parseJson } from '../shared/json.ts'
 import { bytesOf } from '../shared/websocket.ts'
 import type { TunnelId } from '../shared/ids.ts'
@@ -56,7 +56,7 @@ export function linkScreen(config: { api: string; token: string; vncSocket: stri
       heard = Date.now()
       const message = isBinary ? null : parseJson(ToBox, bytesOf(data).toString('utf8'))
       if (!message?.ok) {
-        ws.close(1003, message ? `not understood: ${message.reason}` : 'the control connection carries JSON text only')
+        ws.close(ScreenClose.unsupported, message ? `not understood: ${message.reason}` : 'the control connection carries JSON text only')
         return
       }
       const body = message.value
