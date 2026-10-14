@@ -454,6 +454,10 @@ try {
     && ['task/proj-two', 'task/proj-three'].every((b) => onGithub(full, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`) === '')
     && onGithub(full, 'rev-parse', 'main') === mainBefore,
   `a push of a task branch and main together, either way round, and a push that deletes main, are refused whole (${twoPushes.map((p) => p.stderr.trim().split('\n').at(-1) ?? '').join(' / ')})`)
+  // The daemon pushes with a lease. A leased push that names main is refused the same way.
+  const leased = cloned.status === 0 ? await machineGit(machineToken, ['push', `--force-with-lease=refs/heads/main:${mainBefore}`, 'origin', 'HEAD:refs/heads/main'], clone) : noClone
+  check(leased.status !== 0 && /HTTP 403/.test(leased.stderr) && onGithub(full, 'rev-parse', 'main') === mainBefore,
+    `a push to main with a lease, as the daemon pushes, is refused too (${leased.stderr.trim().split('\n').at(-1) ?? ''})`)
   const stranger = await machineGit(outsiderMachine, ['ls-remote', `${API}/v1/git/${repo?.id}.git`])
   check(stranger.status !== 0 && !stranger.stdout.includes('refs/heads/main'), "another team's machine can't reach the repo through the API")
 
