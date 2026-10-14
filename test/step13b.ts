@@ -187,13 +187,14 @@ async function run(engine: string, github: FakeGithub) {
     await page.locator('.head-actions').getByRole('button', { name: 'New task' }).click()
     const taskForm = page.getByRole('form', { name: 'New task' })
     await taskForm.waitFor()
-    await visible(page, '#task-repo option', 15, new RegExp(repo))
-    const options = await page.locator('#task-repo option').allInnerTexts()
-    check(JSON.stringify(options) === JSON.stringify(['None', repo]) && await visible(page, '.page-head', 5, new RegExp(`In ${name}`)),
+    const picker = taskForm.getByRole('group', { name: 'Repos' })
+    await visible(page, 'fieldset label.check', 15, new RegExp(repo))
+    const options = (await picker.locator('label.check').allInnerTexts()).map((text) => text.trim())
+    check(JSON.stringify(options) === JSON.stringify([repo]) && await visible(page, '.page-head', 5, new RegExp(`In ${name}`)),
       `${engine}: New task inside a project offers only that project's repos (${options.join(', ')})`)
     await taskForm.getByLabel('What needs doing?').fill(`Invoice page ${engine}`)
     await taskForm.getByLabel('Agent').selectOption({ label: `fixer${engine}` })
-    await taskForm.getByLabel('Repo').selectOption({ label: repo })
+    await picker.getByRole('checkbox', { name: repo }).check()
     await taskForm.getByRole('button', { name: 'Start task' }).click()
     check(await visible(page, '.page-head h1', 20, new RegExp(`Invoice page ${engine}`))
       && await visible(page, '.task-place', 15, new RegExp(`In ${name}\\. Works in ${repo}\\.`)),
