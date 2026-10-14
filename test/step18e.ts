@@ -7,9 +7,9 @@
 // the turn ends, the app shows the reply with no card and no interrupted line,
 // and both clients read the record again. Checks 1 to 4 make the same
 // comparison of clients and record when they finish. A task of the same agent,
-// mid-call when the machine dies, shows the same way on its page: interrupted
-// with the reason and an Interrupt button, then the reply, and never the text
-// the resumed session was sent.
+// mid-call when the machine dies, shows the same way on its page, interrupted
+// with the reason and an Interrupt button, then with the reply. Its transcript
+// never shows the text the resumed session was sent.
 //   node --env-file=.env --env-file=.env.test test/step18e.ts
 
 import { execFileSync } from 'node:child_process'

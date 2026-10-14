@@ -21,7 +21,7 @@ export class MessageMoveRefused extends Error {}
 export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
 
 // The only writer of a message command's status. It moves every command in `ids`
-// to `to`'s status, or none of them: each must be a message in a status
+// to `to`'s status, or none of them. Each must be a message in a status
 // MESSAGE_MOVES allows that move from, and on `instanceId` when it is given.
 // Otherwise it throws, having changed nothing.
 export async function moveMessages(

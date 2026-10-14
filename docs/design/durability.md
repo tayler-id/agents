@@ -9,9 +9,11 @@ When a person messages an agent, the API queues a `message` command, and the age
 This branch removes `POST /v1/instance/commands/requeue` and refuses a daemon's report that a message is done. A daemon built before it breaks against the new API, and every box image on the server holds one until it is rebuilt.
 
 - **An old daemon that starts** calls the requeue route, gets 404, and retries it forever, logging "waiting for the API". Its heartbeat keeps its machine `online`, but it never reads its queue, so messages for its agents wait with nothing to say why.
-- **An old daemon already running** claims a message and reports it done at once, as main's daemon does. The new API answers 400, the daemon reports the message failed instead, and the API marks the session `failed` with that error. A pipeline stage running in the session fails with it. The old Claude keeps working the turn meanwhile, and its lines still reach the record.
+- **An old daemon already running** claims a message and reports it done at once, as main's daemon does. The new API answers 400, the daemon reports the message failed instead, and the API records that error in the session and marks it `failed`. A pipeline stage waiting on the message fails with it, since `pollAgent` in `server/runner.ts` reads the failed command. The old Claude keeps working the turn meanwhile, and its lines still reach the record and set the session's status again.
 
 The reverse breaks too. A new daemon calls `POST /v1/instance/recover`, which an old API answers with 404, and retries it forever in the same way.
+
+I ran main's daemon at `360c16e` against this branch's API, both as a fresh start and across an API restart, and this branch's daemon against main's API, with the fake Claude. Each did what is described here, apart from the pipeline stage, which follows from the code and was not run.
 
 Rolled out in this order, no old daemon ever reaches the new API.
 
@@ -96,7 +98,7 @@ The session statuses are the agreed ones. Only `lost` gets a meaning it didn't h
 
 A `lost` session leaves `lost` the way any session changes status. The resumed harness's first line sets `running`, its result sets `idle`, and a failure sets `failed`.
 
-Only a session's current process sets its status. The daemon stops a session's process to start one with a new setup, when the agent's instructions, skills, plugins or model change. From the moment it starts the new one, the old one is no longer the session's: its lines are still recorded, but its status is dropped. So when the new start fails, the session stays `failed` with the machine's reason, and the old process's clean exit can't report it `idle`. Before this rule the daemon kept the old process as current until the new one started, and a failed start left the session showing `idle` with no notice. Check 6 covers it.
+Only a session's current process sets its status. The daemon stops a session's process to start one with a new setup, when the agent's instructions, skills, plugins or model change. From the moment it starts the new one, the old one is no longer the session's. Its lines are still recorded, but its status is dropped. So when the new start fails, the session stays `failed` with the machine's reason, and the old process's clean exit can't report it `idle`. Before this rule the daemon kept the old process as current until the new one started, and a failed start left the session showing `idle` with no notice. Check 6 covers it.
 
 ## Who records what, and when
 
@@ -151,7 +153,7 @@ With more than one unfinished message, it lists each in the order people sent th
 
 The daemon never runs a tool call again by itself, and never sends the original message to a fresh session. Either would repeat an action without saying so. The resumed session decides, told what may have happened.
 
-A daemon stopped with SIGTERM, as launchd stops it, leaves a session in the middle of a turn as a crash would: its Claude keeps running and its messages stay claimed. The next start stops that Claude and resumes the turn. Sessions with no turn in flight end cleanly. Check 2 covers it.
+A daemon stopped with SIGTERM, as launchd stops it, leaves a session in the middle of a turn as a crash would. Its Claude keeps running and its messages stay claimed. The next start stops that Claude and resumes the turn. Sessions with no turn in flight end cleanly. Check 2 covers it.
 
 ## How an approval survives a restart
 
@@ -159,7 +161,7 @@ An ask is answered through the harness request that raised it, and that request 
 
 - The card stays open across the restart, and a person can answer it at any time. The answer is recorded on the ask at once, whether or not a machine is running.
 - While the request is alive, an answer becomes an `answer` command for it, as today.
-- Recovery sets `request_ended_at` on each ask of the cut-off turn whose decision never reached its process: one still open, allowed, or denied.
+- Recovery sets `request_ended_at` on each ask of the cut-off turn whose decision never reached its process, whether it is still open, allowed or denied.
 - The continuation tells the resumed session to call the tool again with the same input. When its new permission request arrives, the server looks for an ask of the session with an ended request, the same tool and the same input, ignoring Bash's free-text `description`. A match takes the new request instead of opening a second card. If the ask is already answered, the server records an `answer` event by the same person and queues the decision for the new request at once. Check 3.
 - A decision that may have reached a process is not carried. The call may have run, so the continuation names it as possibly run, and asking again needs a person again. This holds however many times the machine restarts in the turn. Check 9.
 - A denial that never reached its process goes into the continuation as denied, with the person's reason, and is not asked for again. A request for the same call in that turn gets the same denial. Check 9.

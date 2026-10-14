@@ -565,8 +565,8 @@ function followSignIns(signal: AbortSignal) {
   new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
 }
 
-// A session mid-turn is left as a crash leaves it: the next start stops its
-// process and resumes its messages. The others end cleanly.
+// A session mid-turn is left as a crash leaves it, for the next start to stop
+// its process and resume its messages. The others end cleanly.
 async function shutdown() {
   if (stopping) return
   stopping = true

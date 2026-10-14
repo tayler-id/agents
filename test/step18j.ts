@@ -70,7 +70,7 @@ try {
   const askFor = (file: string) => c.row(`select id, status, payload from asks where session_id = $1 and payload->'input'->>'command' like $2`, [sessionId, `% >> ${file}`])
   const continuation = async () => String((await c.row(`select text from events where session_id = $1 and kind = 'user' and body ? 'resumes' order by seq desc limit 1`, [sessionId]))?.text ?? '')
 
-  // One: the answer reached Claude, and the command ran.
+  // First, the answer reached Claude, and the command ran.
   await until('the reach card', 60, async () => (await askFor('reach.txt'))?.status === 'open')
   const reach = await askFor('reach.txt')
   await say(`/v1/asks/${reach.id}/answer`, { decision: 'allow' })
@@ -87,7 +87,7 @@ try {
   c.check(second.includes('toolu_reach') && !second.includes('A person allowed it'),
     'the second recovery still names the call as possibly run, and offers no approval to run it again')
 
-  // Two: a person denies while the machine is down.
+  // Second, a person denies while the machine is down.
   await say(`/v1/conversations/${conversationId}/messages`, { text: 'Append deny-1 to deny.txt.' })
   await until('the deny card', 60, async () => (await askFor('deny.txt'))?.status === 'open')
   await restart('hold-resumed.json')

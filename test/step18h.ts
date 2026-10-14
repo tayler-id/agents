@@ -1,9 +1,9 @@
 // Durability check 8, with the fake Claude. An approval belongs to the turn that
-// raised it and never outlives it. First, Claude dies while an approval waits:
-// the card expires with the turn, so nobody can allow it later. Second, a resumed
-// session never asks again for an approval a person answered while it ran: the
-// answer is kept without a command for a dead request, and when the turn ends
-// the decision is let go for good. Each time, a later turn is cut off, and its
+// raised it and never outlives it. First, Claude dies while an approval waits,
+// and the card expires with the turn, so nobody can allow it later. Second, a
+// resumed session never asks again for an approval a person answered while it
+// ran. The answer is kept without a command for a dead request, and when the
+// turn ends the decision expires for good. Each time, a later turn is cut off, and its
 // recovery must not offer the old approval again. It shares ports with step18c,
 // which the suite never runs right before it.
 //   node --env-file=.env --env-file=.env.test test/step18h.ts
@@ -85,7 +85,7 @@ try {
     machine = daemon(scenario)
   }
 
-  // One: Claude dies while the approval waits.
+  // First, Claude dies while the approval waits.
   await until('Claude to die while asking', 60, async () => (await c.row('select status from sessions where id = $1', [sessionId]))?.status === 'failed')
   const died = await askFor('die.txt')
   c.check(died?.status === 'expired', `the card expired when Claude died without finishing the turn (${String(died?.status)})`)
@@ -101,7 +101,7 @@ try {
   c.check(afterHold.includes('toolu_hold') && !afterHold.includes('die.txt'), 'the next recovery named the cut-off call and not the expired approval')
   c.check(!existsSync(join(folder, 'die.txt')), 'the expired approval never ran')
 
-  // Two: a resumed session never asks again, and the person answers meanwhile.
+  // Second, a resumed session never asks again, and the person answers meanwhile.
   await say(`/v1/conversations/${conversationId}/messages`, { text: 'Append once-1 to once.txt.' })
   await until('the once card', 60, async () => (await askFor('once.txt'))?.status === 'open')
   const startsBefore = fakeLog(folder, 'starts').length
