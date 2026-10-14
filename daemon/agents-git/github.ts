@@ -165,19 +165,57 @@ export async function gates(repo: Repo, policy: Policy, main: Sha, base: Sha, ti
   return { problems, unapproved, checks }
 }
 
-// Each line a commit adds, with its file and line number.
-async function addedLines(repo: string, commit: Sha): Promise<{ path: string, line: number, text: string }[]> {
-  const diff = await git(repo, ['show', '--format=', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent', commit])
-  const out: { path: string, line: number, text: string }[] = []
+type Added = { path: string, line: number, text: string }
+
+// A hunk header counts the lines it removes and the lines it adds, and omits a count of 1.
+const HUNK = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+
+// The file a "+++" header names. A name git quotes is kept as git prints it, so its
+// lines are still read, and git ends a name that holds a space with a tab.
+function headerPath(row: string): string {
+  const name = row.slice('+++ '.length).replace(/\t$/, '')
+  return name.startsWith('b/') ? name.slice('b/'.length) : name
+}
+
+// Each line a unified diff adds, with its file and line number. A hunk is read by
+// the counts in its header, so a line in it is never taken for a file header: a
+// file whose line reads "++ /dev/null" shows in the diff as "+++ /dev/null", and
+// reading that as a header would drop it and every line after it. The framework's
+// hunkAdds reads headers the same way, and returns the numbers without the text.
+function addedIn(diff: string): Added[] {
+  const out: Added[] = []
+  const rows = diff.split('\n')
   let path = ''
-  let line = 0
-  for (const row of diff.split('\n')) {
-    // A name git quotes is kept as git prints it, so its lines are still read.
-    if (row.startsWith('+++ ')) path = row.startsWith('+++ b/') ? row.slice('+++ b/'.length) : row === '+++ /dev/null' ? '' : row.slice('+++ '.length)
-    else if (row.startsWith('@@')) line = Number(/\+(\d+)/.exec(row)?.[1] ?? '0')
-    else if (row.startsWith('+') && path) out.push({ path, line: line++, text: row.slice(1) })
+  for (let i = 0; i < rows.length;) {
+    const row = rows[i++] ?? ''
+    const hunk = HUNK.exec(row)
+    if (!hunk) {
+      // Between hunks, a "+++" row is the header git wrote.
+      if (row.startsWith('+++ ')) path = headerPath(row)
+      continue
+    }
+    if (!path) throw new Error('a hunk came before the header that names its file')
+    let removed = Number(hunk[1] ?? 1)
+    let added = Number(hunk[3] ?? 1)
+    let line = Number(hunk[2])
+    while (removed > 0 || added > 0) {
+      const body = rows[i++]
+      if (body === undefined) throw new Error('a hunk ended before its counts did')
+      if (body.startsWith('\\')) continue
+      if (body.startsWith('-') && removed > 0) removed--
+      else if (body.startsWith('+') && added > 0) {
+        out.push({ path, line: line++, text: body.slice(1) })
+        added--
+      } else throw new Error(`a hunk holds a line its counts do not allow: ${JSON.stringify(body.slice(0, 40))}`)
+    }
   }
   return out
+}
+
+// Each line a commit adds, with its file and line number.
+async function addedLines(repo: string, commit: Sha): Promise<Added[]> {
+  const diff = await git(repo, ['show', '--format=', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent', '--src-prefix=a/', '--dst-prefix=b/', commit])
+  return addedIn(diff)
 }
 
 const secretsIn = (text: string) => PATTERNS.filter(([, pattern]) => text.search(pattern) !== -1).map(([kind]) => kind)

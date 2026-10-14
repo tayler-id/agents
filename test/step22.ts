@@ -506,8 +506,17 @@ try {
   commitFile(mu, '.gitignore', 'node_modules/\n.env\n.env.test\nextra/\n')
   const pkg = JSON.parse(readFileSync(join(mu, 'package.json'), 'utf8'))
   commitFile(mu, 'package.json', `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, 'check:step9': 'node test/step9.ts' } }, null, 2)}\n`)
+  // A diff prints a line that reads "++ x" as "+++ x", which looks like a file header.
+  commitFile(mu, 'plus.md', `++ ${token}\n`)
+  commitFile(mu, 'blind.md', `++ /dev/null\ntoken ${token}\n`)
+  // Neither version ends with a newline, so git marks the removed line and the added one.
+  commitFile(mu, 'nonl.md', `token ${token}`)
+  commitFile(mu, 'nonl.md', `again ${token}`)
   run = cli(['submit', 'mu', '--message', 'mu work'])
   check(run.code === 3 && run.out.includes('notes.md:1: matches the github secret pattern') && !run.out.includes(token), 'submit refuses a commit that adds a secret, and never prints it')
+  check(run.out.includes('plus.md:1: matches the github secret pattern'), 'submit reads a line that starts with "++ " as an added line, and does not drop it as a file header')
+  check(run.out.includes('blind.md:2: matches the github secret pattern'), 'a line that reads "++ /dev/null" does not blind submit to the lines after it')
+  check(run.out.split('nonl.md:1: matches the github secret pattern').length === 3 && !run.out.includes(token), 'submit reads the added line of a file with no newline at the end, in both commits that write one, and never prints the secret')
   check(run.out.includes(`home.md:1: holds this Mac's home folder`), "submit refuses a commit that names this Mac's home folder")
   check(run.out.includes('its message: holds the email git is configured with here'), 'submit refuses a commit message holding the personal email')
   check(run.out.includes('name.md:1: uses the studied app'), "submit runs main's name guard on each new commit")
