@@ -698,6 +698,9 @@ try {
     const builder = must(await one(`select id from agents where team_id = $1 and name = 'builder'`, [teamId]), 'the builder')
     const task = await as(mate, '/v1/tasks', { title: 'Work on the boxed repo', instructions: 'x', agentId: builder.id, repoId: boxedRepo })
     check(task.status === 409 && (await task.text()).includes('keeps coding work in boxes'), 'a task on a box-only repo is refused for an agent that lives on a Mac')
+    const twoRepos = await as(mate, '/v1/tasks', { title: 'Work on the app and the boxed repo', instructions: 'x', agentId: builder.id, repoIds: [appRepo, boxedRepo] })
+    check(twoRepos.status === 409 && (await twoRepos.text()).includes('keeps coding work in boxes'),
+      'a task on two repos, one of them box-only, is refused for an agent that lives on a Mac')
   }
 
   if (runs('CAPPED')) {

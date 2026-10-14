@@ -27,7 +27,7 @@ Not blocking:
 
 6. The deploy lifecycle: `checking` may end `failed`, `move()` updates only from the status it expects, and a per-repo advisory lock comes before `failStuck`. step16b and step16c check each. Done.
 7. Paths and gate names unfenced in the pull request body. The file list is fenced and scrubbed, and the gate column goes through `tableCell`. Done.
-8. The box-only refusal for a task with two repos, and the `--scrim` token, named in the build log. Not started.
+8. The box-only refusal for a task with two repos, and the `--scrim` token, named in the build log. step16 BOXED checks a task on two repos. Done.
 
 ## How to run the checks
 

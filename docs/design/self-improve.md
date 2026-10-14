@@ -437,6 +437,7 @@ Each guard below was broken with a scripted edit whose anchor matched once, its 
 | Only the owner approves running the suite | The suite gate let anyone answer | `STEP16_ONLY=ACCEPT test/step16.ts` "a teammate cannot approve running the suite" |
 | An owner-only ask refuses anyone else | The answer route checked no one | `STEP16_ONLY=ACCEPT test/step16.ts` "a teammate cannot accept a verdict below the floor" |
 | The git proxy refuses a push past the gates | Its branch rule refused nothing | `STEP16_ONLY=PUSHMAIN test/step16.ts` "refused by the git proxy and stopped" |
+| A task on two repos, one of them box-only, is refused on a Mac | The refusal needed every repo to keep work in boxes | `STEP16_ONLY=BOXED test/step16.ts` "a task on two repos, one of them box-only, is refused for an agent that lives on a Mac", while the one-repo check stayed green |
 | Judges run without the author's session or team-record tools | Their sessions were not isolated | `STEP16_ONLY=HAPPY test/step16.ts` "ran without team-record tools" |
 | A person's message to a judge's session is refused, and no command reaches it | The lookup asked for `sessionID`, which no row's reviewers hold | `STEP16_ONLY=HAPPY test/step16.ts` "a person's message to the reviewer's or the verifier's session is refused, and no command reaches either: 200, 200" |
 | Judges start with no permission mode, so an edit asks a person, and authors with `acceptEdits` | `startJudges` sent `WORKSPACE_PERMISSIONS` | `STEP16_ONLY=HAPPY test/step16.ts` "the judges start with no permission mode, so an edit asks a person, and the authors with acceptEdits: claude-opus-test acceptEdits, claude-sonnet-test acceptEdits, claude-haiku-test acceptEdits" |
@@ -451,7 +452,7 @@ Each guard below was broken with a scripted edit whose anchor matched once, its 
 ## Every coding agent runs inside it
 
 - Pipeline runs on a repo with a policy run the playbook's stages, and the merge invariant holds for any pipeline.
-- A task a person starts on a repo whose policy says `sandbox: box` needs an agent whose home is a box.
+- A task a person starts needs an agent whose home is a box when any of its repos has a policy that says `sandbox: box`.
 - Pull requests from tasks, which another agent is building, should start an `app-change` run at its `verify` stage with the task's branch. Until then, the forge's branch protection keeps any pull request on a policy repo from merging without the three statuses and the owner's approval.
 - Each workspace's root gets a `CLAUDE.md` that imports each repo's own `CLAUDE.md`, or its `AGENTS.md` when it has no `CLAUDE.md`, so Claude Code loads the repo's rules at the start of every session.
 
