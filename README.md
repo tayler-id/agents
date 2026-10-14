@@ -97,7 +97,7 @@ AGENTS_GITHUB_API=https://api.github.com
 AGENTS_GITHUB_GIT=https://github.com
 ```
 
-`AGENTS_GITHUB_CLIENT_ID`, the client id of the Agents GitHub App, lets each person connect their own GitHub from the Repos page. Until that app is registered, an admin can set a stopgap token for the whole team with `pbpaste | node --env-file=.env server/admin.ts github-token <organization>`. `docs/design/projects.md` has the whole design.
+`AGENTS_GITHUB_CLIENT_ID`, the client id of the Agents GitHub App, lets each person connect their own GitHub from the Repos page. Until that app is registered, an admin can set a stopgap for their team, a fine-grained personal access token, with `pbpaste | node --env-file=.env server/admin.ts github-token <team> <organization>`. `docs/design/projects.md` has the whole design.
 
 ## Boxes
 

@@ -342,32 +342,32 @@ The design is in `docs/design/projects.md`.
 
 ### Repo requests (`repo_requests` table)
 
-- **Solves now.** The app writes down each repo it will ask GitHub for before it asks, so a crash or a refusal never leaves a repo nobody knows about. A failed request keeps GitHub's reason, and trying again adopts a repo an earlier try made.
+- **Solves now.** The app writes down each repo it will ask GitHub for before it asks, so a crash or a refusal never leaves a repo nobody knows about. A try claims the request in a transaction of its own, asks GitHub with none open, and records the answer in another, so a slow GitHub never holds a database connection or a lock. A failed request keeps GitHub's reason, and trying again adopts a repo an earlier try made. A repo that exists already joins only if whoever asked for it can push to it.
 - **Helps later.** Anything else the app makes outside Postgres can follow the same steps: write the intent, act, record the result.
 
 ### GitHub as a forge (`server/github.ts`, `server/repos.ts`)
 
-- **Solves now.** The runner, the hooks and the app reach GitHub with the same calls as this Mac's Gitea, so pipelines work on either. Each repo records its forge in `repos.forge`, and every answer from GitHub is parsed before anything reads it.
+- **Solves now.** The runner, the hooks and the app reach GitHub with the same calls as this Mac's Gitea, so pipelines work on either. Each repo records its forge in `repos.forge`, every answer from GitHub is parsed before anything reads it, and every call gives up after 15 seconds. A repo's calls are made for one team's row of it, so two teams with the same GitHub repo never act with each other's sign-ins. Issue titles are cleaned and cut at the client, so no prompt gets one raw.
 - **Helps later.** Another forge is one more client behind the same calls.
 
 ### Signing in to GitHub (`server/github-auth.ts`)
 
-- **Solves now.** Each person connects their own GitHub account by typing a code on GitHub's device page, with nothing to register. Their token stays in a mode 600 file on the server, renewed before it expires, and never reaches Postgres, a log, a machine or a browser. A repo's calls use the sign-in of whoever brought it into its project. An admin's personal access token is a stopgap until people sign in.
+- **Solves now.** Each person connects their own GitHub account by typing a code on GitHub's device page, with nothing to register. Their token stays in a mode 600 file on the server, renewed before it expires, and never reaches Postgres, a log, a machine or a browser. A repo's calls use the sign-in of whoever brought it into its team's project. An admin's fine-grained personal access token is their team's stopgap until people sign in, and no other team ever uses it.
 - **Helps later.** A team's own GitHub App, for agents with their own identity, plugs in as one more kind of identity where the server picks a token, and nothing that calls GitHub changes.
 
 ### The GitHub worker (`server/github-worker.ts`)
 
-- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with write, maintain or admin access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. Triage access can label issues but starts nothing. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
+- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with write, maintain or admin access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. Triage access can label issues but starts nothing, and so does a label taken off or an issue closed before the worker reads it. A poll that fails partway reads the same labels again next time. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
 - **Helps later.** Webhooks through a small public receiver can feed the same functions, and the worker then only catches up after downtime.
 
 ### Text crossing to and from GitHub (`server/public-text.ts`)
 
-- **Solves now.** An issue's text reaches an agent as a quoted report, without HTML comments, invisible characters, image alt text, hidden elements or link definitions. Everything sent to GitHub loses addresses on this tailnet, private addresses, email addresses and secrets first.
+- **Solves now.** An issue's text reaches an agent as a quoted report, read in one pass over at most 20,000 characters, so a hostile issue can't hold the API. Code spans and fenced code stay as written, and only what parses as an HTML tag goes. HTML comments, invisible characters, image alt text, hidden elements, style and script elements, and link definitions go too. Titles reach prompts on one line, cut at 120 characters, and a report's own title is quoted. Everything sent to GitHub's API loses addresses on this tailnet, private addresses, email addresses and secrets first. Commits that machines push are not filtered.
 - **Helps later.** An agent that reviews public pull requests posts through the same filter.
 
 ### The branch rule (`server/git.ts`)
 
-- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches.
+- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches. The proxy asks the forge for the default branch on each push, so renaming it on GitHub changes nothing, and it refuses a whole push that names it, including one that deletes it.
 - **Helps later.** Other rules about what machines may push go in the same place.
 
 ### Projects and repos in the app (`app/src/Projects.tsx`, `app/src/App.tsx`, `app/src/Work.tsx`)
@@ -375,9 +375,9 @@ The design is in `docs/design/projects.md`.
 - **Solves now.** The sidebar lists projects with their rooms, tasks and runs under them, and a Repos entry with the team's count. The Repos page says in one line what it shows, lists every repo with where it lives, its project, its open pull requests and task branches, and connects GitHub. New project makes a project and its repo. A project's page shows its repos, people, tasks, runs, documents and rooms, and starts tasks, rooms and runs in the project. A task's page names its project and its repos.
 - **Helps later.** The redesign starts from one view per thing a person looks for.
 
-### The step 13 checks (`test/step13.ts`, `test/step13b.ts`, `test/fake-github.ts`)
+### The step 13 checks (`test/step13.ts`, `test/step13b.ts`, `test/step13c.ts`, `test/fake-github.ts`)
 
-- **Solves now.** A fake GitHub that speaks GitHub's REST calls, its device-flow sign-in and real git stands in for GitHub. `test/step13.ts` covers projects, repo requests, sign-in and the stopgap, the git proxy and its branch rule, the label and access rules, the text filters, ETags, a pipeline run from a GitHub issue to a merged pull request, and every token's absence from Postgres, logs and answers. `test/step13b.ts` drives the new pages in three browsers at desktop and phone width.
+- **Solves now.** A fake GitHub that speaks GitHub's REST calls, its device-flow sign-in and real git stands in for GitHub. `test/step13.ts` covers projects, repo requests, sign-in and the stopgap, the git proxy and its branch rule, the label and access rules, the text filters, ETags, a pipeline run from a GitHub issue to a merged pull request, and every token's absence from Postgres, logs and answers. `test/step13b.ts` drives the new pages in three browsers at desktop and phone width. `test/step13c.ts` checks the text filters with no services, each hostile text in a child process that is stopped if it runs past its time.
 - **Helps later.** Checks for later GitHub features start from the same fake.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
