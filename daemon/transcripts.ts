@@ -52,7 +52,7 @@ const START_BYTES = 1024 * 1024
 // character other than a letter or a digit made a dash. Only the folders whose
 // names start like a connected folder's are listed. The path each transcript
 // gives decides, since a name cannot tell /a/repo-old from a folder inside /a/repo.
-const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
+export const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
 
 // How far each transcript has been sent, so a restart goes on from there. Losing
 // this file costs only a reread, since the record skips lines it already has.

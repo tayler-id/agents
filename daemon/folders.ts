@@ -10,10 +10,12 @@
 // Exit codes: 0 done, 1 failed and safe to retry, 2 usage, 3 refused with nothing changed.
 
 import { existsSync, realpathSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { messageOf } from '../shared/errors.ts'
 import { ConnectAnswer, FolderAnswer, FolderList, type FolderRow } from '../shared/terminal.ts'
 import { ApiError, apiClient, loadConfig } from './api.ts'
+import { projectName } from './transcripts.ts'
 
 const USAGE = 'usage: node daemon/folders.ts [connect [folder] [--private | --team] | disconnect [folder]] [--json]'
 const SELF = 'node daemon/folders.ts'
@@ -34,7 +36,9 @@ const allowedFlags = verb === 'connect' ? ['--json', '--private', '--team'] : ['
 if (!known || extra.length || (verb === undefined && folderArg !== undefined) || [...flags].some((f) => !allowedFlags.includes(f))
   || (flags.has('--private') && flags.has('--team'))) exit(2, USAGE)
 
-// The folder as Claude Code records it, with links resolved, since it writes the real path.
+// The folder as Claude Code records it: links resolved, and each name in the case
+// it has on disk, since Claude Code writes the path the system gives back. On a
+// case-insensitive volume, the case a person typed would match no transcript.
 function folderPath(given: string | undefined, mustExist: boolean): string {
   const path = resolve(given ?? process.cwd())
   if (!existsSync(path)) {
@@ -42,10 +46,30 @@ function folderPath(given: string | undefined, mustExist: boolean): string {
     return path
   }
   if (!statSync(path).isDirectory()) exit(2, `${path} is not a folder.`)
-  return realpathSync(path)
+  return realpathSync.native(path)
 }
 
 const who = (folder: FolderRow) => (folder.visibility === 'team' ? 'the team sees its sessions' : 'only you see its sessions')
+
+// Claude Code shortens a transcript folder's name past this length, and the daemon would never find it.
+const LONGEST_NAME = 200
+
+// Where the daemon looks for the folder's transcripts, and what can keep them
+// from it. The daemon runs under launchd, so this shell's CLAUDE_CONFIG_DIR isn't its.
+function whereTranscripts(path: string): { transcripts: string; warnings: string[] } {
+  const name = projectName(path)
+  const transcripts = join(homedir(), '.claude', 'projects', name)
+  const warnings: string[] = []
+  const own = process.env.CLAUDE_CONFIG_DIR
+  if (own !== undefined && resolve(own) !== join(homedir(), '.claude')) {
+    warnings.push(`this shell sets CLAUDE_CONFIG_DIR, so Claude Code started from it writes transcripts under ${join(resolve(own), 'projects')}. `
+      + 'The daemon reads ~/.claude/projects unless its own environment sets CLAUDE_CONFIG_DIR to the same folder, so those sessions will not land until it does.')
+  }
+  if (name.length > LONGEST_NAME) {
+    warnings.push(`the folder's transcript folder name is ${name.length} characters, and Claude Code shortens names past ${LONGEST_NAME}, so its sessions will not land.`)
+  }
+  return { transcripts, warnings }
+}
 
 const api = apiClient((() => {
   try {
@@ -67,10 +91,12 @@ try {
     const visibility = flags.has('--private') ? 'private' : flags.has('--team') ? 'team' : undefined
     const answer = ConnectAnswer.parse(await api('POST', '/v1/instance/folders', visibility === undefined ? { path } : { path, visibility }))
     const shown = answer.exposed ? ` The team now sees the ${answer.exposed} session${answer.exposed === 1 ? '' : 's'} already in the record from it.` : ''
+    const { transcripts, warnings } = whereTranscripts(path)
+    const notes = [`transcripts: the daemon reads ${transcripts}, and the folders whose names start with it`, ...warnings.map((w) => `warning: ${w}`)].join('\n')
     exit(0, answer.already
-      ? `ok: ${path} was already connected, and ${who(answer.folder)}.\nalready: true`
-      : `ok: connected ${path}. Claude Code sessions you start in it from now on land in the record, and ${who(answer.folder)}.${shown}\nnext: ${SELF} disconnect ${path}`,
-    answer)
+      ? `ok: ${path} was already connected, and ${who(answer.folder)}.\n${notes}\nalready: true`
+      : `ok: connected ${path}. Claude Code sessions you start in it from now on land in the record, and ${who(answer.folder)}.${shown}\n${notes}\nnext: ${SELF} disconnect ${path}`,
+    { ...answer, transcripts, warnings })
   }
   const path = folderPath(folderArg, false)
   const answer = FolderAnswer.parse(await api('POST', '/v1/instance/folders/disconnect', { path }))

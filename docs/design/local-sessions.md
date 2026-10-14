@@ -71,7 +71,8 @@ What hooks would have cost: a settings file written into each connected folder o
 - `node daemon/folders.ts connect [folder] [--private | --team]` connects the folder, by default the current one. `disconnect [folder]` disconnects it, and no arguments lists what is connected. `--json` prints the answer as JSON. It follows our CLI conventions: an `ok:` line first, `already: true` when nothing changed, and exit codes 0 done, 1 failed and safe to retry, 2 usage, 3 refused.
 - It runs on the Mac and calls the API with the daemon's machine token, read from `AGENTS_TOKEN` or `~/.agents-app/daemon.json`. No route lets a person connect a folder from the app, so nobody can make another person's sessions leave their Mac.
 - Only a Mac with an owner connects a folder, since the owner is the person whose terminal it is. Boxes are refused.
-- The folder is stored with links resolved, since Claude Code records the real path.
+- The folder is stored as the system gives it back, with links resolved and each name in the case it has on disk, since that is the path Claude Code records. On macOS's case-insensitive volume, a folder typed in the wrong case would otherwise match no transcript, and connect would say ok while nothing landed.
+- `connect` prints the transcript folder the daemon reads, `~/.claude/projects/<name>`. When the shell running it sets `CLAUDE_CONFIG_DIR`, it warns that Claude Code started from that shell writes its transcripts elsewhere, and that the daemon under launchd reads `~/.claude/projects` unless its own environment sets `CLAUDE_CONFIG_DIR` to the same folder. Those sessions don't land until it does. It also warns when the transcript folder's name passes 200 characters.
 - A folder connected again keeps its row, and only sessions started after the new connection land.
 - **Who sees a folder's sessions changes only when the person says so.** A folder is the team's when first connected, and `--private` keeps its sessions to the person. Connecting it again keeps whichever it is, unless `--private` or `--team` says otherwise, so a bare `connect` never shows the team a private folder's sessions. `--team` on a private folder prints how many of its sessions already in the record the team now sees. Both flags together are a usage error.
 
@@ -174,6 +175,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
 - A transcript replaced by a new file, one cut short in place, and one rewritten in place with a different first line are each read again from the start, and the record takes only the lines it didn't have.
 - No line is lost: a post the API refuses with 404 parks its session and a restart sends its lines, three 4.2 MB prompts in three-byte characters land in posts under 20 MiB, lines that don't parse are counted in the log, and a prompt whose fields changed type lands with its raw line as written.
+- The folders command: a folder typed in the wrong case is stored in its case on disk and gets its sessions, connect prints the transcript folder the daemon reads, and it warns when the shell sets `CLAUDE_CONFIG_DIR`.
 - A transcript whose lines name another folder's session writes nothing into it, and the daemon says why. The API refuses that session id for another folder.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
@@ -194,4 +196,4 @@ Tayler made these on 2026-10-14. `docs/decisions.md` has them.
 - Telling a closed terminal from a running session.
 - The cost of a terminal session. Claude Code writes it in `cost-state` lines, which aren't read.
 - Connected folders aren't listed in the app. The command lists them on the Mac.
-- A connected folder whose transcript folder name would pass 200 characters. Claude Code shortens such names, and the reader would miss them.
+- A connected folder whose transcript folder name would pass 200 characters. Claude Code shortens such names, and the reader would miss them. `connect` warns, and no check covers the warning.

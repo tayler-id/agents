@@ -7,8 +7,8 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
@@ -150,7 +150,8 @@ try {
   const last = join(root, 'z')
   // The longest connected path, so the daemon reads this folder first in each read.
   const deep = join(root, 'the-folder-with-the-longest-path-so-the-daemon-reads-it-first')
-  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  const cased = join(root, 'cased-folder')
+  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, cased, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -430,6 +431,21 @@ try {
   const rewrittenPrompts = rewrittenRow ? (await eventsOf(rewrittenRow.id)).filter((e) => e.kind === 'user').map((e) => String(e.text).slice(0, 30)) : []
   check(rewrittenLanded && rewrittenPrompts.join('|') === 'Before the rewrite.|A new start, written in place:|And more after it.',
     `a transcript rewritten in place with a different first line is read again from its start: ${rewrittenPrompts.join('|')}`)
+
+  // connect takes each name's case from the disk, and says where the daemon reads the transcripts.
+  // This means something only on a case-insensitive volume, as macOS's default one is.
+  if (!existsSync(cased.toUpperCase())) throw new Error(`${root} is on a case-sensitive volume, so this check can't show the case taken from the disk`)
+  const casedConnect = folders(token, root, ['connect', join(root, 'CASED-folder')])
+  const { rows: [casedRow] } = await db.query('select path, connected_at from connected_folders where lower(path) = lower($1)', [cased])
+  const casedRun = transcript(claudeDir, cased, new Date(Date.parse(String(must(casedRow, 'the cased folder').connected_at)) + 1000))
+  casedRun.turn({ prompt: 'In a folder connected in the wrong case.', reply: 'Found.' })
+  check(casedConnect.code === 0 && casedRow?.path === cased && await until('the session in the folder typed in the wrong case', LANDS_SEC, async () => (await turnsEnded(casedRun.session)) === 1),
+    `connect takes each name's case from the disk, so a folder typed in the wrong case still gets its sessions: ${String(casedRow?.path)}`)
+  check(casedConnect.out.includes(`transcripts: the daemon reads ${join(homedir(), '.claude', 'projects', cased.replace(/[^a-zA-Z0-9]/g, '-'))}`),
+    'connect prints the transcript folder the daemon reads')
+  const configured = folders(token, root, ['connect', cased], { CLAUDE_CONFIG_DIR: join(root, 'elsewhere') })
+  check(configured.code === 0 && configured.out.includes('warning: this shell sets CLAUDE_CONFIG_DIR'),
+    'connect warns when the shell sets CLAUDE_CONFIG_DIR, which the daemon under launchd does not see')
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
