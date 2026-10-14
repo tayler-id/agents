@@ -1,6 +1,6 @@
 # Projects work, where it stands
 
-A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `360c16e`, with the people socket, the JSON gate and onboarding, and has its own `node_modules` from `npm ci`.
+A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `94cd4b1`, with the people socket, the JSON gate and onboarding, and has its own `node_modules` from `npm ci`.
 
 ## Done, committed
 
@@ -8,9 +8,10 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Server: projects, repo requests, the GitHub client, forge dispatch by `repos.forge`, the git proxy's branch rule, the admin CLI command `github-token <team> <org>`, the GitHub worker.
   - Device-flow sign-in per person (`server/github-auth.ts`), tokens in mode 600 files under `AGENTS_GITHUB_DIR/people`, renewed without a client secret. A repo's calls use the sign-in of whoever brought that team's row of it into a project. Each team's stopgap is a fine-grained token in `AGENTS_GITHUB_DIR/stopgaps/<team id>.json`.
   - Public repos: runs start only from `agent:` labels put on by someone with write, maintain or admin access, while the issue is open and has the label, checked again before the pull request opens. Issue text reaches the agent quoted, read in one linear pass over at most 20,000 characters, with code kept and the hidden parts the filter knows removed (`server/public-text.ts`). Nine other constructs a reader can't see still reach the agent, as the design lists. Titles are cleaned and cut at 120 characters at the GitHub client. Everything sent to GitHub's API passes `forPublic`. Polls use ETags, kept only once a poll's answer is handled.
-  - Every call to GitHub gives up after 15 seconds, a repo request is claimed, asked and recorded in steps with no transaction open while GitHub is asked, and an existing repo joins a project only if its asker can push to it. The branch rule asks the forge for the default branch on each push. The GitHub worker has `stop()`, which the API calls.
+  - Every call to GitHub gives up after 15 seconds, a repo request is claimed, asked and recorded in steps with no transaction open while GitHub is asked, and an existing repo joins a project only if its asker can push to it. The branch rule asks the forge for the default branch on each push, and tasks and runs ask before their workspace is cloned. A try holds its repo request for `CLAIM_SEC`, 90 seconds, worked out from the most calls a try makes and GitHub's time limit. The GitHub worker has `stop()`, which the API calls.
 - The review on another model, 2026-10-13: all thirteen findings fixed in commits "Read a hostile issue in one pass" and "Fix the review's GitHub findings".
-- Checks, all green on the people socket: `test/step13.ts` 62 checks, `test/step13c.ts` 45, `test/step13b.ts` 18 in each of three browsers. Break runners in `.scratch/` (gitignored): `breaks13.ts` with file and schema breaks, `breaks13c.ts` for the text filter, `breaks13b.ts` for the app.
+- The second review, later on 2026-10-13: the claim window, the default branch outside pushes and four doc sentences, fixed in "Hold a repo request for as long as a try can ask GitHub", "Start tasks and runs from the default branch the forge names now" and "Say which hidden parts the text filter takes out, and which still pass".
+- Checks, all green on the people socket: `test/step13.ts` 65 checks, `test/step13c.ts` 45, `test/step13b.ts` 18 in each of three browsers. Break runners in `.scratch/` (gitignored): `breaks13.ts` with file and schema breaks, `breaks13c.ts` for the text filter, `breaks13b.ts` for the app.
 - The app: `app/src/Projects.tsx`, routes and sidebar in `app/src/App.tsx`, small hooks in `app/src/Work.tsx`, `app/src/data.ts`, `app/src/styles.css`.
 - Docs: `docs/what-each-part-does.md` section, `docs/build-log.md` section, a README section.
 
@@ -23,6 +24,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 
 1. Answer the open questions below with Tayler.
 2. Layer 2, a team's own GitHub App made through the manifest flow, as the design describes.
+3. Read `team/pipelines` at the forge's current default branch when pipelines sync and when a change to them is proposed, as tasks and runs do.
 
 ## Must know
 
@@ -31,7 +33,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Team names start with `proj-`. Gitea test repos start with `proj-`. `.scratch/cleanup-proj.ts <id>` removes what a failed run kept.
 - GitHub's settings `AGENTS_GITHUB_DIR`, `AGENTS_GITHUB_API`, `AGENTS_GITHUB_GIT` have no defaults, and `AGENTS_GITHUB_CLIENT_ID` turns sign-in on. Checks strip any of them from the environment and set their own, so they never touch a real token.
 - The fake GitHub runs inside the check's own process, so a child that talks to it must be started without blocking (`spawn`, never `spawnSync`).
-- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs. It leaves out step7, which builds `agents-box:latest`, the live server's box image, from the folder it runs in: run step7 only with `AGENTS_BOX_IMAGE` set to a tag of this branch's own, remove that tag afterwards, and after any check that builds an image run `docker image prune -f`.
+- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs. Its default list leaves out step7 and step12 to step12c, so name them to run them. Main's step7 builds, runs and removes a box image tag of its own since `94cd4b1`. After any check that builds an image, run `docker image prune -f`.
 
 ## Open questions for Tayler
 
@@ -40,3 +42,4 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Register the Agents GitHub App (permissions in the design doc) and set its client id, or keep a stopgap token for now.
 - Make the existing team's person an admin: `node --env-file=.env server/admin.ts set-role <team> <login> admin`.
 - The bug-fix pipeline triggers on `bug`, which on GitHub never starts a run. Change its label to `agent:fix` for GitHub repos, or keep bug-fix on this Mac's forge only.
+- Agree to a CommonMark parser as a new dependency, so the text filter can take out the nine constructs that still reach the agent.
