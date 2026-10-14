@@ -23,12 +23,12 @@ export const Port = z.coerce.number().int().min(1).max(65535)
 // protocol, as boxes on this Mac do, and nothing private except the server's
 // machine port. ops/aws/box-firewall.ts drops every address the box host has, and
 // these ranges, which hold the VPC, RDS, the metadata endpoint, the tailnet and
-// Docker's networks, so other boxes too.
+// Docker's networks, so other boxes too. Loopback is not listed: all of
+// 127.0.0.0/8 is the host's own, so the rule for the host's addresses drops it.
 export const BOX_CLOSED_RANGES = [
   '0.0.0.0/8', // this network
   '10.0.0.0/8', // private: the VPC, the server and RDS
   '100.64.0.0/10', // shared address space: the tailnet
-  '127.0.0.0/8', // loopback
   '169.254.0.0/16', // link-local: the metadata endpoint and AWS's other local services
   '172.16.0.0/12', // private: Docker's networks, so other boxes
   '192.168.0.0/16', // private
