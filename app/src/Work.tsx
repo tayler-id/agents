@@ -2,9 +2,14 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import {
-  act, api, byNumber, clock, repoName, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Repo, type Session, type Task,
+  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { Changes, PullRequests } from './Changes.tsx'
+import { DraftView } from './Draft.tsx'
+import { RepoPicker } from './RepoPicker.tsx'
+import { TaskOrder } from './Order.tsx'
+import { taskState } from '../../shared/work.ts'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -53,28 +58,31 @@ export function NewRoom({ me }: { me: { person: { id: string } } }) {
   )
 }
 
-// Work for an agent outside any pipeline: it gets a workspace, with a repo if you pick one.
+// Work for an agent outside any pipeline: it gets a workspace, with a clone of
+// each repo you pick. Saved as a draft, it waits for someone to start it.
 export function NewTask() {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
-  const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
   const [agent, setAgent] = useState('')
-  const [repo, setRepo] = useState('')
+  const [repoIds, setRepoIds] = useState<string[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const submit = async (event: SyntheticEvent) => {
-    event.preventDefault()
+  const create = async (draft: boolean) => {
     setBusy(true)
     try {
       const agentId = agent || agents[0]?.id
       if (!agentId) throw new Error('Pick an agent first.')
-      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoId: repo || undefined })
+      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoIds, draft })
       go({ task: taskId })
     } catch (e) {
       setError((e as Error).message)
       setBusy(false)
     }
+  }
+  const submit = async (event: SyntheticEvent) => {
+    event.preventDefault()
+    await create(false)
   }
   return (
     <section className="page" aria-label="New task">
@@ -89,13 +97,10 @@ export function NewTask() {
           <select id="task-agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-          <label htmlFor="task-repo">Repo</label>
-          <select id="task-repo" value={repo} onChange={(e) => setRepo(e.target.value)}>
-            <option value="">None</option>
-            {repos.map((r) => <option key={r.id} value={r.id}>{repoName(r.remote_url)}</option>)}
-          </select>
+          <RepoPicker value={repoIds} onChange={setRepoIds} />
           <div className="actions">
             <button className="primary" type="submit" disabled={busy || !title.trim() || !agents.length}>Start task</button>
+            <button type="button" disabled={busy || !title.trim() || !agents.length} onClick={act(() => create(true))}>Save draft</button>
             {error && <p className="error small" role="alert">{error}</p>}
           </div>
         </form>
@@ -107,7 +112,7 @@ export function NewTask() {
 const WORKING = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
 
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
-export function TaskView({ taskId, openSession }: { taskId: string; openSession: string | null }) {
+export function TaskView({ taskId, openSession, openFile }: { taskId: string; openSession: string | null; openFile: string | null }) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
   const { rows: sessions } = useRows<Session>('sessions', { of: 'tasks' })
   const { rows: asks } = useRows<Ask>('asks')
@@ -118,7 +123,10 @@ export function TaskView({ taskId, openSession }: { taskId: string; openSession:
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
+  const { state } = taskState({ archived: false, done: task.done_at !== null, draft: session?.status === 'draft' ? session : null })
+  if (session?.status === 'draft') return <DraftView task={task} state={state} />
   const agent = agents.find((a) => a.id === task.agent_id)
+  const documents = artifacts.filter((a) => a.kind === 'document')
   const send = async (event: SyntheticEvent) => {
     event.preventDefault()
     if (!session || !text.trim()) return
@@ -135,7 +143,7 @@ export function TaskView({ taskId, openSession }: { taskId: string; openSession:
         <div>
           <p className="kicker">Task</p>
           <h1>{task.title}</h1>
-          <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}</p>
+          <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}{state === 'done' ? ' · done' : ''}</p>
         </div>
         <div className="head-actions">
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
@@ -145,16 +153,18 @@ export function TaskView({ taskId, openSession }: { taskId: string; openSession:
       <div className="page-body">
         {session ? <Transcript session={session} agentName={agent?.name ?? 'Agent'} /> : <p className="muted small">Starting…</p>}
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
-        {!!artifacts.length && (
+        <TaskOrder task={task} state={state} />
+        <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
+          {(changed) => <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
+        </Changes>
+        {!!documents.length && (
           <>
             <h2 className="kicker section">Made by this task</h2>
             <ul className="artifacts" aria-label="Made by this task">
-              {artifacts.map((a) => (
+              {documents.map((a) => (
                 <li key={a.id}>
-                  {a.kind === 'link'
-                    ? <a href={a.url ?? '#'} target="_blank" rel="noreferrer">{a.title}</a>
-                    : <button type="button" className="link" onClick={() => go({ task: taskId, document: a.id })}>{a.title}</button>}
-                  <span className="muted small">{a.kind === 'link' ? a.state : `version ${a.current_version}`}</span>
+                  <button type="button" className="link" onClick={() => go({ task: taskId, document: a.id })}>{a.title}</button>
+                  <span className="muted small">version {a.current_version}</span>
                 </li>
               ))}
             </ul>

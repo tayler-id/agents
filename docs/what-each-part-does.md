@@ -242,6 +242,65 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 - **Solves now.** step12 drives all of it through the API against the stand-in Tailscale, including the sign-in relay with the check acting as the box. step12b drives the Team page, the waiting screen, the Tailscale page, a box that could not start and a room's People list in Chromium, Firefox and WebKit at desktop and phone width. step12c starts real box containers from a test-tagged image, and a newcomer watches their box start, signs in through it with the stand-in Claude, and gets an answer from an agent running on their token.
 - **Helps later.** Every later change to joining, boxes or sign-ins runs against the same three.
 
+## The work layer
+
+The design, with what is not done, is `docs/design/workflow.md`.
+
+### Draft tasks (`server/drafts.ts`, `app/src/Draft.tsx`)
+
+- **Solves now.** A person saves a task without starting it. Teammates see it in the sidebar marked draft, and anyone who can see it can change it, start it or discard it. Starting a draft gives it a workspace and sends its agent the first message, the same as a task started at once.
+- **Helps later.** Work gets written down when it comes up and started when there is room for it, in the order the ready list gives.
+
+### Order of work (`server/order.ts`, `app/src/Order.tsx`, the `ready_tasks` tool)
+
+- **Solves now.** A task can wait on other tasks, with a reason, and can be held with a kind, a one-line reason and an optional end date. The sidebar's Ready lists the drafts that nothing blocks or holds, most urgent and then oldest first, and Held lists the held ones with why. Agents read the same list through `ready_tasks`. Every command says when it changed nothing, so running one twice is safe.
+- **Helps later.** Stacked pull requests can follow the edges, and "waiting on Tayler" becomes a hold that shows where work stopped and why.
+
+### Tasks over several repos (`server/checkout.ts`, `app/src/RepoPicker.tsx`)
+
+- **Solves now.** A task picks one or more repos. The workspace clones each into a folder named after it, adding the owner when two share a name, and the first message names every folder.
+- **Helps later.** A change to a service and its client is one task, with a pull request in each repo.
+
+### Changes (`daemon/changes.ts`, `server/changes.ts`, `app/src/Changes.tsx`)
+
+- **Solves now.** Every file the agent added, changed or deleted in each repo shows on the task, and on a run's page, with its line counts against the base branch. A repo with more than 20,000 changed files says so instead of listing them, and one git cannot read shows git's error and its last list. The daemon works them out on its own machine and scrubs them before they leave it, so the browser never reads a machine's files.
+- **Helps later.** A person or a reviewing agent sees the whole change before any pull request exists.
+
+### The file viewer (`app/src/FilePanel.tsx`, `app/src/Code.tsx`, `app/src/highlight.ts`)
+
+- **Solves now.** A changed file or a task's document opens beside the task. Markdown renders, code has line numbers and highlighting in weight and tone, and a Diff tab shows the change against the base, or a document's change from its previous version.
+- **Helps later.** Other kinds of files agents make can open in the same panel.
+
+### Pull requests from a task (`server/pulls.ts`, the `pushes` table)
+
+- **Solves now.** Open pull request pushes the task branch of every task repo and opens a pull request for each one with commits past its base, in the agent's name. A push never overwrites commits someone else added on the forge. It says so, and goes through once the agent merges them. They show on the task, and stay there once nothing differs. Asking again opens no second pull request.
+- **Helps later.** Any forge behind `forge.openPullRequest` works the same way. Only Gitea has been tried.
+
+### Writing without asking (`server/permissions.ts`)
+
+- **Solves now.** A task's session creates, edits and deletes files in its own workspace without asking. Commands still ask, on a Mac and on a box. Conversations ask as before.
+- **Helps later.** If Tayler decides boxes may run commands without asking, it is one place to change.
+
+### The research, plan and implement pipeline (`pipelines/research-plan-implement.ts`)
+
+- **Solves now.** The agent researches and writes `research.md`, then plans in `plan.md`, then changes the code, and a person approves or sends back each phase. Comments pinned to a document reach the agent when it is sent back. The runner checks that research and planning changed no code, and runs the plan's test command. It has run only with the stand-in for Claude, in step 14.
+- **Helps later.** Hard changes get a reviewed plan before any code, and the plan's test proves the change.
+
+### Comments pinned to text (`app/src/quotes.ts`, `comments.anchor.occurrence`)
+
+- **Solves now.** A comment's quote is marked where it sits in the document, and the comment keeps which match it means when the words appear twice. Clicking either finds the other, and a quote that is gone says so.
+- **Helps later.** Review of an agent's plan or research happens on the lines themselves.
+
+### The command palette (`app/src/Palette.tsx`)
+
+- **Solves now.** Cmd+K on a Mac, Ctrl+K elsewhere, opens a search over agents, conversations, tasks, runs, pipelines and documents, beside the actions New task, New room and New agent. Outside a field, c starts a new task and r a new room, and single keys can be turned off. step14c finds a task and runs an action by keyboard alone.
+- **Helps later.** New actions join the palette without new buttons.
+
+### The step 14 checks (`test/step14.ts`, `test/step14b.ts`, `test/step14c.ts`)
+
+- **Solves now.** step14 drives the API, daemon, forge and runner with the stand-in for Claude. step14b is Tayler's README task in three browsers at desktop and phone width. step14c covers drafts, the order of work, the palette, pinned comments and a run's gate the same way. All but 16 of step14's checks, which the build log names, were seen failing with what they guard broken.
+- **Helps later.** A change that breaks any of these parts fails a named check.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
 ] as const
@@ -40,8 +42,15 @@ export type EventBatch = {
   harnessSessionId?: string
 }
 
+// What a session may do without asking a person, beyond the tools it is given.
+// The server decides from where the session runs: in a task's workspace the
+// agent may change files inside it. Commands always ask.
+export const Permissions = z.object({ workspaceWrites: z.boolean() })
+export type Permissions = z.infer<typeof Permissions>
+
 // What a daemon needs to hand a person's message to an agent's harness.
 export type MessagePayload = {
+  permissions: Permissions
   text: string
   agentId: string
   harness: 'claude' | 'codex'
@@ -80,9 +89,17 @@ export type SetupWorkspacePayload = { workspaceId: string; repos: WorkspaceRepo[
 export type ExecPayload = { workspaceId: string; repo: string; command: string; timeoutSec: number }
 export type ExecResult = { exitCode: number | null; output: string; timedOut: boolean }
 
-// Commits whatever changed in the workspace's repos and pushes each task branch.
-export type PushPayload = { workspaceId: string; repos: { repoId: string; name: string; branch: string }[]; message: string; author: string }
-export type PushResult = { pushed: { repoId: string; commit: string }[] }
+// Commits whatever changed in the workspace's repos, pushes each task branch,
+// and counts the commits each holds past its base branch. The machine reads the
+// forge's branch before pushing, and never pushes over commits it has not seen.
+export type PushPayload = {
+  workspaceId: string; repos: { repoId: string; name: string; branch: string; base: string }[]; message: string; author: string
+}
+// The server reads a push's result back from its command's JSON column, so it is parsed.
+export const PushResult = z.object({
+  pushed: z.array(z.object({ repoId: z.string(), commit: z.string(), ahead: z.number().int().min(0) })),
+})
+export type PushResult = z.infer<typeof PushResult>
 
 // How a person answered an ask, as the harness needs it.
 export type AnswerPayload = {

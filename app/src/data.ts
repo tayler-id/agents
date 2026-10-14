@@ -9,6 +9,8 @@ import {
   BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
+import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
+import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 
 export type Me = MemberView
 
@@ -40,8 +42,9 @@ export type Ask = Row & {
   id: string; session_id: string | null; run_id: string | null; conversation_id: string | null; kind: string; status: string
   payload: {
     toolName?: string; input?: Record<string, unknown>; description?: string
-    // A pipeline's gate or hand-off.
+    // A pipeline's gate or hand-off. A gate's labels name its approve and reject buttons.
     question?: string; options?: string[]; stage?: string; links?: { title: string; url: string }[]
+    labels?: { approve: string; reject: string } | null
   }
   created_at: string
 }
@@ -51,7 +54,10 @@ export type Pipeline = Row & {
   conversation_id: string | null; shepherd_id: string | null
 }
 export type PipelineVersion = Row & { id: string; pipeline_id: string; git_sha: string; source: string; error: string | null; created_at: string }
-export type Task = Row & { id: string; slug: string; title: string; instructions: string; agent_id: string | null; conversation_id: string | null; source: string | null; created_at: string }
+export type Task = Row & {
+  id: string; slug: string; title: string; instructions: string; owner_id: string | null; agent_id: string | null; conversation_id: string | null
+  source: string | null; priority: number; done_at: string | null; created_at: string
+}
 export type Run = Row & {
   id: string; pipeline_version_id: string; task_id: string; trigger: string; status: string; stage: string | null
   note: string | null; cost_usd: string | null; created_at: string; started_at: string | null; ended_at: string | null
@@ -154,7 +160,7 @@ export function useRows<T extends Row>(name: string, args: Record<string, string
 export function useSnapshot<T extends Row>(name: string, args: Record<string, string> | null = {}, everyMs = 5000) {
   const url = args ? shapeUrl(name, args) : null
   // Rows are kept with the URL they came from, so a view never shows another shape's rows.
-  const [state, setState] = useState<{ url: string | null; rows: T[] }>({ url, rows: [] })
+  const [state, setState] = useState<{ url: string | null; rows: T[] }>({ url: null, rows: [] })
   useEffect(() => {
     if (!url) return
     let stopped = false
@@ -167,19 +173,31 @@ export function useSnapshot<T extends Row>(name: string, args: Record<string, st
     const timer = setInterval(load, everyMs)
     return () => { stopped = true; clearInterval(timer) }
   }, [url, everyMs])
-  return { rows: url && state.url === url ? state.rows : [] }
+  return { rows: url && state.url === url ? state.rows : [], loaded: url !== null && state.url === url }
 }
 
 // A snapshot whose rows are read through their schema. Rows that do not fit
 // are not shown, and `error` says why.
-export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null = {}, everyMs = 5000) {
-  const { rows } = useSnapshot<Row>(name, args, everyMs)
+export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null = {}, everyMs = 5000): {
+  rows: z.output<S>[]; error: string | null; loaded: boolean
+} {
+  const { rows, loaded } = useSnapshot<Row>(name, args, everyMs)
   return useMemo(() => {
     const parsed = z.array(schema).safeParse(rows)
     return parsed.success
-      ? { rows: parsed.data, error: null }
-      : { rows: [], error: `The ${name} the server sent did not fit this page: ${z.prettifyError(parsed.error)}` }
-  }, [schema, rows, name])
+      ? { rows: parsed.data, error: null, loaded }
+      : { rows: [], error: `The ${name} the server sent did not fit this page: ${z.prettifyError(parsed.error)}`, loaded }
+  }, [schema, rows, name, loaded])
+}
+
+// How lists name a conversation: a room by its name, a DM by its agent and its
+// people. A person or agent not loaded yet reads as someone or agent.
+export function conversationLabel(c: Conversation, names: { me: Me; members: Member[]; agentName: Map<string, string>; login: Map<string, string> }): string {
+  if (c.kind === 'room') return `# ${c.name ?? 'room'}`
+  const who = names.members.filter((m) => m.conversation_id === c.id)
+    .flatMap((m) => (m.person_id ? [m.person_id === names.me.person.id ? 'you' : names.login.get(m.person_id) ?? 'someone'] : []))
+  const agent = c.agent_id ? names.agentName.get(c.agent_id) ?? 'agent' : null
+  return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
 }
 
 // The message of anything thrown.
@@ -265,10 +283,24 @@ export const api = {
   saveTemplate: (agentId: string, name: string) => request<{ slug: string; version: number }>('POST', `/v1/agents/${agentId}/templates`, { name }),
   createRoom: (name: string, people: string[], agents: string[]) =>
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents }),
-  startTask: (body: { title: string; instructions: string; agentId: string; repoId?: string; conversationId?: string; messageId?: string }) =>
-    request<{ taskId: string; sessionId: string }>('POST', '/v1/tasks', body),
+  startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),
+  editDraft: (taskId: string, edit: z.input<typeof DraftEdit>) => request('POST', `/v1/tasks/${taskId}/edit`, edit),
+  startDraft: (taskId: string) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', `/v1/tasks/${taskId}/start`, {}),
+  discardDraft: (taskId: string) => request('POST', `/v1/tasks/${taskId}/discard`, {}),
+  openPullRequests: (taskId: string, ask: PullRequestAsk) => request<{ pushId: PushId }>('POST', `/v1/tasks/${taskId}/pull-requests`, ask),
+  versionDiff: (artifactId: ArtifactId | string, version: number) =>
+    request<{ diff: string }>('GET', `/v1/artifacts/${artifactId}/versions/${version}/diff`),
+  // The order of work. Each answer says whether there was anything to change.
+  ready: async () => ReadyAnswer.parse(await request<unknown>('GET', '/v1/tasks/ready')),
+  prioritize: async (taskId: string, priority: number) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/priority`, { priority })),
+  markDone: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/done`, {})),
+  reopen: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/reopen`, {})),
+  block: async (taskId: string, ask: BlockAsk) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/blockers`, ask)),
+  unblock: async (taskId: string, blockerId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/blockers/${blockerId}/remove`, {})),
+  hold: async (taskId: string, ask: HoldAsk) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/hold`, ask)),
+  unhold: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/unhold`, {})),
   messageSession: (sessionId: string, text: string) => request('POST', `/v1/sessions/${sessionId}/messages`, { text }),
-  addComment: (artifactId: string, body: { version: number; text: string; quote?: string; send: boolean }) =>
+  addComment: (artifactId: string, body: z.input<typeof NewComment>) =>
     request<{ commentId: string }>('POST', `/v1/artifacts/${artifactId}/comments`, body),
   resolveComment: (commentId: string) => request('POST', `/v1/comments/${commentId}/resolve`, {}),
   runRoutine: (routineId: string) => request<{ conversationId: string }>('POST', `/v1/routines/${routineId}/run`, {}),

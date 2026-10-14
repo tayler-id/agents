@@ -11,14 +11,17 @@ import { many, maybe, one, pool } from './db.ts'
 import { appendEvents, appendMessage, HttpError, type Person } from './record.ts'
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
+import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
 import { expireTurns } from './rooms.ts'
+import { finishPushes } from './pulls.ts'
+import { WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
-import type { Next, Pipeline, Report, RunContext, Stage } from '../shared/pipeline.ts'
-import type { ExecResult, MessagePayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
+import type { Next, Pipeline, Report, RunComment, RunContext, Stage } from '../shared/pipeline.ts'
+import type { ExecResult, MessagePayload, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
 
 const CHANNEL = 'agents_runner'
 const TICK_MS = 2000
@@ -50,7 +53,6 @@ type Command = { status: string; error: string | null; result: unknown }
 
 const tail = (text: string, n: number) => (text.length > n ? `…${text.slice(-n)}` : text)
 const branchOf = (run: Run, task: Task) => `${run.replay_of ? 'replay' : 'task'}/${task.slug}`
-const repoName = (remoteUrl: string) => repoPath(remoteUrl).split('/')[1] ?? remoteUrl
 
 // A stage named by a run's row. Rows only ever name stages of their own
 // pipeline version, which never changes, so a missing one is a bug.
@@ -147,8 +149,8 @@ const workspaceOf = (client: pg.PoolClient, run: Run) => maybe<Workspace>(client
 async function reposOf(client: pg.PoolClient, run: Run): Promise<RepoRef[]> {
   const rows = await many<Omit<RepoRef, 'name'>>(client,
     `select r.id as "repoId", r.remote_url, r.default_branch, r.setup_command from task_repos tr
-     join repos r on r.id = tr.repo_id where tr.task_id = $1 order by tr.is_primary desc`, [run.task_id])
-  return rows.map((r) => ({ ...r, name: repoName(r.remote_url) }))
+     join repos r on r.id = tr.repo_id where tr.task_id = $1 order by tr.is_primary desc, r.remote_url`, [run.task_id])
+  return withFolders(rows).map(({ folder, ...r }) => ({ ...r, name: folder }))
 }
 
 // The run's primary repo. Every run is started with one.
@@ -212,12 +214,18 @@ async function context(client: pg.PoolClient, run: Run, rows: Row[], current?: R
   }
   const workspace = await workspaceOf(client, run)
   const [repo] = await reposOf(client, run)
+  // A comment keeps no author once its person has left the team.
+  const comments = await many<RunComment>(client,
+    `select a.path, c.version, c.anchor->>'quote' as quote, c.body as text, coalesce(p.login, 'a former teammate') as by
+     from comments c join artifacts a on a.id = c.artifact_id left join people p on p.id = c.author_person
+     where a.task_id = $1 and c.status = 'open' order by c.created_at, c.id`, [run.task_id])
   return {
     report: run.trigger_payload.report,
     openIssues: run.trigger_payload.openIssues,
     results, attempts,
     repo: repo?.name ?? '',
     taskFolder: workspace?.path ? `${workspace.path}/task` : 'task',
+    comments,
     replay: Boolean(run.replay_of),
   }
 }
@@ -321,7 +329,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     })
     if (seq === undefined) throw new Error(`the prompt for ${row.stage} was not recorded`)
     const payload: MessagePayload = {
-      text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
+      permissions: WORKSPACE_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
       harnessSessionId: session.harness_session_id, workspaceId: workspace.id,
       stage: { outcomes, allow: stage.allow ?? [], maxBudgetUsd: Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost },
     }
@@ -353,7 +361,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     const task = await taskOf(client, run)
     const ask = await one<{ id: string }>(client, 'the new gate',
       `insert into asks (team_id, kind, run_id, conversation_id, payload) values ($1, 'gate', $2, $3, $4) returning id`,
-      [run.team_id, run.id, task.conversation_id, JSON.stringify({ question, stage: row.stage, options: ['approve', 'reject'], links })])
+      [run.team_id, run.id, task.conversation_id, JSON.stringify({ question, stage: row.stage, options: ['approve', 'reject'], links, labels: stage.labels ?? null })])
     await setRow(client, row, { status: 'waiting', ask_id: ask.id, started: true })
     await client.query(`update runs set status = 'waiting' where id = $1`, [run.id])
     await post(client, run, `row:${row.id}`, `${await shepherd(client, run)}${question}${links.map((l) => `\n${l.title}: ${l.url}`).join('')}`)
@@ -369,12 +377,13 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
   const task = await taskOf(client, run)
   const repo = await repoOf(client, run)
   if (stage.action === 'open_pull_request' || stage.action === 'score_change') {
+    const push: PushPayload = {
+      workspaceId: workspace.id, message: stage.title?.(ctx) ?? ctx.report.title, author: pipeline.agent,
+      repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task), base: r.default_branch })),
+    }
     const sent = await one<{ id: string }>(client, 'the new push command',
       `insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'push', $3) returning id`,
-      [run.team_id, workspace.instance_id, JSON.stringify({
-        workspaceId: workspace.id, message: stage.title?.(ctx) ?? ctx.report.title, author: pipeline.agent,
-        repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task) })),
-      })])
+      [run.team_id, workspace.instance_id, JSON.stringify(push)])
     await setRow(client, row, { status: 'running', command_id: sent.id, data: { phase: 'push' }, started: true })
     return true
   }
@@ -830,6 +839,7 @@ export function startRunner() {
           await stopIdleBoxes(teams).catch(logged('idle boxes'))
         }
         await withClient((client) => expireTurns(client, teams)).catch(logged('turns'))
+        await finishPushes(teams).catch(logged('pull requests'))
         const rows = await many<{ id: string }>(pool,
           `select id from runs where status in ('queued', 'running', 'waiting') and ($1::uuid[] is null or team_id = any($1))
            order by created_at`, [teams])

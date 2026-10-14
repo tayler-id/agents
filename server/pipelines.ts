@@ -66,6 +66,10 @@ function problems(value: unknown): string[] {
       else if (TEXT_ACTIONS.includes(stage.action) && !fn('text')) out.push(`${name}: ${stage.action} needs a text`)
     }
     if (stage.kind === 'gate' && !fn('question')) out.push(`${name}: a gate needs a question`)
+    const labels = stage.labels
+    if (stage.kind === 'gate' && labels !== undefined && !(isObject(labels) && typeof labels.approve === 'string' && typeof labels.reject === 'string')) {
+      out.push(`${name}: a gate's labels must name approve and reject`)
+    }
     if (!isObject(stage.next) || !Object.keys(stage.next).length) {
       out.push(`${name}: next is empty`)
       continue

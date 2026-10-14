@@ -13,6 +13,7 @@ import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VI
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
+import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -133,6 +134,56 @@ const personShapes: Record<string, PersonShape> = {
     table: 'artifact_versions', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
   }),
+  // The tasks blocking one task, or, given `blocker`, the tasks it blocks that the person may see.
+  task_blocks: async (p, args) => {
+    if (args.has('blocker')) {
+      const blocker = arg(args, 'blocker')
+      if (!(await canSeeTask(p, blocker))) throw new HttpError(404, 'no such task')
+      return { table: 'task_blocks', where: `blocker_id = $1 and blocked_id in (select id from tasks where ${VISIBLE_TASK})`, params: [blocker, p.id] }
+    }
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_blocks', where: 'blocked_id = $1', params: [taskId] }
+  },
+  // A task's hold, current or lapsed.
+  task_holds: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_holds', where: 'task_id = $1', params: [taskId] }
+  },
+  // A task's repos, for editing a draft.
+  task_repos: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'task_repos', where: 'task_id = $1', params: [taskId] }
+  },
+  // A task's changed files, without their contents, and one file with them.
+  file_changes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'file_changes', where: 'task_id = $1', params: [taskId], columns: FILE_CHANGE_COLUMNS }
+  },
+  // A task's repos whose changes are not listed, and why.
+  unlisted_changes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'unlisted_changes', where: 'task_id = $1', params: [taskId], columns: UNLISTED_CHANGE_COLUMNS }
+  },
+  file_change: async (p, args) => ({
+    table: 'file_changes', where: 'id = $1', columns: FILE_CHANGE_DETAIL_COLUMNS,
+    params: [await requireTaskOf(p, 'select task_id from file_changes where id = $1 and team_id = $2', arg(args, 'id'))],
+  }),
+  // Every document of every task the person may see, without contents, for the palette.
+  documents: async (p) => ({
+    table: 'artifacts', where: `team_id = $1 and kind = 'document' and task_id in (select id from tasks where ${VISIBLE_TASK})`,
+    params: [p.team_id, p.id], columns: DOCUMENT_COLUMNS,
+  }),
+  // Each time someone asked to open a task's pull requests, and how it went.
+  pushes: async (p, args) => {
+    const taskId = arg(args, 'task')
+    if (!(await canSeeTask(p, taskId))) throw new HttpError(404, 'no such task')
+    return { table: 'pushes', where: 'task_id = $1', params: [taskId], columns: PUSH_COLUMNS }
+  },
 }
 
 const instanceShapes: Record<string, InstanceShape> = {

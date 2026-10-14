@@ -3,6 +3,7 @@ import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import { ProposalView } from './Proposal.tsx'
 import { Markdown } from './Markdown.tsx'
+import { Changes } from './Changes.tsx'
 import {
   act, api, byNumber, clock, duration, money, useRows, useSnapshot, type Artifact, type Ask, type Pipeline, type PipelineVersion, type Proposal, type Run, type RunStage, type Task,
 } from './data.ts'
@@ -16,7 +17,7 @@ export const shortRunLabel = (status: string) => (status === 'waiting' ? 'waitin
 
 // One pipeline run: what started it, each stage as it happens, what it made, and
 // anything waiting on a person.
-export function RunView({ runId, openSession }: { runId: string; openSession: string | null }) {
+export function RunView({ runId, openSession, openFile }: { runId: string; openSession: string | null; openFile: string | null }) {
   const { rows: runs } = useSnapshot<Run>('runs', {}, 3000)
   const { rows: stages } = useRows<RunStage>('run_stages', { run: runId })
   const { rows: asks } = useRows<Ask>('asks')
@@ -94,6 +95,8 @@ export function RunView({ runId, openSession }: { runId: string; openSession: st
           ))}
           {!ordered.length && <li className="muted small empty">Waiting for a machine…</li>}
         </ol>
+
+        {task && <Changes taskId={task.id} openId={openFile} onOpen={(id) => go({ run: runId, file: id })} />}
 
         {!!artifacts.length && (
           <>

@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import {
-  act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
+  act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
 } from './data.ts'
 import { TeamPage, Waiting } from './Team.tsx'
 import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
 import { BoxPage, GettingStarted } from './Box.tsx'
+import { FilePanel } from './FilePanel.tsx'
+import { Palette, paletteKey, useShortcuts } from './Palette.tsx'
+import { ReadyLists } from './Order.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -19,13 +22,13 @@ import { NewRoom, NewTask, TaskView } from './Work.tsx'
 const PAGES = ['team', 'tailscale', 'box'] as const
 type Page = (typeof PAGES)[number]
 
-// Where the app is: a conversation, run, task, pipeline, agent, page or
-// new-thing form in the middle, and maybe a session or a document beside it.
+// Where the app is: a conversation, run, task, pipeline, agent, page or new-thing
+// form in the middle, and maybe a session, a document or a changed file beside it.
 type Route = {
   conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
-  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null
+  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null; file: string | null
 }
-const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null }
+const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null }
 const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
 
 function readRoute(): Route {
@@ -37,12 +40,13 @@ function readRoute(): Route {
   route.page = PAGES.find((page) => page === kind) ?? null
   if (sub === 's') route.session = subId || null
   if (sub === 'd') route.document = subId || null
+  if (sub === 'f') route.file = subId || null
   return route
 }
 
 export function go(to: Partial<Route>) {
   const r = { ...EMPTY, ...to }
-  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : ''
+  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
   window.location.hash = r.page ? `#/${r.page}` : r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
@@ -88,23 +92,31 @@ function Workspace({ me }: { me: Me }) {
   const menuOpen = menuOpenOn === here
   const setMenuOpen = (open: boolean) => { setMenuOpenOn(open ? here : null) }
   const { rows: runs } = useSnapshot<Run>('runs', {}, 4000)
-  const side = Boolean(route.session || route.document)
+  const [palette, setPalette] = useState(false)
+  const togglePalette = useCallback(() => setPalette((open) => !open), [])
+  useShortcuts(togglePalette)
+  const side = Boolean(route.session || route.document || route.file)
+  // Documents and files hold lines of text, so their panel takes more of the width.
+  const wide = Boolean(route.document || route.file)
+  const taskOfPanel = route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null
   const back = () => go({ conversation: route.conversation, run: route.run, task: route.task })
   return (
-    <div className={`shell${side ? ' with-panel' : ''}${menuOpen ? ' menu-open' : ''}`}>
+    <div className={`shell${side ? ' with-panel' : ''}${wide ? ' wide' : ''}${menuOpen ? ' menu-open' : ''}`}>
       <header className="topbar">
         <button type="button" className="ghost" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Menu</button>
         <span className="topbar-title">{me.team.name}</span>
+        <button type="button" className="ghost push" onClick={togglePalette}>Go to</button>
       </header>
-      <Sidebar me={me} route={route} runs={runs} />
-      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
+      <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
+      {palette && <Palette me={me} onClose={() => setPalette(false)} />}
+      <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
         : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
-          : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
-            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
+          : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
+            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
                   : route.create === 'agent' ? <NewAgent me={me} />
@@ -116,9 +128,9 @@ function Workspace({ me }: { me: Me }) {
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
       )}
       {route.document && (route.run || route.task) && (
-        <DocumentPanel key={route.document} artifactId={route.document}
-          taskId={route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null} onClose={back} />
+        <DocumentPanel key={route.document} artifactId={route.document} taskId={taskOfPanel} onClose={back} />
       )}
+      {route.file && taskOfPanel && <FilePanel key={route.file} changeId={route.file} taskId={taskOfPanel} onClose={back} />}
     </div>
   )
 }
@@ -137,7 +149,7 @@ function Welcome({ me }: { me: Me }) {
 
 const LIVE = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
 
-function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
+function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs: Run[]; openPalette: () => void }) {
   const { rows: agents } = useSnapshot<Agent>('agents')
   const { rows: conversations } = useSnapshot<Conversation>('conversations')
   const { rows: members } = useSnapshot<Member>('conversation_members')
@@ -161,12 +173,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const current = conversations.find((c) => c.id === route.conversation)
   const taskTitle = (taskId: string) => tasks.find((t) => t.id === taskId)?.title ?? 'Run'
 
-  const label = (c: Conversation) => {
-    if (c.kind === 'room') return `# ${c.name ?? 'room'}`
-    const who = members.filter((m) => m.conversation_id === c.id).flatMap((m) => (m.person_id ? [m.person_id === me.person.id ? 'you' : login.get(m.person_id) ?? 'someone'] : []))
-    const agent = c.agent_id ? agentName.get(c.agent_id) ?? 'agent' : null
-    return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
-  }
+  const label = (c: Conversation) => conversationLabel(c, { me, members, agentName, login })
 
   const open = async (agent: Agent) => {
     setOpening(agent.id)
@@ -213,6 +220,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const runTasks = new Set(runs.map((r) => r.task_id))
   const myTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
     .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6)
+  const drafts = new Set(taskSessions.filter((s) => s.status === 'draft').map((s) => s.task_id))
   return (
     <nav className="sidebar" aria-label="Workspace">
       <div className="team">
@@ -235,6 +243,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
         <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>
         <button type="button" className="link small" onClick={() => go({ create: 'agent' })}>New agent</button>
+        <button type="button" className="link small" onClick={openPalette}>Go to <kbd>{paletteKey()}</kbd></button>
       </div>
 
       <h2 className="kicker">Agents</h2>
@@ -269,11 +278,14 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
           <li key={t.id}>
             <button type="button" className={`row${t.id === route.task ? ' selected' : ''}`} onClick={() => go({ task: t.id })}>
               <span>{t.title}</span>
+              {drafts.has(t.id) && <span className="muted small">draft</span>}
             </button>
           </li>
         ))}
         {!myTasks.length && <li className="muted small empty">No tasks yet</li>}
       </ul>
+
+      <ReadyLists openTask={route.task} />
 
       <h2 className="kicker">Pipelines</h2>
       <ul className="list" aria-label="Pipelines">

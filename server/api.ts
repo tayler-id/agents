@@ -31,6 +31,13 @@ import { syncPipelines } from './pipelines.ts'
 import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
 import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
+import { discardDraft, editDraft, startDraft } from './drafts.ts'
+import { saveChanges } from './changes.ts'
+import { askForPullRequests } from './pulls.ts'
+import { versionDiff } from './versions.ts'
+import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
+import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
+import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
@@ -41,6 +48,13 @@ import {
 
 // Kinds only a person can write. One from an instance would be handed back to it.
 const PERSON_KINDS: EventKind[] = ['user', 'answer']
+
+// Outside data through its schema. Data that does not fit is the sender's mistake.
+function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
+  const result = schema.safeParse(value)
+  if (!result.success) throw new HttpError(400, z.prettifyError(result.error))
+  return result.data
+}
 
 function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
@@ -115,6 +129,12 @@ const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/agents\/([^/]+)$/, async (req, [name], url) => {
     const { teamId } = await agentScope(req, url)
     return agentProfile(teamId, decodeURIComponent(name))
+  }],
+
+  // What is ready to start, and what is held, among the team's shared tasks.
+  ['machines', 'GET', /^\/v1\/record\/ready$/, async (req, _params, url) => {
+    const { teamId } = await agentScope(req, url)
+    return readyAnswer(pool, teamId, null)
   }],
 
   ['machines', 'GET', /^\/v1\/record\/recent$/, async (req, _params, url) => {
@@ -217,6 +237,30 @@ const routes: Route[] = [
     return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, documents)) }
   }],
 
+  // Whether one of the asking machine's workspaces is still being set up: not yet
+  // ready, with its setup queued or running, or not yet ended at all.
+  ['machines', 'GET', new RegExp(`^/v1/instance/workspaces/${UUID}/setup$`), async (req, [id]) => {
+    const instance = await instanceFrom(req)
+    const workspaceId = parsed(WorkspaceId, id)
+    const found = await maybe<{ setting_up: boolean }>(pool,
+      `select w.status = 'creating' and (
+         exists (select 1 from commands c where c.kind = 'setup_workspace' and c.payload->>'workspaceId' = w.id::text and c.status in ('queued', 'claimed'))
+         or not exists (select 1 from commands c where c.kind = 'setup_workspace' and c.payload->>'workspaceId' = w.id::text and c.status in ('done', 'failed'))
+       ) as setting_up
+       from workspaces w where w.id = $1 and w.instance_id = $2`, [workspaceId, instance.id])
+    if (!found) throw new HttpError(404, 'no such workspace on this machine')
+    const answer: WorkspaceSetup = { settingUp: found.setting_up }
+    return answer
+  }],
+
+  // What differs from the base branch in a workspace's repos, from its machine.
+  ['machines', 'POST', new RegExp(`^/v1/workspaces/${UUID}/changes$`), async (req, [id]) => {
+    const instance = await instanceFrom(req)
+    const workspaceId = parsed(WorkspaceId, id)
+    const post = parsed(ChangesPost, await readJson(req))
+    return tx((client) => saveChanges(client, instance.id, workspaceId, post))
+  }],
+
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/events$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
     const { rows } = await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
@@ -283,13 +327,81 @@ const routes: Route[] = [
 
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
+    const { repoId, ...task } = parsed(NewTask, await readJson(req))
+    return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
+  }],
+
+  // The order of work. Each command answers whether there was anything to change.
+  ['people', 'GET', /^\/v1\/tasks\/ready$/, async (req) => {
+    const person = await personFrom(req)
+    return readyAnswer(pool, person.team_id, person.id)
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/(done|reopen|unhold)$`), async (req, [id, verb]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const action = parsed(TaskAction.extract(['done', 'reopen', 'unhold']), verb)
+    switch (action) {
+      case 'done': return tx((client) => markDone(client, person, taskId))
+      case 'reopen': return tx((client) => reopen(client, person, taskId))
+      case 'unhold': return tx((client) => unhold(client, person, taskId))
+    }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/hold$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(HoldAsk, await readJson(req))
+    return tx((client) => hold(client, person, taskId, ask))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/priority$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const { priority } = parsed(PriorityAsk, await readJson(req))
+    return tx((client) => prioritize(client, person, taskId, priority))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/blockers$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(BlockAsk, await readJson(req))
+    return tx((client) => block(client, person, taskId, ask))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/blockers/${UUID}/remove$`), async (req, [id, blocker]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const blockerId = parsed(TaskId, blocker)
+    return tx((client) => unblock(client, person, taskId, blockerId))
+  }],
+
+  // Push the task's branches and open a pull request for each repo with commits.
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/pull-requests$`), async (req, [id]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
+    const ask = parsed(PullRequestAsk, await readJson(req))
+    return tx((client) => askForPullRequests(client, person, taskId, ask))
+  }],
+
+  // A draft task: edited, started, or discarded.
+  ['people', 'POST', new RegExp(`^/v1/tasks/${UUID}/(edit|start|discard)$`), async (req, [id, verb]) => {
+    const person = await personFrom(req)
+    const taskId = parsed(TaskId, id)
     const body = await readJson(req)
-    const result = await tx((client) => startTask(client, person, {
-      title: text(body.title, 'title'), instructions: typeof body.instructions === 'string' ? body.instructions : '',
-      agentId: text(body.agentId, 'agentId'), repoId: optionalText(body.repoId, 'repoId'),
-      conversationId: optionalText(body.conversationId, 'conversationId'), messageId: optionalText(body.messageId, 'messageId'),
-    }))
-    return result
+    const action = parsed(TaskAction.extract(['edit', 'start', 'discard']), verb)
+    switch (action) {
+      case 'start':
+        return tx((client) => startDraft(client, person, taskId))
+      case 'discard':
+        await tx((client) => discardDraft(client, person, taskId))
+        return { ok: true }
+      case 'edit': {
+        const edit = parsed(DraftEdit, body)
+        await tx((client) => editDraft(client, person, taskId, edit))
+        return { ok: true }
+      }
+    }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
@@ -301,11 +413,17 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/artifacts/${UUID}/comments$`), async (req, [artifactId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    const commentId = await tx((client) => addComment(client, person, artifactId, {
-      version: Number(body.version), text: text(body.text, 'text'), quote: optionalText(body.quote, 'quote'), send: body.send === true,
-    }))
+    const comment = parsed(NewComment, await readJson(req))
+    const commentId = await tx((client) => addComment(client, person, artifactId, comment))
     return { commentId }
+  }],
+
+  // What changed in a document from the version before this one.
+  ['people', 'GET', new RegExp(`^/v1/artifacts/${UUID}/versions/([0-9]{1,9})/diff$`), async (req, [id, n]) => {
+    const person = await personFrom(req)
+    const artifactId = parsed(ArtifactId, id)
+    const version = parsed(z.coerce.number().int().min(2), n)
+    return { diff: await versionDiff(person, artifactId, version) }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/comments/${UUID}/resolve$`), async (req, [commentId]) => {

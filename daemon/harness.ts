@@ -13,6 +13,8 @@ export type HarnessStart = {
   mcpConfig: string | null
   // Tools the harness may use without asking, such as the team-record tools.
   allowedTools: string[]
+  // Changes to files inside cwd go ahead without asking, as in a task's workspace.
+  acceptEdits: boolean
   // Stops the session once it has cost this much, in US dollars.
   maxBudgetUsd?: number
   // The Claude token this machine's owner signed in with from the app, or null to use the machine's own login.

@@ -12,6 +12,8 @@
   --waiting: #9a5b0f;
   --off: #9a9a93;
   --danger: #a3261d;
+  --mark: #e2e1d8;
+  --mark-strong: #cbcabe;
   color-scheme: light;
 }
 
@@ -27,6 +29,8 @@
     --waiting: #e3a650;
     --off: #6f6f69;
     --danger: #f08177;
+    --mark: #3b3b36;
+    --mark-strong: #55554e;
     color-scheme: dark;
   }
 }
@@ -42,6 +46,8 @@
   --waiting: #e3a650;
   --off: #6f6f69;
   --danger: #f08177;
+  --mark: #3b3b36;
+  --mark-strong: #55554e;
   color-scheme: dark;
 }
 
@@ -304,4 +310,86 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
   .page-head, .page-body { padding-left: 16px; padding-right: 16px; }
   .page-head { flex-wrap: wrap; }
   .versions { display: block; overflow-x: auto; }
+}
+
+/* The work layer: changes, the file and document panel, code, diffs, pinned
+   comments, drafts and the palette. Highlighting and diffs use weight, tone and
+   a raised surface, never hue, and every border is one neutral hairline. */
+.shell.with-panel.wide { grid-template-columns: 260px minmax(0, 1fr) minmax(380px, 46%); }
+.changes .repo-name { margin: 8px 0 2px; font-weight: 600; color: var(--muted); }
+.change .path { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pull-requests { display: grid; gap: 6px; margin-top: 10px; }
+.pull-request a { font-weight: 600; }
+
+.tabs { display: flex; gap: 2px; margin-bottom: 10px; }
+.tabs [role="tab"] { border: 0; background: transparent; color: var(--muted); padding: 4px 10px; border-radius: 6px; }
+.tabs [role="tab"].selected { background: var(--raised); color: var(--text); font-weight: 600; }
+.tabs [role="tab"]:focus-visible { background: var(--raised); }
+.tab-panel { min-width: 0; }
+
+.code, .diff-view {
+  display: grid; grid-template-columns: minmax(0, 1fr); padding: 6px 0; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.code:focus-visible, .diff-view:focus-visible { background: var(--surface); }
+.code-line { display: grid; grid-template-columns: 5ch minmax(0, 1fr); }
+.diff-line { display: grid; grid-template-columns: 5ch 5ch 2ch minmax(0, 1fr); }
+.code-line .ln, .diff-line .ln { padding-right: 10px; text-align: right; color: var(--muted); user-select: none; }
+.code-line .lc, .diff-line .lc { padding-right: 12px; white-space: pre-wrap; word-break: break-word; }
+.diff-line .sign { color: var(--muted); user-select: none; }
+.diff-line.added { background: var(--raised); font-weight: 600; }
+.diff-line.removed { color: var(--muted); }
+.diff-line.hunk, .diff-line.note { grid-template-columns: minmax(0, 1fr); padding: 4px 12px; color: var(--muted); }
+.tok-keyword { font-weight: 700; }
+.tok-number { font-weight: 600; }
+.tok-comment { color: var(--muted); font-style: italic; }
+.tok-string { background: var(--raised); border-radius: 3px; }
+
+.comment.active { background: var(--raised); }
+.comment .quote {
+  display: block; width: 100%; padding: 0 0 0 10px; border: 0; border-left: 1px solid var(--line); border-radius: 0;
+  background: transparent; color: var(--muted); text-align: left; font-size: inherit;
+}
+.comment .quote:hover:not(:disabled), .comment .quote[aria-pressed="true"] { background: transparent; color: var(--text); }
+.comment .quote:focus-visible { border-color: var(--text); color: var(--text); }
+.quote-pick { display: flex; gap: 8px; }
+.quote-pick input { flex: 1; min-width: 0; }
+::highlight(comment-quote) { background-color: var(--mark); }
+::highlight(comment-quote-active) { background-color: var(--mark-strong); }
+
+dialog.palette {
+  width: min(640px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 64px)); margin: 12vh auto auto; padding: 0;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text);
+}
+dialog.palette:not([open]) { display: none; }
+dialog.palette::backdrop { background: rgba(20, 20, 18, 0.35); }
+.palette input { padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); font: inherit; font-size: 16px; }
+.palette input:focus { outline: none; }
+.palette-results { overflow-y: auto; padding: 6px; }
+.palette-results .kicker { padding: 8px 10px 4px; }
+.option { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.option > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.option > span + span { flex-shrink: 0; display: inline-flex; gap: 6px; align-items: baseline; }
+.option.active { background: var(--raised); font-weight: 600; }
+.palette-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 8px 14px; border-top: 1px solid var(--line); }
+.palette-foot .check { display: inline-flex; gap: 6px; align-items: center; }
+kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.order { display: grid; gap: 6px; }
+.order h3 { margin: 6px 0 0; }
+.order-line, .hold-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.order-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.form.inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: none; }
+.form.inline-form input:not([type]) { flex: 1 1 12ch; min-width: 0; }
+.order select, .order input[type="date"] {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; min-width: 0; max-width: 100%;
+}
+.order select:focus, .order input:focus { outline: none; border-color: var(--text); }
+.row.stacked { display: grid; gap: 1px; }
+.row.stacked > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 760px) {
+  .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }
+  dialog.palette { margin-top: 8vh; }
 }
