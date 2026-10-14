@@ -21,7 +21,8 @@ import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } 
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { must } from './must.ts'
-import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, docker, tryDocker, boxCheckEnv, computerTools, pageSays, stopAll } from './computers.ts'
+import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, docker, tryDocker, boxCheckEnv, peopleSocket, computerTools, pageSays, stopAll } from './computers.ts'
+import { servePeople } from './people.ts'
 
 const SHOTS = join(ROOT, 'test', 'ui-shots')
 const PEOPLE_PORT = 7982
@@ -61,7 +62,7 @@ function check(ok: unknown, label: string) {
 }
 
 const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows[0]
-const checkEnv = boxCheckEnv(team, work, PEOPLE_PORT, STREAMS_PORT)
+const checkEnv = boxCheckEnv(team, work, STREAMS_PORT, [INSECURE, PEOPLE])
 const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', '--env-file=.env.test', ...args],
   { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...checkEnv } })
 
@@ -278,6 +279,8 @@ try {
   children.push(spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...checkEnv },
   }))
+  // Stands in for tailscale serve, which sends people to the API's socket.
+  await servePeople(PEOPLE_PORT, peopleSocket(work))
   await within(20, () => fetch(API).then(() => true, () => false))
   const { instanceId } = JSON.parse(node('server/boxes.ts', 'create', team, boxName))
   const container = `agents-box-${instanceId}`

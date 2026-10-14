@@ -4,6 +4,7 @@
 
 import { execFileSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
+import { connect } from 'node:net'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -54,6 +55,16 @@ export async function stopAll(children: ChildProcess[]) {
   }))
 }
 
+// Whether something on this Mac accepts connections on the port. A container
+// failing to reach a port proves nothing when nothing listens there.
+export function listensHere(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(port, '127.0.0.1')
+    socket.once('connect', () => { socket.destroy(); resolve(true) })
+    socket.once('error', () => { resolve(false) })
+  })
+}
+
 export const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim()
 export const tryDocker = (...args: string[]) => {
   try {
@@ -64,13 +75,16 @@ export const tryDocker = (...args: string[]) => {
   }
 }
 
-// The API's and the box's environment for a check's team: its own people and
-// streams ports, the box image, and the stand-in for Claude mounted in the box.
-// Box mounts come from the colima VM, which sees only the home folder, so `work`
-// must be under it.
-export function boxCheckEnv(team: string, work: string, peoplePort: number, streamsPort: number): Record<string, string> {
+// The socket the check's API serves people on, in the check's own folder.
+export const peopleSocket = (work: string) => join(work, 'people.sock')
+
+// The API's and the box's environment for a check's team: its own people socket
+// and streams port, the origins its pages come from, the box image, and the
+// stand-in for Claude mounted in the box. Box mounts come from the colima VM,
+// which sees only the home folder, so `work` must be under it.
+export function boxCheckEnv(team: string, work: string, streamsPort: number, origins: string[]): Record<string, string> {
   return {
-    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINE_PORT), AGENTS_PEOPLE_PORT: String(peoplePort),
+    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINE_PORT), AGENTS_PEOPLE_SOCKET: peopleSocket(work), AGENTS_PEOPLE_ORIGINS: origins.join(','),
     AGENTS_STREAMS_PORT: String(streamsPort), AGENTS_STREAMS_DIR: join(work, 'streams'),
     AGENTS_BOX_IMAGE: IMAGE, AGENTS_BOX_API: `http://host.docker.internal:${MACHINE_PORT}`,
     AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
