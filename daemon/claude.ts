@@ -194,6 +194,7 @@ function liveDeltas(line: Line): EventBatch['live'] {
 export const TranscriptLine = z.looseObject({
   type: z.string(),
   uuid: optional(z.string()),
+  cwd: optional(z.string()),
   subtype: optional(z.string()),
   content: z.unknown().optional(),
   isSidechain: optional(z.boolean()),
@@ -224,16 +225,50 @@ const CONTINUING = new Set(['tool_use', 'pause_turn'])
 // A block whose content is sent as base64, such as a PDF Claude read.
 const Base64Source = z.looseObject({ type: z.literal('base64') })
 
-// Images and files stay on the Mac. A screenshot can show a secret no scrubber
-// can read, and nothing can scrub a file sent as base64.
-export function withoutFiles(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutFiles)
+// What a tool result becomes when its call named a path outside the connected folder.
+const OUTSIDE_NOTE = 'A result for a path outside the connected folder stays on the Mac.'
+
+// Images, files and some results stay on the Mac. A screenshot can show a secret
+// no scrubber can read, nothing can scrub a file sent as base64, and what a tool
+// read outside the connected folder is not the folder's to share. `withheld`
+// holds the ids of the tool calls whose results stay.
+export function withoutWhatStays(value: unknown, withheld: ReadonlySet<string>): unknown {
+  if (Array.isArray(value)) return value.map((inner) => withoutWhatStays(inner, withheld))
   if (typeof value !== 'object' || value === null) return value
   if ('type' in value && value.type === 'image') return { type: 'image', omitted: 'Images stay on the Mac.' }
   if ('source' in value && Base64Source.safeParse(value.source).success) {
     return { type: 'type' in value && typeof value.type === 'string' ? value.type : 'file', omitted: 'Files stay on the Mac.' }
   }
-  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutFiles(inner)]))
+  const kept = Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutWhatStays(inner, withheld)]))
+  const held = 'type' in value && value.type === 'tool_result' && 'tool_use_id' in value
+    && typeof value.tool_use_id === 'string' && withheld.has(value.tool_use_id)
+  return held ? { ...kept, content: OUTSIDE_NOTE } : kept
+}
+
+// The input fields in which Claude Code's file tools name a path.
+const PATH_FIELDS = ['file_path', 'path', 'notebook_path']
+
+// The tool calls a line makes and answers, for finding the results to withhold.
+export type ToolTraffic = {
+  // The calls in an assistant line that name a path, with the paths as written.
+  calls: { id: string; paths: string[] }[]
+  // The ids of the calls a user line answers.
+  answered: string[]
+}
+
+export function toolTraffic(line: TranscriptLine): ToolTraffic {
+  const content = line.message?.content
+  const blocks = Array.isArray(content) ? content : []
+  const calls = blocks.flatMap((block) => {
+    if (block.type !== 'tool_use') return []
+    const fields = InputFields.safeParse(block.input).data
+    const paths = PATH_FIELDS.flatMap((name) => {
+      const path = fields?.[name]
+      return typeof path === 'string' ? [path] : []
+    })
+    return paths.length ? [{ id: block.id, paths }] : []
+  })
+  return { calls, answered: blocks.flatMap((block) => (block.type === 'tool_result' ? [block.tool_use_id] : [])) }
 }
 
 // Where a person's own prompt comes from: typed in the terminal, or given to

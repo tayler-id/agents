@@ -87,6 +87,8 @@ The daemon follows the `connected_folders` shape for its machine. Every second i
 
 A session that passes all three gets its record session from the API, which checks again that `cwd` is inside the folder. From then on the daemon sends each new line, in posts of at most 200 lines whose encoded size stays under the API's 20 MiB limit, and keeps how far it got in `~/.agents-app/terminal-sessions.json`. A restart goes on from there, and losing that file only costs a reread, since the record skips any line it already has.
 
+**A tool result for a path outside the connected folder stays on the Mac.** A tool call's input names a path in `file_path`, `path` or `notebook_path`. When that path is not inside the connected folder, the call's result becomes the note "A result for a path outside the connected folder stays on the Mac.", in the event and in the raw line. The call stays, so the record shows what Claude tried to read. The path is judged where it points. `~` is the home folder, a relative path starts at the session's own folder, `..` is followed, and so is a link inside the connected folder that leads out. The daemon saves the ids of the calls it holds results back for with the transcript's offset, so a result that arrives after a restart is held back too. A call's id leaves the list when its result arrives. Not covered: what a Bash command prints from a file outside the folder, a tool that names its path in another field, and the input of a call that writes a file outside the folder.
+
 **One bad session, line or file stops nothing else.**
 
 - Each transcript, and each folder of transcripts, is read on its own. One that fails 3 reads in a row, such as a file the daemon may not open, is parked until the daemon starts again, and the daemon's log says why. A file removed between listing and reading it, as Claude Code's cleanup does, is skipped without a word.
@@ -110,7 +112,7 @@ The mapping is `transcriptBatch` in `daemon/claude.ts`, beside the mapping for t
 | A person's prompt | `user`, authored by the folder's person, and the session is running |
 | Text, thinking and tool calls in an assistant line | `assistant`, `thinking` and `tool_call`, as in an app session |
 | The last line of a message that ends the turn | also `usage`, which the app shows as the turn's end, and the session is idle |
-| Tool results in a user line | `tool_result`, linked to its call by `tool_use_id` |
+| Tool results in a user line | `tool_result`, linked to its call by `tool_use_id`, or a note when the call named a path outside the connected folder |
 | `[Request interrupted by user]` | `notice` with `body.subtype` `interrupted`, which the terminal page draws as Interrupted, and the session is idle |
 | Other user text, such as a task notice or a subagent's orders | `notice`, as the app's sessions record them |
 | A `system` line other than `stop_hook_summary` and `turn_duration` | `notice` |
@@ -171,7 +173,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 
 `test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about 10 s, on ports 8110 to 8112, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
 
-- A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end. A turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle.
+- A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end. A result for a path outside the connected folder is a note, whether the path is absolute, climbs out with `..`, starts with `~`, is relative to the session's own folder or runs through a link inside the folder, and one that arrives after the daemon restarted is a note too. A result for a path inside lands. A turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle.
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried. A session from a Mac clock a minute ahead of the server's, closed by a reconnect, is refused once and then passed over. Every session in the check starts exactly at its folder's `connected_at`, so a folder connected again a moment later is newer than all of them.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
@@ -186,7 +188,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 Tayler made these on 2026-10-14. `docs/decisions.md` has them.
 
 1. **The team sees a connected folder's sessions by default,** and `connect --private` keeps them to the person who connected it, with agents' search leaving them out. As built.
-2. **Tool results for files outside the connected folder stay on the Mac.** Not built yet.
+2. **Tool results for files outside the connected folder stay on the Mac.** As built, for the tools that name a path in `file_path`, `path` or `notebook_path`.
 3. **Sessions started before a folder was connected stay on the Mac,** and so do the ones started while it was disconnected, even when resumed later. As built.
 4. **Images stay on the Mac,** with a note in the record that one was there. As built, and files sent as base64 stay too.
 5. **The daemon learns the secret values in the person's login shell at start,** and they never leave the Mac. Built, as Secrets says.

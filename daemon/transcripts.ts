@@ -7,9 +7,9 @@
 // that says where it started, and nothing of it leaves the Mac. The design is
 // docs/design/local-sessions.md.
 
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
@@ -19,7 +19,7 @@ import { makeScrub, type Scrub } from '../shared/scrub.ts'
 import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
 import { MAX_BODY_BYTES, type EventBatch, type NewEvent, type RawLine, type SessionStatus } from '../shared/types.ts'
 import { ApiError, type Api, type Config } from './api.ts'
-import { TranscriptLine, transcriptBatch, withoutFiles } from './claude.ts'
+import { TranscriptLine, toolTraffic, transcriptBatch, withoutWhatStays } from './claude.ts'
 import { dotenvFinder, dotenvSecrets, type Secrets } from './secrets.ts'
 
 // Where Claude Code keeps transcripts. CLAUDE_CONFIG_DIR moves its whole config folder.
@@ -58,9 +58,12 @@ export const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
 // this file costs only a reread, since the record skips lines it already has.
 // `connectedAt` is when the folder was connected as the session was taken, since a
 // folder connected again starts over. `inode` and `firstUuid` tell the same file
-// from one replaced or cut short, which is read again from its start.
+// from one replaced or cut short, which is read again from its start. `withheld`
+// holds the ids of the tool calls, as of the offset, whose results stay on the
+// Mac and have not arrived yet, since a result can arrive after a restart.
 const Sent = z.record(z.string(), z.object({
   sessionId: SessionId, folderId: FolderId, connectedAt: z.string(), cwd: z.string(), offset: z.number().int().min(0), inode: z.number().int(), firstUuid: z.string().nullable(), parentToolUseId: z.string().nullable(),
+  withheld: z.array(z.string()).default([]),
 }))
 type Sent = z.infer<typeof Sent>
 type Tracked = Sent[string]
@@ -254,6 +257,7 @@ export async function followTerminalSessions(options: {
       }
       tracked.offset = 0
       tracked.inode = ino
+      tracked.withheld = []
     }
     if (first !== tracked.firstUuid) {
       tracked.firstUuid = first
@@ -263,17 +267,21 @@ export async function followTerminalSessions(options: {
     if (!lines.length) return
     const scrub = scrubFor(folder)
     let part = emptyPart(tracked.offset)
+    // The calls whose results stay on the Mac, as of the lines the record has.
+    // A post that fails leaves tracked.withheld as it was, with the offset.
+    const withheld = new Set(tracked.withheld)
     const flush = async () => {
       const batch: EventBatch = part.status === undefined ? { events: part.events, raw: part.raw } : { events: part.events, raw: part.raw, status: part.status }
       if ((batch.events.length || batch.status) && !await post(file, tracked.sessionId, batch)) return false
       if (part.unparsed) console.error(`terminal sessions, ${file}: ${part.unparsed} line${part.unparsed === 1 ? '' : 's'} did not parse, and were left out`)
       tracked.offset = part.end
+      tracked.withheld = [...withheld]
       changed = true
       part = emptyPart(part.end)
       return true
     }
     for (const line of lines) {
-      const value = withoutFiles(parseJson(line.text))
+      const value = withoutWhatStays(parseJson(line.text), withheld)
       const parsed = TranscriptLine.safeParse(value)
       const piece = parsed.success ? scrub(transcriptBatch([{ line: parsed.data, value }], tracked.parentToolUseId)) : undefined
       const bytes = piece ? Buffer.byteLength(JSON.stringify(piece.events)) + Buffer.byteLength(JSON.stringify(piece.raw)) : 0
@@ -292,6 +300,13 @@ export async function followTerminalSessions(options: {
       part.lines += 1
       part.bytes += bytes
       part.end = line.end
+      // The calls this line makes and answers count for the lines after it. A
+      // post that holds the line is what makes them count for the offset.
+      if (parsed.success) {
+        const { calls, answered } = toolTraffic(parsed.data)
+        for (const call of calls) if (leavesFolder(folder.path, parsed.data.cwd ?? tracked.cwd, call.paths)) withheld.add(call.id)
+        for (const id of answered) withheld.delete(id)
+      }
     }
     await flush()
   }
@@ -333,7 +348,7 @@ export async function followTerminalSessions(options: {
         { folderId: folder.id, harnessSessionId: scrub(start.sessionId), cwd: scrub(start.cwd) }))
       const tracked: Tracked = {
         sessionId, folderId: folder.id, connectedAt: folder.connected_at, cwd: start.cwd, offset: 0,
-        inode: statSync(file).ino, firstUuid: firstUuidOf(file), parentToolUseId: null,
+        inode: statSync(file).ino, firstUuid: firstUuidOf(file), parentToolUseId: null, withheld: [],
       }
       sent.set(file, tracked)
       changed = true
@@ -358,7 +373,7 @@ export async function followTerminalSessions(options: {
       if (sent.has(path) || !existsSync(facts)) continue
       const parsed = SubagentFacts.safeParse(parseJson(readFileSync(facts, 'utf8')))
       if (!parsed.success) continue
-      sent.set(path, { ...main, offset: 0, inode: statSync(path).ino, firstUuid: firstUuidOf(path), parentToolUseId: parsed.data.toolUseId })
+      sent.set(path, { ...main, offset: 0, inode: statSync(path).ino, firstUuid: firstUuidOf(path), parentToolUseId: parsed.data.toolUseId, withheld: [] })
       changed = true
     }
   }
@@ -406,6 +421,33 @@ export async function followTerminalSessions(options: {
 }
 
 const missing = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT'
+
+// A path that can't be looked up as it stands: it isn't there, part of it isn't a
+// folder or is one the daemon may not enter, or its links lead round in a circle.
+const unresolvable = (error: unknown) =>
+  error instanceof Error && 'code' in error && ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ELOOP'].includes(String(error.code))
+
+// A path with its links followed. Claude names files it is about to create, so a
+// part that doesn't exist keeps its spelling, after the nearest folder that does.
+function resolved(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch (error) {
+    if (!unresolvable(error)) throw error
+    const parent = dirname(path)
+    return parent === path ? path : join(resolved(parent), basename(path))
+  }
+}
+
+// Whether a tool call names a path outside the connected folder, for a session
+// that was in `cwd`. `~` is the home folder, a relative path starts at the cwd,
+// and a link inside the folder that leads out leads out.
+function leavesFolder(folder: string, cwd: string, paths: string[]): boolean {
+  return paths.some((path) => {
+    const named = path === '~' || path.startsWith('~/') ? join(homedir(), path.slice(1)) : path
+    return !insideFolder(folder, resolved(resolve(cwd, named)))
+  })
+}
 
 // A folder's entries, or none when it doesn't exist yet.
 function listed(dir: string): string[] {

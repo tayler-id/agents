@@ -7,7 +7,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -30,6 +30,8 @@ const [redisPassword, mongoPassword, smtpPassword] = [secret(), secret(), secret
 const folderWord = secret()
 const sessionWord = secret()
 const phrase = secret()
+// What a file outside the connected folder holds, which must stay on the Mac.
+const outsideWord = secret()
 const pdf = randomBytes(600).toString('base64')
 const githubToken = `ghp_${randomBytes(27).toString('hex').slice(0, 36)}`
 // How long a line may take to reach the record. The daemon reads every second.
@@ -106,20 +108,38 @@ function transcript(claudeDir: string, cwd: string, startedAt: Date, session: st
   const write = (lines: unknown[]) => { appendFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join('')) }
   const head = { type: 'queue-operation', operation: 'enqueue', timestamp: stamp(), sessionId: session }
   write([head])
+  const model = 'claude-haiku-4-5'
+  const messageId = () => `msg_${randomBytes(8).toString('hex')}`
+  // A tool call, the result that answers it, and the reply that ends a turn, each as the line Claude Code writes.
+  const callLine = (toolUseId: string, name: string, input: Record<string, unknown>) =>
+    line({ type: 'assistant', message: { id: messageId(), type: 'message', role: 'assistant', model, stop_reason: 'tool_use', content: [{ type: 'tool_use', id: toolUseId, name, input }] } })
+  const resultLine = (toolUseId: string, result: unknown) =>
+    line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: result }] }, toolUseResult: { copy: result } })
+  const replyLine = (reply: string) =>
+    line({ type: 'assistant', message: { id: messageId(), type: 'message', role: 'assistant', model, stop_reason: 'end_turn', content: [{ type: 'text', text: reply }], usage: { input_tokens: 10, output_tokens: 2 } } })
+  const newToolUseId = () => `toolu_${randomBytes(12).toString('hex')}`
   return {
     session, path, line, write, head,
     // A turn: the person's prompt, Claude's tool calls each with its result, and the reply that ends the turn.
     turn({ prompt, calls = [], reply, promptFields = {} }: Turn) {
-      const model = 'claude-haiku-4-5'
       const lines: unknown[] = [line({ type: 'user', message: { role: 'user', content: prompt }, turnOrigin: 'human', ...promptFields })]
       for (const call of calls) {
-        const toolUseId = `toolu_${randomBytes(12).toString('hex')}`
-        lines.push(line({ type: 'assistant', message: { id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model, stop_reason: 'tool_use', content: [{ type: 'tool_use', id: toolUseId, name: call.name, input: call.input }] } }))
-        lines.push(line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: call.result }] }, toolUseResult: { copy: call.result } }))
+        const toolUseId = newToolUseId()
+        lines.push(callLine(toolUseId, call.name, call.input), resultLine(toolUseId, call.result))
       }
-      lines.push(line({ type: 'assistant', message: { id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model, stop_reason: 'end_turn', content: [{ type: 'text', text: reply }], usage: { input_tokens: 10, output_tokens: 2 } } }))
+      lines.push(replyLine(reply))
       write(lines)
       return lines
+    },
+    // A tool call on its own, for a result that comes later. It returns the call's id.
+    call(name: string, input: Record<string, unknown>) {
+      const toolUseId = newToolUseId()
+      write([callLine(toolUseId, name, input)])
+      return toolUseId
+    },
+    // The result of a call made earlier, and the reply that ends the turn.
+    finish(toolUseId: string, result: unknown, reply: string) {
+      write([resultLine(toolUseId, result), replyLine(reply)])
     },
   }
 }
@@ -153,7 +173,11 @@ try {
   const deep = join(root, 'the-folder-with-the-longest-path-so-the-daemon-reads-it-first')
   const cased = join(root, 'cased-folder')
   const skewed = join(root, 'skewed')
-  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, cased, skewed, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  // A folder beside the connected one, with a file in it that must stay on the Mac, and a link to it from inside.
+  const elsewhere = join(root, 'elsewhere')
+  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, cased, skewed, elsewhere, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  writeFileSync(join(elsewhere, 'notes.txt'), `The word is ${outsideWord}.\n`)
+  symlinkSync(elsewhere, join(shop, 'linked'))
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -243,6 +267,58 @@ try {
   const wrongNotices = (await eventsOfHarness(wrongRun.session)).filter((e) => e.kind === 'notice')
   check(wrongLanded && isDeepStrictEqual(wrongNotices.map((e) => e.body.block), wrongBlocks),
     `a text block, a tool call and a tool result with a field of the wrong type are notices holding the block as written, and the turns around them land (${wrongNotices.length} notices)`)
+
+  // A tool result for a path outside the connected folder stays on the Mac, as a note. The path may be absolute, climb
+  // out with .., start with ~, be relative to the session's folder, or run through a link inside the connected folder.
+  const NOTE = 'A result for a path outside the connected folder stays on the Mac.'
+  const resultTexts = async (harness: string) => (await eventsOfHarness(harness)).filter((e) => e.kind === 'tool_result').map((e) => String(e.text))
+  // How many events and raw lines of a Claude Code session hold the word.
+  const recordHolds = async (harness: string, word: string) => {
+    const s = await sessionOf(harness)
+    return s ? count(
+      `select (select count(*) from events where session_id = $1 and (body::text like $2 or coalesce(text, '') like $2))
+            + (select count(*) from raw_events where session_id = $1 and line::text like $2) as count`,
+      [s.id, `%${word}%`]) : 0
+  }
+  const notes = `The word is ${outsideWord}.`
+  const outside = transcript(claudeDir, shop, afterShop)
+  outside.turn({ prompt: 'Read the notes beside this folder, and one inside it.', calls: [
+    { name: 'Read', input: { file_path: join(elsewhere, 'notes.txt') }, result: notes },
+    { name: 'Read', input: { file_path: `${shop}/../elsewhere/notes.txt` }, result: notes },
+    { name: 'Grep', input: { pattern: 'word', path: '../elsewhere' }, result: notes },
+    { name: 'Read', input: { file_path: `~/agents-step21b-${id}-nothing-here.txt` }, result: notes },
+    { name: 'Read', input: { file_path: join(shop, 'notes.txt') }, result: 'The word is pelican.' },
+  ], reply: 'Done.' })
+  await until('the session that read outside the folder', LANDS_SEC, async () => (await turnsEnded(outside.session)) === 1)
+  check((await resultTexts(outside.session)).join('|') === [NOTE, NOTE, NOTE, NOTE, 'The word is pelican.'].join('|') && await recordHolds(outside.session, outsideWord) === 0,
+    `results for paths outside the folder stay on the Mac whether the path is absolute, climbs out with .., is relative to the cwd or starts with ~, and a result inside lands: ${(await resultTexts(outside.session)).length} results`)
+
+  // A relative path starts at the session's own folder, here one inside the connected folder, so it can stay in or leave.
+  const inner = transcript(claudeDir, join(shop, 'apps', 'api'), afterShop)
+  inner.turn({ prompt: 'Read relative to this folder.', calls: [
+    { name: 'Read', input: { file_path: '../../notes.txt' }, result: 'The word is pelican.' },
+    { name: 'Grep', input: { pattern: 'word', path: '../../../elsewhere' }, result: notes },
+  ], reply: 'Done.' })
+  await until('the session in a folder inside the connected one', LANDS_SEC, async () => (await turnsEnded(inner.session)) === 1)
+  check((await resultTexts(inner.session)).join('|') === ['The word is pelican.', NOTE].join('|') && await recordHolds(inner.session, outsideWord) === 0,
+    'a relative path starts at the session\'s own folder, so one that stays inside the connected folder lands and one that leaves it does not')
+
+  const linked = transcript(claudeDir, shop, afterShop)
+  linked.turn({ prompt: 'Read the notes through the link.', calls: [{ name: 'Read', input: { file_path: join(shop, 'linked', 'notes.txt') }, result: notes }], reply: 'Done.' })
+  await until('the session that read through a link', LANDS_SEC, async () => (await turnsEnded(linked.session)) === 1)
+  check((await resultTexts(linked.session)).join('|') === NOTE && await recordHolds(linked.session, outsideWord) === 0,
+    'a result for a path that runs through a link inside the folder to a file outside stays on the Mac')
+
+  // The result can come after the daemon restarted, so what it withholds is kept with the offset.
+  const slow = transcript(claudeDir, shop, afterShop)
+  slow.write([slow.line({ type: 'user', message: { role: 'user', content: 'Read the notes, slowly.' }, turnOrigin: 'human' })])
+  const slowCall = slow.call('Read', { file_path: join(elsewhere, 'notes.txt') })
+  await until('the call made before the restart', LANDS_SEC, async () => (await eventsOfHarness(slow.session)).some((e) => e.kind === 'tool_call'))
+  await restart()
+  slow.finish(slowCall, notes, 'Done.')
+  await until('the turn that finished after the restart', LANDS_SEC, async () => (await turnsEnded(slow.session)) === 1)
+  check((await resultTexts(slow.session)).join('|') === NOTE && await recordHolds(slow.session, outsideWord) === 0,
+    'a result for a path outside the folder that arrives after the daemon restarted stays on the Mac')
 
   // Secrets: a nested .env, values under any name, a PDF, a folder and a session named with a secret, and the login shell's.
   const secrets = transcript(claudeDir, shop, afterShop)

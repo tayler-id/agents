@@ -341,7 +341,7 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 
 ### The transcript reader (`daemon/transcripts.ts`, `transcriptBatch` in `daemon/claude.ts`)
 
-- **Solves now.** The daemon reads the transcripts Claude Code writes under `~/.claude/projects` for the sessions that started in a connected folder after it was connected. It posts each prompt, reply, thinking block, tool call and result, with a subagent's work under the Agent call that started it. It scrubs them as it scrubs an app session, adds the values in the folder's `.env` files, and leaves images on the Mac. A session started anywhere else is read only as far as the line that says where it started, and nothing of it leaves the Mac. A restart goes on where the last one stopped.
+- **Solves now.** The daemon reads the transcripts Claude Code writes under `~/.claude/projects` for the sessions that started in a connected folder after it was connected. It posts each prompt, reply, thinking block, tool call and result, with a subagent's work under the Agent call that started it. It scrubs them as it scrubs an app session, adds the values in the folder's `.env` files, and leaves images, files and the results of tool calls on paths outside the folder on the Mac. A session started anywhere else is read only as far as the line that says where it started, and nothing of it leaves the Mac. A restart goes on where the last one stopped.
 - **Helps later.** Codex keeps transcripts too, so its terminal sessions need one more reader, not a new path into the record.
 
 ### Terminal sessions in the app (`app/src/Terminal.tsx`)
