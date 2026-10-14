@@ -97,6 +97,15 @@ try {
   check((await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: invitee, role: 'member' })).status === 409, 'an email with an open invite cannot be invited again')
   check((await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: member, role: 'member' })).status === 409, 'someone already on a team cannot be invited')
   check((await asPerson(PEOPLE, member, 'POST', '/v1/invites', { email: `friend12-${id}@mail.test`, role: 'member' })).status === 403, 'a member cannot invite')
+  // A page on another site can make a person's browser post a form, which goes as
+  // text/plain or a form encoding, never as JSON.
+  const crossSite = `xsite12-${id}@mail.test`
+  const formPost = await fetch(`${PEOPLE}/v1/invites`, {
+    method: 'POST', headers: { 'tailscale-user-login': owner, 'content-type': 'text/plain' }, body: JSON.stringify({ email: crossSite, role: 'admin' }),
+  })
+  await formPost.body?.cancel()
+  check(!formPost.ok && !(await row('select 1 from invites where email = $1', [crossSite])),
+    `a person's change sent as text/plain, as a form on another site sends it, is refused and makes no invite (${formPost.status})`)
   const inviteId: string = made.json?.invite.id
   check((await asPerson(PEOPLE, owner, 'GET', `/v1/invites/${inviteId}/link`)).json?.link === tailscaleInvite?.inviteUrl, "an admin can fetch the invite's link again")
   tailscale.state.lastSent.set(must(tailscaleInvite, 'the Tailscale invite').id, 0)
