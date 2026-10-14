@@ -313,6 +313,8 @@ async function run(engine: string) {
     await dark.goto('/#/tailscale')
     await visible(dark, 'ul[aria-label="Tailnet users"] li', 15)
     await dark.screenshot({ path: join(SHOTS, `${engine}-tailscale-dark.png`), fullPage: true })
+    // Someone waiting with a long name and no spaces in it, which the Team page must wrap on a phone.
+    await asPerson(PEOPLE, `longw12b-${engine}-${id}@mail.test`, 'POST', '/v1/me/join', {}, `W${'w'.repeat(150)}`)
     const phone = await open(owner, phoneOf(engine))
     await phone.goto('/#/team')
     await visible(phone, 'ul[aria-label="People"] li', 15)
@@ -367,7 +369,7 @@ try {
   await tailscale.close()
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
-    await db.query(`delete from join_requests where login like $1 or login like $2`, [`gh12b-%-${id}@github`, `late12b-%-${id}@mail.test`]).catch(() => undefined)
+    await db.query(`delete from join_requests where login like $1 or login like $2 or login like $3`, [`gh12b-%-${id}@github`, `late12b-%-${id}@mail.test`, `longw12b-%-${id}@mail.test`]).catch(() => undefined)
     rmSync(home, { recursive: true, force: true })
   }
   await db.end().catch(() => undefined)
