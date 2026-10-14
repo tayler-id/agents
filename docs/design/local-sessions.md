@@ -86,6 +86,8 @@ A session that passes all three gets its record session from the API, which chec
 
 Disconnecting a folder stops its sessions at once. The daemon forgets them, and the API refuses their events from then on.
 
+Durability leaves terminal sessions alone where it resumes turns, since a terminal session has no claimed messages, and its fence stops only the harnesses the daemon started. Its watchdog marks a terminal session lost when the Mac stops answering, as it does an agent's, and the next batch the daemon sends sets the status again. That is read from the code, and no check covers it.
+
 ## Mapping a transcript to events
 
 The mapping is `transcriptBatch` in `daemon/claude.ts`, beside the mapping for the app's sessions, and both make their blocks into events with the same function.

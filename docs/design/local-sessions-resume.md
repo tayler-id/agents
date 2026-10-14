@@ -2,7 +2,7 @@
 
 A note for whoever picks this up, kept current with each commit on the branch. The design is [local-sessions.md](local-sessions.md).
 
-- Branch `worktree-agent-ae6bff17618001d52`, worktree `.claude/worktrees/agent-ae6bff17618001d52`, from main at a98d843.
+- Branch `worktree-agent-ae6bff17618001d52`, worktree `.claude/worktrees/agent-ae6bff17618001d52`. Started from main at a98d843, and rebased onto 5556f3b, the durability merge.
 - The worktree has its own `node_modules` from `npm ci`, and `.env` and `.env.test` copied from main.
 - Migration 0013, applied to `agents_test`. Never edit it. The coordinator renumbers it at landing.
 - The check is `test/step21.ts`, on ports 8100 to 8102, with teams named `local-<id>`.
@@ -16,20 +16,24 @@ The branch's commits, oldest first, by subject:
 3. The API: connected folders, terminal sessions, events from a terminal session, the shapes, and who sees what.
 4. The daemon: `daemon/api.ts` taken out of `agentsd.ts`, `daemon/transcripts.ts`, `daemon/folders.ts`, and the mapping in `daemon/claude.ts`.
 5. The app: the sidebar's From terminals and Running now, and a terminal session's page.
-6. `test/step21.ts`, which passed all 49 lines with the real CLI. Its first run found that headless prompts are marked `sdk`, not `human`, and the fix is in the same commit.
+6. `test/step21.ts`. Its first run found that headless prompts are marked `sdk`, not `human`, and the fix is in the same commit.
+7. The parts doc and the design doc's account of the check.
+8. An interrupt for a terminal session is refused, a `.env` link to nothing is skipped, and step21's stray-words search looks only at its own team.
+9. step21's phone-width line measures the page's own boxes, and the build log's entry.
+10. The interactive session typed through the real daemon, in the build log and the design doc.
 
-## Under way
+Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
-- Breaking what step21 guards, a group of breaks per run. The runner and its results are in this session's scratchpad, `ls/breaks.ts` and `ls/breaks-result.json`, not in the repo. Each anchor must occur once before a file is written, and each file is put back and compared by sha256.
-- An interactive session typed through `expect`, through the real API and daemon, by hand: `ls/interactive-e2e.ts` in the scratchpad.
+## The rebase onto durability
 
-## After that
-
-- The build log's entry, and the numbers from the breaks in the design doc and `docs/what-each-part-does.md`.
-- Remove the `local-` teams that red runs kept, the `agents-step21-` folders in the temp folder, and the check's transcript folders under `~/.claude/projects`.
+- `docs/data-model.md` and `docs/what-each-part-does.md` keep both sections, durability's first.
+- `daemon/agentsd.ts` keeps main's `HEARTBEAT_SEC` and `SESSIONS_DIR`, with `HOME` from `daemon/api.ts`.
+- `app/src/App.tsx` lists live terminal sessions with main's `isWorking`, and `app/src/Session.tsx`'s `EventList` draws main's interrupted notices.
+- What durability does to a terminal session, read from the code and not checked: recovery takes up only sessions with claimed messages, which a terminal session never has, and the fence stops only harnesses the daemon started. The watchdog marks a terminal session lost when its Mac stops answering, like an agent's, and the next batch the daemon sends sets its status again.
 
 ## How to work here
 
 - `export PATH="$HOME/.local/node/bin:$PATH"` first.
 - Run the check with `node --env-file=.env --env-file=.env.test test/step21.ts`. It needs the test Postgres and the test Electric on 3002, builds the app, and runs the real `claude` with `haiku` about ten times, so it spends a little of the subscription. It takes about three minutes.
-- Never touch port 7701 without `mkdir ~/.agents-app/checks/run.lock` first. This work's check doesn't use it.
+- A red run keeps its teams and folders for inspection. `ls/cleanup.ts` in the scratchpad removes the `local-` teams, the `agents-step21-` temp folders and their transcript folders under `~/.claude/projects`.
+- Never touch port 7701 without `mkdir ~/.agents-app/checks/run.lock` first. step21 doesn't use it. Main's step18d does.
