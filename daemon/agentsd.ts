@@ -6,8 +6,7 @@
 // agent's folder and each task's workspace.
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -27,8 +26,9 @@ import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
 import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
+import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
+import { followTerminalSessions } from './transcripts.ts'
 
-const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
@@ -38,24 +38,8 @@ const TEAM_RECORD_GUIDE = "You work on a team. Everything you and your teammates
   + 'shared team record. Before you start on a problem, use the team-record tool search_record to look for related '
   + "work, earlier fixes and decisions by teammates, and build on what you find. Say when you used a teammate's work."
 
-function loadConfig(): { api: string; token: string } {
-  let file: unknown = {}
-  try {
-    file = JSON.parse(readFileSync(join(HOME, 'daemon.json'), 'utf8'))
-  } catch {
-    // No daemon.json: the environment must give the token.
-  }
-  const fromFile = (key: string) => {
-    const value = typeof file === 'object' && file !== null ? (file as Record<string, unknown>)[key] : undefined
-    return typeof value === 'string' ? value : undefined
-  }
-  const api = process.env.AGENTS_API ?? fromFile('api') ?? 'http://127.0.0.1:7700'
-  const token = process.env.AGENTS_TOKEN ?? fromFile('token')
-  if (!token) throw new Error(`set AGENTS_TOKEN or add a token to ${join(HOME, 'daemon.json')}`)
-  return { api, token }
-}
-
 const config = loadConfig()
+const api = apiClient(config)
 
 // The Claude token this box's owner signed in with from the app, if any.
 // Damaged, it is reported and left out, so the daemon stays up and its owner
@@ -94,47 +78,7 @@ const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, 
 const ws = workspaces(HOME, config.api, config.token)
 let stopping = false
 
-class ApiError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
-
-async function api<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(config.api + path, {
-    method,
-    signal,
-    headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const json: unknown = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const error = typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' ? json.error : ''
-    throw new ApiError(res.status, `${method} ${path}: ${res.status} ${error}`)
-  }
-  // The API's answers are this repo's own types.
-  return json as T
-}
-
-// Retries until the API takes the batch. Posts are idempotent by client id. A 4xx
-// other than 408 or 429 means the batch itself is wrong, so it is logged and dropped.
-async function post(sessionId: string, batch: EventBatch) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await api('POST', `/v1/sessions/${sessionId}/events`, scrub(batch))
-      return
-    } catch (error) {
-      const status = error instanceof ApiError ? error.status : 0
-      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        console.error(`dropped a batch for ${sessionId}:`, (error as Error).message)
-        return
-      }
-      await sleep(Math.min(30_000, 500 * 2 ** attempt))
-    }
-  }
-}
+const post = (sessionId: string, batch: EventBatch) => postEvents(api, sessionId, scrub(batch))
 
 // An agent's conversations run in its own folder on this machine.
 function agentHome(agentId: string): string {
@@ -599,3 +543,6 @@ console.log(`agentsd connected to ${config.api}`)
 void heartbeat()
 void listen(abort.signal)
 followSignIns(abort.signal)
+// The person's own Claude Code sessions in the folders they connected on this Mac.
+void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, signal: abort.signal })
+  .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })

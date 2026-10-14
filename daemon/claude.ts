@@ -4,7 +4,8 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
-import type { AnswerPayload, EventBatch, NewEvent } from '../shared/types.ts'
+import { z } from 'zod'
+import type { AnswerPayload, EventBatch, NewEvent, RawLine, SessionStatus } from '../shared/types.ts'
 import type { Harness, HarnessSession, HarnessStart } from './harness.ts'
 
 // Set by a parent Claude Code session. A daemon started from inside one must not
@@ -59,7 +60,7 @@ function resultText(content: unknown): string {
   return ''
 }
 
-function blockEvent(line: Line, block: Block, clientId: string): NewEvent {
+function blockEvent(line: Pick<Line, 'type' | 'parent_tool_use_id' | 'message'>, block: Block, clientId: string): NewEvent {
   const parentToolUseId = line.parent_tool_use_id ?? undefined
   const context = { parentToolUseId: parentToolUseId ?? null, messageId: line.message?.id ?? null }
   switch (block.type) {
@@ -155,6 +156,110 @@ function liveDeltas(line: Line): EventBatch['live'] {
   if (event.delta?.type === 'text_delta' && event.delta.text) return [{ m, b, k: 'text', d: event.delta.text, p }]
   if (event.delta?.type === 'thinking_delta' && event.delta.thinking) return [{ m, b, k: 'thinking', d: event.delta.thinking, p }]
   return []
+}
+
+// Claude Code's transcripts: one JSON line per entry, written under
+// ~/.claude/projects for every session, in a terminal or headless. The format is
+// Claude Code's own and not documented, so every field is optional here, and a
+// line of a type this file does not map makes no event.
+const TranscriptBlock = z.looseObject({ type: z.string() })
+export const TranscriptLine = z.looseObject({
+  type: z.string(),
+  uuid: z.string().optional(),
+  subtype: z.string().optional(),
+  content: z.unknown().optional(),
+  isSidechain: z.boolean().optional(),
+  isMeta: z.boolean().optional(),
+  isCompactSummary: z.boolean().optional(),
+  origin: z.looseObject({ kind: z.string() }).optional(),
+  turnOrigin: z.string().optional(),
+  message: z.looseObject({
+    id: z.string().optional(),
+    model: z.string().optional(),
+    stop_reason: z.string().nullable().optional(),
+    usage: z.unknown().optional(),
+    content: z.union([z.string(), z.array(TranscriptBlock)]).optional(),
+  }).optional(),
+})
+export type TranscriptLine = z.infer<typeof TranscriptLine>
+
+// Claude Code's own bookkeeping, not part of the conversation.
+const SKIPPED_TRANSCRIPT_SYSTEM = new Set(['stop_hook_summary', 'turn_duration'])
+// What Claude Code writes when a person stops a turn with Esc.
+const INTERRUPTED = /^\[Request interrupted by user/
+// Stop reasons that leave the turn with the model. Any other ends the turn.
+const CONTINUING = new Set(['tool_use', 'pause_turn'])
+const THINKING = new Set(['thinking', 'redacted_thinking'])
+
+// Images stay on the Mac. A screenshot can show a secret no scrubber can read.
+export function withoutImages(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutImages)
+  if (typeof value !== 'object' || value === null) return value
+  if ('type' in value && value.type === 'image') return { type: 'image', omitted: 'Images stay on the Mac.' }
+  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutImages(inner)]))
+}
+
+// Whether a user line is the person typing, rather than Claude Code, a hook, a
+// background task, another session or an agent's orders to its subagent.
+function fromPerson(line: TranscriptLine): boolean {
+  return !line.isSidechain && !line.isCompactSummary
+    && (line.origin === undefined || line.origin.kind === 'human')
+    && (line.turnOrigin === undefined || line.turnOrigin === 'human')
+}
+
+type Mapped = { events: NewEvent[]; status?: SessionStatus }
+
+function transcriptEvents(line: TranscriptLine, id: string, parentToolUseId: string | null): Mapped | null {
+  const subagent = parentToolUseId !== null
+  const context = { type: line.type, parent_tool_use_id: parentToolUseId, message: line.message }
+  const content = line.message?.content
+  const blocks: Block[] = typeof content === 'string' ? [{ type: 'text', text: content }] : content ?? []
+  if (line.type === 'assistant') {
+    const events = blocks.map((block, i) => blockEvent(context, block, `${id}:${i}`))
+    if (subagent) return { events }
+    // Every line of a message carries the message's stop reason. A message that
+    // ends the turn has its words after its thinking, so its thinking ends nothing.
+    const stop = line.message?.stop_reason
+    if (typeof stop !== 'string' || CONTINUING.has(stop) || blocks.every((b) => THINKING.has(b.type))) return { events, status: 'running' }
+    return { events: [...events, { clientId: `${id}:end`, kind: 'usage', body: { stopReason: stop, usage: line.message?.usage } }], status: 'idle' }
+  }
+  if (line.type === 'user') {
+    if (line.isMeta) return null
+    const events = blocks.flatMap((block, i) => (block.type === 'text' || block.type === 'image' ? [] : [blockEvent(context, block, `${id}:${i}`)]))
+    const said = blocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
+    const images = blocks.filter((b) => b.type === 'image').length
+    if (!said && !images) return { events, status: subagent ? undefined : 'running' }
+    if (INTERRUPTED.test(said)) {
+      return { events: [...events, { clientId: `${id}:said`, kind: 'notice', text: said, body: { interrupted: true, text: said } }], status: subagent ? undefined : 'idle' }
+    }
+    if (!subagent && fromPerson(line)) {
+      return { events: [...events, { clientId: `${id}:said`, kind: 'user', text: said, body: { text: said, images } }], status: 'running' }
+    }
+    return { events: [...events, blockEvent(context, { type: 'text', text: said }, `${id}:said`)] }
+  }
+  if (line.type === 'system' && line.subtype !== undefined && !SKIPPED_TRANSCRIPT_SYSTEM.has(line.subtype)) {
+    return { events: [{ clientId: id, kind: 'notice', text: line.subtype, parentToolUseId: parentToolUseId ?? undefined, body: { subtype: line.subtype, content: line.content } }] }
+  }
+  return null
+}
+
+// The events and raw lines that transcript lines make, in order. A subagent's
+// lines carry the Agent call that started it. The raw line leaves out
+// toolUseResult, Claude Code's second copy of a tool's result.
+export function transcriptBatch(lines: TranscriptLine[], parentToolUseId: string | null): EventBatch & { raw: RawLine[] } {
+  const events: NewEvent[] = []
+  const raw: RawLine[] = []
+  let status: SessionStatus | undefined
+  for (const line of lines) {
+    if (line.uuid === undefined) continue
+    const mapped = transcriptEvents(line, line.uuid, parentToolUseId)
+    if (!mapped) continue
+    events.push(...mapped.events)
+    const { toolUseResult: _copy, ...kept } = line
+    raw.push({ clientId: line.uuid, line: kept })
+    status = mapped.status ?? status
+  }
+  return status === undefined ? { events, raw } : { events, raw, status }
 }
 
 class ClaudeSession implements HarnessSession {
