@@ -167,11 +167,16 @@ export async function recordAnswer(client: pg.PoolClient, ask: AskTarget, answer
 export async function answerAsk(
   client: pg.PoolClient, askId: string, person: Person | null, decision: Decision, message?: string,
 ) {
+  // The session's lock comes before the ask's, the order a machine's recovery and
+  // a harness's batches take them in, so neither can wait on the other forever.
+  const owner = await maybe<{ session_id: string }>(client, 'select session_id from asks where id = $1', [askId])
+  if (owner) await client.query('select 1 from sessions where id = $1 for update', [owner.session_id])
   const ask = await maybe<AskTarget & { status: string; agent_id: string; request_ended_at: string | null }>(client,
     `select a.id, a.status, a.session_id, a.payload, a.request_ended_at, s.instance_id, s.agent_id, s.team_id
      from asks a join sessions s on s.id = a.session_id where a.id = $1 for update of a`, [askId])
   if (!ask) throw new HttpError(404, 'no such ask')
-  if (ask.status !== 'open') throw new HttpError(409, 'this ask is already answered')
+  if (ask.status === 'answered') throw new HttpError(409, 'this ask is already answered')
+  if (ask.status !== 'open') throw new HttpError(409, 'this ask is no longer open, since the turn that raised it ended')
   await client.query(
     `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
     [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
