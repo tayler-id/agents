@@ -45,7 +45,7 @@ Preconditions:
 
 ## Gotchas
 
-- Claiming a box makes the instance's runner start its container from the agents-box image. The container cannot reach an instance's port, since the box firewall lets containers reach only the live API's port, so the box stays offline. `bin/agentsctl down` removes the container and its home volume by their exact names.
+- An instance's boxes start from an image tag of its own, `agents-box:verify-<instance>`, never the live `agents-box:latest`, and nothing builds that tag. So claiming a box starts no container: the runner records `No such image` in the box's `start_error`, and the box stays offline. A box could not reach an instance's port anyway, since the box firewall lets containers reach only the live API's port. `bin/agentsctl down` removes any container and home volume of the team's boxes by their exact names.
 - A box held by a run says "on a run". Pipelines that run on boxes need that reach, so an instance runs bug-fix on its home machine and this state stays unreachable here.
 - The Machines list refreshes every 5 seconds, so a new box or a change of holder takes that long to show.
 - The machine shows online for as long as its daemon heartbeats, every 15 seconds. A daemon that stops leaves the machine stale and then offline.

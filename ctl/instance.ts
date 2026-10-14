@@ -61,6 +61,15 @@ async function until<T>(what: string, ms: number, needs: ProcessRecord[], look: 
 // A Unix socket's path may be at most 103 bytes on macOS.
 const MAX_SOCKET_PATH = 103
 
+// The image an instance's boxes start from: a tag of its own, which nothing
+// builds. The live server starts boxes from agents-box:latest, and a box could
+// not reach an instance's port anyway, since the box firewall lets containers
+// reach only the live API's port. So a box the instance claims records that its
+// image is missing, and no container runs.
+export const boxImageOf = (name: string) => `agents-box:verify-${name}`
+// docker run never fetches that tag from a registry.
+const BOX_DOCKER_ARGS = ['--pull=never']
+
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
 
 export type UpOptions = { name?: InstanceName; port?: number; harness: Harness; pipelines: boolean; build: boolean }
@@ -136,8 +145,9 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
         // People reach the API only on this socket, through the people process below.
         AGENTS_PEOPLE_SOCKET: socket,
         AGENTS_STREAMS_DIR: join(scratch, 'streams'), AGENTS_HOME: join(scratch, 'server'),
-        // Boxes an instance starts never get the team's Claude token.
+        // Boxes an instance starts never get the team's Claude token, nor the live image.
         AGENTS_BOX_TOKEN_FILE: join(scratch, 'no-box-claude-token'),
+        AGENTS_BOX_IMAGE: boxImageOf(name), AGENTS_BOX_DOCKER_ARGS: JSON.stringify(BOX_DOCKER_ARGS),
         AGENTS_REPLAYS: String(REPLAYS),
       }),
     })

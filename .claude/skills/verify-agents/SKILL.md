@@ -203,7 +203,7 @@ It stops what the instance's state file lists, after checking each process's sta
 - Lists the app reads every few seconds (the sidebar, an agent's page) lag a write. Wait on what a person would see with `--timeout`, never sleep.
 - The fake harness finishes a turn at once, so there is no moment to interrupt it, and it never asks to use a tool. Those need `--claude real`, which costs real tokens.
 - Chromium and Firefox reach the instance as `http://agents.test:<port>`, a plain-HTTP name like the tailnet's, so a browser API that needs a secure page fails as it would for a teammate. WebKit uses 127.0.0.1, which browsers treat as secure.
-- The forge can reach only the live API's port, so a forge issue or push never reaches an instance. Start runs from the app, the API, or the pipeline's own webhook, and know that a box can never reach an instance either.
+- The forge can reach only the live API's port, so a forge issue or push never reaches an instance. Start runs from the app, the API, or the pipeline's own webhook, and know that a box can never reach an instance either. An instance's boxes start from an image tag of its own, `agents-box:verify-<instance>`, which nothing builds, so a claimed box records that its image is missing and no container runs. Never build or tag `agents-box:latest`: the live server starts its boxes from it.
 - Several agents share the test database and its Electric. Electric may answer a live read with a 409, which the app follows by reading again, and `network` reports. Other agents' migrations may already be in the test database.
 - `.claude/` is protected. Baselines and feature files live in this skill's folder, and the tool's code lives in `ctl/`.
 

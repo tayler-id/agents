@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs, promisify } from 'node:util'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import { EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
 import { OUTPUT, type Output } from '../shared/cli/output.ts'
@@ -22,7 +23,7 @@ import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
 import { InstanceName, InstanceState, ProcessRecord, saveState, stateFile } from '../ctl/state.ts'
 import { childEnv } from '../ctl/config.ts'
-import { DoctorReport } from '../ctl/instance.ts'
+import { boxImageOf, DoctorReport } from '../ctl/instance.ts'
 import { MapReport } from '../ctl/map.ts'
 import { CompareResult } from '../ctl/visual.ts'
 import { Found } from '../ctl/protocol.ts'
@@ -40,6 +41,8 @@ const want = (section: z.infer<typeof Section>) => only.includes(section)
 
 const ROOT = new URL('..', import.meta.url).pathname
 const exec = promisify(execFile)
+// How often a wait in this check looks again.
+const LOOK_MS = 500
 const name = InstanceName.parse(`s17-${randomBytes(3).toString('hex')}`)
 const failures: string[] = []
 // How much of a failed command's own account the log keeps.
@@ -101,6 +104,20 @@ const stateNow = () => InstanceState.parse(JSON.parse(readFileSync(stateFile(nam
 const teamExists = (team: string) => withClient(async (client) => (await client.query('select 1 from teams where name = $1', [team])).rowCount === 1)
 // The login agentsctl drives as `--as stranger`, which asks to join when it opens the app.
 const stranger = `stranger-${name}@verify.local`
+// A box of the instance's team, with why its container could not start, if it could not.
+const BoxRow = z.object({ id: z.string(), start_error: z.string().nullable() })
+const boxNamed = (box: string) => withClient(async (client) => BoxRow.parse((await client.query(
+  'select i.id, i.start_error from instances i join teams t on t.id = i.team_id where t.name = $1 and i.name = $2', [`verify-${name}`, box])).rows[0]))
+
+// Looks again until `look` finds something, or gives null once `seconds` pass.
+async function within<T>(seconds: number, look: () => Promise<T | null>): Promise<T | null> {
+  const deadline = Date.now() + seconds * 1000
+  for (;;) {
+    const found = await look()
+    if (found !== null || Date.now() > deadline) return found
+    await sleep(LOOK_MS)
+  }
+}
 const asksToJoin = (login: string) => withClient(async (client) => (await client.query('select 1 from join_requests where login = $1', [login])).rowCount === 1)
 const orgExists = (org: string) => forgeAdmin.call('GET', `/orgs/${org}`).then(() => true, (error: unknown) => {
   if (error instanceof ForgeError && error.status === 404) return false
@@ -282,6 +299,14 @@ try {
     check(agent.out.head === 'ok: seed agent scout -> scout lives on mac' && /^ok: seed box crate -> crate is \S+ and free$/.test(box.out.head)
       && /^ok: seed task "Step 17 checks the task seed" -> the task is at #\/t\/[0-9a-f-]{36}, for fixer$/.test(task.out.head) && !task.out.already && taskAgain.out.already,
     'seed adds an agent, a box and a task, each read back from the record, and the same task again says already: true')
+    // Claiming the box makes the instance's runner start its container, from an image tag of the instance's own that nothing builds.
+    const crate = await boxNamed('crate')
+    const claimed = await ctl(['api', 'POST', `/v1/instances/${crate.id}/claim`])
+    const tried = await within(30, async () => { const row = await boxNamed('crate'); return row.start_error === null ? null : row })
+    const containers = (await exec('docker', ['ps', '-a', '--filter', `name=^agents-box-${crate.id}$`, '--format', '{{.Names}}'])).stdout.trim()
+    const released = await ctl(['api', 'POST', `/v1/instances/${crate.id}/release`])
+    check(claimed.out.ok && released.out.ok && tried?.start_error?.includes(`No such image: ${boxImageOf(name)}`) === true && containers === '',
+      "a box the instance claims starts from the instance's own image tag, never agents-box:latest, so no container runs")
     // The agents shape was made at up, so its first read holds only the snapshot from then, without scout.
     const report = DoctorReport.safeParse((await ctl(['doctor'])).out.data)
     const electric = report.success ? report.data.checks.find((c) => c.name === 'Electric') : undefined
