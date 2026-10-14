@@ -1,7 +1,22 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { go } from './App.tsx'
 import { act, api, clock, duration, money, useSnapshot, type Agent, type Hunk, type Person, type Proposal } from './data.ts'
 import type { Counts, FindingKind, RunScore, SessionScore } from '../../shared/evidence.ts'
+
+// What every proposal on a page reads: the hunks, and the names of people and
+// agents. A page fetches them once, and only while it shows a proposal.
+export function useProposalContext(showing: boolean) {
+  const args = showing ? {} : null
+  const { rows: hunks } = useSnapshot<Hunk>('proposal_hunks', args, 4000)
+  const { rows: people } = useSnapshot<Person>('people', args, 30000)
+  const { rows: agents } = useSnapshot<Agent>('agents', args, 30000)
+  return useMemo(() => ({
+    hunksOf: (proposalId: string) => hunks.filter((h) => h.proposal_id === proposalId).sort((a, b) => a.n - b.n),
+    login: (id: string | null) => people.find((p) => p.id === id)?.login ?? 'someone',
+    agentName: (id: string | null) => agents.find((a) => a.id === id)?.name ?? 'an agent',
+  }), [hunks, people, agents])
+}
+export type ProposalContext = ReturnType<typeof useProposalContext>
 
 const STATUS: Record<string, string> = {
   scoring: 'being scored', open: 'waiting for the shepherd', approved: 'approved', rejected: 'turned down', failed: 'could not be scored',
@@ -22,13 +37,10 @@ function Diff({ text, label }: { text: string; label: string }) {
 // A proposed change: what it changes and why, how it scored on replays, and its
 // hunks, each with the quotes it rests on and the decision on it. A coach
 // proposal at its gate lets a person keep or turn down each hunk.
-export function ProposalView({ proposal, showRun = false }: { proposal: Proposal; showRun?: boolean }) {
-  const { rows: allHunks } = useSnapshot<Hunk>('proposal_hunks', {}, 4000)
-  const { rows: people } = useSnapshot<Person>('people', {}, 30000)
-  const { rows: agents } = useSnapshot<Agent>('agents', {}, 30000)
-  const hunks = allHunks.filter((h) => h.proposal_id === proposal.id).sort((a, b) => a.n - b.n)
-  const login = (id: string | null) => people.find((p) => p.id === id)?.login ?? 'someone'
-  const agent = agents.find((a) => a.id === proposal.agent_id)?.name ?? 'an agent'
+export function ProposalView({ proposal, context, showRun = false }: { proposal: Proposal; context: ProposalContext; showRun?: boolean }) {
+  const hunks = context.hunksOf(proposal.id)
+  const { login } = context
+  const agent = context.agentName(proposal.agent_id)
   const what = proposal.target === 'pipeline' ? 'pipeline change' : proposal.target === 'skill' ? `skill ${proposal.skill_name ?? ''}`
     : proposal.target === 'agent' ? `change to ${agent}` : 'instructions change'
   const { scores } = proposal

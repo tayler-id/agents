@@ -222,6 +222,30 @@ try {
       await other.browser.close()
     }
   }
+
+  // A page showing two proposals reads the hunks once for the page, not once for each proposal.
+  const coachId = must(await one<{ id: string }>(`select id from pipelines where team_id = $1 and name = 'coach'`, [teamId]), 'the coach pipeline').id
+  for (const n of [1, 2]) {
+    await db.query(`insert into proposals (team_id, target, pipeline_id, diff, summary, status) values ($1, 'pipeline', $2, $3, $4, 'open')`,
+      [teamId, coachId, '--- a/pipelines/coach.ts\n+++ b/pipelines/coach.ts\n@@ -1 +1 @@\n-one\n+two', `Change ${n} to coach.`])
+  }
+  const polled = await browse('chromium', '/', errors)
+  try {
+    // Each read of a shape starts at offset -1, and may take more requests to catch up.
+    const reads: number[] = []
+    polled.page.on('request', (request) => {
+      const url = new URL(request.url())
+      if (url.pathname === '/v1/shape/proposal_hunks' && url.searchParams.get('offset') === '-1') reads.push(Date.now())
+    })
+    await polled.page.goto(`/#/p/${coachId}`)
+    check(await visible(polled.page, 'section.proposal >> nth=1', 30, /Change 2 to coach|Change 1 to coach/), 'the pipeline page shows both proposed changes')
+    await sleep(3000)
+    const first = reads[0] ?? 0
+    const early = reads.filter((at) => at - first < 3000).length
+    check(reads.length > 0 && early === 1, `the page read the hunks ${early} times in its first 3 seconds, once for both proposals`)
+  } finally {
+    await polled.browser.close()
+  }
   check(errors.length === 0, `no page errors${errors.length ? ` (${errors.join('; ')})` : ''}`)
 } catch (error) {
   failures.push((error as Error).message)

@@ -1,7 +1,7 @@
 import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { runLabel } from './Run.tsx'
-import { ProposalView } from './Proposal.tsx'
+import { ProposalView, useProposalContext } from './Proposal.tsx'
 import {
   act, api, clock, duration, money, repoName, useSnapshot, type Pipeline, type PipelineVersion, type Proposal, type Repo, type Run, type Task,
 } from './data.ts'
@@ -22,6 +22,7 @@ export function PipelineView({ pipelineId }: { pipelineId: string }) {
   // Replays score proposals. They count toward no version's record and show with their proposal's run.
   const ownRuns = runs.filter((r) => ownIds.has(r.pipeline_version_id) && !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at))
   const changes = proposals.filter((p) => p.pipeline_id === pipelineId && p.status !== 'failed').sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const proposalContext = useProposalContext(changes.length > 0)
   const title = (run: Run) => tasks.find((t) => t.id === run.task_id)?.title ?? run.trigger_payload.report?.title ?? 'Run'
 
   const stats = useMemo(() => {
@@ -59,7 +60,7 @@ export function PipelineView({ pipelineId }: { pipelineId: string }) {
         {!!changes.length && (
           <>
             <h2 className="kicker section">Proposed changes</h2>
-            {changes.slice(0, 5).map((proposal) => <ProposalView key={proposal.id} proposal={proposal} showRun />)}
+            {changes.slice(0, 5).map((proposal) => <ProposalView key={proposal.id} proposal={proposal} context={proposalContext} showRun />)}
           </>
         )}
 
