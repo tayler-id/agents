@@ -108,7 +108,7 @@ Every script has `--dry-run`, which says each step and does nothing. `npx cdk sy
 
 ## Tailscale policy
 
-One policy for the Mac and AWS. It keeps the grant and the tests that `docs/design/people-port.md` adds for the people socket, puts the AWS server's tag in that grant, and adds what the box host needs: Tailscale SSH from the server, for its Docker, and from admins. Merge it with what the policy already holds, after removing any grant or ACL that lets everyone reach everything, as that doc's first live step says. Nothing here has been applied or tried. Tailscale checks the policy when you save it, and runs the tests on every later change.
+One policy for the Mac and AWS. It keeps the grant and the tests that `docs/design/people-port.md` adds for the people socket, puts the AWS server's tag in that grant, and adds what the box host needs: Tailscale SSH from the server, for its Docker, and from admins. Merge it into the policy the tailnet holds now. That policy already has the Mac's grant and the tests, and the rule that let everyone reach everything is gone, so nothing needs removing first. `docs/decisions.md` records this under "Only tailscale serve can name a person". The AWS server's tag in the grant and the box host's SSH rules have not been applied or tried. Tailscale checks the policy when you save it, and runs the tests on every later change.
 
 ```json
 {
