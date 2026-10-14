@@ -142,6 +142,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 - **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port.
 - **Helps later.** Boxes run Claude on your subscription once a token from `claude setup-token` is in `~/.agents-app/box-claude-token`.
+- **Fenced in.** Boxes run without `NET_RAW`, so a box cannot put raw frames on the shared bridge or capture packets. `ops/box-firewall.sh` keeps every container off this Mac except on the machine ports. It also keeps boxes off every private range and off the VM except for DNS, as the box host does on AWS. The script and its check are written. The live VM does not have that part until Tayler runs the live steps in `docs/aws.md`.
 
 ### Runs in the app (`app/src/Run.tsx`, `app/src/Pipeline.tsx`, `app/src/Document.tsx`)
 
@@ -436,7 +437,7 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 
 ### Boxes' way out (`ops/aws/box-firewall.ts`)
 
-- **Solves now.** A box is an agent's computer, so its browser and tools reach the public internet over any protocol, and look names up at public resolvers. Inside, it reaches only the server's machine port. The firewall drops what a box sends to the box host, the VPC, RDS, the metadata endpoint, the tailnet, other boxes and every private range, and Docker cannot start without it.
+- **Solves now.** A box is an agent's computer, so its browser and tools reach the public internet over any protocol, and look names up at public resolvers. Inside, it reaches only the server's machine port. The firewall drops what a box sends to the box host at any of its addresses, loopback included, the VPC, RDS, the metadata endpoint, the tailnet, other boxes, every private range, multicast and the reserved ranges, and Docker cannot start without it.
 - **Helps later.** What boxes may not reach is one list, `BOX_CLOSED_RANGES`, and one update.
 
 ### Secrets on AWS (`ops/aws/secrets.ts`, `ops/aws/fetch-secrets.ts`)
@@ -446,14 +447,14 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 
 ### Backups, restore and health (`ops/aws/backup.ts`, `ops/aws/restore.ts`, `ops/aws/health.ts`)
 
-- **Solves now.** Every night the database and the forge go to S3, kept 35 days, beside RDS's own 7 days. A restore refuses while anything is connected. Every minute each host reports what the alarms watch, including whether the API answers and how old the last backup is.
+- **Solves now.** Every night the database and the forge go to S3, kept 35 days, beside RDS's own 7 days, staged on disk under `/var/tmp` after a check that they fit, and uploaded in parts, so a file can pass S3's 5 GiB limit for one upload. A restore says when its backup was taken, and changes nothing while the database holds teams, unless `--replace` names it, while anything is connected or a box runs, or when the backup will not fit. It removes the restored boxes' stopped containers, whose tokens the restored database does not know, so the runner starts each box with a new one. Every minute each host reports what the alarms watch, including whether the API answers and how old the last backup is.
 - **Helps later.** The restore is also how a rollback to this Mac works.
 - **Not done.** The nightly backup leaves out the boxes' home folders, so losing the box host's disk loses them, and a rollback leaves what boxes did on AWS behind.
 
 ### Cutover, updates and teardown (`ops/aws/export.ts`, `ops/aws/update.ts`, `ops/aws/down.ts`)
 
-- **Solves now.** One command moves this Mac's data, every box's home folder and the secrets to AWS at cutover, and refuses while the API or a box is running. The restore puts each box's home back on the box host, so a task resumes in its workspace with the same Claude session. One command on each host moves it to the last deployed commit. One command takes everything down, keeping a final snapshot and the backups unless told otherwise.
+- **Solves now.** One command moves this Mac's data, every box's home folder and the secrets to AWS at cutover, and refuses while the API or a box is running. The restore puts each box's home back on the box host, so a task resumes in its workspace with the same Claude session. One command on each host moves it to the last deployed commit. One command takes everything down, keeping a final snapshot and the backups unless told otherwise, and naming any backup object S3 will not delete.
 
-### The AWS checks (`test/step11.ts` to `test/step11f.ts`, `test/fake-aws.ts`)
+### The AWS checks (`test/step11.ts` to `test/step11g.ts`, `test/netlab.ts`, `test/fake-aws.ts`)
 
-- **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.
+- **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, and through the one in colima's VM on this Mac, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.

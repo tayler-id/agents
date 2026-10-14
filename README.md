@@ -37,13 +37,13 @@ The same server can run on AWS instead. The plan, with the costs and the cutover
 
 ### The box firewall
 
-Containers must reach this Mac only on the machine port, never the people port. `ops/box-firewall.sh` enforces that inside the colima VM, and colima runs it at every start once it is in colima's provision steps. After the first `colima start`, print the block:
+Containers must reach this Mac only on the machine port, never the people port. `ops/box-firewall.sh` enforces that inside the colima VM, and colima runs it at every start once it is in colima's provision steps. The same script keeps boxes, which run on Docker's default bridge, off every private range and off the VM, as the box host does on AWS. After the first `colima start`, print the block:
 
 ```sh
 { printf 'provision:\n  - mode: system\n    script: |\n'; sed 's/^/      /' ops/box-firewall.sh; }
 ```
 
-Put it in place of the `provision: []` line in `~/.colima/default/colima.yaml`, then run `colima restart`. `npm run check:step2b` confirms from a container that only the machine port answers.
+Put it in place of the `provision:` line in `~/.colima/default/colima.yaml`, which reads `provision: null` in a new config, then run `colima restart`. `docs/aws.md` has the steps for a VM that already runs the older script. `npm run check:step2b` confirms from a container that only the machine port answers.
 
 ## Connect over Tailscale
 
