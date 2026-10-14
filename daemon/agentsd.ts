@@ -6,8 +6,8 @@
 // agent's folder and each task's workspace.
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -18,14 +18,13 @@ import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
 import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
-import { MessagePayload, PUSH_PAYLOAD, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, OtherCommand, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces, type TaskFile } from './workspace.ts'
 import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from '../shared/framework.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -35,8 +34,10 @@ import { startDesktop, type Desktop } from './desktop.ts'
 import { startScreenService, type ScreenService } from './screen.ts'
 import { linkScreen, type ScreenLink } from './screen-link.ts'
 import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL } from './computer-guide.ts'
+import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
+import { followTerminalSessions } from './transcripts.ts'
+import { loginShellSecrets } from './secrets.ts'
 
-const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
@@ -49,24 +50,8 @@ const TEAM_RECORD_GUIDE = "You work on a team. Everything you and your teammates
   + 'shared team record. Before you start on a problem, use the team-record tool search_record to look for related '
   + "work, earlier fixes and decisions by teammates, and build on what you find. Say when you used a teammate's work."
 
-function loadConfig(): { api: string; token: string } {
-  let file: unknown = {}
-  try {
-    file = JSON.parse(readFileSync(join(HOME, 'daemon.json'), 'utf8'))
-  } catch {
-    // No daemon.json: the environment must give the token.
-  }
-  const fromFile = (key: string) => {
-    const value = typeof file === 'object' && file !== null ? (file as Record<string, unknown>)[key] : undefined
-    return typeof value === 'string' ? value : undefined
-  }
-  const api = process.env.AGENTS_API ?? fromFile('api') ?? 'http://127.0.0.1:7700'
-  const token = process.env.AGENTS_TOKEN ?? fromFile('token')
-  if (!token) throw new Error(`set AGENTS_TOKEN or add a token to ${join(HOME, 'daemon.json')}`)
-  return { api, token }
-}
-
 const config = loadConfig()
+const api = apiClient(config)
 
 // The Claude token this box's owner signed in with from the app, if any.
 // Damaged, it is reported and left out, so the daemon stays up and its owner
@@ -80,9 +65,11 @@ function ownToken(): string | null {
   }
 }
 
+// What the person's login shell exports, learned once, at start.
+let shellSecrets: [string, string][] = []
 // Secrets this machine holds: its environment's, the plugins' in secrets.json,
-// and its owner's Claude token. Read again for each new session, so a secret
-// added later is scrubbed too.
+// its owner's Claude token and its login shell's. Read again for each new
+// session, so a secret added later is scrubbed too.
 const knownSecrets = (): [string, string][] => {
   const own = ownToken()
   const signedIn: [string, string][] = own === null ? [] : [['CLAUDE_CODE_OAUTH_TOKEN', own]]
@@ -90,10 +77,22 @@ const knownSecrets = (): [string, string][] => {
     ...envSecrets(process.env),
     ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
     ...signedIn,
+    ...shellSecrets,
   ].sort((a, b) => b[1].length - a[1].length)
 }
 let secrets = knownSecrets()
 let scrub = makeScrub(secrets)
+// Terminal sessions wait for this, and are not sent at all if the shell can't be
+// read, since its secrets would reach the record unscrubbed.
+const shellRead = loginShellSecrets().then((found) => {
+  shellSecrets = found
+  secrets = knownSecrets()
+  scrub = makeScrub(secrets)
+  return true
+}, (error: unknown) => {
+  console.error(`the login shell's environment: ${messageOf(error)}. Terminal sessions are not sent until the daemon starts again and can read it.`)
+  return false
+})
 // Live text is held back long enough to catch a secret split across chunks.
 const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length + 16))
 // Each session's current process. Only it sets the session's status. A process
@@ -153,47 +152,7 @@ const desktopUp: Promise<boolean> = desktop && desktopConfig
   })
   : Promise.resolve(true)
 
-class ApiError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
-
-async function api<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(config.api + path, {
-    method,
-    signal,
-    headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const json: unknown = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const error = typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' ? json.error : ''
-    throw new ApiError(res.status, `${method} ${path}: ${res.status} ${error}`)
-  }
-  // The API's answers are this repo's own types.
-  return json as T
-}
-
-// Retries until the API takes the batch. Posts are idempotent by client id. A 4xx
-// other than 408 or 429 means the batch itself is wrong, so it is logged and dropped.
-async function post(sessionId: string, batch: EventBatch) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await api('POST', `/v1/sessions/${sessionId}/events`, scrub(batch))
-      return
-    } catch (error) {
-      const status = error instanceof ApiError ? error.status : 0
-      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        console.error(`dropped a batch for ${sessionId}:`, (error as Error).message)
-        return
-      }
-      await sleep(Math.min(30_000, 500 * 2 ** attempt))
-    }
-  }
-}
+const post = (sessionId: string, batch: EventBatch) => postEvents(api, sessionId, scrub(batch))
 
 // An agent's conversations run in its own folder on this machine.
 function agentHome(agentId: string): string {
@@ -291,7 +250,7 @@ async function sendChanges(workspaceId: string) {
   const sent = sentChanges.get(workspaceId) ?? new Map<string, string>()
   const repos = await ws.changes(workspaceId, sent)
   if (!repos) return
-  const reply = ChangesReply.parse(await api<unknown>('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
+  const reply = ChangesReply.parse(await api('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
   const held = new Map<string, string>()
   for (const repo of repos) {
     if (repo.state === 'listed') for (const file of repo.files) held.set(changeKey(repo.repoId, file.path), file.hash)
@@ -395,7 +354,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
 
 // Whether the server still has the workspace's setup queued or running for this machine.
 const settingUp = (workspaceId: string) => async () =>
-  WorkspaceSetup.parse(await api<unknown>('GET', `/v1/instance/workspaces/${workspaceId}/setup`)).settingUp
+  WorkspaceSetup.parse(await api('GET', `/v1/instance/workspaces/${workspaceId}/setup`)).settingUp
 
 // Does what a command asks, and returns what the API should record about it. A
 // message starts or resumes the session; an answer or an interrupt needs the
@@ -403,9 +362,9 @@ const settingUp = (workspaceId: string) => async () =>
 async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'setup_workspace') return ws.setup(command.payload)
   if (command.kind === 'exec') return ws.exec(command.payload)
-  if (command.kind === 'push') return ws.push(PUSH_PAYLOAD.parse(command.payload))
-  if (command.kind === 'verify') return checker.verify(VERIFY_PAYLOAD.parse(command.payload))
-  if (command.kind === 'suite') return checker.suite(SUITE_PAYLOAD.parse(command.payload))
+  if (command.kind === 'push') return ws.push(command.payload)
+  if (command.kind === 'verify') return checker.verify(command.payload)
+  if (command.kind === 'suite') return checker.suite(command.payload)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
     // A process keeps the setup it started with. Once the agent's instructions,
@@ -431,16 +390,21 @@ async function apply(command: Command): Promise<unknown> {
   return null
 }
 
+// Tells the API a command this machine claimed failed, and why.
+async function failCommand(commandId: string, why: string) {
+  const message = scrub(why)
+  console.error(`command ${commandId} failed:`, message)
+  await api('POST', `/v1/instance/commands/${commandId}`, { status: 'failed', error: message })
+    .catch(() => {})
+}
+
 async function handle(command: Command) {
   try {
     const result = await apply(command)
     // A message is finished by the turn that answers it, which the harness reports.
     if (command.kind !== 'message') await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
   } catch (error) {
-    const message = scrub(error instanceof Error ? error.message : String(error))
-    console.error(`command ${command.id} failed:`, message)
-    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'failed', error: message })
-      .catch(() => {})
+    await failCommand(command.id, error instanceof Error ? error.message : String(error))
   }
   // Setting up, a check or a push may have changed what differs from the base.
   // A suite runs in the check host's own clone, outside every workspace.
@@ -510,7 +474,7 @@ async function listen(signal: AbortSignal) {
   // The API may not be up yet, after a reboot or a server restart. Keep trying.
   for (let attempt = 0; !stopping; attempt++) {
     try {
-      const recovery = RecoveryAnswer.parse(await api<unknown>('POST', '/v1/instance/recover', {}))
+      const recovery = RecoveryAnswer.parse(await api('POST', '/v1/instance/recover', {}))
       if (recovery.requeued) console.log(`requeued ${recovery.requeued} unfinished commands`)
       if (recovery.ended) console.log(`ended ${recovery.ended} messages a person asked to stop while this machine was down`)
       if (recovery.gaveUp) console.log(`failed ${recovery.gaveUp} messages whose turn kept stopping this machine`)
@@ -543,26 +507,42 @@ async function listen(signal: AbortSignal) {
   })
 }
 
+// What a claim answers with. A message's payload is read on its own, below. The
+// union is on the kind, so a command that doesn't parse names its own fields.
+const Claimed = z.object({
+  command: z.discriminatedUnion('kind', [z.object({ id: z.string(), kind: z.literal('message'), sessionId: z.string(), payload: z.unknown() }), OtherCommand]),
+})
+
+// A message with its payload read. An API of another version can queue a payload
+// this daemon can't use, such as one with no permissions, and that turn fails with the reason.
+function readMessage(claimed: { id: string; sessionId: string; payload: unknown }): Command | null {
+  const payload = MessagePayload.safeParse(claimed.payload)
+  if (!payload.success) {
+    failTurn(claimed.sessionId, [claimed.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
+    return null
+  }
+  return { id: claimed.id, kind: 'message', sessionId: claimed.sessionId, payload: payload.data }
+}
+
 async function claimAndHandle(commandId: string) {
   try {
-    const { command } = await api<{ command: Command }>('POST', `/v1/instance/commands/${commandId}/claim`, {})
-    if (command.kind === 'message') {
-      // The claim's answer is cast, not read. An API of another version can queue a
-      // payload this daemon can't use, such as one with no permissions.
-      const payload = MessagePayload.safeParse(command.payload)
-      if (!payload.success) {
-        failTurn(command.sessionId, [command.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
-        return
-      }
-      command.payload = payload.data
+    const answer = Claimed.safeParse(await api('POST', `/v1/instance/commands/${commandId}/claim`, {}))
+    if (!answer.success) {
+      // The claim made the command this machine's. One it can't read fails with
+      // the reason, as one whose work throws does, so no run waits on it.
+      await failCommand(commandId, `This machine could not read the command: ${z.prettifyError(answer.error)}`)
+      return
     }
+    const claimed = answer.data.command
+    const command = claimed.kind === 'message' ? readMessage(claimed) : claimed
+    if (command === null) return
     // Workspace work can take minutes, so it runs beside the queue rather than
     // holding up messages and interrupts for sessions.
     if (command.sessionId === null) void handle(command)
     else inOrder(command.sessionId, () => handle(command))
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) return
-    console.error(`claim ${commandId}:`, (error as Error).message)
+    console.error(`claim ${commandId}:`, messageOf(error))
   }
 }
 
@@ -703,3 +683,6 @@ console.log(`agentsd connected to ${config.api}`)
 void heartbeat()
 void desktopUp.then((up) => { if (up) void listen(abort.signal) })
 followSignIns(abort.signal)
+// The person's own Claude Code sessions in the folders they connected on this Mac.
+void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, ready: shellRead, signal: abort.signal })
+  .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })

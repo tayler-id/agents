@@ -4,6 +4,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { z } from 'zod'
 import { HttpError } from './record.ts'
+import { MAX_BODY_BYTES } from '../shared/types.ts'
 
 // People reach the API only through tailscale serve, on a Unix socket. Machines,
 // boxes included, reach it on a loopback port with their tokens. Containers and
@@ -15,8 +16,6 @@ export type Audience = 'people' | 'machines'
 export type Params = readonly [string, string, string]
 export type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown>
 export type Route = [Audience, string, RegExp, Handler]
-
-const MAX_BODY_BYTES = 20 * 1024 * 1024
 
 export async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []

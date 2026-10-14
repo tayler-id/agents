@@ -420,6 +420,35 @@ The design is in `docs/design/projects.md`.
 - **Helps later.** Pipelines can make and keep the same kind of skill for any repo (`docs/design/verification.md`), and other CLIs, such as agents-git, can share the library and pass the same conformance check.
 - **Not done.** The framework's policy still names its own stand-in skill and map, `.claude/skills/verify/`, and an evidence file, `test/ui-shots/evidence.json`, that agentsctl does not write. Its gates do not read this branch's map or manifest yet.
 
+## Terminal sessions
+
+The design, with what is not done and the calls waiting on Tayler, is `docs/design/local-sessions.md`.
+
+### Connected folders (`daemon/folders.ts`, `server/folders.ts`, the `connected_folders` table)
+
+- **Solves now.** A person connects a folder on their Mac once, with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again.
+- **Helps later.** The app can list a Mac's folders and disconnect one through the same rows.
+
+### The transcript reader (`daemon/transcripts.ts`, `transcriptBatch` in `daemon/claude.ts`)
+
+- **Solves now.** The daemon reads the transcripts Claude Code writes under `~/.claude/projects` for the sessions that started in a connected folder after it was connected. It posts each prompt, reply, thinking block, tool call and result, with a subagent's work under the Agent call that started it. It scrubs them as it scrubs an app session, adds the values in the folder's `.env` files, and leaves images, files and the results of tool calls on paths outside the folder on the Mac. A session started anywhere else is read only as far as the line that says where it started, and nothing of it leaves the Mac. A restart goes on where the last one stopped.
+- **Helps later.** Codex keeps transcripts too, so its terminal sessions need one more reader, not a new path into the record.
+
+### Terminal sessions in the app (`app/src/Terminal.tsx`)
+
+- **Solves now.** The sidebar's From terminals lists recent terminal sessions by folder and whose terminal they ran in, and Running now marks a live one as terminal. Each opens on its own page, `#/l/<session id>`, with every event. Agents' `search_record` finds them like any session the team shares.
+- **Helps later.** A teammate's Claude finds a fix made in a terminal, which is where most fixes are made today.
+
+### The step 21 check (`test/step21.ts`)
+
+- **Solves now.** It runs the real `claude` CLI with `haiku`, headless, through the real daemon, API and Electric. It connects a folder and runs sessions in it, in a folder inside it, beside it, before it was connected and after it was disconnected, and in a private folder. Then it checks what the record holds and what it doesn't, the scrubbing, the picture that stayed on the Mac, the subagent, what each person sees in the API and in Chromium, a daemon restart, and what the API refuses.
+- **Helps later.** A Claude Code release that changes its transcripts fails this check instead of going quiet.
+
+### The step 21b check (`test/step21b.ts`, `test/read-meter.ts`)
+
+- **Solves now.** It writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, and runs the real daemon, folders command, API and Electric on them, with no Claude. It takes about a minute and a half, on ports 8110 to 8113. It holds the review's fixes for terminal sessions, each as a line that went red under a break of what it guards. `test/read-meter.ts` is loaded into the daemon it starts and counts the bytes the daemon reads from each file, the biggest buffer a read was given and the CPU time it used, so the check can say how much a read cost and not only that it landed.
+- **Helps later.** A change to how the daemon reads, scrubs, sends or withholds a transcript gets its answer in about a minute and a half, where step 21 takes about three and spends a little of the subscription.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

@@ -11,7 +11,7 @@ import type { BlobId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
-import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, MessagePayload, NewEvent } from '../shared/types.ts'
+import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
 import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
@@ -38,9 +38,14 @@ export class HttpError extends Error {
 // A person on a team, as the people port knows them.
 export const Person = z.object({ id: PersonId, team_id: TeamId, login: z.string(), role: TeamRole })
 export type Person = z.infer<typeof Person>
-type Session = {
-  id: string; team_id: string; instance_id: string; conversation_id: string | null; agent_id: string; last_seq: string
-}
+// A session as the schema's check allows it. An agent's session has an agent, and
+// serves a conversation or a task. A terminal session serves a folder, and has
+// neither an agent nor a conversation.
+type Session = { id: string; team_id: string; instance_id: string; last_seq: string } & (
+  | { folder_id: null; conversation_id: string | null; agent_id: string }
+  | { folder_id: string; conversation_id: null; agent_id: null }
+)
+type AgentSession = Extract<Session, { folder_id: null }>
 type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 
 // Gives new events the next numbers in their session, skipping any client id
@@ -49,7 +54,7 @@ export async function appendEvents(
   client: pg.PoolClient, sessionId: string, batch: EventBatch, author: string | null = null,
 ): Promise<number[]> {
   const session = await maybe<Session>(client,
-    'select id, team_id, instance_id, conversation_id, agent_id, last_seq from sessions where id = $1 for update', [sessionId])
+    'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for update', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
 
   const ids = batch.events.map((e) => e.clientId)
@@ -204,21 +209,28 @@ export async function answerAsk(
 
 // Asks the session's machine to stop the current turn.
 export async function interruptSession(client: pg.PoolClient, sessionId: string) {
-  const session = await maybe<{ team_id: string; instance_id: string }>(client,
-    'select team_id, instance_id from sessions where id = $1', [sessionId])
+  const session = await maybe<{ team_id: string; instance_id: string; folder_id: string | null }>(client,
+    'select team_id, instance_id, folder_id from sessions where id = $1', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
+  // The daemon reads a terminal session. It doesn't run it, so it can't stop it.
+  if (session.folder_id !== null) throw new HttpError(409, 'A terminal session is stopped from its terminal, not from the app.')
   await client.query(
     `insert into commands (team_id, instance_id, session_id, kind) values ($1, $2, $3, 'interrupt')`,
     [session.team_id, session.instance_id, sessionId])
 }
 
+// In a terminal session only what the person writes carries their author, so its
+// batch names them on their prompts and on nothing Claude wrote. Any other
+// session takes the author its caller gives, such as the person a screen notice
+// says took over.
 async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
   const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
+  const authored = session.folder_id === null || PERSON_KINDS.includes(event.kind)
   await client.query(
     `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
        tool_use_id, tool_name, text, body, client_id)
      values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [session.team_id, session.id, seq, event.kind, author, event.parentToolUseId ?? null,
+    [session.team_id, session.id, seq, event.kind, authored ? author : null, event.parentToolUseId ?? null,
       event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
 }
 
@@ -255,7 +267,7 @@ export async function appendMessage(
 // When an agent's turn ends in a conversation, its last words in that turn
 // become its post there, unless it passed its turn in a room. Subagents' words
 // stay in the record only. Returns the words, or null when there were none.
-async function postAgentReply(client: pg.PoolClient, session: Session, conversationId: string): Promise<string | null> {
+async function postAgentReply(client: pg.PoolClient, session: AgentSession, conversationId: string): Promise<string | null> {
   const reply = await maybe<{ id: string; text: string }>(client,
     `select id, body->>'text' as text from events
      where session_id = $1 and kind = 'assistant' and parent_tool_use_id is null

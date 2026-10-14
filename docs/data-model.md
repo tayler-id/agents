@@ -246,3 +246,10 @@ Coach and improve learn from checked evidence, in `server/migrations/0012_eviden
   | created_at, replied_at | time | |
 
 - **`proposals.target` gains `agent`.** A coach proposal's hunks touch one agent's instructions, skills, profiles and checks. The targets `instructions` and `skill` stay for proposals already made.
+
+Terminal sessions, in `server/migrations/0013_local_sessions.sql`. The design is in `docs/design/local-sessions.md`.
+
+- **`connected_folders`, new.** A folder on a person's Mac whose Claude Code sessions land in the record: the team, the Mac, the folder's absolute path, who sees its sessions (`team` or `private`), the person who connected it, and when it was connected and disconnected. One row per Mac and path, reused when the folder is connected again. Only the Mac connects or disconnects a folder, with its machine token.
+- **`sessions.folder_id` and `sessions.cwd`, new, and `sessions.agent_id` may be null.** A terminal session serves a connected folder, not a conversation or a task, and has no agent. `cwd` is the folder, or a folder inside it, that the session started in. One check replaces the old "a task or a conversation, never both": a session serves a conversation or a task and has an agent, or it serves a folder and has no agent, task, conversation or workspace, but has a `cwd` and Claude's session id.
+- **`sessions` unique on `(instance_id, harness_session_id)` for terminal sessions.** One record session per Claude Code session on a Mac, so a daemon that reads a transcript twice gets the same session back.
+- **Used for the first time, with no schema change.** A `user` event can come from a machine, in a terminal session only. Its author is the folder's person.

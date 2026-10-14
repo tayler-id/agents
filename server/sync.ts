@@ -9,7 +9,7 @@ import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ELECTRIC_PROTOCOL_QUERY_PARAMS } from '@electric-sql/client'
 import { instanceFrom, personFrom, type Instance } from './auth.ts'
-import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VISIBLE_TASK } from './access.ts'
+import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VISIBLE_FOLDER, VISIBLE_TASK } from './access.ts'
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
@@ -75,17 +75,22 @@ const personShapes: Record<string, PersonShape> = {
   messages: async (p, args) => ({
     table: 'messages', where: 'conversation_id = $1', params: [await requireConversation(p, args)],
   }),
-  // Sessions the person may see, either conversations' or tasks'. They are two
-  // shapes because Electric 1.8 never sends a row that moves into a filter ORing
-  // two subqueries, so a new task's session would never arrive.
+  // Sessions the person may see: conversations', tasks', or the terminal sessions
+  // of connected folders. They are separate shapes because Electric 1.8 never
+  // sends a row that moves into a filter ORing two subqueries, so a new task's
+  // session would never arrive.
   sessions: async (p, args) => {
     const of = args.get('of')
-    if (of !== 'conversations' && of !== 'tasks') throw new HttpError(400, 'of must be conversations or tasks')
+    if (of !== 'conversations' && of !== 'tasks' && of !== 'folders') throw new HttpError(400, 'of must be conversations, tasks or folders')
     const parent = of === 'tasks'
       ? `task_id in (select id from tasks where ${VISIBLE_TASK})`
-      : `conversation_id in (select id from conversations where ${VISIBLE_CONVERSATION})`
+      : of === 'folders'
+        ? `folder_id in (select id from connected_folders where ${VISIBLE_FOLDER})`
+        : `conversation_id in (select id from conversations where ${VISIBLE_CONVERSATION})`
     return { table: 'sessions', where: `team_id = $1 and archived_at is null and ${parent}`, params: [p.team_id, p.id] }
   },
+  // The team's connected folders the person may see, to name where a terminal session ran.
+  connected_folders: async (p) => ({ table: 'connected_folders', where: `team_id = $1 and ${VISIBLE_FOLDER}`, params: [p.team_id, p.id] }),
   events: async (p, args) => {
     const sessionId = arg(args, 'session')
     if (!(await canSeeSession(p, sessionId))) throw new HttpError(404, 'no such session')
@@ -207,6 +212,8 @@ const personShapes: Record<string, PersonShape> = {
 const instanceShapes: Record<string, InstanceShape> = {
   // A machine's queue: the commands waiting for it.
   commands: async (i) => ({ table: 'commands', where: `instance_id = $1 and status = 'queued'`, params: [i.id] }),
+  // The folders on this Mac whose terminal sessions its daemon sends.
+  connected_folders: async (i) => ({ table: 'connected_folders', where: 'instance_id = $1 and disconnected_at is null', params: [i.id] }),
   // The Claude sign-ins this box's owner has under way on it.
   claude_logins: async (i) => ({
     table: 'claude_logins', where: `instance_id = $1 and status in ('starting', 'waiting_for_code', 'checking')`, params: [i.id],
