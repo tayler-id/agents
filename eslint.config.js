@@ -34,7 +34,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['server/**/*.ts', 'daemon/**/*.ts', 'shared/**/*.ts', 'ops/**/*.ts', 'pipelines/**/*.ts', 'test/**/*.ts'],
+    files: ['server/**/*.ts', 'daemon/**/*.ts', 'shared/**/*.ts', 'ops/**/*.ts', 'pipelines/**/*.ts', 'test/**/*.ts', 'ctl/**/*.ts'],
     languageOptions: { globals: globals.node },
   },
   {

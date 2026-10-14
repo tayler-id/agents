@@ -1,0 +1,183 @@
+{
+  "features": [
+    {
+      "id": "getting-in",
+      "name": "Getting in",
+      "paths": [
+        "server/auth.ts",
+        "server/access.ts",
+        "server/admin.ts",
+        "server/onboarding.ts",
+        "app/src/App.tsx",
+        "app/src/Team.tsx",
+        "desktop/main.cjs"
+      ],
+      "checks": [
+        "test/step2.ts",
+        "test/step2b.ts",
+        "test/step4c.ts",
+        "test/step12.ts",
+        "test/step12b.ts"
+      ]
+    },
+    {
+      "id": "conversations",
+      "name": "Conversations",
+      "paths": [
+        "app/src/Conversation.tsx",
+        "app/src/Work.tsx",
+        "app/src/live.ts",
+        "server/record.ts",
+        "server/rooms.ts",
+        "daemon/agentsd.ts"
+      ],
+      "checks": [
+        "test/step1.ts",
+        "test/step3.ts",
+        "test/step4b.ts",
+        "test/step10.ts",
+        "test/step10b.ts"
+      ]
+    },
+    {
+      "id": "agent-setup",
+      "name": "Agent setup",
+      "paths": [
+        "app/src/AgentPage.tsx",
+        "server/agents.ts",
+        "server/routines.ts",
+        "daemon/agentfiles.ts"
+      ],
+      "checks": [
+        "test/step10.ts",
+        "test/step10b.ts"
+      ]
+    },
+    {
+      "id": "tasks",
+      "name": "Tasks",
+      "paths": [
+        "app/src/Work.tsx",
+        "server/tasks.ts",
+        "daemon/workspace.ts"
+      ],
+      "checks": [
+        "test/step10.ts",
+        "test/step10b.ts"
+      ]
+    },
+    {
+      "id": "documents",
+      "name": "Documents and comments",
+      "paths": [
+        "app/src/Document.tsx",
+        "server/tasks.ts",
+        "daemon/agentsd.ts"
+      ],
+      "checks": [
+        "test/step10.ts",
+        "test/step10b.ts"
+      ]
+    },
+    {
+      "id": "sessions",
+      "name": "Sessions and the record",
+      "paths": [
+        "app/src/Session.tsx",
+        "app/src/App.tsx",
+        "server/teamrecord.ts",
+        "daemon/record-mcp.ts"
+      ],
+      "checks": [
+        "test/step1.ts",
+        "test/step5.ts",
+        "test/step10.ts"
+      ]
+    },
+    {
+      "id": "approvals",
+      "name": "Approvals and asks",
+      "paths": [
+        "app/src/Asks.tsx",
+        "server/record.ts",
+        "server/runner.ts",
+        "daemon/claude.ts"
+      ],
+      "checks": [
+        "test/step4a.ts",
+        "test/step4b.ts",
+        "test/step6.ts",
+        "test/step6b.ts"
+      ]
+    },
+    {
+      "id": "pipelines",
+      "name": "Pipelines",
+      "paths": [
+        "app/src/Pipeline.tsx",
+        "app/src/Run.tsx",
+        "server/pipelines.ts",
+        "server/runner.ts",
+        "server/hooks.ts",
+        "pipelines/bug-fix.ts"
+      ],
+      "checks": [
+        "test/step6.ts",
+        "test/step6b.ts",
+        "test/step8.ts"
+      ]
+    },
+    {
+      "id": "proposals",
+      "name": "Proposals",
+      "paths": [
+        "app/src/Proposal.tsx",
+        "server/refine.ts",
+        "pipelines/improve.ts",
+        "pipelines/coach.ts"
+      ],
+      "checks": [
+        "test/step9.ts",
+        "test/step9b.ts"
+      ]
+    },
+    {
+      "id": "secrets",
+      "name": "Secrets",
+      "paths": [
+        "daemon/agentsd.ts",
+        "shared/scrub.ts",
+        "server/agents.ts"
+      ],
+      "checks": [
+        "test/step10.ts",
+        "test/step10b.ts"
+      ]
+    },
+    {
+      "id": "machines",
+      "name": "Machines and boxes",
+      "paths": [
+        "server/boxes.ts",
+        "app/src/App.tsx"
+      ],
+      "checks": [
+        "test/step2b.ts",
+        "test/step7.ts"
+      ]
+    },
+    {
+      "id": "journeys",
+      "name": "Journeys",
+      "paths": [
+        "app/src/Conversation.tsx",
+        "app/src/Session.tsx",
+        "desktop/main.cjs"
+      ],
+      "checks": [
+        "test/step4b.ts",
+        "test/step4c.ts"
+      ]
+    }
+  ]
+}

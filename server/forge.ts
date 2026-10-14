@@ -210,9 +210,9 @@ export const forgeAdmin = {
   // Creates the repo in the org if it is missing, with the given files as its first
   // commit, the factory as a writer, main protected, and a webhook to the API.
   // `hook` false leaves the webhook out, and a URL sends it to that API instead,
-  // such as a check's own.
-  async ensureRepo(name: string, files: Record<string, string>, description = '', hook: boolean | string = true): Promise<string> {
-    const { org, webhookSecret } = forgeConfig()
+  // such as a check's own. `org` defaults to the team's org from forge.json.
+  async ensureRepo(name: string, files: Record<string, string>, description = '', hook: boolean | string = true, org = forgeConfig().org): Promise<string> {
+    const { webhookSecret } = forgeConfig()
     const hookUrl = typeof hook === 'string' ? hook : forgeConfig().hookUrl
     const repo = `${org}/${name}`
     const exists = await this.call('GET', `/repos/${repo}`).then(() => true, (error: unknown) => {

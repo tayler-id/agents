@@ -1,0 +1,475 @@
+// An instance's lifecycle: `up` starts an isolated API, daemon and app on the
+// test database, `doctor` says whether it is worth driving, and `down` stops
+// exactly what `up` and later commands started, then removes the instance's team
+// and forge repos. Evidence survives `down`.
+
+import { execFile } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
+import { setTimeout as sleep } from 'node:timers/promises'
+import type { PageKey } from './driver.ts'
+import { z } from 'zod'
+import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX, scrubber } from './config.ts'
+import { withClient } from './db.ts'
+import { call, readShape, type Reply } from './api.ts'
+import { CliError, EXIT, Refused, UsageError } from '../shared/cli/output.ts'
+import { playwrightDriver } from './playwright.ts'
+import { claimPorts, releasePorts } from './ports.ts'
+import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
+import { isLoginOf, LOGIN_DOMAIN, makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
+import { containerName, homeVolumeName } from '../shared/box-names.ts'
+import { stopSessionServer } from './session-client.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
+import {
+  InstanceName, listStates, ProcessRecord, readState, saveState, stateFile, toFailed, toKept, toReady, toStopped, toStopping,
+  type Harness, type InstanceState, type KeptState, type ReadyState, type StartingState, type StoppedState, type StoppingState,
+} from './state.ts'
+
+const run = promisify(execFile)
+
+// How long the API may take to answer after it starts: it applies migrations first.
+const API_READY_MS = 60_000
+// The daemon heartbeats as soon as it starts, then every 15 seconds.
+const DAEMON_HEARTBEAT_MS = 15_000
+const DAEMON_ONLINE_MS = 30_000
+// The daemon stops its agents' sessions on SIGTERM and waits up to 10 seconds for them.
+const STOP_GRACE_MS = 20_000
+// Two replays per proposal keep an improve run to a few minutes.
+const REPLAYS = 2
+const LOOK_MS = 250
+// The daemon claims a command as soon as sync delivers it, within a second or two.
+const STUCK_COMMAND_S = 30
+// How long doctor's browser waits for the app to show its workspace.
+const USABLE_MS = 15_000
+
+const Me = z.object({ person: z.object({ id: z.string(), login: z.string() }), team: z.object({ id: z.string(), name: z.string() }) })
+
+// Waits for `look` to find something, failing at once if a process it needs has exited.
+async function until<T>(what: string, ms: number, needs: ProcessRecord[], look: () => Promise<T | null>): Promise<T> {
+  const deadline = Date.now() + ms
+  for (;;) {
+    for (const record of needs) if (!(await isOurs(record))) throw new Error(`the ${record.role} process exited. Its log is ${record.log}`)
+    const found = await look()
+    if (found !== null) return found
+    if (Date.now() > deadline) throw new Error(`${what} within ${String(ms / 1000)} seconds`)
+    await sleep(LOOK_MS)
+  }
+}
+
+// A Unix socket's path may be at most 103 bytes on macOS.
+const MAX_SOCKET_PATH = 103
+
+// The image an instance's boxes start from: a tag of its own, which nothing
+// builds. The live server starts boxes from agents-box:latest, and a box could
+// not reach an instance's port anyway, since the box firewall lets containers
+// reach only the live API's port. So a box the instance claims records that its
+// image is missing, and no container runs.
+export const boxImageOf = (name: string) => `agents-box:verify-${name}`
+// docker run never fetches that tag from a registry.
+const BOX_DOCKER_ARGS = ['--pull=never']
+
+const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
+
+export type UpOptions = { name?: InstanceName; port?: number; harness: Harness; pipelines: boolean; build: boolean }
+
+// Whether an instance's API and daemon are still the processes it started.
+async function running(state: InstanceState): Promise<boolean> {
+  const needed = state.processes.filter((p) => p.role !== 'session')
+  if (!needed.length) return false
+  for (const record of needed) if (!(await isOurs(record))) return false
+  return true
+}
+
+// `up` again gives back the instance it already started, so a rerun starts nothing.
+export async function up(options: UpOptions): Promise<{ state: ReadyState; already: boolean }> {
+  config()
+  const fits = (s: InstanceState) => s.harness === options.harness && s.pipelines === options.pipelines
+  const named = options.name ? readState(options.name) : null
+  const candidates = options.name ? (named ? [named] : []) : listStates().filter(fits)
+  for (const existing of candidates) {
+    if (existing.phase === 'ready' && fits(existing) && await running(existing)) return { state: existing, already: true }
+  }
+  if (named) {
+    // A kept instance still has the team and repos its name refuses, until a later down removes them.
+    const kept = named.phase === 'kept'
+    const why = kept ? 'down --keep-data left its team in place' : named.phase !== 'ready' ? `it is ${named.phase}` : !fits(named) ? `it runs ${named.harness} Claude${named.pipelines ? ' with' : ' without'} pipelines` : 'its API or daemon stopped'
+    throw new Refused(`instance ${named.name} is already here, and ${why}`, [`Run \`bin/agentsctl down --instance ${named.name}\` to ${kept ? 'remove what it kept' : 'stop it'}, then up again`])
+  }
+  const name = options.name ?? InstanceName.parse(`v${randomBytes(3).toString('hex')}`)
+  // What up makes must not be there already. Another checkout's instance of the
+  // same name would own it, and a failed up would remove it.
+  const team = `verify-${name}`
+  const pick = ['Pick another name with --instance, or run `bin/agentsctl list` in the checkout that owns it']
+  if (await teamTaken(team)) throw new Refused(`the team ${team} is already in the test database, so it is not this instance's to make or remove`, pick)
+  if (options.pipelines && await orgTaken(orgOf(name))) throw new Refused(`the forge org ${orgOf(name)} is already there, so it is not this instance's to make or remove`, pick)
+  const ports = await claimPorts(name, options.port)
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), `${SCRATCH_PREFIX}${name}-`)))
+  const socket = join(scratch, 'people.sock')
+  if (socket.length > MAX_SOCKET_PATH) {
+    rmSync(scratch, { recursive: true, force: true })
+    releasePorts(ports, name)
+    throw new Refused(`the people socket's path, ${socket}, is longer than the ${String(MAX_SOCKET_PATH)} bytes a socket may have`, ['Pick a shorter name with --instance'])
+  }
+  const evidence = join(EVIDENCE_DIR, `${name}-${stamp()}`)
+  mkdirSync(evidence, { recursive: true })
+  let state: StartingState = {
+    phase: 'starting', name, team, ports, scratch, evidence, harness: options.harness, pipelines: options.pipelines,
+    createdAt: new Date().toISOString(), processes: [], forgeRepos: [], made: { team: false, org: false },
+  }
+  saveState(state)
+  try {
+    await makeTeam(name, team)
+    state = { ...state, made: { ...state.made, team: true } }
+    saveState(state)
+    const seed = await seedTeam(name, team)
+    state = { ...state, seed }
+    saveState(state)
+    if (options.pipelines) {
+      await makeOrg(name)
+      state = { ...state, made: { ...state.made, org: true } }
+      saveState(state)
+      // Before the API starts, so its runner reads the pipelines when it first syncs.
+      state = { ...state, forgeRepos: await seedForge(name, seed.teamId) }
+      saveState(state)
+    }
+    if (options.build) {
+      await run(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT, env: childEnv('build', {}) })
+    }
+    if (!existsSync(join(ROOT, 'app', 'dist', 'index.html'))) throw new Error('the app is not built. Run up without --no-build.')
+
+    const api = await spawnRecorded('api', [process.execPath, join(ROOT, 'server', 'api.ts')], {
+      cwd: ROOT, log: join(evidence, 'api.log'),
+      env: childEnv('api', {
+        AGENTS_RUNNER_TEAMS: team,
+        AGENTS_API_PORT: String(ports.machines), AGENTS_STREAMS_PORT: String(ports.streams),
+        // People reach the API only on this socket, through the people process below.
+        AGENTS_PEOPLE_SOCKET: socket,
+        AGENTS_STREAMS_DIR: join(scratch, 'streams'), AGENTS_HOME: join(scratch, 'server'),
+        // Boxes an instance starts never get the team's Claude token, nor the live image.
+        AGENTS_BOX_TOKEN_FILE: join(scratch, 'no-box-claude-token'),
+        AGENTS_BOX_IMAGE: boxImageOf(name), AGENTS_BOX_DOCKER_ARGS: JSON.stringify(BOX_DOCKER_ARGS),
+        AGENTS_REPLAYS: String(REPLAYS),
+      }),
+    })
+    state = { ...state, processes: [...state.processes, api] }
+    saveState(state)
+    const people = await spawnRecorded('people', [process.execPath, join(ROOT, 'ctl', 'people.ts'), String(ports.people), socket], {
+      cwd: ROOT, log: join(evidence, 'people.log'), env: childEnv('people', {}),
+    })
+    state = { ...state, processes: [...state.processes, people] }
+    saveState(state)
+    const ready = toReady(state, seed)
+    await until(`the API did not answer /v1/me for the instance's owner through its people port (see ${api.log})`, API_READY_MS, [api, people], async () => {
+      const reply = await call(ready, { method: 'GET', path: '/v1/me', as: 'person' }).catch(() => null)
+      const me = reply?.status === 200 ? Me.safeParse(reply.body) : null
+      return me?.success && me.data.team.name === team ? true : null
+    })
+
+    const fake = options.harness === 'fake'
+    if (fake) writeScenario(join(scratch, 'scenario.json'))
+    // A real session runs `claude` from the PATH. The fake one follows the scenario.
+    const daemonEnv = childEnv('daemon', {
+      AGENTS_API: `http://127.0.0.1:${String(ports.machines)}`, AGENTS_TOKEN: seed.machine.token, AGENTS_HOME: join(scratch, 'daemon'),
+      ...(fake ? { AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(scratch, 'scenario.json') } : {}),
+    })
+    const daemon = await spawnRecorded('daemon', [process.execPath, join(ROOT, 'daemon', 'agentsd.ts')], { cwd: ROOT, env: daemonEnv, log: join(evidence, 'daemon.log') })
+    state = { ...state, processes: [...state.processes, daemon] }
+    saveState(state)
+    await until(`the daemon did not come online (see ${daemon.log})`, DAEMON_ONLINE_MS, [api, people, daemon], async () => (await machineStatus(seed.machine.id)).status === 'online' ? true : null)
+
+    const done = toReady(state, seed)
+    saveState(done)
+    return { state: done, already: false }
+  } catch (error) {
+    const message = messageOf(error)
+    saveState(toFailed(state, message))
+    await down(name, { keepData: false })
+    throw new CliError(EXIT.failed, `up failed, and stopped everything it started: ${message}`, [
+      `Read the logs in ${evidence}`,
+      `Run \`bin/agentsctl up${options.name ? ` --instance ${options.name}` : ''}\` again once the cause is fixed`,
+    ])
+  }
+}
+
+const MachineRow = z.object({ status: z.string(), last_seen_at: z.date().nullable() })
+
+async function machineStatus(machineId: string) {
+  return withClient(async (client) => {
+    const row = MachineRow.parse((await client.query('select status, last_seen_at from instances where id = $1', [machineId])).rows[0])
+    return { status: row.status, seenMsAgo: row.last_seen_at ? Date.now() - row.last_seen_at.getTime() : null }
+  })
+}
+
+// The instance a command means: the one named, or the only one this checkout has running.
+export function resolve(name: InstanceName | undefined): InstanceState {
+  if (name) {
+    const state = readState(name)
+    if (!state) throw new CliError(EXIT.failed, `no instance named ${name} in this checkout`, [`Run \`bin/agentsctl up --instance ${name}\` to start it`, 'Run `bin/agentsctl list` to see the instances here'])
+    return state
+  }
+  const live = listStates().filter((s) => s.phase !== 'stopped')
+  const [only] = live
+  if (only && live.length === 1) return only
+  if (!live.length) throw new CliError(EXIT.failed, 'no instance is running in this checkout', ['Run `bin/agentsctl up --pipelines` to start one'])
+  throw new UsageError(`several instances are running: ${live.map((s) => s.name).join(', ')}`, live.map((s) => `Add \`--instance ${s.name}\` to mean ${s.name}`))
+}
+
+export function ready(name: InstanceName | undefined): ReadyState {
+  const state = resolve(name)
+  if (state.phase !== 'ready') {
+    throw new CliError(EXIT.failed, `instance ${state.name} is ${state.phase}, not ready`, [
+      `Run \`bin/agentsctl doctor --instance ${state.name}\` to see why`, `Run \`bin/agentsctl down --instance ${state.name}\` to stop what is left`,
+    ])
+  }
+  return state
+}
+
+// One of doctor's checks. `detail` holds only what the tool knows; `outside`
+// holds a server's words the check read, which the CLI prints fenced.
+export const Check = z.object({ name: z.string(), ok: z.boolean(), detail: z.string(), outside: z.string().optional() })
+export type Check = z.infer<typeof Check>
+
+// Whether the people door answers /v1/me with the owner on the instance's team.
+// Any other answer is the server's words, so it goes in `outside`.
+export function peopleDoorCheck(reply: Reply | { error: string }, expected: { owner: string; team: string }): Check {
+  const name = 'people door answers'
+  if ('error' in reply) return { name, ok: false, detail: `GET /v1/me failed: ${reply.error}` }
+  const parsed = Me.safeParse(reply.body)
+  if (parsed.success && parsed.data.person.login === expected.owner && parsed.data.team.name === expected.team) {
+    return { name, ok: true, detail: `${expected.owner} is on ${expected.team}` }
+  }
+  return {
+    name, ok: false, outside: typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body),
+    detail: `GET /v1/me answered ${String(reply.status)} with ${parsed.success ? `someone other than ${expected.owner} on ${expected.team}` : 'no person on a team'}`,
+  }
+}
+export const DoctorReport = z.object({ instance: z.string(), ok: z.boolean(), checks: z.array(Check) })
+export type DoctorReport = z.infer<typeof DoctorReport>
+
+async function listener(port: number): Promise<number | null> {
+  try {
+    const out = (await run('lsof', ['-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-t'])).stdout.trim()
+    return out ? Number(out.split('\n')[0]) : null
+  } catch (error) {
+    // lsof exits 1 when nothing listens there.
+    if (hasCode(error, 1)) return null
+    throw error
+  }
+}
+
+function newest(dir: string): number {
+  return Math.max(...readdirSync(dir, { withFileTypes: true }).map((e) => {
+    const path = join(dir, e.name)
+    return e.isDirectory() ? newest(path) : statSync(path).mtimeMs
+  }))
+}
+
+// Ready means usable, not only that a port answers: the app renders in a browser
+// as the instance's owner, with its team and agents in the sidebar. A browser of
+// its own, closed again, so doctor starts nothing that outlives it.
+async function appUsable(state: ReadyState): Promise<{ ok: boolean; detail: string }> {
+  const driver = playwrightDriver(state, async () => {})
+  const key: PageKey = { target: 'browser', engine: 'chromium', width: 'desktop', login: state.seed.owner.login }
+  try {
+    await driver.open(key)
+    await driver.wait(key, { role: 'navigation', name: 'Workspace' }, false, USABLE_MS)
+    // The sidebar's lists load after the sidebar shows. An agent's row reads its
+    // name, then its title when it has one, so each name is looked for at the start of a line.
+    const agents = Object.keys(state.seed.agents)
+    const missing = (text: string) => agents.filter((name) => !text.split('\n').some((line) => line === name || line.startsWith(`${name} `)))
+    const deadline = Date.now() + USABLE_MS
+    let lacking = missing(await driver.text(key, { role: 'list', name: 'Agents' }, USABLE_MS))
+    while (lacking.length && Date.now() < deadline) {
+      await sleep(LOOK_MS)
+      lacking = missing(await driver.text(key, { role: 'list', name: 'Agents' }, USABLE_MS))
+    }
+    const team = (await driver.text(key, { role: 'navigation', name: 'Workspace' }, USABLE_MS)).includes(state.team)
+    const ok = team && !lacking.length
+    return { ok, detail: ok ? `the app opens for ${state.seed.owner.login} on ${state.team}, with ${agents.join(', ')} in the sidebar` : `the app opened, but ${lacking.length ? `the sidebar lacks ${lacking.join(', ')}` : `shows no ${state.team}`}` }
+  } catch (error) {
+    return { ok: false, detail: `the app did not render its workspace: ${(messageOf(error)).split('\n')[0] ?? ''}` }
+  } finally {
+    await driver.shutdown()
+  }
+}
+
+// Read-only: answers whether this instance is worth driving. Changes nothing.
+export async function doctor(name: InstanceName | undefined): Promise<DoctorReport> {
+  const state = resolve(name)
+  const checks: Check[] = []
+  const add = (check: string, ok: boolean, detail: string) => { checks.push({ name: check, ok, detail }) }
+  add('phase', state.phase === 'ready', `the instance is ${state.phase}${state.phase === 'failed' ? `: ${state.error}` : ''}`)
+  try {
+    const { DATABASE_URL } = config()
+    add('test database', true, `${redact(DATABASE_URL)}, the database .env.test names`)
+  } catch (error) {
+    add('test database', false, messageOf(error))
+  }
+  const livePort = Object.values(state.ports).find((p) => LIVE_PORTS.includes(p))
+  add('not live', livePort === undefined, livePort === undefined ? `ports ${Object.values(state.ports).join(', ')} are the instance's own` : `port ${String(livePort)} is the live system's`)
+  for (const record of state.processes.filter((p) => p.role !== 'session')) {
+    const ours = await isOurs(record)
+    add(`${record.role} process`, ours, ours ? `pid ${String(record.pid)} is running ${record.argv.slice(1).join(' ')}` : `pid ${String(record.pid)} is gone, or is another program now. Its log is ${record.log}`)
+  }
+  // The browser session starts on the first browser or desktop command and can be
+  // reset at any time, so whether it runs says nothing about the instance's health.
+  const sessions = state.processes.filter((p) => p.role === 'session')
+  let session: ProcessRecord | null = null
+  for (const record of sessions) if (await isOurs(record)) session = record
+  add('browser session', true, session ? `pid ${String(session.pid)} holds the browsers` : 'not running. The next browser or desktop command starts it')
+  // The API listens on the machine door and the stream server, and the people process on the people door.
+  for (const [door, port, role] of [['machine door', state.ports.machines, 'api'], ['people door', state.ports.people, 'people'], ['stream server', state.ports.streams, 'api']] as const) {
+    const owner = state.processes.find((p) => p.role === role)
+    const pid = await listener(port)
+    add(door, pid !== null && pid === owner?.pid, pid === null ? `nothing listens on ${String(port)}` : pid === owner?.pid ? `the ${role} process (pid ${String(pid)}) listens on ${String(port)}` : `pid ${String(pid)} listens on ${String(port)}, not the instance's ${role} process`)
+  }
+  if (state.phase === 'ready') {
+    const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ error: messageOf(error) }))
+    checks.push(peopleDoorCheck(me, { owner: state.seed.owner.login, team: state.team }))
+    // Electric must serve what the database holds: a shape that stopped following
+    // the database still answers 200, with rows from before it stopped.
+    const shape = await readShape(state, 'agents').catch((error: unknown) => ({ ok: false as const, why: `reading the agents shape failed: ${messageOf(error)}` }))
+    const listed = new Set(shape.ok ? shape.rows.flatMap((row) => (typeof row.name === 'string' ? [row.name] : [])) : [])
+    const held = await withClient(async (client) => z.array(z.object({ name: z.string() })).parse((await client.query(
+      'select name from agents where team_id = $1 and archived_at is null order by name', [state.seed.teamId])).rows).map((row) => row.name))
+    const unlisted = held.filter((name) => !listed.has(name))
+    add('Electric', shape.ok && !unlisted.length,
+      !shape.ok ? shape.why
+        : unlisted.length ? `the agents shape lacks ${unlisted.join(', ')}, which the database holds, so Electric has stopped following the database. Its container's log says why`
+          : `the agents shape lists all ${String(held.length)} of the team's agents: ${held.join(', ')}`)
+    const commands = await call(state, { method: 'GET', path: '/v1/shape/commands?offset=-1', as: 'machine' }).then(
+      (reply) => ({ ok: reply.status === 200, why: `the command queue answered ${String(reply.status)}` }),
+      (error: unknown) => ({ ok: false, why: `reading the command queue failed: ${messageOf(error)}` }))
+    add('machine token', commands.ok, commands.ok ? "the machine's token reads its command queue" : commands.why)
+    const machine = await machineStatus(state.seed.machine.id)
+    const fresh = machine.status === 'online' && machine.seenMsAgo !== null && machine.seenMsAgo < 2 * DAEMON_HEARTBEAT_MS + 5_000
+    add('daemon online', fresh, `the machine ${state.seed.machine.name} is ${machine.status}${machine.seenMsAgo === null ? '' : `, seen ${String(Math.round(machine.seenMsAgo / 1000))}s ago`}`)
+    const stuck = await withClient(async (client) => z.object({ n: z.number() }).parse((await client.query(
+      `select count(*)::int as n from commands where instance_id = $1 and status = 'queued' and created_at < now() - make_interval(secs => $2)`,
+      [state.seed.machine.id, STUCK_COMMAND_S])).rows[0]).n)
+    add('daemon takes commands', stuck === 0, stuck ? `${String(stuck)} commands have waited more than ${String(STUCK_COMMAND_S)}s for the machine. Its log is ${state.processes.find((p) => p.role === 'daemon')?.log ?? 'missing'}` : 'nothing waits on the machine')
+    const page = await call(state, { method: 'GET', path: '/', as: 'person' }).then(
+      (reply) => ({ ok: reply.status === 200 && JSON.stringify(reply.body).includes('<title>Agents</title>'), why: `GET / answered ${String(reply.status)}` }),
+      (error: unknown) => ({ ok: false, why: `GET / failed: ${messageOf(error)}` }))
+    add('app served', page.ok, page.why)
+    const usable = await appUsable(state)
+    add('app usable', usable.ok, usable.detail)
+    const built = join(ROOT, 'app', 'dist', 'index.html')
+    const stale = existsSync(built) && newest(join(ROOT, 'app', 'src')) > statSync(built).mtimeMs
+    add('app build', existsSync(built) && !stale, stale ? 'app/src changed after the last build. Run bin/agentsctl down, then up (which builds), to see your change.' : 'app/dist is newer than app/src')
+    add('harness', state.harness === 'real' || existsSync(join(state.scratch, 'scenario.json')), state.harness === 'fake' ? 'the fake Claude harness, following its scenario' : 'real Claude sessions')
+  }
+  return { instance: state.name, ok: checks.every((c) => c.ok), checks }
+}
+
+const docker = async (...args: string[]) => {
+  try {
+    return (await run('docker', args)).stdout.trim()
+  } catch (error) {
+    if (hasCode(error, 'ENOENT')) {
+      throw new CliError(EXIT.failed, "docker is not on PATH, and down needs it to remove the instance's boxes", [
+        'Put the folder holding docker on PATH (/opt/homebrew/bin on this Mac), then run down again. It carries on where it stopped',
+      ])
+    }
+    throw error
+  }
+}
+async function dockerHas(kind: 'container' | 'volume', name: string): Promise<boolean> {
+  try {
+    await docker(kind, 'inspect', name)
+    return true
+  } catch (error) {
+    // docker exits 1 when there is no such container or volume.
+    if (hasCode(error, 1)) return false
+    throw error
+  }
+}
+
+// What an instance made, removed: its boxes' containers and volumes, its forge
+// org, its team, the join requests of its own logins, and its scratch folder.
+// Only what its state says up made goes.
+async function removeMade(instance: StoppingState): Promise<StoppedState['removed']> {
+  const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], joinRequests: [], scratch: false }
+  const seed = instance.seed
+  if (seed && instance.made.team) {
+    const boxes = await withClient(async (client) => z.array(z.object({ id: z.string() }))
+      .parse((await client.query(`select id from instances where team_id = $1 and kind = 'box'`, [seed.teamId])).rows))
+    for (const box of boxes) {
+      for (const [kind, thing] of [['container', containerName(box.id)], ['volume', homeVolumeName(box.id)]] as const) {
+        if (!(await dockerHas(kind, thing))) continue
+        await docker(kind === 'container' ? 'rm' : 'volume', ...(kind === 'container' ? ['-f', thing] : ['rm', thing]))
+        removed.containers.push(thing)
+      }
+    }
+  }
+  if (instance.made.org) removed.repos = await removeForge(instance.name)
+  const team = instance.team
+  removed.team = instance.made.team && await withClient(async (client) => {
+    const { rowCount } = await client.query('delete from teams where name = $1', [team])
+    return rowCount !== null && rowCount > 0
+  })
+  // A login on no team asks to join when it opens the app, and that request
+  // belongs to no team, so it outlives the team. Only the logins loginOf makes
+  // for this instance go. Another instance's can end the same way: down of
+  // visual leaves stranger-my-visual, which belongs to my-visual.
+  if (instance.made.team) {
+    const name = instance.name
+    const logins = z.array(z.object({ login: z.string() }))
+    removed.joinRequests = await withClient(async (client) => {
+      const asking = logins.parse((await client.query('select login from join_requests where login like $1', [`%${LOGIN_DOMAIN}`])).rows)
+      const ours = asking.map((row) => row.login).filter((login) => isLoginOf(login, name))
+      return logins.parse((await client.query('delete from join_requests where login = any($1) returning login', [ours])).rows).map((row) => row.login)
+    })
+  }
+  rmSync(instance.scratch, { recursive: true, force: true })
+  removed.scratch = true
+  return removed
+}
+
+// The final state goes with the evidence, without the machine's token or any
+// other secret. A stopped instance leaves this checkout's list. A kept one stays
+// on it, so a later down can remove what it kept.
+function closeOut(final: StoppedState | KeptState): StoppedState | KeptState {
+  saveState(final)
+  mkdirSync(final.evidence, { recursive: true })
+  writeFileSync(join(final.evidence, 'instance.json'), `${JSON.stringify(scrubber()(final), null, 2)}\n`)
+  if (final.phase === 'stopped') rmSync(stateFile(final.name))
+  return final
+}
+
+// Stops what the instance started and removes what it made, leaving its evidence.
+// With keepData it removes nothing and leaves the instance `kept`, for a later
+// down to remove. Null when there is nothing to stop: the instance named has no
+// state file here, or no instance is running, so `down` again is a no-op.
+export async function down(name: InstanceName | undefined, options: { keepData: boolean }): Promise<{ state: StoppedState | KeptState; already: boolean } | null> {
+  if (name ? !readState(name) : !listStates().length) return null
+  const state = resolve(name)
+  if (state.phase === 'stopped') return null
+  const alreadyKept = options.keepData && state.phase === 'kept'
+  const stopping = state.phase === 'stopping' ? state : toStopping(state)
+  saveState(stopping)
+  // The browsers and desktop apps the session opened, recorded in case the session itself died first.
+  const childrenFile = join(stopping.scratch, 'session-children.json')
+  const children = existsSync(childrenFile) ? z.array(ProcessRecord).parse(JSON.parse(readFileSync(childrenFile, 'utf8'))) : []
+  const found: Owned[] = await owned([...stopping.processes, ...children])
+  if (stopping.processes.some((p) => p.role === 'session')) await stopSessionServer(stopping)
+  // The daemon first, so it can say it is going offline while the API still listens.
+  const order: ProcessRecord['role'][] = ['session', 'daemon', 'api', 'people']
+  for (const role of order) {
+    const record = stopping.processes.find((p) => p.role === role)
+    if (record && await isOurs(record)) await stop(found.filter((p) => p.pid === record.pid), STOP_GRACE_MS)
+  }
+  const survivors = (await stop(found, STOP_GRACE_MS)).map((s) => ({ pid: s.pid, command: s.command }))
+  const removed = options.keepData ? null : await removeMade(stopping)
+  releasePorts(stopping.ports, stopping.name)
+  const final = closeOut(removed === null ? toKept(stopping, { survivors }) : toStopped(stopping, { survivors, removed }))
+  // Keeping what is already kept changes nothing, unless a process was left to stop.
+  return { state: final, already: alreadyKept && found.length === 0 }
+}
+
+export function list(): InstanceState[] {
+  return listStates()
+}

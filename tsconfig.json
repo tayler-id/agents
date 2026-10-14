@@ -23,6 +23,7 @@
     "daemon",
     "test",
     "pipelines",
+    "ctl",
     "ops",
     "app/vite.config.ts"
   ]

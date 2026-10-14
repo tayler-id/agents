@@ -24,6 +24,7 @@ import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
+import { containerName, homeVolumeName } from '../shared/box-names.ts'
 import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
@@ -47,7 +48,6 @@ const BOX_CPUS = '2'
 // Docker counts every thread against this, not only each process.
 const BOX_PIDS = '4096'
 
-export const containerName = (instanceId: string) => `agents-box-${instanceId}`
 const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
 
 // What docker said went wrong, scrubbed and cut short, since its words can repeat
@@ -76,7 +76,7 @@ async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string)
   const extra = JSON.parse(process.env.AGENTS_BOX_DOCKER_ARGS ?? '[]') as string[]
   await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped', '--shm-size', BOX_SHM_SIZE,
     '--memory', BOX_MEMORY, '--memory-swap', BOX_MEMORY, '--cpus', BOX_CPUS, '--pids-limit', BOX_PIDS,
-    '--label', `agents.instance=${instanceId}`, '-v', `${containerName(instanceId)}-home:/home/agent`, ...env, ...extra, IMAGE)
+    '--label', `agents.instance=${instanceId}`, '-v', `${homeVolumeName(instanceId)}:/home/agent`, ...env, ...extra, IMAGE)
 }
 
 async function startContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {

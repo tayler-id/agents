@@ -3,7 +3,6 @@
 // system can start a pipeline through that pipeline's own webhook URL, signed with
 // a secret derived from AGENTS_HOOK_SECRET for that pipeline.
 
-import { createHmac } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import { many, maybe, pool, tx } from './db.ts'
 import { forgeConfig, repoPath, verifySignature } from './forge.ts'
@@ -12,9 +11,9 @@ import { HttpError } from './record.ts'
 import { forgeFor, type RepoOnForge } from './repos.ts'
 import { startRun } from './runner.ts'
 import type { Report } from '../shared/pipeline.ts'
+import { pipelineHookSecret } from '../shared/pipeline-hooks.ts'
 
-export const hookSecret = (pipelineId: string) =>
-  createHmac('sha256', process.env.AGENTS_HOOK_SECRET ?? '').update(pipelineId).digest('hex')
+export const hookSecret = (pipelineId: string) => pipelineHookSecret(process.env.AGENTS_HOOK_SECRET ?? '', pipelineId)
 
 const header = (headers: IncomingHttpHeaders, name: string) => {
   const value = headers[name]

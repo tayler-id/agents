@@ -16,7 +16,7 @@ import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
-import { messageOf } from '../shared/errors.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
@@ -785,8 +785,6 @@ const PeopleSocket = z.string().startsWith('/')
 const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin) => origin.trim()))
   // Zod runs a refinement even when z.url() has failed, so this one must not throw.
   .pipe(z.array(z.url().refine((url) => URL.canParse(url) && new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
-
-const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
 
 // Whether something accepts connections on the socket at this path.
 function accepts(path: string): Promise<boolean> {

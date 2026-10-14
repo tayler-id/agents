@@ -110,6 +110,24 @@ node --env-file=.env server/boxes.ts build
 
 A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`). A person's own box never gets that token. Its agents run on the account its owner signs in with.
 
+## Run and drive the app with agentsctl
+
+`bin/agentsctl` starts a private copy of Agents in this checkout and drives it the way a person does, so an agent can prove a change in the running app and keep the evidence. Run it from the repo root, with `~/.local/node/bin` first on PATH and the folder holding `docker` on it too.
+
+```sh
+bin/agentsctl up --pipelines        # its own team, people, agents and machine, on ports 8020 to 8039
+bin/agentsctl doctor                # read-only, and proves it is usable, not only answering
+bin/agentsctl browser goto /        # drive the web app by role and name
+bin/agentsctl browser click --role button --name fixer --within list:Agents
+bin/agentsctl db "select count(*)::int as n from messages where team_id = {team}"
+bin/agentsctl map run getting-in    # run a feature file as written, with a verdict for each step
+bin/agentsctl down                  # stop everything it started, and keep the evidence
+```
+
+It reads `.env` and then `.env.test`, and refuses to start unless the database is the test database, so it never touches the live server's data. Each command prints its answer, details and next steps, or with `--json` one envelope. Exit codes are 0 done, 1 failed, 2 usage error and 3 refused with nothing changed. `bin/agentsctl help` lists every command, and `bin/agentsctl <command> --help` its flags. The evidence (the action log, screenshots, ARIA snapshots, videos, traces, API answers, rows and `evidence.json`) stays in `.scratch/verify/evidence/<instance>-<time>/` after `down`.
+
+The skill that tells an agent how to use it, and the feature map it runs, are in `.claude/skills/verify-agents/`. `node test/step17.ts` checks the tool, and `node test/step17-breaks.ts` breaks each thing a check guards and watches the check fail.
+
 ## Checks
 
 ```sh

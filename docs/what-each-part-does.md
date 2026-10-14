@@ -138,9 +138,9 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** A bug report becomes a reviewed pull request. Triage checks for duplicates and whether the bug is already fixed. The agent writes a failing test, and the runner confirms it fails before any fix. The agent fixes it or writes a plan, the runner confirms the tests pass, opens the pull request and asks the shepherd. Approving merges it, which closes the issue.
 - **Helps later.** It is the first pipeline the improve pipeline works on.
 
-### Boxes (`box/Dockerfile`, `server/boxes.ts`, `ops/box-firewall.sh`)
+### Boxes (`box/Dockerfile`, `server/boxes.ts`, `shared/box-names.ts`, `ops/box-firewall.sh`)
 
-- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port.
+- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port. `shared/box-names.ts` names a box's container and its home volume, for the server that starts them and for agentsctl's `down` that removes an instance's. Changing a name leaves the containers and volumes already made under the old one.
 - **Helps later.** Boxes run Claude on your subscription once a token from `claude setup-token` is in `~/.agents-app/box-claude-token`.
 
 ### Runs in the app (`app/src/Run.tsx`, `app/src/Pipeline.tsx`, `app/src/Document.tsx`)
@@ -413,6 +413,12 @@ The design is in `docs/design/projects.md`.
 
 - **Solves now.** A fake GitHub that speaks GitHub's REST calls, its device-flow sign-in and real git stands in for GitHub. `test/step13.ts` covers projects, repo requests, sign-in and the stopgap, the git proxy and its branch rule, the label and access rules, the text filters, ETags, a pipeline run from a GitHub issue to a merged pull request, and every token's absence from Postgres, logs and answers. `test/step13b.ts` drives the new pages in three browsers at desktop and phone width. `test/step13c.ts` checks the text filters with no services, each hostile text in a child process that is stopped if it runs past its time.
 - **Helps later.** Checks for later GitHub features start from the same fake.
+
+## Verification (`bin/agentsctl`, `ctl/`, `shared/cli/`, `.claude/skills/verify-agents/`)
+
+- **Solves now.** An agent proves a change by running a private Agents and driving it the way a person does. `bin/agentsctl` starts one on its own ports and team against the test database, checks it is usable, drives the web app in Chromium, Firefox and WebKit and the desktop app by role and name, reads the record back, records video and traces, captures views for visual comparison, and stops everything it started while keeping the evidence. The feature map in `.claude/skills/verify-agents/features/` describes twelve features as runnable steps, and `map run` gives each step a verdict. `shared/cli/` is the command-line library it is built on: one output envelope, exit codes, help made from the command definitions, and a conformance check. The evidence manifest and the feature map are the framework's `shared/verification.ts`, described under the coding framework, and agentsctl imports them from there.
+- **Helps later.** Pipelines can make and keep the same kind of skill for any repo (`docs/design/verification.md`), and other CLIs, such as agents-git, can share the library and pass the same conformance check.
+- **Not done.** The framework's policy still names its own stand-in skill and map, `.claude/skills/verify/`, and an evidence file, `test/ui-shots/evidence.json`, that agentsctl does not write. Its gates do not read this branch's map or manifest yet.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
