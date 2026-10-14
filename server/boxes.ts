@@ -29,7 +29,8 @@ import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
-import { BOX_LABEL, boxContainer, boxHomeVolume } from '../shared/boxes.ts'
+import { BOX_LABEL, BOX_STATE_FORMAT, BoxLine, boxContainer, boxHomeVolume, type ContainerState } from '../shared/boxes.ts'
+import { MACHINE_PORT, Port } from '../shared/listen.ts'
 import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
@@ -50,7 +51,7 @@ const Settings = z.object({
   AGENTS_BOX_DOCKER_HOST: z.string().min(1).optional(),
   DOCKER_HOST: z.string().min(1).optional(),
   AGENTS_BOX_API: z.url().optional(),
-  AGENTS_API_PORT: z.coerce.number().int().min(1).max(65535).default(7700),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
   // Extra `docker run` arguments, a JSON list of strings.
   AGENTS_BOX_DOCKER_ARGS: z.string().default('[]').transform((text, ctx) => {
     try {
@@ -70,7 +71,7 @@ const Settings = z.object({
   if (settings.dockerHost && !settings.dockerHost.startsWith('unix://') && !settings.boxApi) {
     ctx.addIssue({
       code: 'custom', path: ['AGENTS_BOX_API'],
-      message: `boxes run on ${settings.dockerHost}, so set AGENTS_BOX_API to where they reach this server's machine port, such as http://10.40.0.10:7700`,
+      message: `boxes run on ${settings.dockerHost}, so set AGENTS_BOX_API to where they reach this server's machine port, such as http://10.40.0.10:${String(MACHINE_PORT)}`,
     })
   }
 })
@@ -98,18 +99,15 @@ function dockerProblem(error: unknown): string {
   return scrub(said || 'Docker could not start the container and gave no reason.').slice(0, START_ERROR_MAX)
 }
 
-// Docker's container states, and what starting a box does in each.
-const ContainerState = z.enum(['created', 'restarting', 'running', 'removing', 'paused', 'exited', 'dead'])
-type ContainerState = z.infer<typeof ContainerState>
+// What starting a box does in each of Docker's container states.
 const START: Record<ContainerState, 'leave' | 'start' | 'replace'> = {
   running: 'leave', restarting: 'leave', removing: 'leave', created: 'start', exited: 'start', paused: 'replace', dead: 'replace',
 }
-const BoxLine = z.string().transform((line) => line.split(' ')).pipe(z.tuple([z.uuid(), ContainerState]))
 
 // Every box container's state, by instance id, from one `docker ps`. A box host
 // that cannot be reached throws, so an outage never looks like a missing container.
 async function boxStates(): Promise<Map<string, ContainerState>> {
-  const out = await docker(['ps', '--all', '--filter', `label=${BOX_LABEL}`, '--format', `{{.Label "${BOX_LABEL}"}} {{.State}}`])
+  const out = await docker(['ps', '--all', '--filter', `label=${BOX_LABEL}`, '--format', BOX_STATE_FORMAT])
   return new Map(out.split('\n').filter((line) => line !== '').map((line) => BoxLine.parse(line)))
 }
 

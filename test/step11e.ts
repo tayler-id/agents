@@ -2,22 +2,31 @@
 // speaks the real wire protocols (SSM and Secrets Manager's JSON 1.1, CloudWatch's
 // JSON 1.0, and S3's REST API, each request signed), with a real Postgres and
 // real Docker. The secrets land in files with mode 600 and never in output. The
-// nightly backup uploads a dump and the forge's volume, and the restore brings
-// both back into a new database and volume, after refusing while anything is
-// connected. The health report sends what the alarms watch, and notices a
-// stopped API. Every script's dry run makes no AWS call, and the systemd
-// installer and the Compose override say what docs/design/aws.md says.
+// nightly backup stages a dump and the forge's volume under /var/tmp and uploads
+// them. The restore brings both back into another database and volume. Before
+// it, it refuses, changing nothing, while the database holds teams unless
+// --replace names it, while anything is connected or uses a volume, while a box
+// of that database runs, and when the backup will not fit under /var/tmp. Each
+// refusal starts from a fresh database and volumes. Uploads go in parts with
+// CRC32s, and one that fails is given up. Deleting the bucket stops on an object
+// S3 keeps. The health report sends what the alarms watch, and notices a stopped
+// API. Every script's dry run makes no AWS call, and the systemd installer and
+// the Compose override say what docs/design/aws.md says.
 //   node --env-file=.env --env-file=.env.test test/step11e.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { parseEnv } from 'node:util'
+import { S3Client } from '@aws-sdk/client-s3'
 import pg from 'pg'
 import { z } from 'zod'
+import { BOX_LABEL } from '../shared/boxes.ts'
+import { messageOf } from '../shared/errors.ts'
+import { download, PART_BYTES, upload } from '../ops/aws/aws.ts'
 import { BOX_DNS } from '../ops/aws/config.ts'
 import { startFakeAws } from './fake-aws.ts'
 import { must } from './must.ts'
@@ -31,6 +40,10 @@ const AWS_PORT = 7913
 const API_PORTS = { machines: 7914, people: 7915, streams: 7916 } as const
 const UNUSED_PORT = 7917
 const START_MS = 20_000
+// How long deleting the bucket may take before it counts as never ending.
+const DELETE_MS = 20_000
+// What a listing claims for a backup too large to stage: 1 PiB.
+const TOO_BIG_BYTES = 2 ** 50
 const BUCKET = 'agents-test-bucket'
 const REGION = 'us-east-1'
 const SECRET_ARN = `arn:aws:secretsmanager:${REGION}:111111111111:secret:agents-db-AbCdEf`
@@ -47,7 +60,7 @@ function check(ok: unknown, label: string) {
 // ---- Running the scripts, against a fake AWS ----
 
 const fake = await startFakeAws(AWS_PORT, BUCKET, REGION)
-const { calls, parameters, secrets, objects, metrics, script } = fake
+const { calls, parameters, secrets, objects, sizes, undeletable, refusedParts, uploads, metrics, script } = fake
 const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 // Null when the command fails, as it does for a container or volume that is not there.
 const tryDocker = (...args: string[]) => {
@@ -68,6 +81,9 @@ const forgeVolume = `aws-step11e-${id}-forge`
 const forge2 = `aws-step11e-${id}-forge2`
 const electricVolume = `aws-step11e-${id}-electric`
 const forgeContainer = `aws-step11e-${id}-forge`
+// A box of the database the restore replaces, and a container standing in for it.
+const liveBox = randomUUID()
+const liveBoxContainer = `aws-step11e-${id}-box`
 const appHome = join(work, 'app-home')
 const admin = new pg.Client({ connectionString: testUrl.toString() })
 
@@ -143,33 +159,138 @@ try {
   const prefix = dumpKey?.slice(`${BUCKET}/`.length).replace(/agents\.dump$/, '') ?? 'none/'
   check(backup.status === 0 && objects.get(`${BUCKET}/${prefix}agents.dump`)?.subarray(0, 5).toString() === 'PGDMP'
     && objects.get(`${BUCKET}/${prefix}forge.tar.gz`)?.[0] === 0x1f, `backup.ts uploads a custom-format dump and a gzip of the forge's volume to ${prefix}`)
+  check(backup.out.includes('MB to stage in /var/tmp/agents-backup-') && backup.out.includes('MB free')
+    && ['agents.dump', 'forge.tar.gz'].every((file) => calls.some((call) => call.operation === 'CompleteMultipartUpload' && call.body.startsWith(`${BUCKET}/${prefix}${file},`))),
+  'it measures them and checks they fit under /var/tmp before staging them there, and uploads each in parts')
   const state = z.object({ lastSuccess: z.string(), location: z.string() }).safeParse(JSON.parse(readFileSync(join(appHome, 'backup-state.json'), 'utf8')))
   check(state.success && state.data.location === `s3://${BUCKET}/${prefix}` && docker('inspect', '-f', '{{.State.Running}}', forgeContainer) === 'true'
     && !backup.out.includes(password), 'it records the time and place of the backup, starts the forge again, and prints no password')
 
-  await admin.query(`create database ${admin.escapeIdentifier(restored)}`)
-  docker('volume', 'create', forge2)
-  docker('volume', 'create', electricVolume)
-  docker('run', '--rm', '-v', `${electricVolume}:/data`, 'alpine:3.20', 'touch', '/data/shape-log')
+  // What the restore replaces, made afresh before each try, so each refusal stands
+  // alone: a database that holds a team, as one with newer work would, and a box
+  // of it, and two volumes, each with something a refusal must leave alone.
+  const seed = async () => {
+    await admin.query(`drop database if exists ${admin.escapeIdentifier(restored)} with (force)`)
+    await admin.query(`create database ${admin.escapeIdentifier(restored)}`)
+    const target = new pg.Client({ connectionString: urlFor(restored) })
+    await target.connect()
+    try {
+      await target.query('create table marker (note text)')
+      await target.query('insert into marker values ($1)', [`before ${id}`])
+      await target.query('create table teams (id int primary key, name text)')
+      await target.query(`insert into teams values (1, 'newer work')`)
+      await target.query('create table instances (id uuid primary key, team_id int, kind text)')
+      await target.query(`insert into instances values ($1, 1, 'box')`, [liveBox])
+    } finally {
+      await target.end()
+    }
+    for (const volume of [forge2, electricVolume]) {
+      tryDocker('volume', 'rm', volume)
+      docker('volume', 'create', volume)
+    }
+    execFileSync('docker', ['run', '--rm', '-i', '-v', `${forge2}:/data`, 'alpine:3.20', 'tee', '/data/marker'], { input: `forge2 ${id}`, stdio: ['pipe', 'ignore', 'inherit'] })
+    docker('run', '--rm', '-v', `${electricVolume}:/data`, 'alpine:3.20', 'touch', '/data/shape-log')
+  }
+  await seed()
+  // Whether the database and both volumes still hold just what they held before.
+  const leftAlone = async () => {
+    const client = new pg.Client({ connectionString: urlFor(restored) })
+    await client.connect()
+    try {
+      const marker = await client.query<{ note: string }>('select note from marker').then((result) => result.rows[0]?.note, () => undefined)
+      return marker === `before ${id}` && tryDocker('run', '--rm', '-v', `${forge2}:/data`, 'alpine:3.20', 'cat', '/data/marker') === `forge2 ${id}`
+        && tryDocker('run', '--rm', '-v', `${electricVolume}:/data`, 'alpine:3.20', 'ls', '-A', '/data') === 'shape-log'
+    } finally {
+      await client.end()
+    }
+  }
   const restoreEnv = { DATABASE_URL: urlFor(restored), AGENTS_FORGE_VOLUME: forge2, AGENTS_ELECTRIC_VOLUME: electricVolume }
+  const from = `s3://${BUCKET}/${prefix}`
+  const [, day = '', hours = '', minutes = '', seconds = ''] = /(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})Z\/$/.exec(prefix) ?? []
+  const takenAt = `${day} ${hours}:${minutes}:${seconds} UTC`
+  const newer = await script(['ops/aws/restore.ts', from], restoreEnv)
+  check(newer.status !== 0 && newer.out.includes(`${restored} holds a team`) && newer.out.includes(`taken at ${takenAt}`)
+    && newer.out.includes(`--replace ${restored}`) && await leftAlone(),
+  'restore.ts refuses to replace a database that holds teams, says when the backup was taken, and leaves the database and volumes alone')
+  await seed()
+  const wrongName = await script(['ops/aws/restore.ts', from, '--replace', scratch], restoreEnv)
+  check(wrongName.status !== 0 && wrongName.out.includes(`--replace names ${scratch}, but DATABASE_URL names ${restored}`) && await leftAlone(),
+    'it refuses a --replace that names another database')
+  const replace = ['--replace', restored]
+  await seed()
   const busy = new pg.Client({ connectionString: urlFor(restored), application_name: 'still-connected' })
   await busy.connect()
-  const refused = await script(['ops/aws/restore.ts', `s3://${BUCKET}/${prefix}`], restoreEnv)
+  const refused = await script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
   await busy.end()
-  check(refused.status !== 0 && refused.out.includes('still-connected'), 'restore.ts refuses while a session is connected to the database, and names it')
+  check(refused.status !== 0 && refused.out.includes('still-connected') && await leftAlone(),
+    'with --replace, it still refuses while a session is connected to the database, names it, and leaves everything alone')
+  await seed()
   docker('run', '-d', '--name', `${forgeContainer}-2`, '-v', `${forge2}:/data`, 'alpine:3.20', 'sleep', '600')
-  const inUse = await script(['ops/aws/restore.ts', `s3://${BUCKET}/${prefix}`], restoreEnv)
+  const inUse = await script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
   docker('rm', '-f', `${forgeContainer}-2`)
-  check(inUse.status !== 0 && inUse.out.includes(`${forgeContainer}-2`), "it refuses while a container uses the forge's volume, and names it")
-  const restore = await script(['ops/aws/restore.ts', `s3://${BUCKET}/${prefix}`], restoreEnv)
+  check(inUse.status !== 0 && inUse.out.includes(`${forgeContainer}-2`) && await leftAlone(),
+    "it refuses while a container uses the forge's volume, names it, and leaves everything alone")
+  // A box of the database it replaces that still runs, as a container with the box label that mounts nothing.
+  await seed()
+  docker('run', '-d', '--name', liveBoxContainer, '--label', `${BOX_LABEL}=${liveBox}`, 'alpine:3.20', 'sleep', '600')
+  const boxRuns = await script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
+  docker('rm', '-f', liveBoxContainer)
+  check(boxRuns.status !== 0 && boxRuns.out.includes(`these boxes are still running: agents-box-${liveBox}`) && await leftAlone(),
+    'it refuses while a box of the database it replaces runs, names it, and leaves everything alone')
+  await seed()
+  sizes.set(`${prefix}agents.dump`, TOO_BIG_BYTES)
+  const tooBig = await script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
+  sizes.clear()
+  check(tooBig.status !== 0 && tooBig.out.includes('not enough room') && tooBig.out.includes('to stage in /var/tmp/agents-restore-') && await leftAlone(),
+    'it refuses a backup larger than the room under /var/tmp, and leaves everything alone')
+  await seed()
+  const restore = await script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
   const back = new pg.Client({ connectionString: urlFor(restored) })
   await back.connect()
   const note = (await back.query<{ body: string }>('select body from notes where id = 1')).rows[0]
   await back.end()
-  check(restore.status === 0 && note?.body === `kept ${id}`, 'restore.ts brings the database back whole into the database in DATABASE_URL')
+  check(restore.status === 0 && note?.body === `kept ${id}` && restore.out.includes(`taken at ${takenAt}`),
+    'with --replace naming it, restore.ts brings the database back whole into the database in DATABASE_URL, and says when the backup was taken')
   check(docker('run', '--rm', '-v', `${forge2}:/data`, 'alpine:3.20', 'cat', '/data/gitea/hello.txt') === `forge ${id}`
-    && docker('run', '--rm', '-v', `${electricVolume}:/data`, 'alpine:3.20', 'ls', '-A', '/data') === '' && !restore.out.includes(password),
-  "it brings the forge's volume back, empties Electric's, and prints no password")
+    && docker('run', '--rm', '-v', `${electricVolume}:/data`, 'alpine:3.20', 'ls', '-A', '/data') === ''
+    && restore.out.includes('MB to stage in /var/tmp/agents-restore-') && !restore.out.includes(password),
+  "it brings the forge's volume back, empties Electric's, stages under /var/tmp, and prints no password")
+
+  // ---- Uploads in parts, and deleting the bucket ----
+  const s3 = new S3Client({
+    endpoint: fake.env.AWS_ENDPOINT_URL, region: REGION, forcePathStyle: true,
+    credentials: { accessKeyId: fake.env.AWS_ACCESS_KEY_ID, secretAccessKey: fake.env.AWS_SECRET_ACCESS_KEY },
+  })
+  const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex')
+  // One part and a mebibyte, so it takes two.
+  const big = join(work, 'big.bin')
+  writeFileSync(big, randomBytes(PART_BYTES + 1024 * 1024))
+  const bigKey = `parts/${id}.bin`
+  await upload(s3, big, BUCKET, bigKey)
+  await download(s3, BUCKET, bigKey, join(work, 'big.back'))
+  const sentParts = calls.filter((call) => call.operation === 'UploadPart' && call.body.startsWith(`${BUCKET}/${bigKey} part `))
+  check(sentParts.length === 2 && sha256(big) === sha256(join(work, 'big.back')) && uploads.size === 0,
+    'upload() sends a file larger than a part as two parts, each with a CRC32 the fake checks, and it comes back byte for byte')
+  objects.delete(`${BUCKET}/${bigKey}`)
+  const refusedKey = `parts/${id}-refused.bin`
+  refusedParts.add(refusedKey)
+  const gaveUp = await upload(s3, big, BUCKET, refusedKey).then(() => 'uploaded', (error: unknown) => messageOf(error))
+  check(gaveUp.includes('refuses parts') && uploads.size === 0 && !objects.has(`${BUCKET}/${refusedKey}`)
+    && calls.some((call) => call.operation === 'AbortMultipartUpload' && call.body === `${BUCKET}/${refusedKey}`),
+  "an upload whose part S3 refuses fails with S3's reason, and is given up, so no parts are left to cost storage")
+  // In a script of its own, so one that never ends can be stopped.
+  const deleteBucket = () => script(['--input-type=module', '-e',
+    `import { S3Client } from '@aws-sdk/client-s3'; import { deleteBucket } from './ops/aws/aws.ts'; await deleteBucket(new S3Client({}), '${BUCKET}')`],
+  {}, '', DELETE_MS)
+  const keptKey = `backups/kept-${id}`
+  objects.set(`${BUCKET}/${keptKey}`, Buffer.from('kept'))
+  undeletable.add(keptKey)
+  const stuck = await deleteBucket()
+  check(stuck.status !== 0 && stuck.out.includes(`${keptKey} (AccessDenied)`) && !calls.some((call) => call.operation === 'DeleteBucket'),
+    'deleting the bucket stops on an object S3 will not delete, and names it, where it once listed and sent it again forever')
+  undeletable.clear()
+  const deleted = await deleteBucket()
+  check(deleted.status === 0 && objects.size === 0 && calls.some((call) => call.operation === 'DeleteBucket'), 'without that object it deletes every object, then the bucket')
 
   // ---- health.ts ----
   const peopleSocket = join(work, 'people', 'people.sock')
@@ -266,7 +387,7 @@ try {
 } finally {
   for (const child of children) if (child.exitCode === null) child.kill('SIGTERM')
   // Docker things and databases this check made go whatever happened.
-  for (const name of [forgeContainer, `${forgeContainer}-2`]) tryDocker('rm', '-f', name)
+  for (const name of [forgeContainer, `${forgeContainer}-2`, liveBoxContainer]) tryDocker('rm', '-f', name)
   for (const name of [forgeVolume, forge2, electricVolume]) tryDocker('volume', 'rm', name)
   for (const name of [scratch, restored]) await admin.query(`drop database if exists ${admin.escapeIdentifier(name)} with (force)`).catch((error: unknown) => {
     console.error(`dropping ${name}: ${error instanceof Error ? error.message : String(error)}`)

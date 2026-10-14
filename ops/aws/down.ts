@@ -8,10 +8,9 @@
 // Afterwards, remove agents-server and agents-boxes in Tailscale's admin console.
 
 import { createInterface } from 'node:readline/promises'
-import { DeleteBucketCommand, DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3'
+import { S3Client } from '@aws-sdk/client-s3'
 import { DeleteParametersCommand, SSMClient } from '@aws-sdk/client-ssm'
-import { z } from 'zod'
-import { hostConfig } from './aws.ts'
+import { deleteBucket, hostConfig } from './aws.ts'
 import { SECRET_PARAMETERS, STACK_NAME } from './config.ts'
 import { isDryRun, perform, run } from './steps.ts'
 
@@ -22,20 +21,6 @@ const dryRun = isDryRun()
 const ssm = new SSMClient({})
 const cdk = (...args: string[]) => { run('npx', ['cdk', ...args], { cwd: HERE }) }
 let bucket = ''
-
-// S3 deletes up to 1000 keys a call.
-const DELETE_BATCH = 1000
-const Version = z.object({ Key: z.string(), VersionId: z.string() })
-
-async function emptyAndDelete(s3: S3Client, name: string) {
-  for (;;) {
-    const page = await s3.send(new ListObjectVersionsCommand({ Bucket: name, MaxKeys: DELETE_BATCH }))
-    const versions = z.array(Version).parse([...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])])
-    if (!versions.length) break
-    await s3.send(new DeleteObjectsCommand({ Bucket: name, Delete: { Objects: versions, Quiet: true } }))
-  }
-  await s3.send(new DeleteBucketCommand({ Bucket: name }))
-}
 
 const steps = [
   {
@@ -50,7 +35,7 @@ const steps = [
   { say: 'read the backup bucket from /agents/config, before the stack takes it away', act: async () => { bucket = (await hostConfig(ssm)).bucket } },
   { say: 'deploy once with deletion and termination protection off', act: () => { cdk('deploy', '--context', 'agents:teardown=true', '--require-approval', 'never') } },
   { say: `destroy the ${STACK_NAME} stack`, act: () => { cdk('destroy', '--force') } },
-  ...(deleteBackups ? [{ say: 'empty the backup bucket, every version, and delete it', act: () => emptyAndDelete(new S3Client({}), bucket) }] : []),
+  ...(deleteBackups ? [{ say: 'empty the backup bucket, every version, and delete it', act: () => deleteBucket(new S3Client({}), bucket) }] : []),
   ...(deleteSecrets ? [{
     say: `delete ${Object.values(SECRET_PARAMETERS).join(', ')}`,
     act: async () => { await ssm.send(new DeleteParametersCommand({ Names: Object.values(SECRET_PARAMETERS) })) },

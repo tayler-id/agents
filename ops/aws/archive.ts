@@ -5,13 +5,84 @@
 // Connection settings reach them as libpq's environment variables, so a
 // password is never in a command line.
 
-import { closeSync, openSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, statfsSync } from 'node:fs'
+import { join } from 'node:path'
 import pg from 'pg'
-import { BOX_LABEL } from '../../shared/boxes.ts'
+import { z } from 'zod'
+import { BOX_LABEL, BOX_STATE_FORMAT, BoxLine, type ContainerState } from '../../shared/boxes.ts'
+import { hasCode } from '../../shared/errors.ts'
 import { output, run } from './steps.ts'
 
 const POSTGRES_IMAGE = 'postgres:17'
 const TOOLS_IMAGE = 'alpine:3.20'
+
+// Archives are staged here, on disk on both hosts and on this Mac. /tmp on
+// Amazon Linux is memory, too small for a database or a box's home.
+const STAGING_ROOT = '/var/tmp'
+// The room staging must leave: a tenth more than it measured, and 256 MiB, since
+// an archive can come out larger than what it holds.
+const SPACE_FACTOR = 1.1
+const SPACE_SLACK_BYTES = 256 * 1024 * 1024
+const MB = 1024 * 1024
+
+export const stagingDir = (prefix: string) => mkdtempSync(join(STAGING_ROOT, prefix))
+
+// Stops unless the disk under a folder has room for this many bytes, with the
+// margin above. Otherwise says how much it is and how much is free.
+export function ensureSpace(dir: string, bytes: number): string {
+  const disk = statfsSync(dir)
+  const free = disk.bavail * disk.bsize
+  const said = `${String(Math.ceil(bytes / MB))} MB to stage in ${dir}, with ${String(Math.floor(free / MB))} MB free`
+  if (free < Math.ceil(bytes * SPACE_FACTOR) + SPACE_SLACK_BYTES) throw new Error(`not enough room: ${said}`)
+  return said
+}
+
+// A database's size, as Postgres counts it.
+export async function databaseBytes(url: URL): Promise<number> {
+  const client = new pg.Client({ connectionString: url.toString() })
+  await client.connect()
+  try {
+    const { rows } = await client.query('select pg_database_size(current_database())::text as bytes')
+    return z.coerce.number().int().nonnegative().parse(z.object({ bytes: z.string() }).parse(rows[0]).bytes)
+  } finally {
+    await client.end()
+  }
+}
+
+// Postgres's codes for a database, and a table, that does not exist.
+const NO_DATABASE = '3D000'
+const NO_TABLE = '42P01'
+
+// What a database holds, read before it is replaced. A database that does not
+// exist yet, or has no Agents tables yet, holds nothing.
+async function readIfThere<T>(url: URL, empty: T, read: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = new pg.Client({ connectionString: url.toString() })
+  try {
+    await client.connect()
+  } catch (error) {
+    if (hasCode(error, NO_DATABASE)) return empty
+    throw error
+  }
+  try {
+    return await read(client)
+  } catch (error) {
+    if (hasCode(error, NO_TABLE)) return empty
+    throw error
+  } finally {
+    await client.end()
+  }
+}
+
+export const teamsIn = (url: URL) => readIfThere(url, 0, async (client) =>
+  z.object({ n: z.number() }).parse((await client.query('select count(*)::int as n from teams')).rows[0]).n)
+
+// The box instances a database holds, of the teams named if any.
+export const boxInstances = (url: URL, teams: string[] | null) => readIfThere(url, [], async (client) => {
+  const { rows } = await client.query(
+    `select i.id from instances i join teams t on t.id = i.team_id
+     where i.kind = 'box' and ($1::text[] is null or t.name = any($1)) order by i.id`, [teams])
+  return z.array(z.object({ id: z.uuid() })).parse(rows).map((row) => row.id)
+})
 
 type Libpq = { env: Record<string, string>; args: string[] }
 
@@ -98,6 +169,22 @@ export const usersOf = (volume: string, on: On = {}) =>
 
 export const volumeNames = (on: On = {}) => new Set(lines(output('docker', ['volume', 'ls', '--format', '{{.Name}}'], { env: dockerEnv(on) })))
 
-// The instances whose box containers are running.
-export const runningBoxes = (on: On = {}) =>
-  new Set(lines(output('docker', ['ps', '--filter', `label=${BOX_LABEL}`, '--format', `{{.Label "${BOX_LABEL}"}}`], { env: dockerEnv(on) })))
+// How much a volume holds, from du in a throwaway container.
+export function volumeBytes(volume: string, on: On = {}): number {
+  const kib = output('docker', ['run', '--rm', '-v', `${volume}:/data:ro`, TOOLS_IMAGE, 'du', '-sk', '/data'], { env: dockerEnv(on) })
+  return z.coerce.number().int().nonnegative().parse(kib.split(/\s+/)[0]) * 1024
+}
+
+// The states in which a box's container is up, or may be again without being
+// started, so it can still write to its home. A created or exited container
+// cannot, and the runner starts it with the token it was made with.
+const LIVE = new Set<ContainerState>(['running', 'restarting', 'paused', 'removing'])
+export const isLive = (state: ContainerState) => LIVE.has(state)
+
+// Every box container's state on a Docker host, by its instance id.
+export const boxContainerStates = (on: On = {}) => new Map(lines(output('docker',
+  ['ps', '--all', '--filter', `label=${BOX_LABEL}`, '--format', BOX_STATE_FORMAT], { env: dockerEnv(on) })).map((line) => BoxLine.parse(line)))
+
+export function removeContainer(name: string, on: On = {}): void {
+  run('docker', ['rm', name], { env: dockerEnv(on) })
+}

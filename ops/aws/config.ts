@@ -55,6 +55,16 @@ export const PEOPLE_SOCKET_FILE = 'people.sock'
 export const SETTINGS_FILE = 'settings.env'
 export const NODE_DIR = '/opt/node'
 export const RDS_CA_FILE = `${APP_HOME}/rds-ca.pem`
+// Compose's names for the forge's container and volume and Electric's volume,
+// the same from compose.yaml on this Mac and compose.server.yaml on the server.
+export const FORGE_CONTAINER = 'agents-forge-1'
+export const FORGE_VOLUME = 'agents_forgedata'
+export const ELECTRIC_VOLUME = 'agents_electricdata'
+// AGENTS_RUNNER_TEAMS: team names, comma separated, as server/runner.ts reads them. Unset, every team.
+export const RunnerTeams = z.string().optional().transform((value) => {
+  const names = (value ?? '').split(',').map((name) => name.trim()).filter((name) => name !== '')
+  return names.length ? names : null
+})
 
 // Names on the tailnet. The server joins under a temporary name and takes
 // agents-server at cutover, when this Mac gives it up.
