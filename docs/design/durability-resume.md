@@ -20,11 +20,11 @@ A daemon built before this branch breaks against its API, and a new daemon break
 
 ## Proven
 
-The branch runs are on the rebase onto `360c16e`, on 2026-10-13. Main then moved to `94cd4b1`, which changes only `docs/decisions.md` and `test/step7.ts`, and the branch is rebased onto it. The main runs are on `360c16e`, whose product code `94cd4b1` keeps as it was.
+The branch runs are on `a22cac0`, rebased onto main at `94cd4b1`, on 2026-10-14. The main runs are on `360c16e`, whose product code `94cd4b1` keeps as it was. The break tests ran on the branch before its last change, which closes a turn's asks only when a batch finishes its messages, apart from the two that guard that change and recovery's limit to the cut-off turn's asks, which ran on it.
 
 | Check | On the branch | On main | Break test, red then green |
 |---|---|---|---|
-| step18a, real Claude killed mid-reply | passes, a 28-line poem after a kill 295 characters in | times out waiting for the resumed turn | the daemon skips resuming |
+| step18a, real Claude killed mid-reply | passes, a 28-line poem after a kill 246 characters in | times out waiting for the resumed turn | the daemon skips resuming |
 | step18b, a tool acts before its result is saved, only the daemon dies, an interrupt during an outage, SIGTERM mid-turn | passes, 33 assertions | times out waiting for the resumed turn | the continuation drops in-flight calls; recovery ignores a waiting interrupt; shutdown stops a busy session |
 | step18c, an approval waits through a restart | passes, 18 | times out waiting for the resumed turn | a new request can't take over an ended ask |
 | step18d, a box replaced on the same volume | passes, 14 | never shows the session lost | the daemon skips resuming |
