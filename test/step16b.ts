@@ -162,6 +162,12 @@ expect('opaque', [unread('server/migrations/0010_x.sql', 64, true)], 'fail', 'bi
 expect('opaque', [unread('ops/policies/x.json', 64, true)], 'fail', 'binary JSON fails')
 expect('opaque', [unread('app/src/x.css', 64, true)], 'fail', 'a binary stylesheet fails')
 expect('opaque', [unread('docs/evidence/shot.png', 90_000, true, 'png')], 'pass', 'an image whose first bytes show it is one passes')
+expect('opaque', [unread('docs/evidence/shot.jpg', 90_000, true, 'jpeg')], 'pass', 'a .jpg whose first bytes show a JPEG passes')
+// A script may open with GIF89a:, a valid JavaScript label, so an image's
+// extension must name the format its first bytes show.
+expect('opaque', [unread('server/x.ts', 120, true, 'gif')], 'fail', 'a script that starts with GIF bytes fails, since .ts names no image')
+expect('size', [unread('server/x.ts', 40_000, true, 'gif')], 'fail', 'a script that starts with GIF bytes counts toward the cap by its bytes')
+expect('opaque', [unread('docs/evidence/shot.png', 120, true, 'gif')], 'fail', 'a .png whose first bytes show a GIF fails')
 expect('opaque', [unread('package-lock.json', 3 * 1024 * 1024, false)], 'pass', 'a lockfile over the read limit passes')
 expect('opaque', [{ ...unread('server/old.ts', 0, true), status: 'deleted', bytes: null }], 'pass', 'deleting a binary script passes')
 
@@ -177,6 +183,7 @@ inRepo('commit', '--quiet', '-m', 'base')
 const baseCommit = inRepo('rev-parse', 'HEAD')
 writeFileSync(join(gitRepo, 'server/forged.ts'), 'export const a = 1\n++ b/ok.ts\n// eslint-disable-next-line no-console\nconsole.log(a)\n')
 writeFileSync(join(gitRepo, 'server/we"ird.ts'), `export const key = 'sk-ant-${'a'.repeat(30)}'\n`)
+writeFileSync(join(gitRepo, 'server/helper.ts'), `GIF89a: 0\n// ${String.fromCharCode(0)} hidden\nimport { exec } from 'node:child_process'\nexec('ls')\n`)
 inRepo('add', '-A')
 inRepo('commit', '--quiet', '-m', 'head')
 const realFiles = await changes({ dir: gitRepo, env: process.env }, baseCommit, inRepo('rev-parse', 'HEAD'))
@@ -188,14 +195,18 @@ expect('suppressions', forgedFile, 'fail', 'the suppression after a line that re
 const quotedGate = expect('opaque', realFiles, 'fail', 'a path git quotes fails closed')
 check(quotedGate.findings.some((f) => f.path === 'server/we"ird.ts' && f.text.includes('quotes')), 'opaque: the finding names the path git quotes')
 expect('secrets', realFiles, 'fail', 'the key in a file whose path git quotes is found')
+const disguised = realFiles.filter((f) => f.path === 'server/helper.ts')
+check(disguised[0]?.binary === true && disguised[0].image === 'gif', 'diff: a script that opens with GIF89a: and holds a NUL byte is binary to git and starts as a GIF')
+expect('opaque', disguised, 'fail', 'a script that opens with the GIF89a: label and holds a NUL byte fails')
 check(untrusted(['server/ok.ts'], new Set([1, 2]), 2) === null && untrusted(['server/ok.ts'], new Set([1]), 2)?.includes('git counts 2') === true,
   'diff: a file whose hunks add another number of lines than git counts fails closed')
 expect('opaque', [{ ...appended('server/x.ts', 'a', 'b'), untrusted: 'git counts 2 added lines and the hunks add 1.' }], 'fail', 'a file whose diff the gates cannot trust fails')
-// A binary file fails whatever its name, unless its first bytes show an image.
+// A binary file fails whatever its name, unless its first bytes and its
+// extension name the same image format.
 expect('opaque', [unread('box/Dockerfile', 120, true)], 'fail', 'a file git calls binary fails whatever its name, a Dockerfile here')
 expect('opaque', [unread('docs/evidence/fake.png', 120, true)], 'fail', 'a file named .png whose bytes are no image fails')
 check(imageFormat(Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])) === 'png' && imageFormat(new TextEncoder().encode('// a script')) === null,
-  'opaque: an image is known by its first bytes')
+  'opaque: an image format is read from the first bytes')
 
 // UI changes need a Playwright check in every engine at both widths.
 const view = appended('app/src/App.tsx', 'export const a = 1', 'export const b = 2')

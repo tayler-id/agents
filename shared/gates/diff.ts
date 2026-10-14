@@ -62,8 +62,9 @@ const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDepende
 const SCRIPT_OR_SHELL = (path: string) => isScript(path) || extensionOf(path) === '.sh'
 // A file the gates cannot read counts toward the size cap at this many bytes a line.
 const BYTES_PER_LINE = 80
-// The images a change may add unread, known by the bytes each format starts
-// with, never by the file's name.
+// The images a change may add unread. A file is one when its first bytes and
+// its extension name the same format. The bytes alone prove nothing, since a
+// script that opens with GIF89a: is a valid JavaScript label.
 const IMAGE_FORMATS = ['png', 'jpeg', 'gif', 'webp', 'ico'] as const
 export type ImageFormat = (typeof IMAGE_FORMATS)[number]
 const IMAGE_SIGNATURES: Record<ImageFormat, readonly (readonly [number, readonly number[]])[]> = {
@@ -73,12 +74,17 @@ const IMAGE_SIGNATURES: Record<ImageFormat, readonly (readonly [number, readonly
   webp: [[0, [0x52, 0x49, 0x46, 0x46]], [8, [0x57, 0x45, 0x42, 0x50]]],
   ico: [[0, [0x00, 0x00, 0x01, 0x00]]],
 }
+const IMAGE_EXTENSIONS: Record<ImageFormat, readonly string[]> = {
+  png: ['.png'], jpeg: ['.jpg', '.jpeg'], gif: ['.gif'], webp: ['.webp'], ico: ['.ico'],
+}
 // The most bytes any signature reads.
 export const IMAGE_HEAD_BYTES = 12
 
 export function imageFormat(bytes: Uint8Array): ImageFormat | null {
   return IMAGE_FORMATS.find((format) => IMAGE_SIGNATURES[format].every(([start, signature]) => signature.every((b, i) => bytes[start + i] === b))) ?? null
 }
+
+const isImage = (f: FileChange) => f.image !== null && IMAGE_EXTENSIONS[f.image].includes(extensionOf(f.path))
 const TYPESCRIPT = new Set(['.ts', '.tsx'])
 // The checks and what they rely on. An edit to any of them is an edit to a check.
 const checkFiles = (policy: Policy) => matcher([policy.checks.pattern, ...policy.checks.related, '**/*.test.ts', '**/*.test.js'])
@@ -230,12 +236,12 @@ function suppressions({ policy, files }: StaticContext): GateResult {
 
 // Why no gate can read what a change did to a file, or null when every gate
 // can. A lockfile is the dependency gate's to judge, and an image is known by
-// its first bytes. Anything else git calls binary, or too big to read, is
-// hidden whatever its name.
+// its first bytes and its extension together. Anything else git calls binary,
+// or too big to read, is hidden whatever its name.
 function hidden(policy: Policy, f: FileChange): string | null {
   if (f.untrusted !== null) return f.untrusted
   if (f.status === 'deleted' || matcher(policy.lockfiles)(f.path)) return null
-  if (f.binary) return f.image === null ? `git reads it as binary (${f.bytes ?? 0} bytes), and it starts as no image the gates allow, so no gate can read it` : null
+  if (f.binary) return isImage(f) ? null : `git reads it as binary (${f.bytes ?? 0} bytes), and it is no image whose first bytes and extension name the same format, so no gate can read it`
   return f.after === null ? `${f.bytes ?? 0} bytes, over what the gates read` : null
 }
 
@@ -253,7 +259,7 @@ function size({ policy, files }: StaticContext): GateResult {
   const isLock = matcher(policy.lockfiles)
   const read = files.filter((f) => !isLock(f.path) && !f.binary).reduce((n, f) => n + f.added + f.deleted, 0)
   // A binary file that is no image counts by its bytes.
-  const unseen = files.filter((f) => f.status !== 'deleted' && !isLock(f.path) && f.binary && f.image === null)
+  const unseen = files.filter((f) => f.status !== 'deleted' && !isLock(f.path) && f.binary && !isImage(f))
   const total = read + unseen.reduce((n, f) => n + Math.ceil((f.bytes ?? 0) / BYTES_PER_LINE), 0)
   const findings = total > policy.maxChangedLines
     ? [{ path: null, line: null, text: `${total} changed lines, over the limit of ${policy.maxChangedLines}. Split the work into stacked pull requests.` }]

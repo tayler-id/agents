@@ -386,3 +386,9 @@ A review on another model found the framework not ready to land. On its branch, 
 - **Verified.** step16 passed every section, with HAPPY run again after two of its checks were corrected, and step16b, step16c, step16d, step16f, the typecheck of both projects, lint, names and style passed. Main's step0, 1, 4d, 5, 6, 7, 8, 9, 10, 10b, 12, 12b, 12c, 14, 14b, 14c and 19 passed under the 7701 lock. Each new guard was seen failing, as the design's table lists.
 - **Schema.** Migration 0009 gained `obligations.attempts` and `obligations.retry_at`, added to agents_test by hand.
 - **Not done.** Judges on a machine of their own. Until then review and verdict are advisory, and the repo must not be registered.
+
+### The coding framework: the third review round (in progress)
+
+A third review found five blocking holes and three smaller ones. Each fix has a fixture or a check, seen failing with the fix broken and green with it restored byte for byte.
+
+- **An image needs the extension of its format.** A new `server/helper.ts` that opens with `GIF89a:`, a valid JavaScript label, and holds one NUL byte in a comment was binary to git and a GIF to the opaque gate, so no gate read it and the size cap charged it nothing. The opaque gate and the size cap now pass a binary file unread only when its extension names the format its first bytes show. step16b has the fixture for `server/x.ts`, and reads `server/helper.ts` from a real git repo.
