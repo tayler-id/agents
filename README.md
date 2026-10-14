@@ -12,13 +12,14 @@ My multiplayer rebuild of an agent app. People and agents talk in conversations 
 
 ## Run the server
 
-On the server Mac, with Node 24 at `~/.local/node/bin` first on the PATH, colima, and a signed-in `claude`:
+On the server Mac, with Node 24 at `~/.local/node/bin` first on the PATH, colima, and a signed-in `claude`. Put your tailnet's name, which `tailscale status` shows, in place of `your-tailnet` on the line that sets `O`:
 
 ```sh
 colima start
 P=$(openssl rand -hex 16); S=$(openssl rand -hex 32)
-printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents\nELECTRIC_SECRET=%s\nAGENTS_API_PORT=7700\nAGENTS_PEOPLE_SOCKET=%s\nAGENTS_HOOK_SECRET=%s\n' "$P" "$P" "$(openssl rand -hex 16)" "$HOME/.agents-app/people.sock" "$S" > .env
-printf 'DATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents_test\nELECTRIC_URL=http://127.0.0.1:3002\nAGENTS_PEOPLE_SOCKET=\n' "$P" > .env.test
+O=http://agents-server.your-tailnet.ts.net
+printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents\nELECTRIC_SECRET=%s\nAGENTS_API_PORT=7700\nAGENTS_PEOPLE_SOCKET=%s\nAGENTS_PEOPLE_ORIGINS=%s\nAGENTS_HOOK_SECRET=%s\n' "$P" "$P" "$(openssl rand -hex 16)" "$HOME/.agents-app/people.sock" "$O" "$S" > .env
+printf 'DATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents_test\nELECTRIC_URL=http://127.0.0.1:3002\nAGENTS_PEOPLE_SOCKET=\nAGENTS_PEOPLE_ORIGINS=http://127.0.0.1\n' "$P" > .env.test
 docker compose up -d --wait postgres
 docker compose exec -T postgres createdb -U agents agents_test
 docker compose up -d --wait
@@ -53,7 +54,7 @@ sudo /opt/homebrew/opt/tailscale/bin/tailscale --socket="$HOME/.agents-app/tails
 
 Pointing serve at a Unix socket needs root, so `sudo` asks for your password.
 
-People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which only tailscale serve points at. In userspace mode tailscaled hands a tailnet peer's connection for any other port to the same port on this Mac's loopback, where a TCP people port would let the peer name anyone, and a socket file is out of its reach. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
+People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which only tailscale serve points at. The API won't start without `AGENTS_PEOPLE_ORIGINS`, a comma-separated list of the origins the app's pages come from, such as `http://agents-server.<your-tailnet>.ts.net`. It refuses a screen's WebSocket from a page with any other origin, and logs the origin it refused. Checks need one too, and `.env.test`'s `http://127.0.0.1` serves them, since steps 15 and 15b set their own. In userspace mode tailscaled hands a tailnet peer's connection for any other port to the same port on this Mac's loopback, where a TCP people port would let the peer name anyone, and a socket file is out of its reach. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
 
 The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. That includes tailscaled's own proxy on 1055, through which a peer would reach serve as this Mac and be taken for its owner, so a person's identity also rests on the policy. `docs/design/people-port.md` gives the rule, and `test/live-tailnet.ts` checks the filter the server enforces. It runs on its own, not in `npm run check`.
 
