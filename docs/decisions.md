@@ -337,7 +337,7 @@ Tayler went with the coordinator's picks on all of these.
   - Boxes get a desktop, a browser, browser control and computer use. The sessions on one box share its computer, so an agent has one to itself only when it has a box to itself.
   - A Screen view in the app shows the live display, and a person can take over and hand back. Only the app's own pages may open it, from the origins in `AGENTS_PEOPLE_ORIGINS`, which the API needs to start.
   - Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
-  - Agents verify each change with tests and in the browser, and attach screenshots to the task.
+  - Agents verify each change with tests and in the browser, and attach screenshots to the task. A session the coding framework marks isolated, such as a judge's, gets no computer, since the runner names the only tools a judge may use.
   - Documents can hold images.
   - A helper that lets agents use a Mac is designed but not built.
 - **Implementation.** On the agent computers branch, designed in `docs/design/computers.md`. Its checks, `test/step15.ts` and `test/step15b.ts`, run a real box with the stand-in for Claude, and both pass on its last commit. `docs/build-log.md` records what they proved.
@@ -348,7 +348,7 @@ Tayler went with the coordinator's picks on all of these.
   - A box whose desktop can't come up takes no work, where before it worked without its computer. Accepted too.
   - `ws`, `@types/ws` and `@novnc/novnc` are approved for the Screen view.
   - The daemon refuses to save a screenshot while a page in the box's browser shows a known secret value. It can't cover a secret shown outside the page.
-- **Waiting on Tayler.** The refusal also saves nothing while a page can't say what it shows, so a page an alert holds refuses every screenshot, and an agent can't save proof of a dialog, which it could before. That takes something away.
+  - A page that can't give its text within 5 seconds, such as one an open alert holds, refuses every screenshot until it can. That takes away saving proof of a dialog, which an agent could do before.
 
 ### The cloud half moves to AWS
 

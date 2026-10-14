@@ -4,7 +4,7 @@ A note for whoever picks this up, kept current with each commit. The design is `
 
 ## Done, on this branch
 
-Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer landed. Commit ids change with each rebase, so find them by subject.
+Rebased onto main at b2aa8b5 on 2026-10-14, after durability, evidence and the coding framework landed. Commit ids change with each rebase, so find them by subject.
 
 | Commit | What |
 |---|---|
@@ -53,18 +53,23 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 | A screen socket's protocol error no longer stops the API | One `error` listener inside `accept`, and a log line for a refused origin |
 | Step 15 checks the review's second round | Six lines, each seen failing |
 | The README's setup writes AGENTS_PEOPLE_ORIGINS | `.env` and `.env.test` |
-| A page an alert holds refuses every screenshot, a regression for Tayler to decide | The design, decisions and this note |
+| A page an alert holds refuses every screenshot, a regression for Tayler to decide | The design, decisions and this note. Tayler accepted it on 2026-10-14 |
 | Record the second review round's runs | The build log, the design's sizes and latency, and this note |
+| The screen rules use main's list of working statuses | `server/screens.ts` reads `WORKING` from `shared/lifecycle.ts`, not a copy |
+| A judge's session in a box gets no computer | An isolated session gets no `computer` server, standing instructions or `verify-work` skill |
+| Say how the rebase onto the coding framework went, and what was run | The build log, decisions, the design and this note |
 
 ## Before this lands
 
-- One call waits on Tayler. A page that can't say what it shows within 5 s, such as one an alert holds, refuses every screenshot, so an agent can't save proof of a dialog, which it could before the refusal.
+- One question is open. A judge's session in a box gets no computer, so a reviewer or a verifier can't look at a screen. Whether judges should get it is Tayler's call, and no check runs a judge in a box, so nothing fails if the rule is taken out.
+- Tayler accepted the page-that-can't-be-read refusal on 2026-10-14, as "2026-10-14, Tayler's calls" in `docs/decisions.md` records. A page that gives no text within 5 s, such as one an alert holds, refuses every screenshot, so an agent can't save proof of a dialog, which it could before the refusal.
 - Every API now needs `AGENTS_PEOPLE_ORIGINS` to start, a comma-separated list of the origins the app's pages come from. The live API needs `http://agents-server.<tailnet>.ts.net` in main's `.env` before it restarts on this code. Main's checks start their APIs with what `.env` and `.env.test` hold, and none of them opens a screen, so any one origin in `.env.test` lets them run, such as `AGENTS_PEOPLE_ORIGINS=http://127.0.0.1`. Steps 15 and 15b set their own.
 - Two commits trade something away, and Tayler accepted both on 2026-10-14. The box limits slow a box that needs more than 2 CPUs and hold every box to 4 GB. A box whose desktop can't come up now restarts and takes no work, where before it worked without a computer. Tayler also approved the packages this branch adds, `ws`, `@types/ws` and `@novnc/novnc`.
 
 ## Checks
 
-- Step 15 has 53 checks and step 15b has 17 in each of Chromium, WebKit and Firefox, 51 in all. Both passed on the final code, at 13:21 and 13:24 on 2026-10-14. Step 12c from this branch passed 51 of 51 at 13:29.
+- Step 15 has 53 checks and step 15b has 17 in each of Chromium, WebKit and Firefox, 51 in all. Both passed on the code of 693486e, which sits on main at b2aa8b5, at 14:43 and 14:47 on 2026-10-14. Before the rebase they passed on 7197f4b, at 13:21 and 13:24, and step 12c from this branch passed 51 of 51 at 13:29. Step 12c has not run on the rebased branch.
+- Main's checks passed on the same code. step16 passed 95 of 95, step14 74, step18b 33, step18e 21, step18l 12 and step20b 31. The build log's "Seen failing" lists the lines of main's that were broken in `daemon/agentsd.ts` and the check each one turned red. The rest of the suite has not run on the rebased branch.
 - The review's second round added six lines to step 15. They failed together at 10:57 on 2026-10-14, and the other 47 passed, with these breaks: the `error` listener inside `accept` in `server/screens.ts` removed, the refused-origin log removed, `recheckViewers(...)` in `server/api.ts` replaced by `Promise.resolve()`, `collapsed` in `daemon/page-secrets.ts` made to return its text unchanged, the `shadowRoots` line in `rootsIn` removed, and `.catch(() => [])` put on the reads.
 - Step 15's two lines for the screenshot refusal were seen failing with `if (names.length === 0) return null` in `daemon/computer-mcp.ts` changed to `>= 0`, a break `.scratch/breaks.ts` doesn't hold. Both failed, each tool having saved its file, and the other 45 passed. With the file put back byte for byte, all 47 passed.
 - Every check was seen failing under `.scratch/breaks.ts`, a local file that git ignores. `node .scratch/breaks.ts check-all` checks every anchor, `node .scratch/breaks.ts <set>` applies one set, and `git checkout -- <files it lists>` restores. Step 15's sets are quiet, input, stuck, flow, team, noscreen, notunnel, filter and told. Step 15b's are ui-a to ui-d, run with `AGENTS_UI_ENGINES=chromium`. Before the review round's fixes, step 15's new lines failed on the old code in one run.
@@ -76,7 +81,7 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 - Take the lock first with `mkdir ~/.agents-app/checks/run.lock`, and `rmdir` it after. Both checks use port 7701, the only check port the box firewall opens.
 - Before a run that builds an image, check `colima ssh -- df -h /var/lib/docker`, and stop above 80%. After it, run `docker image prune -f`. On 2026-10-13 untagged copies of an earlier fixed tag, `agents-box:computers`, helped fill the disk. Each run of step 15 or 15b now builds `agents-box:comp-<id>` and removes it when it ends, so every run builds the image from the start.
 - `node --env-file=.env --env-file=.env.test test/step15.ts` took 6.6 to 8.2 minutes on 2026-10-14, of which building the image took 164 to 237 seconds.
-- `node --env-file=.env --env-file=.env.test test/step15b.ts` took 3.2 to 3.8 minutes in three engines, building its image included.
+- `node --env-file=.env --env-file=.env.test test/step15b.ts` took 3.2 to 4.2 minutes in three engines, building its image included.
 - Give every `docker build` a time limit, and hold the lock for one check at a time. On 2026-10-14 a build sat for an hour at 0% CPU while my run held the lock, until the coordinator stopped it. A `docker` script first on the PATH that runs `docker build` under `perl -e 'alarm shift; exec @ARGV' 600` and passes every other command through stops a build after 10 minutes.
 - Teams are `comp-<id>` and `comp-other-<id>`. A failed run keeps both in `agents_test` and its folder under `~/.agents-app/checks/`. `.scratch/clean-one-team.ts <team>` deletes one. `.scratch/clean-teams.ts` deletes every `comp-` team, so don't run it while another run of step 15 or 15b is going.
 - Main's step 12c builds `agents-box:onboard-check`, a tag other runs use. To run it from this branch, put another tag in its `IMAGE` line for that run only, then remove the tag and put the file back from git. After a failure it can wait for good on a browser's open connection, so stop it, then remove its boxes, their volumes and its team.
