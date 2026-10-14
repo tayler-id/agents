@@ -44,3 +44,5 @@ export type BlobId = z.infer<typeof BlobId>
 // box. It is a uuid like the rest so it can't be guessed.
 export const TunnelId = z.uuid().brand<'TunnelId'>()
 export type TunnelId = z.infer<typeof TunnelId>
+export const FolderId = z.uuid().brand<'FolderId'>()
+export type FolderId = z.infer<typeof FolderId>

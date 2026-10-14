@@ -1,15 +1,21 @@
 import { z } from 'zod'
-import type { SuitePayload, VerifyPayload } from './framework.ts'
+import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from './framework.ts'
 
 export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
+// The kinds a person writes, what they say and their answer to an ask. Only these carry an author.
+export const PERSON_KINDS: readonly EventKind[] = ['user', 'answer']
 
 export const SESSION_STATUSES = [
   'draft', 'starting', 'running', 'idle', 'needs_input', 'needs_approval', 'limited', 'lost', 'failed',
 ] as const
 export type SessionStatus = (typeof SESSION_STATUSES)[number]
+
+// The most a request body may hold. The API refuses a bigger one with 413, and
+// the daemon sizes its posts of a transcript to fit.
+export const MAX_BODY_BYTES = 20 * 1024 * 1024
 
 // Agent, skill and plugin names. A skill's name is also its folder on each machine.
 export const NAME = /^[a-z][a-z0-9-]{0,39}$/
@@ -111,11 +117,16 @@ export type MessagePayload = z.infer<typeof MessagePayload>
 // the task's branch, and a task folder beside them for documents.
 // `commit`, when set, starts the branch there instead of at the base branch's tip,
 // as a replay of a past run does.
-export type WorkspaceRepo = { repoId: string; name: string; branch: string; base: string; setup: string | null; commit?: string }
-export type SetupWorkspacePayload = { workspaceId: string; repos: WorkspaceRepo[] }
+export const WorkspaceRepo = z.object({
+  repoId: z.string(), name: z.string(), branch: z.string(), base: z.string(), setup: z.string().nullable(), commit: z.string().optional(),
+})
+export type WorkspaceRepo = z.infer<typeof WorkspaceRepo>
+export const SetupWorkspacePayload = z.object({ workspaceId: z.string(), repos: z.array(WorkspaceRepo) })
+export type SetupWorkspacePayload = z.infer<typeof SetupWorkspacePayload>
 
 // A command run in one of a workspace's repos, for a pipeline's checks.
-export type ExecPayload = { workspaceId: string; repo: string; command: string; timeoutSec: number }
+export const ExecPayload = z.object({ workspaceId: z.string(), repo: z.string(), command: z.string(), timeoutSec: z.number() })
+export type ExecPayload = z.infer<typeof ExecPayload>
 export type ExecResult = { exitCode: number | null; output: string; timedOut: boolean }
 
 // Commits whatever changed in the workspace's repos, pushes each task branch,
@@ -136,12 +147,10 @@ export const PushResult = z.object({
 export type PushResult = z.infer<typeof PushResult>
 
 // How a person answered an ask, as the harness needs it.
-export type AnswerPayload = {
-  requestId: string
-  behavior: 'allow' | 'deny'
-  message?: string
-  updatedInput?: unknown
-}
+export const AnswerPayload = z.object({
+  requestId: z.string(), behavior: z.enum(['allow', 'deny']), message: z.string().optional(), updatedInput: z.unknown().optional(),
+})
+export type AnswerPayload = z.infer<typeof AnswerPayload>
 
 // A session a restarted machine resumes. The command is its oldest unfinished
 // message, carrying the text that resumes the session, and the turn that takes
@@ -159,12 +168,17 @@ export const Recovery = z.object({
 })
 export type Recovery = z.infer<typeof Recovery>
 
-export type Command =
-  | { id: string; kind: 'message'; sessionId: string; payload: MessagePayload }
-  | { id: string; kind: 'answer'; sessionId: string; payload: AnswerPayload }
-  | { id: string; kind: 'interrupt' | 'stop'; sessionId: string; payload: Record<string, never> }
-  | { id: string; kind: 'setup_workspace'; sessionId: null; payload: SetupWorkspacePayload }
-  | { id: string; kind: 'exec'; sessionId: null; payload: ExecPayload }
-  | { id: string; kind: 'push'; sessionId: null; payload: PushPayload }
-  | { id: string; kind: 'verify'; sessionId: null; payload: VerifyPayload }
-  | { id: string; kind: 'suite'; sessionId: null; payload: SuitePayload }
+// A command a machine claims, by kind. A message is a session's, and its payload is
+// read on its own where it is claimed, so a payload this machine can't use fails
+// that turn with the reason. The other kinds are read whole.
+export const MessageCommand = z.object({ id: z.string(), kind: z.literal('message'), sessionId: z.string(), payload: MessagePayload })
+export const OtherCommand = z.discriminatedUnion('kind', [
+  z.object({ id: z.string(), kind: z.literal('answer'), sessionId: z.string(), payload: AnswerPayload }),
+  z.object({ id: z.string(), kind: z.enum(['interrupt', 'stop']), sessionId: z.string(), payload: z.object({}) }),
+  z.object({ id: z.string(), kind: z.literal('setup_workspace'), sessionId: z.null(), payload: SetupWorkspacePayload }),
+  z.object({ id: z.string(), kind: z.literal('exec'), sessionId: z.null(), payload: ExecPayload }),
+  z.object({ id: z.string(), kind: z.literal('push'), sessionId: z.null(), payload: PUSH_PAYLOAD }),
+  z.object({ id: z.string(), kind: z.literal('verify'), sessionId: z.null(), payload: VERIFY_PAYLOAD }),
+  z.object({ id: z.string(), kind: z.literal('suite'), sessionId: z.null(), payload: SUITE_PAYLOAD }),
+])
+export type Command = z.infer<typeof MessageCommand> | z.infer<typeof OtherCommand>

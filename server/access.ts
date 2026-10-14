@@ -23,11 +23,19 @@ export async function canSeeTask(person: Person, taskId: string): Promise<boolea
   return rows.length > 0
 }
 
+// Connected folders a person may see: the team's, and their own private ones.
+// Connecting a folder is its person's choice to share its terminal sessions.
+export const VISIBLE_FOLDER = `(visibility = 'team' or connected_by = $2)`
+
 export async function canSeeSession(person: Person, sessionId: string): Promise<boolean> {
-  const session = await maybe<{ conversation_id: string | null; task_id: string | null }>(pool,
-    'select conversation_id, task_id from sessions where id = $1 and team_id = $2', [sessionId, person.team_id])
+  const session = await maybe<{ conversation_id: string | null; task_id: string | null; folder_id: string | null }>(pool,
+    'select conversation_id, task_id, folder_id from sessions where id = $1 and team_id = $2', [sessionId, person.team_id])
   if (!session) return false
-  // A session serves a conversation or a task. The schema allows nothing else.
+  // A session serves a conversation, a task, or a person's terminal in a connected folder.
   if (session.conversation_id) return canSeeConversation(person, session.conversation_id)
-  return session.task_id ? canSeeTask(person, session.task_id) : false
+  if (session.task_id) return canSeeTask(person, session.task_id)
+  if (!session.folder_id) return false
+  const { rows } = await pool.query(
+    `select 1 from connected_folders where id = $3 and team_id = $1 and ${VISIBLE_FOLDER}`, [person.team_id, person.id, session.folder_id])
+  return rows.length > 0
 }

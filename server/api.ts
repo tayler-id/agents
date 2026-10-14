@@ -14,6 +14,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { connectedFolders, connectFolder, disconnectFolder, sessionWriter, terminalSession } from './folders.ts'
+import { ConnectFolder, DisconnectFolder, TerminalSessionAsk, type FolderList } from '../shared/terminal.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -46,7 +48,7 @@ import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
-import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
+import { ArtifactId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
 import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
@@ -60,9 +62,6 @@ import {
   EndedMessages, EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
 } from '../shared/types.ts'
-
-// Kinds only a person can write. One from an instance would be handed back to it.
-const PERSON_KINDS: EventKind[] = ['user', 'answer']
 
 // Outside data through its schema. Data that does not fit is the sender's mistake.
 function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
@@ -79,14 +78,15 @@ function optionalProject(value: unknown): ProjectId | undefined {
   return result.data
 }
 
-function parseBatch(raw: Record<string, unknown>): EventBatch {
+// A machine's batch for a session, holding only the kinds that session takes from a machine.
+function parseBatch(raw: Record<string, unknown>, kinds: readonly EventKind[]): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
   const events: NewEvent[] = raw.events.map((e, i) => {
     if (!e || typeof e !== 'object') throw new HttpError(400, `events.${i} must be an object`)
     const event = e as Record<string, unknown>
     const kind = event.kind as EventKind
     if (!EVENT_KINDS.includes(kind)) throw new HttpError(400, `events.${i}.kind is not an event kind`)
-    if (PERSON_KINDS.includes(kind)) throw new HttpError(400, `instances cannot write ${kind} events`)
+    if (!kinds.includes(kind)) throw new HttpError(400, `this session takes no ${kind} events from a machine`)
     return {
       clientId: text(event.clientId, `events.${i}.clientId`),
       kind,
@@ -309,13 +309,40 @@ const routes: Route[] = [
     return { ok: true, commit: BUILD.commit, build: BUILD }
   }],
 
+  // The folders on this Mac whose terminal sessions land in the record. Only the
+  // Mac itself connects or disconnects one, so nobody in the app can.
+  ['machines', 'GET', /^\/v1\/instance\/folders$/, async (req) => {
+    const answer: FolderList = { folders: await connectedFolders(await instanceFrom(req)) }
+    return answer
+  }],
+
+  ['machines', 'POST', /^\/v1\/instance\/folders$/, async (req) => {
+    const instance = await instanceFrom(req)
+    const ask = await parseBody(req, ConnectFolder)
+    return tx((client) => connectFolder(client, instance, ask))
+  }],
+
+  ['machines', 'POST', /^\/v1\/instance\/folders\/disconnect$/, async (req) => {
+    const instance = await instanceFrom(req)
+    const ask = await parseBody(req, DisconnectFolder)
+    return tx((client) => disconnectFolder(client, instance, ask))
+  }],
+
+  // A Claude Code session the Mac found in one of its connected folders, and the
+  // record's session for it, the same one each time it asks.
+  ['machines', 'POST', /^\/v1\/instance\/terminal-sessions$/, async (req) => {
+    const instance = await instanceFrom(req)
+    const ask = await parseBody(req, TerminalSessionAsk)
+    return { sessionId: await tx((client) => terminalSession(client, instance, ask)) }
+  }],
+
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/events$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
-    const { rows } = await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
-    if (!rows[0]) throw new HttpError(404, 'no such session on this instance')
-    const batch = parseBatch(await readJson(req))
+    const writer = await sessionWriter(instance, parsed(SessionId, sessionId))
+    const batch = parseBatch(await readJson(req), writer.kinds)
     const seqs = await tx(async (client) => {
-      const appended = await appendEvents(client, sessionId, batch)
+      // A terminal session's prompts are its person's own.
+      const appended = await appendEvents(client, sessionId, batch, writer.kind === 'terminal' ? writer.author : null)
       // The decision log reads log_decision calls from the record, so it is complete whatever the tool's server did.
       await recordDecisions(client, sessionId, batch.events)
       return appended
