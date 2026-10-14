@@ -1,6 +1,6 @@
 // A stand-in for GitHub's gh CLI, for step22. It answers the pull request commands
 // agents-git runs and keeps the pull requests, and every call, in the JSON file
-// AGENTS_FAKE_GH_STATE names.
+// STEP22_FAKE_GH_STATE names.
 //   pr list --head <branch> --state open --json url,number --limit 1
 //   pr create --head <branch> --base <base> --title <title> --body <body>
 //   pr edit <number> --body <body>
@@ -8,9 +8,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 
-const file = process.env.AGENTS_FAKE_GH_STATE
+const file = process.env.STEP22_FAKE_GH_STATE
 if (!file) {
-  console.error('fake gh: AGENTS_FAKE_GH_STATE is not set')
+  console.error('fake gh: STEP22_FAKE_GH_STATE is not set')
   process.exit(1)
 }
 type Pull = { number: number, head: string, base: string, title: string, body: string, url: string }

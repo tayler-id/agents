@@ -26,7 +26,7 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 ### How check runs a step
 
 - It takes `~/.agents-app/checks/run.lock` with `mkdir`, the lock `AGENTS.md` names, and waits for it up to the longest run the policy allows. A return, a thrown error and SIGINT, SIGTERM or SIGHUP all remove it. Only SIGKILL can't.
-- It runs `node --env-file=<main>/.env --env-file=<main>/.env.test test/step<step>.ts` in the worktree. agents-git never reads or copies the env files.
+- It runs `node --env-file=<main>/.env --env-file=<main>/.env.test test/step<step>.ts` in the worktree. agents-git never reads or copies the env files. Node's `--env-file` never overrides a variable that is already set, so the step is not given `DATABASE_URL`, any `PG*` variable or any `AGENTS_*` variable from the caller's shell, and the env files decide which database it uses. The same goes for `npm ci`, the name guard and `gh`.
 - Each step runs in its own process group, under the policy's limit per check, 900 seconds, or `--limit`. Past it the whole group gets SIGTERM, then SIGKILL 5 seconds later, and whatever the step left running is killed when it ends.
 - `daemon/agents-git/docker.ts` is the `docker` every step sees, first on its PATH. It passes each call to the real docker, refuses any build, tag or commit that names `agents-box:latest`, stops a build past 20 minutes or `--build-limit`, and notes each build so check runs `docker image prune -f` after the step.
 - The log goes to `~/.agents-app/checks/agents-git/<name>/`, and the ledger gets the step, the commit, its pass and FAIL counts, and whether it passed, failed or ran out of time.
@@ -72,7 +72,7 @@ From `AGENTS.md` on main at `b2aa8b5`.
 | Read the standards, decisions and parts doc first | | Reading can't be checked |
 | Names: the product is Agents, and no studied or reference names | `submit` runs main's `test/names.ts` on every new commit and its message and on the pull request's text, `land` runs it on the merge message, and land's suite runs it again | |
 | Don't restart, edit or install the `com.agents.*` services | `land` restarts nothing, and no command runs `launchctl` | An agent's own shell can, until a hook blocks it |
-| Checks use `agents_test` through `.env` then `.env.test` | `check` and `land` run every step with main's two files, in that order, by absolute path | Connecting to the live database another way |
+| Checks use `agents_test` through `.env` then `.env.test` | `check` and `land` run every step with main's two files, in that order, by absolute path, and without the caller's `DATABASE_URL`, `PG*` or `AGENTS_*`, which would beat the files | Connecting to the live database another way |
 | Don't change Tailscale, or remove Docker things you didn't make, or publish pipelines to the real forge | | No command does these, so there is nothing to refuse |
 | Never write a secret to a commit | `submit` checks the added lines and message of every commit it would publish, and the pull request's message, regression line and reviews, against the `shared/scrub.ts` patterns, and runs the framework's secrets gate on the diff. `land` checks the merge message, and every commit GitHub lacks before it mirrors main. A finding names its kind and where it is, never the value | Postgres, logs and the record are the scrubber's, not agents-git's |
 | Describe a schema change in `docs/data-model.md`, and never edit a migration | The framework's migrations gate at `submit` and `land` | |

@@ -52,8 +52,8 @@ const env: NodeJS.ProcessEnv = {
   npm_config_audit: 'false',
   npm_config_fund: 'false',
   npm_config_update_notifier: 'false',
-  AGENTS_FAKE_GH_STATE: ghState,
-  AGENTS_FAKE_DOCKER_LOG: dockerLog,
+  STEP22_FAKE_GH_STATE: ghState,
+  STEP22_FAKE_DOCKER_LOG: dockerLog,
   STEP22_RUN_LOCK: runLock,
 }
 
@@ -123,6 +123,13 @@ const seen = [
   [existsSync(process.env.STEP22_RUN_LOCK ?? ''), 'the run lock is held'],
   [true, 'three'],
 ]
+if (process.env.STEP22_PROBE_ENV) {
+  seen.push(
+    [process.env.DATABASE_URL === 'postgres://step22-test/agents_test', 'DATABASE_URL is the one in .env.test'],
+    [process.env.PGHOST === undefined && process.env.PGDATABASE === undefined, 'no PG variable from the caller'],
+    [process.env.AGENTS_PROBE === undefined, 'no AGENTS_ variable from the caller'],
+  )
+}
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
 if (process.env.STEP22_HANG) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
@@ -176,7 +183,7 @@ try {
     copyFileSync(join(ROOT, file), join(main, file))
   }
   writeFileSync(join(main, '.env'), 'STEP22_FROM_ENV=yes\n')
-  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\n')
+  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\nDATABASE_URL=postgres://step22-test/agents_test\n')
   git(main, 'add', '-A')
   git(main, 'commit', '-qm', 'start')
   const localRoot = commit('refs/heads/main') ?? ''
@@ -453,6 +460,13 @@ try {
   const stepLog = one ? readFileSync(one.log, 'utf8') : ''
   check(stepLog.includes("pass  env from .env and .env.test") && !existsSync(join(lambda, '.env')) && !existsSync(join(lambda, '.env.test')), "a step gets main's .env and .env.test, and the worktree holds neither")
   check(stepLog.includes('pass  the run lock is held') && !existsSync(runLock), 'a step runs while check holds the run lock, and check lets go of it after')
+  // Node's --env-file never overrides a variable that is already set, so the caller's must not reach the step.
+  run = cli(['check', 'lambda', '1'], { STEP22_PROBE_ENV: '1', DATABASE_URL: 'postgres://live/agents', PGHOST: 'live.example', PGDATABASE: 'agents', AGENTS_PROBE: 'live' })
+  const probeLog = readFileSync(entry('lambda').checks.at(-1).log, 'utf8')
+  check(probeLog.includes('pass  DATABASE_URL is the one in .env.test'), "a step gets DATABASE_URL from main's .env.test even when the caller has one set")
+  check(probeLog.includes('pass  no PG variable from the caller'), "a step gets none of the caller's PG variables")
+  check(probeLog.includes('pass  no AGENTS_ variable from the caller'), "a step gets none of the caller's AGENTS_ variables")
+  check(run.code === 0, 'and the step passes with all of them set in the caller')
   writeFileSync(join(lambda, 'dirty.md'), 'not committed\n')
   run = cli(['check', 'lambda', '1'])
   check(run.code === 3 && run.first.includes('1 uncommitted file'), 'check refuses a worktree with uncommitted files, since a result must belong to a commit')
@@ -491,7 +505,7 @@ try {
   const dockerCalls = readFileSync(dockerLog, 'utf8')
   check(run.code === 0 && dockerCalls.includes('build -t step22-image .') && !dockerCalls.includes('agents-box'), `check passes docker builds through and refuses to tag agents-box:latest (${run.first})`)
   check(dockerCalls.includes('image prune -f') && run.out.includes('pruned the untagged images its docker build left'), 'check runs docker image prune -f after a step that built an image')
-  run = cli(['check', 'lambda', '3', '--build-limit', '1'], { STEP22_DOCKER: '1', AGENTS_FAKE_DOCKER_HANG: '1' })
+  run = cli(['check', 'lambda', '3', '--build-limit', '1'], { STEP22_DOCKER: '1', STEP22_FAKE_DOCKER_HANG: '1' })
   const buildLog = entry('lambda').checks.at(-1)?.log
   check(run.code === 1 && buildLog && readFileSync(buildLog, 'utf8').includes('docker build ran past 1 seconds, so it was stopped'), 'check stops a docker build that runs past its limit')
 

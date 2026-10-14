@@ -115,12 +115,20 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
   })
 }
 
+// Settings that say which database, or which Agents, a program talks to. Node's
+// --env-file never overrides a variable that is already set, so one left in the caller's
+// shell would beat main's .env.test, and a check could run against the live database.
+// A step is not given them, so the env files decide.
+const decidedByEnvFiles = (name: string) => name === 'DATABASE_URL' || name.startsWith('PG') || name.startsWith('AGENTS_')
+
 // The environment for a program agents-git starts. npm's script and a step's own
 // children start node from the PATH, so the node running agents-git goes first,
-// after any folders the caller puts in front of it.
+// after any folders the caller puts in front of it. extra is added after the
+// settings above are left out, so a caller of this function can still pass one on.
 export function childEnv(extra: Record<string, string> = {}, first: readonly string[] = []): NodeJS.ProcessEnv {
   const path = [...first, dirname(process.execPath), ...(process.env.PATH ? [process.env.PATH] : [])].join(delimiter)
-  return { ...process.env, ...extra, PATH: path }
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !decidedByEnvFiles(name)))
+  return { ...inherited, ...extra, PATH: path }
 }
 
 // Returns why the install failed, or null when it worked.
