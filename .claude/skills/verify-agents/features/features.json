@@ -7,13 +7,17 @@
         "server/auth.ts",
         "server/access.ts",
         "server/admin.ts",
+        "server/onboarding.ts",
         "app/src/App.tsx",
+        "app/src/Team.tsx",
         "desktop/main.cjs"
       ],
       "checks": [
         "test/step2.ts",
         "test/step2b.ts",
-        "test/step4c.ts"
+        "test/step4c.ts",
+        "test/step12.ts",
+        "test/step12b.ts"
       ]
     },
     {

@@ -75,11 +75,13 @@ function explain(error: unknown, handle: Handle | undefined, timeoutMs: number):
 }
 
 // The app is loaded once it shows the workspace (its sidebar on a wide screen,
-// its menu button on a phone) or says it cannot open.
+// its menu button on a phone), says it cannot open, or shows a login on no team
+// waiting to join.
 async function loaded(page: Page, timeoutMs: number) {
   const workspace = page.getByRole('navigation', { name: 'Workspace' })
     .or(page.getByRole('button', { name: 'Menu' }))
     .or(page.getByRole('heading', { name: "Can't open the app" }))
+    .or(page.getByRole('main', { name: 'Waiting to join' }))
   await workspace.first().waitFor({ state: 'visible', timeout: timeoutMs })
 }
 

@@ -32,7 +32,7 @@ Run the files top to bottom on one fresh instance: `bin/agentsctl map run all --
 
 ## Features
 
-- [Getting in](./getting-in.md): who you are comes from Tailscale. A login on no team is turned away, the machine door refuses people, and the desktop app opens the same team.
+- [Getting in](./getting-in.md): who you are comes from Tailscale. A login on no team asks to join and waits, the machine door refuses people, and the desktop app opens the same team.
 - [Conversations](./conversations.md): DMs with one agent, rooms where agents take turns, @mentions, and the notice an agent leaves when it cannot start.
 - [Agent setup](./agent-setup.md): a new agent, its title, model and instructions, skills, plugins, routines, memory, and templates.
 - [Tasks](./tasks.md): a new task, a DM post made a task, telling the agent more, a task on a repo, and interrupting the agent.

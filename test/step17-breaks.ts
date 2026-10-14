@@ -169,6 +169,8 @@ const BREAKS: Break[] = [
     edits: [{ file: '.claude/skills/verify-agents/features/getting-in.md', anchor: 'bin/agentsctl browser text --role navigation --name Workspace --expect "$(bin/agentsctl db "select name from teams where id = {team}" --value)"', replace: 'bin/agentsctl browser text --role navigation --name Workspace' }] },
   { name: 'map-verdict', why: 'map run calls a step that held a failure', sections: 'map', red: 'map run getting-in verifies every step live',
     edits: [{ file: 'ctl/map.ts', anchor: "steps.push({ label: step.label, verdict: 'live-ui-verified', reason: '', commands })", replace: "steps.push({ label: step.label, verdict: 'verifier-failed', reason: '', commands })" }] },
+  { name: 'loaded-waiting', why: 'goto does not know the page a login on no team waits on', sections: 'map', red: 'map run getting-in verifies every step live',
+    edits: [{ file: 'ctl/playwright.ts', anchor: "\n    .or(page.getByRole('main', { name: 'Waiting to join' }))", replace: '' }] },
 ]
 
 const Result = z.object({
