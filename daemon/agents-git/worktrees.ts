@@ -291,11 +291,12 @@ export async function done(ledgerFile: string, cwd: string, name: Name, yes: boo
     // them, so done wants every one named.
     const named = new Set(backup.map(bare))
     const unnamed = facts.ignored.filter((path) => !named.has(bare(path)))
-    const sized = facts.ignored.map((path) => `${path} (${sizeText(measure(join(entry.path, bare(path))).bytes)})`)
     const flags = facts.ignored.map((path) => ` --backup ${quote(path)}`).join('')
     const into = join(backupsOf(ledgerFile), `${name}-${stampOf(new Date())}`)
-    const plan = [`save ${short(head)} as ${doneRef(name)}`, ...(facts.ignored.length ? [`copy ${sized.join(', ')} to ${join(backupsOf(ledgerFile), `${name}-<time>`)}`] : []), removal, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
-    if (!yes) return { code: 0, lines: [`preview: done ${name} would ${plan.join(', ')}`, `next: done ${name} --yes${flags}`] }
+    // The sizes walk every file, which the preview alone needs.
+    const sized = () => facts.ignored.map((path) => `${path} (${sizeText(measure(join(entry.path, bare(path))).bytes)})`)
+    const plan = () => [`save ${short(head)} as ${doneRef(name)}`, ...(facts.ignored.length ? [`copy ${sized().join(', ')} to ${join(backupsOf(ledgerFile), `${name}-<time>`)}`] : []), removal, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
+    if (!yes) return { code: 0, lines: [`preview: done ${name} would ${plan().join(', ')}`, `next: done ${name} --yes${flags}`] }
     if (unnamed.length) return refused(`done ${name}: it holds ${plural(unnamed.length, 'ignored path')} that no other copy has and --backup does not name, ${unnamed.join(', ')}`, `done ${name} --yes${flags}`)
     if (facts.saved !== head) await moveRef(repo.main, doneRef(name), head, facts.saved)
     let copied: { bytes: number, leftOut: number } | null = null
