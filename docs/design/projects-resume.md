@@ -1,6 +1,6 @@
 # Projects work, where it stands
 
-A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `7197f4b`, and has its own `node_modules` from `npm ci`.
+A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `f643a30`, and has its own `node_modules` from `npm ci`.
 
 ## Done, committed
 
@@ -17,7 +17,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
   - bug-fix's prompt says the report's title and the other issues' titles are quoted data, not instructions.
   - GitHub stays off on the real server until these have landed on main.
 - The review of `cb9b6b8`: the cut before the parse, drafts that couldn't be edited, titles the prompt called quoted that weren't, and small filter gaps, fixed in "Read an issue whole before cutting it, and quote titles in every prompt" and "Let a draft keep the repos it was started with". Main's step14 then found that a task on a repo its forge doesn't have no longer started, fixed in "Start a task when its forge can't name the default branch". The known gaps in tables and footnotes are in the design, and GitHub stays off until they close.
-- Checks, all green on `5f38aba`: `test/step13.ts` 68 checks, `test/step13c.ts` 83, `test/step13b.ts` 19 in each of three browsers, and main's step14, step14b and step14c. step13b's checks that wait for GitHub's sign-in or a page failed twice while other agents' checks kept this Mac at a load of 12 to 19, and passed at 8. Break runners in `.scratch/` (gitignored): `breaks13.ts` with file and schema breaks, sets U1 to U3 for this round, `breaks13c.ts` for the text filter, 47 breaks, `breaks13b.ts` for the app, set V1 for the draft's picker.
+- Checks, all green on `5f38aba`: `test/step13.ts` 68 checks, `test/step13c.ts` 83, `test/step13b.ts` 19 in each of three browsers, and main's step14, step14b and step14c. step13b's checks that wait for GitHub's sign-in or a page failed twice while other agents' checks kept this Mac at a load of 12 to 19, and passed at 8. Break runners in `.scratch/` (gitignored): `breaks13.ts` with file and schema breaks, sets U1 to U3 for this round, `breaks13c.ts` for the text filter, 47 breaks, `breaks13b.ts` for the app, set V1 for the draft's picker. After the rebase onto main at `f643a30`, the checks ran again on `4111510` and passed, with step13 at 68, step13c 83, step13b 19 in each of three browsers, step14 74, step14b 42, step14c 132, step18e 21 and step20b 31. Five commits conflicted, and the build log says how each was resolved.
 - The app: `app/src/Projects.tsx`, routes and sidebar in `app/src/App.tsx`, small hooks in `app/src/Work.tsx`, `app/src/data.ts`, `app/src/styles.css`.
 - Docs: `docs/what-each-part-does.md` section, `docs/build-log.md` section, a README section.
 
