@@ -380,32 +380,22 @@ function failTurn(sessionId: string, covers: string[], why: string) {
 }
 
 // Resumes a session the last run cut off, with one message that answers all of
-// its unfinished messages, once its workspace is set up. The machine may have
-// stopped while a message waited for that, and then the setup comes back through
-// the queue. A session that can't start fails its messages with the reason.
-async function resume({ command, covers }: ResumeTurn) {
-  console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
-  try {
-    const { workspaceId } = command.payload
-    if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
-    startSession(command).send(command.payload.text, covers)
-  } catch (error) {
-    failTurn(command.sessionId, covers, messageOf(error))
-  }
-}
-
-// Puts each turn recover returned first in its session's queue, read on its own.
-function resumeAll(turns: unknown[]) {
-  for (const turn of turns) {
-    const parsed = ResumeTurn.safeParse(turn)
-    if (parsed.success) {
-      inOrder(parsed.data.command.sessionId, () => resume(parsed.data))
-      continue
-    }
+// its unfinished messages. A session that can't start fails them with the reason.
+function resume(turn: unknown) {
+  const parsed = ResumeTurn.safeParse(turn)
+  if (!parsed.success) {
     const target = TurnTarget.safeParse(turn)
     const reason = `This machine could not read the turn to resume: ${z.prettifyError(parsed.error)}`
     if (target.success) failTurn(target.data.command.sessionId, target.data.covers, reason)
     else console.error(scrub(reason))
+    return
+  }
+  const { command, covers } = parsed.data
+  console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
+  try {
+    startSession(command).send(command.payload.text, covers)
+  } catch (error) {
+    failTurn(command.sessionId, covers, messageOf(error))
   }
 }
 
@@ -426,7 +416,7 @@ async function listen(signal: AbortSignal) {
       if (recovery.requeued) console.log(`requeued ${recovery.requeued} unfinished commands`)
       if (recovery.ended) console.log(`ended ${recovery.ended} messages a person asked to stop while this machine was down`)
       if (recovery.gaveUp) console.log(`failed ${recovery.gaveUp} messages whose turn kept stopping this machine`)
-      resumeAll(recovery.resumed)
+      for (const turn of recovery.resumed) resume(turn)
       // Workspaces from before this process may have changes the API has not seen.
       for (const workspaceId of ws.ids()) refreshChanges(workspaceId)
       break
