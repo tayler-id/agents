@@ -158,7 +158,7 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
   })
   if ('code' in made) return made
   // A signal stops npm with the rest of start, and leaves the entry starting, as a person's Ctrl-C always did.
-  const failure = await stoppable((running) => npmCi(running, made.path))
+  const failure = await stoppable((running) => npmCi(running, made.repo, made.path))
   return withLedger(ledgerFile, `start ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.name === name)
     if (entry?.state !== 'starting' || entry.pid !== process.pid) throw new Error(`the ledger's entry for ${name} changed while npm ci ran`)
@@ -183,11 +183,11 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
 
 // Returns why the install failed, or null when it worked. The install runs in a process
 // group of its own that running holds, so a signal can stop it with everything it started.
-export async function npmCi(running: Running, path: string): Promise<string | null> {
+export async function npmCi(running: Running, main: string, path: string): Promise<string | null> {
   const dir = mkdtempSync(join(tmpdir(), 'agents-git-npm-'))
   const log = join(dir, 'npm-ci.log')
   try {
-    const ran = await runGroup(running, ['npm', 'ci'], path, childEnv(), NPM_CI_LIMIT_SEC, log)
+    const ran = await runGroup(running, ['npm', 'ci'], path, childEnv(main), NPM_CI_LIMIT_SEC, log)
     if (ran.code === 0 && !ran.timedOut) return null
     const tail = readFileSync(log, 'utf8').split('\n').filter((line) => line.trim() !== '').slice(-NPM_TAIL_LINES)
     return [ran.timedOut ? `npm ci ran past ${NPM_CI_LIMIT_SEC}s and was stopped:` : `npm ci exited ${ran.code ?? 'by a signal'}:`, ...tail].join('\n')

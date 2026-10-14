@@ -155,6 +155,8 @@ if (process.env.STEP22_PROBE_ENV) {
     [process.env.DATABASE_URL === 'postgres://step22-test/agents_test', 'DATABASE_URL is the one in .env.test'],
     [process.env.PGHOST === undefined && process.env.PGDATABASE === undefined, 'no PG variable from the caller'],
     [process.env.AGENTS_PROBE === undefined, 'no AGENTS_ variable from the caller'],
+    [process.env.ELECTRIC_URL === 'http://step22-test.invalid/electric', 'ELECTRIC_URL is the one in .env.test'],
+    [process.env.ELECTRIC_SECRET === 'step22-env-secret' && process.env.POSTGRES_PASSWORD === 'step22-env-password', 'ELECTRIC_SECRET and POSTGRES_PASSWORD are the ones in .env'],
   )
 }
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
@@ -228,8 +230,8 @@ try {
     mkdirSync(join(main, file, '..'), { recursive: true })
     copyFileSync(join(ROOT, file), join(main, file))
   }
-  writeFileSync(join(main, '.env'), 'STEP22_FROM_ENV=yes\n')
-  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\nDATABASE_URL=postgres://step22-test/agents_test\n')
+  writeFileSync(join(main, '.env'), 'STEP22_FROM_ENV=yes\nELECTRIC_URL=http://step22-env.invalid/electric\nELECTRIC_SECRET=step22-env-secret\nPOSTGRES_PASSWORD=step22-env-password\n')
+  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\nDATABASE_URL=postgres://step22-test/agents_test\nELECTRIC_URL=http://step22-test.invalid/electric\n')
   git(main, 'add', '-A')
   git(main, 'commit', '-qm', 'start')
   const localRoot = commit('refs/heads/main') ?? ''
@@ -570,11 +572,13 @@ try {
   check(stepLog.includes("pass  env from .env and .env.test") && !existsSync(join(lambda, '.env')) && !existsSync(join(lambda, '.env.test')), "a step gets main's .env and .env.test, and the worktree holds neither")
   check(stepLog.includes('pass  the run lock is held') && !existsSync(runLock), 'a step runs while check holds the run lock, and check lets go of it after')
   // Node's --env-file never overrides a variable that is already set, so the caller's must not reach the step.
-  run = cli(['check', 'lambda', '1'], { STEP22_PROBE_ENV: '1', DATABASE_URL: 'postgres://live/agents', PGHOST: 'live.example', PGDATABASE: 'agents', AGENTS_PROBE: 'live' })
+  run = cli(['check', 'lambda', '1'], { STEP22_PROBE_ENV: '1', DATABASE_URL: 'postgres://live/agents', PGHOST: 'live.example', PGDATABASE: 'agents', AGENTS_PROBE: 'live', ELECTRIC_URL: 'http://live.invalid/electric', ELECTRIC_SECRET: 'live-secret', POSTGRES_PASSWORD: 'live-password' })
   const probeLog = readFileSync(entry('lambda').checks.at(-1).log, 'utf8')
   check(probeLog.includes('pass  DATABASE_URL is the one in .env.test'), "a step gets DATABASE_URL from main's .env.test even when the caller has one set")
   check(probeLog.includes('pass  no PG variable from the caller'), "a step gets none of the caller's PG variables")
   check(probeLog.includes('pass  no AGENTS_ variable from the caller'), "a step gets none of the caller's AGENTS_ variables")
+  check(probeLog.includes('pass  ELECTRIC_URL is the one in .env.test'), "a step gets ELECTRIC_URL from main's .env.test even when the caller has one set")
+  check(probeLog.includes('pass  ELECTRIC_SECRET and POSTGRES_PASSWORD are the ones in .env'), "a step gets ELECTRIC_SECRET and POSTGRES_PASSWORD from main's .env even when the caller has them set")
   check(run.code === 0, 'and the step passes with all of them set in the caller')
   writeFileSync(join(lambda, 'dirty.md'), 'not committed\n')
   run = cli(['check', 'lambda', '1'])

@@ -12,7 +12,8 @@ import { messageOf } from '../../shared/errors.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommitted, worktreeList } from './git.ts'
 import { MAIN_BRANCH, withLedger, type Approval, type CheckRun, type Name } from './ledger.ts'
-import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
+import { BUILD_LIMIT_SEC, describe, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
+import { envFilesOf } from './group.ts'
 import { bindApprovals, gates, listed, mirrorMain, publicProblems, type Mirrored } from './github.ts'
 import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, stampOf, worktreeRoot, type Report } from './repo.ts'
 import { npmCi } from './worktrees.ts'
@@ -73,9 +74,9 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       mkdirSync(dirname(plan.scratch), { recursive: true })
       await git(plan.main, ['worktree', 'add', '--detach', '--quiet', plan.scratch, plan.mainSha])
       // The suite loads .env and .env.test from its own folder, and these links
-      // point at main's, so they are never read here or copied.
+      // point at main's, so they are never copied.
       for (const file of plan.envFiles) symlinkSync(file, join(plan.scratch, basename(file)))
-      const install = await npmCi(running, plan.scratch)
+      const install = await npmCi(running, plan.main, plan.scratch)
       if (install !== null) return failed(`land ${name}: npm ci in ${plan.scratch} failed`, install)
       const envFlags = plan.envFiles.map((file) => `--env-file=${file}`)
       const passing: string[] = []
@@ -83,7 +84,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
         mkdirSync(dirname(join(plan.scratch, file)), { recursive: true })
         writeFileSync(join(plan.scratch, file), await git(plan.main, ['show', `${plan.tip}:${file}`]))
         const at = new Date()
-        const outcome = await runLogged(running, ledgerFile, plan.scratch, [process.execPath, ...envFlags, file], plan.policy.checks.timeoutSec, BUILD_LIMIT_SEC, log(basename(file, '.ts')))
+        const outcome = await runLogged(running, ledgerFile, plan.main, plan.scratch, [process.execPath, ...envFlags, file], plan.policy.checks.timeoutSec, BUILD_LIMIT_SEC, log(basename(file, '.ts')))
         await keep(`main: ${file}`, plan.mainSha, outcome, outcome.passed, outcome.failed, at)
         if (resultOf(outcome) === 'pass') passing.push(file)
       }
@@ -98,13 +99,13 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       const merge = Sha.parse((await git(plan.scratch, ['rev-parse', 'HEAD'])).trim())
       await moveRef(plan.main, landRef(name), merge, await commitOf(plan.main, landRef(name)))
       if ((await gitRun(plan.scratch, ['diff', '--quiet', plan.mainSha, merge, '--', 'package.json', 'package-lock.json'])).code !== 0) {
-        const again = await npmCi(running, plan.scratch)
+        const again = await npmCi(running, plan.main, plan.scratch)
         if (again !== null) return failed(`land ${name}: npm ci after the merge failed`, again)
       }
       const outcomes: { label: string, outcome: Outcome, limitSec: number }[] = []
       for (const command of plan.policy.suite.commands) {
         const at = new Date()
-        const outcome = await runLogged(running, ledgerFile, plan.scratch, command.argv, command.timeoutSec, BUILD_LIMIT_SEC, log(command.name))
+        const outcome = await runLogged(running, ledgerFile, plan.main, plan.scratch, command.argv, command.timeoutSec, BUILD_LIMIT_SEC, log(command.name))
         const lines = [...readFileSync(outcome.log, 'utf8').matchAll(SUITE_LINE)]
         await keep(command.name, merge, outcome, lines.filter((l) => l[1] === 'pass').length, lines.filter((l) => l[1] === 'FAIL').length, at)
         outcomes.push({ label: command.name, outcome, limitSec: command.timeoutSec })

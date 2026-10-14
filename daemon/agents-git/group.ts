@@ -5,28 +5,36 @@
 // worktree or a half-made install is never left behind.
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { closeSync, mkdirSync, openSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { constants as os } from 'node:os'
-import { delimiter, dirname } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
+import { parseEnv } from 'node:util'
 import { errorCode } from './ledger.ts'
 
 // A program told to stop gets this long to stop its own children before it is killed.
 export const KILL_GRACE_MS = 5_000
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
 
-// Settings that say which database, or which Agents, a program talks to. Node's
-// --env-file never overrides a variable that is already set, so one left in the caller's
-// shell would beat main's .env.test, and a check could run against the live database.
-// A step is not given them, so the env files decide.
-const decidedByEnvFiles = (name: string) => name === 'DATABASE_URL' || name.startsWith('PG') || name.startsWith('AGENTS_')
+// Main's env files, which a check loads in this order. agents-git reads only the names
+// they set, never a value.
+export const envFilesOf = (main: string) => [join(main, '.env'), join(main, '.env.test')]
 
-// The environment for a program agents-git starts. npm's script and a step's own
-// children start node from the PATH, so the node running agents-git goes first,
-// after any folders the caller puts in front of it. extra is added after the
-// settings above are left out, so a caller of this function can still pass one on.
-export function childEnv(extra: Record<string, string> = {}, first: readonly string[] = []): NodeJS.ProcessEnv {
+// Settings that say which database, or which Agents, a program talks to, left out even
+// where main's env files don't set them.
+const pointsSomewhere = (name: string) => name === 'DATABASE_URL' || name.startsWith('PG') || name.startsWith('AGENTS_')
+
+// The environment for a program agents-git starts in a repo whose main checkout is main.
+// Node's --env-file never overrides a variable that is already set, so one left in the
+// caller's shell would beat main's env files, and a check could reach the live database
+// or Electric. A program is given no variable the files set and none of the settings
+// above, so the files decide. A file main lacks sets nothing, and check and land refuse
+// to run without it. npm's script and a step's own children start node from the PATH,
+// so the node running agents-git goes first, after any folders the caller puts in front
+// of it. extra is added after the variables are left out, so a caller can pass one on.
+export function childEnv(main: string, extra: Record<string, string> = {}, first: readonly string[] = []): NodeJS.ProcessEnv {
+  const setByFiles = new Set(envFilesOf(main).filter((file) => existsSync(file)).flatMap((file) => Object.keys(parseEnv(readFileSync(file, 'utf8')))))
   const path = [...first, dirname(process.execPath), ...(process.env.PATH ? [process.env.PATH] : [])].join(delimiter)
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !decidedByEnvFiles(name)))
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !setByFiles.has(name) && !pointsSomewhere(name)))
   return { ...inherited, ...extra, PATH: path }
 }
 

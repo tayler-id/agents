@@ -344,7 +344,7 @@ async function namesIn(repo: string, main: Sha, probes: readonly Probe[]): Promi
       mkdirSync(dirname(join(tree, NAME_GUARD)), { recursive: true })
       writeFileSync(join(tree, NAME_GUARD), guard.stdout)
       writeFileSync(join(tree, MESSAGE_FILE), probe.text)
-      const ran = await run(process.execPath, [NAME_GUARD], tree, NAME_GUARD_TIMEOUT_MS, childEnv())
+      const ran = await run(process.execPath, [NAME_GUARD], tree, NAME_GUARD_TIMEOUT_MS, childEnv(repo))
       const hits = [...`${ran.stdout}\n${ran.stderr}`.matchAll(/^(.+?):(\d+) (.+?): /gm)]
       if (ran.code !== 0 && !hits.length) throw new Error(`main's ${NAME_GUARD} exited ${ran.code} on ${probe.textAt}: ${ran.stderr.trim()}`)
       for (const [, file = '', line = '', what = ''] of hits) {
@@ -366,8 +366,8 @@ export function listed(problems: readonly string[]): string[] {
 
 const Pulls = z.array(z.object({ url: z.url(), number: z.number().int().positive() }))
 
-async function gh(cwd: string, args: readonly string[]): Promise<string> {
-  const ran = await run('gh', args, cwd, GH_TIMEOUT_MS, childEnv())
+async function gh(main: string, args: readonly string[]): Promise<string> {
+  const ran = await run('gh', args, main, GH_TIMEOUT_MS, childEnv(main))
   if (ran.code !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')} exited ${ran.code}: ${ran.stderr.trim()}`)
   return ran.stdout
 }

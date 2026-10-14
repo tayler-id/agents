@@ -11,7 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { Policy } from '../../shared/policy.ts'
 import { commitOf, run, short, uncommitted, type Sha } from './git.ts'
-import { childEnv, runGroup, stoppable, Stopped, type Group, type Running } from './group.ts'
+import { childEnv, envFilesOf, runGroup, stoppable, Stopped, type Group, type Running } from './group.ts'
 import { appHome, errorCode, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, quote, refused, replace, stampOf, type Report } from './repo.ts'
 
@@ -27,8 +27,6 @@ export type StepId = z.infer<typeof StepId>
 export const stepFile = (id: StepId) => `test/step${id}.ts`
 export const runLockOf = (ledgerFile: string) => join(appHome(ledgerFile), 'checks', 'run.lock')
 export const logsOf = (ledgerFile: string, name: Name) => join(appHome(ledgerFile), 'checks', 'agents-git', name)
-// Main's env files, which a check loads in this order and agents-git never reads.
-export const envFilesOf = (main: string) => [join(main, '.env'), join(main, '.env.test')]
 // The longest anyone may hold the run lock under the policy, which is how long a check waits for it.
 export const lockWaitOf = (policy: Policy) => Math.max(policy.checks.timeoutSec, ...policy.suite.commands.map((c) => c.timeoutSec)) * 1000
 
@@ -94,10 +92,10 @@ export type Outcome = { code: number | null, timedOut: boolean, seconds: number,
 
 // Runs one program to completion or its limit with its output in a log, in a
 // process group of its own, so stopping it stops everything it started.
-export async function runLogged(running: Running, ledgerFile: string, cwd: string, argv: readonly string[], limitSec: number, buildLimitSec: number, log: string): Promise<Outcome> {
+export async function runLogged(running: Running, ledgerFile: string, main: string, cwd: string, argv: readonly string[], limitSec: number, buildLimitSec: number, log: string): Promise<Outcome> {
   const docker = dockerFor(ledgerFile)
   if (docker) writeFileSync(docker.builds, '')
-  const env = childEnv(docker ? { AGENTS_GIT_DOCKER: docker.real, AGENTS_GIT_BUILDS: docker.builds, AGENTS_GIT_BUILD_LIMIT_SEC: String(buildLimitSec) } : {}, docker ? [docker.folder] : [])
+  const env = childEnv(main, docker ? { AGENTS_GIT_DOCKER: docker.real, AGENTS_GIT_BUILDS: docker.builds, AGENTS_GIT_BUILD_LIMIT_SEC: String(buildLimitSec) } : {}, docker ? [docker.folder] : [])
   const built = () => docker !== null && statSync(docker.builds).size > 0
   let group: Group
   try {
@@ -184,7 +182,7 @@ export async function check(ledgerFile: string, cwd: string, name: Name, steps: 
     for (const id of steps) {
       const at = new Date()
       const argv = [process.execPath, ...plan.envFiles.map((file) => `--env-file=${file}`), stepFile(id)]
-      const outcome = await runLogged(running, ledgerFile, plan.entry.path, argv, plan.limitSec, builds, join(logsOf(ledgerFile, name), `${stampOf(at)}-step${id}.log`))
+      const outcome = await runLogged(running, ledgerFile, plan.repo, plan.entry.path, argv, plan.limitSec, builds, join(logsOf(ledgerFile, name), `${stampOf(at)}-step${id}.log`))
       const after = await changedSince(plan.entry.path, plan.head, false)
       if (after) return failed(`check ${name}: ${after} while step${id} ran, so its result was not recorded`, `  log ${outcome.log}`)
       await record(ledgerFile, plan.repo, name, { step: id, head: plan.head, passed: outcome.passed, failed: outcome.failed, result: resultOf(outcome), at: at.toISOString(), seconds: outcome.seconds, log: outcome.log })
