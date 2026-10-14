@@ -132,8 +132,12 @@ const desktop: Desktop | null = desktopConfig && startDesktop({
 // link to the API, through which people watch and take over.
 type Screen = { size: ScreenSize; service: ScreenService; link: ScreenLink; socket: string; cdpUrl: string; browserMcp: string }
 let screen: Screen | null = null
-if (desktop && desktopConfig) {
-  desktop.ready.then(() => {
+// A box's sessions need its computer, so the daemon takes no work until its
+// desktop is up. `ready` gives up when a part of the desktop doesn't come up
+// within the desktop's start limit. Then the daemon stops, and the container's
+// restart policy starts the box again, so a box never works without its computer.
+const desktopUp: Promise<boolean> = desktop && desktopConfig
+  ? desktop.ready.then(() => {
     const socket = join(SCREEN_DIR, 'agent.sock')
     const service = startScreenService({ desktop, socketPath: socket })
     screen = {
@@ -141,12 +145,13 @@ if (desktop && desktopConfig) {
       link: linkScreen({ api: config.api, token: config.token, vncSocket: desktop.vncSocket, onControl: (control) => { service.setControl(control) } }),
     }
     console.log(`desktop up at ${desktop.size.width}x${desktop.size.height}`)
+    return true
   }, (error: unknown) => {
-    // The supervisors keep trying to start what failed. Until the daemon starts
-    // again the machine reports no screen, so the app offers none.
-    console.error(`desktop: ${messageOf(error)}`)
+    console.error(`desktop: ${messageOf(error)}. Stopping, so the box starts again.`)
+    void shutdown(1)
+    return false
   })
-}
+  : Promise.resolve(true)
 
 class ApiError extends Error {
   status: number
@@ -667,9 +672,11 @@ function followSignIns(signal: AbortSignal) {
   new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
 }
 
-// A session mid-turn is left as a crash leaves it, for the next start to stop
-// its process and resume its messages. The others end cleanly.
-async function shutdown() {
+// Stops everything and exits with `code`, 0 when asked to stop and 1 when the
+// box can't work, so its restart policy starts it again. A session mid-turn is
+// left as a crash leaves it, for the next start to stop its process and resume
+// its messages. The others end cleanly.
+async function shutdown(code: 0 | 1) {
   if (stopping) return
   stopping = true
   abort.abort()
@@ -685,13 +692,13 @@ async function shutdown() {
   await screen?.service.stop()
   await desktop?.stop()
   await api('POST', '/v1/instance/heartbeat', { status: 'offline' }).catch(() => {})
-  process.exit(0)
+  process.exit(code)
 }
 
 const abort = new AbortController()
-process.on('SIGINT', () => { void shutdown() })
-process.on('SIGTERM', () => { void shutdown() })
+process.on('SIGINT', () => { void shutdown(0) })
+process.on('SIGTERM', () => { void shutdown(0) })
 console.log(`agentsd connected to ${config.api}`)
 void heartbeat()
-void listen(abort.signal)
+void desktopUp.then((up) => { if (up) void listen(abort.signal) })
 followSignIns(abort.signal)
