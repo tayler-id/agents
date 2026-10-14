@@ -53,7 +53,7 @@ It refuses with exit 3, before making anything, when the team `verify-<instance>
 bin/agentsctl doctor
 ```
 
-Read-only. It answers whether the instance is worth driving: the API and daemon are the processes `up` started, the API owns all three ports, `/v1/me` answers as ada, Electric's agents shape holds every agent the database does, the machine's token reads its queue, the daemon is online and no command waits on it, the app is served and built from the current `app/src`, and the app renders in a browser as ada with the team and agents in the sidebar. Run it first, and again after anything surprising. A failing check names what to read or run next.
+Read-only. It answers whether the instance is worth driving: the API and daemon are the processes `up` started, the API owns all three ports, `/v1/me` answers as ada, Electric's agents shape, read past its snapshot to up-to-date as the app reads it, holds every agent the database does, the machine's token reads its queue, the daemon is online and no command waits on it, the app is served and built from the current `app/src`, and the app renders in a browser as ada with the team and agents in the sidebar. Run it first, and again after anything surprising. A failing check names what to read or run next.
 
 ## Drive
 
@@ -194,7 +194,7 @@ bin/agentsctl map check
 bin/agentsctl down
 ```
 
-It stops what the instance's state file lists, after checking each process's start time and command line with `ps`, so a process that reused a pid is never touched, and nothing is ever stopped by name. It stops their children too: Claude sessions, browsers and the desktop app. It removes only what `up` made, as the instance's state records it: the team (and everything in it, including any box container and volume its boxes started), the forge org, and the scratch folder. Then it confirms no process it started is still running. `--keep-data` keeps the team for a look at the record. Evidence stays.
+It stops what the instance's state file lists, after checking each process's start time and command line with `ps`, so a process that reused a pid is never touched, and nothing is ever stopped by name. It stops their children too: Claude sessions, browsers and the desktop app. It removes only what the instance made: the team (and everything in it, including any box container and volume its boxes started), the forge org and the scratch folder, as the instance's state records them, and the join requests of the instance's own logins, which belong to no team. A login on no team asks to join when it opens the app. Then it confirms no process it started is still running. `--keep-data` keeps the team for a look at the record. Evidence stays.
 
 ## Gotchas
 
