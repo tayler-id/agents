@@ -40,6 +40,8 @@ The branch runs are on the rebase onto `360c16e`, on 2026-10-13. Main then moved
 
 step18d failed once in 5 runs after the rebase onto `360c16e`, on its last assertion: the replaced box still showed `stale` right after the resumed turn ended, and its new container's heartbeat never reached the record in that run. The cause is not found. The check now waits up to 20 seconds, one heartbeat and a margin, for the box to show online, and passed in the break test's green run.
 
+Main's checks pass on the branch rebased onto `94cd4b1`: step1, step2, step3, step4a, step4b, step4c, step4d, step5, step6, step6b, step7, step8, step9, step9b, step10, step10b, step12, step12b and step19. step9b failed once with its people port 7981 taken by another process, and passed when run again. step12c passed as a copy that builds `agents-box:dur-12c`, since it builds a fixed `agents-box:onboard-check` tag that another workstream uses. step2b checks the live server's ports and was not run.
+
 Main's daemon at `360c16e`, run against this branch's API with the fake Claude, looped on the requeue route while its machine showed online, and, already running when the API restarted onto this branch, failed its message with the 400. This branch's daemon looped on recover against main's API.
 
 ## Not done
