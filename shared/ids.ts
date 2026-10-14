@@ -27,3 +27,5 @@ export const FileChangeId = z.uuid().brand<'FileChangeId'>()
 export type FileChangeId = z.infer<typeof FileChangeId>
 export const PushId = z.uuid().brand<'PushId'>()
 export type PushId = z.infer<typeof PushId>
+export const FolderId = z.uuid().brand<'FolderId'>()
+export type FolderId = z.infer<typeof FolderId>

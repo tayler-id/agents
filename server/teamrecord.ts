@@ -5,14 +5,17 @@
 import { maybe, pool } from './db.ts'
 import { HttpError } from './record.ts'
 
-// Sessions an agent may read, given the session it is asking from.
+// Sessions an agent may read, given the session it is asking from. A terminal
+// session in a folder its person shares with the team is the team's to read.
 const READABLE = `s.team_id = $1 and (
   (s.conversation_id is not null and (c.visibility = 'team' or s.conversation_id = own.conversation_id))
-  or (s.task_id is not null and (t.visibility = 'team' or s.task_id = own.task_id)))`
+  or (s.task_id is not null and (t.visibility = 'team' or s.task_id = own.task_id))
+  or (s.folder_id is not null and f.visibility = 'team'))`
 
 const FROM_SESSIONS = `from sessions s
   left join conversations c on c.id = s.conversation_id
   left join tasks t on t.id = s.task_id
+  left join connected_folders f on f.id = s.folder_id
   left join agents a on a.id = s.agent_id
   left join people p on p.id = s.started_by
   cross join (select conversation_id, task_id from sessions where id = $2) own`

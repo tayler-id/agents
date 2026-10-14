@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
-import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, MessagePayload, NewEvent } from '../shared/types.ts'
+import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, EventKind, MessagePayload, NewEvent } from '../shared/types.ts'
 import { memoryBlock } from './agents.ts'
 import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
@@ -36,7 +36,8 @@ export class HttpError extends Error {
 export const Person = z.object({ id: PersonId, team_id: TeamId, login: z.string(), role: TeamRole })
 export type Person = z.infer<typeof Person>
 type Session = {
-  id: string; team_id: string; instance_id: string; conversation_id: string | null; agent_id: string; last_seq: string
+  // A terminal session has no agent, and no conversation either.
+  id: string; team_id: string; instance_id: string; conversation_id: string | null; agent_id: string | null; last_seq: string
 }
 type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 
@@ -83,13 +84,16 @@ export async function appendEvents(
   if (batch.ended && await endMessages(client, sessionId, batch.ended)) await closeTurnAsks(client, sessionId)
   if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
     const conversationId = session.conversation_id
+    // The schema's check gives every conversation's session an agent.
+    const agentId = session.agent_id
+    if (agentId === null) throw new Error(`session ${session.id} serves a conversation and has no agent`)
     const room = await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [conversationId])
     if (turnsEnded.length) {
-      const reply = await postAgentReply(client, session, conversationId)
-      if (room) await finishTurn(client, conversationId, session.agent_id, reply === null || reply.trim() === PASS ? 'pass' : 'sent')
+      const reply = await postAgentReply(client, session.id, agentId, conversationId)
+      if (room) await finishTurn(client, conversationId, agentId, reply === null || reply.trim() === PASS ? 'pass' : 'sent')
     } else if (room) {
       // A failed session gives up its turn at once, rather than the room waiting out the deadline.
-      await finishTurn(client, conversationId, session.agent_id, 'error')
+      await finishTurn(client, conversationId, agentId, 'error')
     }
   }
   if (turnsEnded.length && !session.conversation_id) await reportToConversation(client, session.id)
@@ -204,13 +208,17 @@ export async function interruptSession(client: pg.PoolClient, sessionId: string)
     [session.team_id, session.instance_id, sessionId])
 }
 
+// Kinds a person writes. Only these carry an author, so a terminal session's
+// batch names its person on their prompts and on nothing Claude wrote.
+const PERSON_KINDS: ReadonlySet<EventKind> = new Set(['user', 'answer'])
+
 async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
   const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
   await client.query(
     `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
        tool_use_id, tool_name, text, body, client_id)
      values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [session.team_id, session.id, seq, event.kind, author, event.parentToolUseId ?? null,
+    [session.team_id, session.id, seq, event.kind, PERSON_KINDS.has(event.kind) ? author : null, event.parentToolUseId ?? null,
       event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
 }
 
@@ -247,18 +255,18 @@ export async function appendMessage(
 // When an agent's turn ends in a conversation, its last words in that turn
 // become its post there, unless it passed its turn in a room. Subagents' words
 // stay in the record only. Returns the words, or null when there were none.
-async function postAgentReply(client: pg.PoolClient, session: Session, conversationId: string): Promise<string | null> {
+async function postAgentReply(client: pg.PoolClient, sessionId: string, agentId: string, conversationId: string): Promise<string | null> {
   const reply = await maybe<{ id: string; text: string }>(client,
     `select id, body->>'text' as text from events
      where session_id = $1 and kind = 'assistant' and parent_tool_use_id is null
        and coalesce(body->>'text', '') <> ''
        and seq > coalesce((select max(seq) from events where session_id = $1 and kind = 'user'), 0)
-     order by seq desc limit 1`, [session.id])
+     order by seq desc limit 1`, [sessionId])
   if (!reply) return null
   if (reply.text.trim() === PASS) return reply.text
   await appendMessage(client, conversationId, {
-    speaker: 'agent', agentId: session.agent_id, body: reply.text,
-    clientId: `event:${reply.id}`, sessionId: session.id, eventId: reply.id,
+    speaker: 'agent', agentId, body: reply.text,
+    clientId: `event:${reply.id}`, sessionId, eventId: reply.id,
   })
   return reply.text
 }
