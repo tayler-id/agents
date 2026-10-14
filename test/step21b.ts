@@ -266,7 +266,7 @@ try {
   check(stop?.body.subtype === 'interrupted' && stop.text === '[Request interrupted by user]' && (await sessionOf(escaped.session))?.status === 'idle',
     `a turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle: ${JSON.stringify(stop?.body)}`)
 
-  // What a machine may write into a terminal session: the person's prompts, as theirs, and what Claude did, but never an ask
+  // A machine may write into a terminal session the person's prompts, as theirs, and what Claude did, but never an ask
   // or an answer, since the person gives those in their terminal.
   const ruled = transcript(claudeDir, shop, afterShop)
   ruled.turn({ prompt: 'A session to post into.', reply: 'Ready.' })

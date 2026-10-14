@@ -6,7 +6,8 @@
 //   node daemon/folders.ts disconnect [folder]
 // A folder is the team's when first connected, and --private keeps its sessions
 // to you. Connecting it again keeps whichever it is, unless --private or --team
-// says otherwise. --json prints the answer as JSON.
+// says otherwise. Your home folder, and any folder above it, can't be connected,
+// since it holds every project you have. --json prints the answer as JSON.
 // Exit codes: 0 done, 1 failed and safe to retry, 2 usage, 3 refused with nothing changed.
 
 import { existsSync, realpathSync, statSync } from 'node:fs'

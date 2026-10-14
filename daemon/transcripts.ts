@@ -481,7 +481,7 @@ export async function followTerminalSessions(options: {
 
 const missing = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT'
 
-// A path that can't be looked up as it stands: it isn't there, part of it isn't a
+// A path that can't be looked up as it stands. It isn't there, part of it isn't a
 // folder or is one the daemon may not enter, or its links lead round in a circle.
 const unresolvable = (error: unknown) =>
   error instanceof Error && 'code' in error && ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ELOOP'].includes(String(error.code))

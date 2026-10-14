@@ -36,8 +36,8 @@ const KnownBlock = z.discriminatedUnion('type', [
   z.looseObject({ type: z.literal('tool_result'), tool_use_id: z.string(), content: z.unknown().optional(), is_error: optional(z.boolean()) }),
 ])
 const OtherBlock = z.looseObject({ type: z.string() }).transform((block) => ({ type: 'other' as const, kind: block.type, block }))
-export const Block = z.union([KnownBlock, OtherBlock])
-export type Block = z.infer<typeof Block>
+const Block = z.union([KnownBlock, OtherBlock])
+type Block = z.infer<typeof Block>
 
 const textBlock = (text: string): Block => ({ type: 'text', text })
 // Whether a block is an `other` one of this kind.
