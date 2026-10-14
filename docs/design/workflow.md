@@ -227,6 +227,7 @@ Nearly every check was seen failing with the thing it guards broken, then passin
 - **The probe of what still asks** used Claude Code 2.1.296 on this Mac. No box has run a session with real Claude. The checks only see the flags the daemon passes, so a new Claude Code version that changes what `acceptEdits` covers would pass them.
 - **A pull request's state** is what we recorded when it opened. One merged or closed on the forge by hand still shows open here. That needs the forge to report back, which belongs with the GitHub forge.
 - **Only the Gitea forge was exercised.** The GitHub forge is on another branch. Pull requests go through the same `forge.openPullRequest` interface, untested there.
+- **Forge calls have no timeout,** so a forge that stops answering holds the runner's loop, which finishes pushes and advances every run, as main's pipeline stages already do. `server/forge.ts` belongs to the projects branch, so the timeout is left to it.
 - **Built but not checked by any test:**
   - Try again after a failed push, a second push after more changes, and the pull request route's refusals while a push is in flight, before the workspace is ready and for a task with no repo.
   - The flags a pipeline stage's session starts with, and the research, plan and implement pipeline driven from the app. step14c drives a simpler pipeline's gate there.
