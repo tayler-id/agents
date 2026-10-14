@@ -17,6 +17,7 @@ import { SessionRequest, type Found, type SessionReply } from './protocol.ts'
 import { InstanceState, type ProcessRecord, type ReadyState } from './state.ts'
 import { captureViews } from './visual.ts'
 import { messageOf } from '../shared/errors.ts'
+import { counted } from '../shared/cli/output.ts'
 
 // A session nobody has used for this long closes, so a run that forgot `down`
 // does not leave browsers open for good.
@@ -81,7 +82,7 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
         url: driver.url(key), pass: !problems.length, files: captures.map((c) => c.file), captures,
         summary: `captured ${op.state} at ${new URL(driver.url(key)).hash || '#/'} in ${String(captures.length)} engine and width pairs`
           + (problems.length ? `. Problems: ${problems.map((c) => `${c.engine}-${c.width}: ${[
-            ...c.violations.map((v) => `${v.impact} ${v.id}`), ...(c.overflow ? ['sideways scrolling'] : []), ...(c.errors.length ? [`${String(c.errors.length)} console errors`] : [])].join(', ')}`).join('; ')}`
+            ...c.violations.map((v) => `${v.impact} ${v.id}`), ...(c.overflow ? ['sideways scrolling'] : []), ...(c.errors.length ? [counted('console errors', c.errors.length, c.errors.length)] : [])].join(', ')}`).join('; ')}`
             : ', each with no accessibility violation, no console error, and no sideways scrolling at phone width'),
         outside: captures.flatMap((c) => c.errors.map((e) => `${c.engine}-${c.width}: ${e}`)).join('\n'),
       }
