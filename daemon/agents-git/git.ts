@@ -56,6 +56,18 @@ export const Tree = z.string().regex(/^[0-9a-f]{40}$/, 'a full tree id').brand<'
 export type Tree = z.infer<typeof Tree>
 export const treeOf = async (cwd: string, commit: Sha) => Tree.parse((await git(cwd, ['rev-parse', `${commit}^{tree}`])).trim())
 
+export const Blob = z.string().regex(/^[0-9a-f]{40}$/, 'a full blob id').brand<'Blob'>()
+export type Blob = z.infer<typeof Blob>
+
+// The file a commit holds at path, as its blob, or null when the commit has no file there. A
+// folder or a submodule at the path is not a file. git reads everything after the colon as the
+// path, so the type is asked of cat-file and not added to the name.
+export async function blobAt(cwd: string, commit: Sha, path: string): Promise<Blob | null> {
+  const found = (await git(cwd, ['cat-file', '--batch-check'], { input: `${commit}:${path}\n` })).trim()
+  const blob = /^([0-9a-f]{40}) blob \d+$/.exec(found)
+  return blob ? Blob.parse(blob[1]) : null
+}
+
 export type GitWorktree = { path: string, head: Sha | null, branch: string | null, locked: string | null, prunable: boolean, bare: boolean }
 
 // One record of `git worktree list --porcelain -z`. Fields git adds later are dropped.

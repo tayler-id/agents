@@ -129,6 +129,8 @@ async function allGone(pids: number[]): Promise<boolean> {
 async function ended(command: ReturnType<typeof launch>) {
   const code = await command.exited()
   if (code === 'still running') command.child.kill('SIGKILL')
+  // The codes a check here expects are 143 for a signal and 3 for a refusal, so anything else is described.
+  if (code !== 143 && code !== 3) console.error(`a launched command ended with ${String(code)}: ${(command.seen.stdout + command.seen.stderr).trim().slice(0, 600)}`)
   return code
 }
 const pidsIn = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').split(' ').map(Number) : [])
@@ -720,7 +722,7 @@ try {
   const pulls = gh().pulls
   check(pulls.length === 1 && pulls[0].head === 'lambda' && pulls[0].base === 'main' && pulls[0].title === 'Add lambda' && pulls[0].body.split('\n')[0] === 'Add lambda' && pulls[0].body.includes(`Checks at ${short(lambdaTip)}`), 'submit opens one pull request, its text from the ledger')
   const submitted = entry('lambda')
-  check(submitted.submitted?.head === lambdaTip && submitted.submitted.copy === firstCopy && submitted.submitted.pr === pulls[0].url && submitted.approved.join() === 'AGENTS.md,server/migrations/0002_lambda.sql' && submitted.message === 'Add lambda', 'the ledger records what was submitted, its copy, the pull request and the approvals')
+  check(submitted.submitted?.head === lambdaTip && submitted.submitted.copy === firstCopy && submitted.submitted.pr === pulls[0].url && submitted.approved.map((a: any) => `${a.path}=${a.blob}`).join() === ['AGENTS.md', 'server/migrations/0002_lambda.sql'].map((p) => `${p}=${git(main, 'rev-parse', `${lambdaTip}:${p}`)}`).join() && submitted.message === 'Add lambda', 'the ledger records what was submitted, its copy, the pull request and each approval with the blob it covers')
   run = cli(['land', 'lambda'])
   check(run.code === 3 && run.first.includes('no review is noted'), 'land refuses until a review is noted')
   run = cli(['submit', 'lambda', '--review', 'second model: no blocking findings', '--regression', 'lambda drops the old greeting'])
@@ -739,6 +741,12 @@ try {
   git(main, 'update-ref', 'refs/mirror/github-pushed', githubRoot)
   run = cli(['submit', 'lambda', '--approve', 'server/migrations/0003_lambda.sql'])
   check(run.code === 0 && isAncestor(firstCopy, git(main, 'ls-remote', github, 'refs/heads/lambda').split('\t')[0] ?? '', github), `submit pushes the new commit on top of the copy before, never forced (${run.first})`)
+  // An approval covers the content Tayler approved, so an edit made after it needs approving again.
+  commitFile(lambda, 'AGENTS.md', '# Rules for step22\n\nand one more rule, added after the approval\n')
+  run = cli(['submit', 'lambda'])
+  check(run.code === 3 && run.out.includes("these need Tayler's approval") && run.out.includes('AGENTS.md (protected') && run.out.includes('approved for an earlier version of it'), 'submit refuses a protected file that changed after Tayler approved it, and says the approval was for an earlier version')
+  run = cli(['submit', 'lambda', '--approve', 'AGENTS.md'])
+  check(run.code === 0 && entry('lambda').approved.filter((a: any) => a.path === 'AGENTS.md').map((a: any) => a.blob).join() === git(main, 'rev-parse', 'refs/heads/lambda:AGENTS.md'), 'naming the file again approves the new content, and replaces the old approval')
   run = cli(['submit', 'tau', '--message', 'Add tau', '--review', 'second model: fine'])
   check(run.code === 0 && gh().pulls.some((p: any) => p.head === 'tau' && p.title === 'Add tau'), `the same branch submits once its text is clean (${run.first})`)
 
@@ -811,6 +819,12 @@ try {
   run = cli(['land', 'lambda'])
   check(run.code === 3 && run.out.includes('the merge message: matches the github secret pattern') && !run.out.includes(token), 'land refuses a merge message that holds a secret, and never prints it')
   check(commit('refs/heads/main') === mainBefore && !commit('refs/agents-git/lambda/land') && !existsSync(join(root, '.land-lambda')) && !existsSync(runLock), 'and it refuses before it makes a worktree or a merge')
+  writeFileSync(ledgerFile, untampered)
+  const staled = JSON.parse(untampered)
+  staled.worktrees.find((e: any) => e.name === 'lambda').approved.find((a: any) => a.path === 'AGENTS.md').blob = '0'.repeat(39) + '1'
+  writeFileSync(ledgerFile, `${JSON.stringify(staled, null, 2)}\n`)
+  run = cli(['land', 'lambda'])
+  check(run.code === 3 && run.out.includes("these need Tayler's approval") && run.out.includes('approved for an earlier version of it') && commit('refs/heads/main') === mainBefore, 'land counts an approval only while the branch holds the content it covered')
   writeFileSync(ledgerFile, untampered)
   // Git's own lock on a ref stops its move after GitHub took the push, as a crash would.
   const pushedPair = [commit('refs/mirror/local-pushed'), commit('refs/mirror/github-pushed')]

@@ -15,8 +15,8 @@ import { checksOnly, staticGates } from '../../shared/gates/diff.ts'
 import { matcher } from '../../shared/gates/glob.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { PATTERNS } from '../../shared/scrub.ts'
-import { aheadOf, commitOf, git, gitRun, mergeBase, moveRefs, run, Sha, short, Tree, uncommitted } from './git.ts'
-import { MAIN_BRANCH, withLedger, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
+import { aheadOf, blobAt, commitOf, git, gitRun, mergeBase, moveRefs, run, Sha, short, Tree, uncommitted, type Blob } from './git.ts'
+import { MAIN_BRANCH, withLedger, type Approval, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, refused, replace, type Repo, type Report } from './repo.ts'
 import { childEnv } from './group.ts'
 
@@ -148,8 +148,9 @@ const firstLine = (text: string) => text.split('\n')[0] ?? ''
 export type Judged = { problems: string[], unapproved: string[], checks: string[] }
 
 // What the framework's static gates say about base..tip, judged on main's policy.
-// A gate that needs Tayler names its paths, and each must be approved.
-export async function gates(repo: Repo, policy: Policy, main: Sha, base: Sha, tip: Sha, approved: ReadonlySet<string>): Promise<Judged> {
+// A gate that needs Tayler names its paths, and each must be approved for the content the
+// tip holds there.
+export async function gates(repo: Repo, policy: Policy, main: Sha, base: Sha, tip: Sha, approved: readonly Approval[]): Promise<Judged> {
   const mirror = { dir: repo.main, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' } }
   const files = await changes(mirror, base, tip)
   const results = staticGates({
@@ -157,11 +158,21 @@ export async function gates(repo: Repo, policy: Policy, main: Sha, base: Sha, ti
     baseMigrations: await list(mirror, main, policy.docs.migrations),
     // A repo without the token stylesheet has no tokens, as for the framework's runner.
     tokens: await read(mirror, main, policy.lint.css.tokens) ?? '',
+    // agents-git has no plan, playbook or refused pushes to give the gates, so the plan, playbook and
+    // pushes gates always pass here. The feature map is read only by the plan gate.
     featureMap: { kind: 'none' }, playbook: null, plan: null, requirePlan: false, refusedPushes: [],
   })
   const problems = results.filter((r) => r.status === 'fail').flatMap((r) => r.findings.map((f) => `${r.gate}: ${where(f)} ${firstLine(f.text)}`))
-  const unapproved = results.filter((r) => r.status === 'needs_owner')
-    .flatMap((r) => r.findings.filter((f) => f.path === null || !approved.has(f.path)).map((f) => `${where(f)} (${r.gate}: ${firstLine(f.text)})`))
+  const owned = results.filter((r) => r.status === 'needs_owner').flatMap((r) => r.findings.map((f) => ({ f, gate: r.gate })))
+  const blobs = new Map<string, Blob | null>()
+  for (const path of new Set(owned.flatMap(({ f }) => (f.path === null ? [] : [f.path])))) blobs.set(path, await blobAt(repo.main, tip, path))
+  const unapproved = owned.flatMap(({ f, gate }) => {
+    const path = f.path
+    if (path === null) return [`${where(f)} (${gate}: ${firstLine(f.text)})`]
+    const held = approved.filter((a) => a.path === path)
+    if (held.some((a) => a.blob === blobs.get(path))) return []
+    return [`${where(f)} (${gate}: ${firstLine(f.text)})${held.length ? ', approved for an earlier version of it' : ''}`]
+  })
   // AGENTS.md bans these outright, with no approval that lets them through.
   for (const f of files) {
     if (f.path.split('/').at(-1) === '.gitignore') problems.push(`working rules: ${f.path} changed, and agents never edit .gitignore`)
@@ -371,14 +382,22 @@ const textsOf = (notes: { message: string, regression: string | null, reviews: r
 export type Notes = { message: string | undefined, reviews: readonly string[], regression: string | undefined, approve: readonly string[] }
 
 // The ledger's notes with this run's added: a new message or regression replaces
-// the old one, and reviews and approvals add to theirs.
+// the old one, and reviews add to theirs.
 export function withNotes(entry: LiveEntry, notes: Notes) {
   return {
     message: notes.message ?? entry.message,
     reviews: [...entry.reviews, ...notes.reviews.filter((r) => !entry.reviews.includes(r))],
     regression: notes.regression ?? entry.regression,
-    approved: [...entry.approved, ...notes.approve.filter((p) => !entry.approved.includes(p))],
   }
+}
+
+// The approvals after this run: the ones the ledger holds that this run does not name
+// again, and one for each path it names, bound to the file the tip holds there. Naming a
+// path again after the file changed is how Tayler approves the new content.
+export async function bindApprovals(repo: string, tip: Sha, held: readonly Approval[], named: readonly string[]): Promise<Approval[]> {
+  const fresh: Approval[] = []
+  for (const path of new Set(named)) fresh.push({ path, blob: await blobAt(repo, tip, path) })
+  return [...held.filter((approval) => !named.includes(approval.path)), ...fresh]
 }
 
 export async function submit(ledgerFile: string, cwd: string, name: Name, notes: Notes): Promise<Report> {
@@ -402,7 +421,8 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
   })
   if (isReport(plan)) return plan
   const commits = await unpublished(plan.repo.main, plan.tip)
-  const judged = await gates(plan.repo, plan.policy, plan.main, plan.base, plan.tip, new Set(plan.merged.approved))
+  const approved = await bindApprovals(plan.repo.main, plan.tip, plan.entry.approved, notes.approve)
+  const judged = await gates(plan.repo, plan.policy, plan.main, plan.base, plan.tip, approved)
   const problems = [...judged.problems, ...await publicProblems(plan.repo.main, plan.main, commits, textsOf(plan.merged))]
   if (problems.length) return { code: 3, lines: [`refused: submit ${name}: ${plural(problems.length, 'problem')} in what it would publish. Nothing changed.`, ...listed(problems)] }
   if (judged.unapproved.length) return { code: 3, lines: [`refused: submit ${name}: these need Tayler's approval. Nothing changed.`, ...listed(judged.unapproved), `next: once Tayler approves, submit ${name} --approve <path> for each`] }
@@ -427,7 +447,7 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
   await withLedger(ledgerFile, `submit ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.repo === plan.repo.main && e.name === name)
     if (entry?.state !== 'active') throw new Error(`${name} left the ledger while it was submitted`)
-    write(replace(ledger, { ...entry, ...plan.merged, submitted: { head: plan.tip, copy, pr, at: new Date().toISOString() } }))
+    write(replace(ledger, { ...entry, ...plan.merged, approved, submitted: { head: plan.tip, copy, pr, at: new Date().toISOString() } }))
   })
   return ok(`ok: submitted ${name} as ${short(copy)} on ${GITHUB}'s ${name}, ${existing ? 'updating' : 'opening'} ${pr}`)
 }

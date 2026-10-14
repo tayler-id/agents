@@ -11,9 +11,9 @@ import { basename, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommitted, worktreeList } from './git.ts'
-import { MAIN_BRANCH, withLedger, type CheckRun, type Name } from './ledger.ts'
+import { MAIN_BRANCH, withLedger, type Approval, type CheckRun, type Name } from './ledger.ts'
 import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
-import { gates, listed, mirrorMain, publicProblems, withNotes, type Mirrored } from './github.ts'
+import { bindApprovals, gates, listed, mirrorMain, publicProblems, type Mirrored } from './github.ts'
 import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, stampOf, worktreeRoot, type Report } from './repo.ts'
 import { npmCi } from './worktrees.ts'
 
@@ -22,7 +22,7 @@ const SUITE_LINE = /^(pass|FAIL) {2}step[0-9a-z]+\.ts \(\d+s\)$/gm
 // Where land keeps the merge commit it made, so it stays reachable after its worktree goes.
 const landRef = (name: Name) => `${refsOf(name)}/land`
 
-type Plan = { main: string, tip: Sha, mainSha: Sha, base: Sha, envFiles: string[], scratch: string, policy: Policy, approved: string[], message: string }
+type Plan = { main: string, tip: Sha, mainSha: Sha, base: Sha, envFiles: string[], scratch: string, policy: Policy, approved: Approval[], message: string }
 
 export async function land(ledgerFile: string, cwd: string, name: Name, approve: readonly string[]): Promise<Report> {
   const plan = await withLedger(ledgerFile, `land ${name}`, async (ledger): Promise<Plan | Report | { mirror: Sha, main: string }> => {
@@ -51,14 +51,14 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
     if (existsSync(scratch)) return refused(`land ${name}: ${scratch} is left from an earlier land`, `git worktree remove --force ${scratch}`)
     const base = await mergeBase(repo.main, mainSha, worktree.head)
     if (!base) return refused(`land ${name}: it shares no history with main`)
-    const approved = withNotes(entry, { message: undefined, reviews: [], regression: undefined, approve }).approved
+    const approved = await bindApprovals(repo.main, worktree.head, entry.approved, approve)
     // The merge commit's message is the ledger's, with its regression line first.
     const message = [...(entry.regression ? [`Regression: ${entry.regression}`] : []), entry.message].join('\n\n')
     return { main: repo.main, tip: worktree.head, mainSha, base, envFiles, scratch, policy: await policyAt(repo.main, mainSha), approved, message }
   })
   if (isReport(plan)) return plan
   if ('mirror' in plan) return mirror(ledgerFile, plan.main, name, plan.mirror)
-  const judged = await gates(await openRepo(cwd), plan.policy, plan.mainSha, plan.base, plan.tip, new Set(plan.approved))
+  const judged = await gates(await openRepo(cwd), plan.policy, plan.mainSha, plan.base, plan.tip, plan.approved)
   if (judged.problems.length) return { code: 3, lines: [`refused: land ${name}: the gates found ${plural(judged.problems.length, 'problem')}. Nothing changed.`, ...listed(judged.problems)] }
   if (judged.unapproved.length) return { code: 3, lines: [`refused: land ${name}: these need Tayler's approval. Nothing changed.`, ...listed(judged.unapproved), `next: once Tayler approves, land ${name} --approve <path> for each`] }
   // submit scanned this text, but the ledger could hold a message it never saw, and the

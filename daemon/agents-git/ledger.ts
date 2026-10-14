@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import { messageOf } from '../../shared/errors.ts'
-import { Sha } from './git.ts'
+import { Blob, Sha } from './git.ts'
 
 // AGENTS_GIT_LEDGER moves the ledger. Only the step 22 check sets it, so the check
 // never reads or writes the real one. It is the one seam, and it sits at a real
@@ -38,6 +38,12 @@ export const Name = z.string()
 export type Name = z.infer<typeof Name>
 const Time = z.iso.datetime()
 const Path = z.string().startsWith('/')
+
+// A protected path Tayler approved changing, with the content he approved: the file's blob
+// at the branch tip when the approval was given, or null when it approved deleting the file.
+// It counts only while the tip still holds that blob, so an edit made after it needs a new one.
+export const Approval = z.strictObject({ path: z.string().min(1), blob: Blob.nullable() })
+export type Approval = z.infer<typeof Approval>
 
 // One run of a check on one commit. The step is a step's id, such as 18d, or
 // "suite" for land's full suite, or "main: <file>" for a changed check land ran
@@ -74,8 +80,8 @@ const Tracked = {
   message: z.string().min(1).nullable().default(null),
   reviews: z.array(z.string().min(1)).default([]),
   regression: z.string().min(1).nullable().default(null),
-  // Protected paths Tayler approved changing, as named with --approve.
-  approved: z.array(z.string().min(1)).default([]),
+  // Protected paths Tayler approved changing, as named with --approve, each with the content approved.
+  approved: z.array(Approval).default([]),
   // The branch tip submit scanned and pushed, its copy on GitHub, and the pull request.
   submitted: z.strictObject({ head: Sha, copy: Sha, pr: z.string().min(1), at: Time }).nullable().default(null),
   // The merge commit land put on main, and its copy on GitHub once mirrored.
