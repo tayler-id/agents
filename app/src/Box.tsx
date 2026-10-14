@@ -181,7 +181,8 @@ function ClaudeSignIn({ box, login }: { box: Instance; login: ClaudeLoginRow | n
         {login?.status === 'signed_in' && (
           <>
             <p className="note-line" role="status"><span className="glyph" aria-hidden="true">✓</span> Signed in to Claude. Agents on your box run on your account.</p>
-            <p className="small muted">The sign-in lasts until {longDate(login.valid_until)}. The token stays on your box.</p>
+            <p className="small muted">The sign-in lasts until {longDate(login.valid_until)}. The token stays on your box, where agents on it and the tools they run can read it.</p>
+            <p className="small muted">Teammates can message agents on your box and add them to rooms. Those turns use your Claude account.</p>
             <p><button type="button" className="link small" disabled={busy} onClick={act(start)}>Sign in again</button></p>
           </>
         )}

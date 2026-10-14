@@ -241,7 +241,7 @@ The routes for people and the team, Tailscale and rooms live in `server/onboardi
 ## Open questions for Tayler
 
 1. Personal boxes run all the time, one container per person. That is fine for a few people. Should they stop when idle and start again when a message arrives?
-2. Anyone on the team can message an agent whose home is someone else's box, which spends that person's Claude usage. Keep that, or limit such agents to their owner?
+2. Anyone on the team can message an agent whose home is someone else's box, and add it to a room, which spends that person's Claude usage. The token sits in the box's home, where the box's agents and the tools their plugins run can read it. Keep that, or let only the owner drive agents on their box?
 3. Removing someone from the team is not built. Removing them from the tailnet locks them out, but their row and their box stay.
 4. Should personal boxes fall back to the team token until their owner signs in? That is not built.
 5. A `setup-token` token lasts a year and cannot be refreshed. The app shows when it runs out. Should it also warn ahead of time, as it does for the Tailscale key?
