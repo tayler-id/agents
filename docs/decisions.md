@@ -221,7 +221,11 @@ Tayler went with the coordinator's picks on all of these.
   - cleanup that previews by default
   
   Claude Code hooks route agents through it.
-- **Status.** Decided, not built. `agents-git` starts after the first branches merge.
+- **Status.** `agents-git` v1 is built on branch `agents-git`, not merged. It starts a task's branch from local main with a worktree beside the repo and its own `npm ci`, keeps a ledger of every worktree, adopts the ones that exist, and finishes them with `done` and `prune`, which preview unless given `--yes` and keep each final commit under `refs/agents-git/<name>/done`. `test/step22.ts` checks it on a temp repo. Not built yet:
+  - ports and a test database per worktree
+  - env file setup
+  - syncing, running checks, submitting and landing
+  - the Claude Code hooks, which need Tayler's approval since they live under `.claude/`
 
 ### The repo on GitHub
 

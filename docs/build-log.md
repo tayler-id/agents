@@ -335,3 +335,29 @@ Rebased onto main at 5556f3b, the durability merge. Four files conflicted, in fo
 - **Seen failing.** step18d as it was, with its 20-minute wait cut to 3 seconds, failed on the lock the run held, with "run.lock was held for 0.05 minutes". It stopped before it made a team or a container. The file was put back, identical by sha256.
 - **Verified.** Typecheck, lint and the name guard pass. step18d as committed passed all 14 checks while the lock was held. Its first run failed instead, with "timed out after 90s waiting for the session to show as lost", and the next run passed. I did not find the cause. In the failed run the box wrote its note and lost its container, and 90 seconds later its instance still showed online and its session running, so the lost-machine pass had not marked either. The test Postgres log shows 19 Electric replication timeouts between 11:46 and 13:07 that day. The change removes only code that ran before the check's first query.
 - **Not covered.** Run without the lock held, step18d now collides with another agent's check on port 7701, as step7 and step8 do. Nothing in the check enforces the lock. `AGENTS.md` and the durability resume note are what tell the caller to take it.
+
+### agents-git v1 (not merged)
+
+- **What changed.** `daemon/agents-git/` is a TypeScript CLI that starts, lists, adopts and finishes the git worktrees agents work in, and keeps a ledger of them in `~/.agents-app/worktrees.json`. `docs/what-each-part-does.md` says what each command does. `test/step22.ts` runs every command against a repo it builds in a temp folder.
+- **Decisions I made.**
+  - It lives in `daemon/`. The compiler and lint cover only the folders `tsconfig.json` lists, and that file, `eslint.config.js` and `ops/` all need Tayler's approval to change. **Revisit** if it should get a top-level folder, which is one line in each of the two files.
+  - Worktrees go in `<main checkout>-worktrees/<name>`, named once in `worktrees.ts`, which is `~/Projects/agents-worktrees/<name>` for this repo. Deriving it from the main checkout keeps a home folder out of the code, and keeps the check's worktrees inside its temp folder without a second env var.
+  - `done` keeps the last commit at `refs/agents-git/<name>/done`, not at `refs/agents-git/<name>`. Git can't hold a ref and a folder of refs under the same name, and saves go under `refs/agents-git/<name>/`. In a scratch repo git refused with "'refs/agents-git/alpha' exists; cannot create 'refs/agents-git/alpha/save-1'".
+  - A name is used once. start refuses a name the ledger has, finished or not, and a name with refs kept under it, so a kept commit is never overwritten.
+  - start takes its worktree and branch back when `npm ci` fails, so it leaves either a ready worktree or nothing.
+  - prune leaves out worktrees with no new commits. Main has all their commits, but an agent may have just started in one.
+  - A lock whose holder process has exited is cleared. Clearing takes a second lock, so two waiters can't both clear it and both take the first.
+- **Seen failing.** 36 breaks, run one at a time by a script that asserted each anchor matched once, ran step22, and put the file back identical by sha256 before the next. Each guard's own line went red:
+  - start: a plain name, the owner note, a dirty main checkout, a name in the ledger, an existing branch, kept refs, an existing folder, branching from local main, running `npm ci`, taking back a failed install, and running no hooks.
+  - list and the ledger: optional locks off, mode 0600, the rename, the zod parse, flagging worktrees git has and the ledger lacks, and flagging a folder that is gone.
+  - adopt: refusing the main checkout, a folder that is not a worktree, and one already tracked, plus a break that locked the worktree, which the unchanged-worktree line caught.
+  - done: the preview, uncommitted files, commits main lacks, the saved ref, marking the ledger, a locked worktree, a worktree on another branch, and a start still running.
+  - prune: leaving out worktrees with no new commits, and skipping what done would refuse.
+  - the lock: holding it, clearing a stale one, and releasing it. Without the release, start waited on the lock it held itself until the check's 60-second limit stopped it.
+  - Deleting the branch only when main has it is a second layer behind the refusal of commits main lacks. Broken alone, no line went red. With both out, "a clean worktree whose branch main lacks is still refused, and its branch kept" went red.
+- **Verified.** Typecheck, lint and the name guard pass. step22 passes 59 checks in about 8 seconds, with no ports and no database, and confirms the real ledger was not touched.
+- **Not covered.**
+  - Three guards have no line that breaks them: adopt refusing a worktree on main, done refusing a folder git has no worktree at, and done refusing a kept ref that holds a commit outside the worktree.
+  - A commit made on a detached HEAD in the moment between done's last check and git's removal would be lost. Started worktrees are always on a branch, so only adopted detached ones are exposed.
+  - A process killed while clearing a stale lock leaves `worktrees.json.lock.clearing`, which a person has to remove.
+  - It has not been run against the real repo.
