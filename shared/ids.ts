@@ -36,3 +36,11 @@ export type ProposalId = z.infer<typeof ProposalId>
 // events.id is a bigint, which Postgres sends as text.
 export const EventId = z.string().regex(/^\d+$/).brand<'EventId'>()
 export type EventId = z.infer<typeof EventId>
+export const ScreenTakeoverId = z.uuid().brand<'ScreenTakeoverId'>()
+export type ScreenTakeoverId = z.infer<typeof ScreenTakeoverId>
+export const BlobId = z.uuid().brand<'BlobId'>()
+export type BlobId = z.infer<typeof BlobId>
+// A tunnel lives only in the API's memory, between a person's Screen view and a
+// box. It is a uuid like the rest so it can't be guessed.
+export const TunnelId = z.uuid().brand<'TunnelId'>()
+export type TunnelId = z.infer<typeof TunnelId>

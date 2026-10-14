@@ -6,6 +6,16 @@ import type { IncomingMessage } from 'node:http'
 import { maybe, pool } from './db.ts'
 import { HttpError, Person } from './record.ts'
 import { Login, NAME_MAX } from '../shared/onboarding.ts'
+import type { Audience } from './http.ts'
+
+// The machine port refuses any person's identity, for requests and WebSocket
+// upgrades alike. Containers can reach this Mac's loopback, so a box could
+// otherwise pose as a person.
+export function checkAudience(audience: Audience, req: IncomingMessage) {
+  if (audience === 'machines' && req.headers['tailscale-user-login']) {
+    throw new HttpError(400, 'people connect through Tailscale, not the machine port')
+  }
+}
 
 export type Instance = { id: string; team_id: string }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import { isWorking } from '../../shared/lifecycle.ts'
 import {
@@ -23,17 +23,27 @@ import { NewRoom, NewTask, TaskView } from './Work.tsx'
 const PAGES = ['team', 'tailscale', 'box'] as const
 type Page = (typeof PAGES)[number]
 
+// The VNC client and its schemas load only when someone opens a screen.
+const ScreenPanel = lazy(async () => ({ default: (await import('./Screen.tsx')).ScreenPanel }))
+
+// A box's screen open beside the work, and the session it was opened from.
+type ScreenRoute = { instance: string; session: string | null }
+
 // Where the app is: a conversation, run, task, pipeline, agent, page or new-thing
-// form in the middle, and maybe a session, a document or a changed file beside it.
+// form in the middle, and maybe a session, a document, a changed file or a
+// screen beside it.
 type Route = {
   conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
   create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null; file: string | null
+  screen: ScreenRoute | null
 }
-const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null }
+const EMPTY: Route = {
+  conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null, screen: null,
+}
 const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
 
 function readRoute(): Route {
-  const [, kind = '', id = '', sub, subId] = window.location.hash.split('/')
+  const [, kind = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
   const route = { ...EMPTY }
   if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
   if (kind === 'n' && (id === 'agent' || id === 'room' || id === 'task')) route.create = id
@@ -42,12 +52,14 @@ function readRoute(): Route {
   if (sub === 's') route.session = subId || null
   if (sub === 'd') route.document = subId || null
   if (sub === 'f') route.file = subId || null
+  if (sub === 'screen' && subId) route.screen = { instance: subId, session: subSession || null }
   return route
 }
 
 export function go(to: Partial<Route>) {
   const r = { ...EMPTY, ...to }
-  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}` : ''
+  const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}`
+    : r.screen ? `/screen/${r.screen.instance}${r.screen.session ? `/${r.screen.session}` : ''}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
   window.location.hash = r.page ? `#/${r.page}` : r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
@@ -96,13 +108,14 @@ function Workspace({ me }: { me: Me }) {
   const [palette, setPalette] = useState(false)
   const togglePalette = useCallback(() => setPalette((open) => !open), [])
   useShortcuts(togglePalette)
-  const side = Boolean(route.session || route.document || route.file)
+  const side = Boolean(route.session || route.document || route.file || route.screen)
   // Documents and files hold lines of text, so their panel takes more of the width.
   const wide = Boolean(route.document || route.file)
   const taskOfPanel = route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null
   const back = () => go({ conversation: route.conversation, run: route.run, task: route.task })
+  const openScreen = (instance: string, session: string | null) => go({ conversation: route.conversation, run: route.run, task: route.task, screen: { instance, session } })
   return (
-    <div className={`shell${side ? ' with-panel' : ''}${wide ? ' wide' : ''}${menuOpen ? ' menu-open' : ''}`}>
+    <div className={`shell${side ? ' with-panel' : ''}${wide ? ' wide' : ''}${route.screen ? ' with-screen' : ''}${menuOpen ? ' menu-open' : ''}`}>
       <header className="topbar">
         <button type="button" className="ghost" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Menu</button>
         <span className="topbar-title">{me.team.name}</span>
@@ -117,7 +130,8 @@ function Workspace({ me }: { me: Me }) {
           : route.page === 'box' ? <BoxPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
-            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file} />
+            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
+              screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
                   : route.create === 'agent' ? <NewAgent me={me} />
@@ -126,7 +140,12 @@ function Workspace({ me }: { me: Me }) {
                         : <Welcome me={me} />}
       </main>
       {route.session && (route.conversation || route.run || route.task) && (
-        <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
+        <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} onScreen={openScreen} />
+      )}
+      {route.screen && (route.conversation || route.run || route.task) && (
+        <Suspense fallback={<aside className="panel" aria-label="Screen"><p className="muted small screen-status">Loading the screen…</p></aside>}>
+          <ScreenPanel key={route.screen.instance} me={me} instanceId={route.screen.instance} sessionId={route.screen.session} onClose={back} />
+        </Suspense>
       )}
       {route.document && (route.run || route.task) && (
         <DocumentPanel key={route.document} artifactId={route.document} taskId={taskOfPanel} onClose={back} />

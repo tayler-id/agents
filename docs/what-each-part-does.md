@@ -331,6 +331,40 @@ The design is `docs/design/durability.md`.
 
 - **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
 
+## Agent computers
+
+The design is `docs/design/computers.md`.
+
+### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
+
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until the desktop is up, and stops so the box starts again when it can't come up. The sessions on a box share its one computer. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
+- **Helps later.** Each person's own box, which onboarding added, and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
+
+### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`, `daemon/page-secrets.ts`)
+
+- **Solves now.** Every session in a box except a judge's gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first. No screenshot is saved while a page in the box's browser shows a secret the box holds, since a saved image is never scrubbed.
+- **Helps later.** The Mac helper in the design can serve the same tools through the same socket.
+
+### Watching and taking over a screen (`server/screens.ts`, `server/rfb-filter.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
+
+- **Solves now.** A person on the team watches a box's screen live through the people socket, as their Tailscale login, from the app's own pages only, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer, pinging both and dropping either once it stops answering. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` records it. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, the agent's browser call under way returns with the refusal, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work, and someone already watching when such work starts is cut off.
+- **Helps later.** A Mac with the computer-use helper in the design can serve the same Screen view through the same tunnel.
+
+### The Screen view (`app/src/Screen.tsx`)
+
+- **Solves now.** A task or session running in a box has a Screen button. It opens the box's screen beside the work, live, through noVNC, with who holds it and one action: Take over or Hand back. While a person holds it, their keys and clicks go to the box, and everyone else watching sees who has it. A refusal, such as private work on the box, shows its reason, and a stopped box says it is not connected and offers Reconnect. The view loads only when someone opens a screen, so the rest of the app stays light.
+- **Helps later.** Runs and conversations can link to the same view once their pages show which box a stage ran on.
+
+### Images as documents (`shared/documents.ts`, `server/record.ts`, `app/src/Document.tsx`)
+
+- **Solves now.** Images an agent writes in its task's folder, such as the screenshots it saves to show what it checked, become documents with versions and comments, beside the text ones. A file is an image when its bytes say so: PNG, JPEG, WebP or GIF, up to 5 MB. The bytes live in Postgres in `blobs`, a table sync never reads, and the app fetches them through the people socket for anyone who can see the task.
+- **Helps later.** A run's report or pull request can show the screenshots its agents saved, from the same table.
+
+### Checking their own work (`daemon/computer-guide.ts`)
+
+- **Solves now.** A session on a machine with a screen, except a judge's, is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
+- **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

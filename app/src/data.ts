@@ -24,6 +24,8 @@ export type Instance = Row & {
   claimed_by: string | null; claimed_by_run: string | null
   // A person's own box belongs to its owner for good. start_error says why its container did not start.
   owner_id: string | null; personal: boolean; start_error: string | null
+  // The size of the machine's screen, when it has one.
+  screen_width: number | null; screen_height: number | null
 }
 export type Conversation = Row & { id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string }
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
@@ -89,7 +91,11 @@ export type Memory = Row & { id: string; agent_id: string; scope: 'person' | 'te
 export type Template = Row & { id: string; name: string; version: number; share_slug: string; recipe: { title: string | null; instructions: string; skills: unknown[]; plugins: unknown[]; routines: unknown[] }; created_at: string }
 export type Turn = Row & { id: string; conversation_id: string; agent_id: string; requested_at: string; started_at: string | null; outcome: string | null; finished_at: string | null }
 export type Comment = Row & { id: string; artifact_id: string; version: number; anchor: { quote?: string } | null; author_person: string | null; body: string; status: string; sent_to_session: string | null; created_at: string }
-export type ArtifactVersion = Row & { artifact_id: string; version: number; content: string; author_session: string | null; created_at: string }
+// An image version has no text, and its bytes come from imageUrl.
+export type ArtifactVersion = Row & {
+  artifact_id: string; version: number; content: string; blob_id: string | null; author_session: string | null; created_at: string
+}
+export const imageUrl = (version: ArtifactVersion) => `/v1/artifacts/${version.artifact_id}/versions/${version.version}/image`
 
 const origin = () => window.location.origin
 
@@ -235,7 +241,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 // A call whose answer is read through its schema.
-async function call<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.output<S>> {
+export async function call<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.output<S>> {
   const parsed = schema.safeParse(await send(method, path, body))
   if (!parsed.success) throw new Error(`The server's answer to ${path} did not fit this app: ${z.prettifyError(parsed.error)}`)
   return parsed.data

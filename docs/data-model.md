@@ -110,6 +110,13 @@ The work layer, in `server/migrations/0007_workflow.sql`. The design is in `docs
 - **`tasks.priority` and `tasks.done_at`, new.** Priority runs from 0, the most urgent, to 4, and is 2 unless set. `done_at` is when someone marked the task done. With the draft status and `archived_at` they give a task its state, queued, active, done or discarded. The ready query lists the queued tasks that nothing blocks or holds, by priority and then age.
 - **Used for the first time, with no schema change.** A session with the agreed `draft` status is a task saved to start later. `comments.anchor` gains `occurrence`, which match of the quote a comment means. A push command's repos carry their `base`, and its result says how many commits each repo is `ahead`. A message command carries `permissions`, what its session may do without asking.
 
+Agent computers, in `server/migrations/0008_computers.sql`. The design is in `docs/design/computers.md`.
+
+- **`instances.screen_width` and `.screen_height`.** The size of the screen a machine reports on its heartbeat, or null when it has none. Both are set or both are null. The app offers a Screen button only for machines with a screen.
+- **`screen_takeovers`, new.** One row for each time a person held a machine's screen: the machine, the person, the session they were looking at, when it started, when it ended, and how (`handed_back`, or `left` when their last Screen view closed). A unique index allows one open row per machine, and the open row is the record of who holds the screen. The API and the box keep copies, which the API updates after it writes the row.
+- **`blobs`, new.** The bytes of image documents, one row per team and SHA-256, with the media type (PNG, JPEG, WebP or GIF) and size (5 MB at most). Kept apart from `artifact_versions` so Electric never streams image bytes. Never a shape.
+- **`artifact_versions.blob_id`.** Set on an image version, whose `content` is then empty. A version is text or an image, never both.
+
 The coding framework, in `server/migrations/0009_self_improve.sql`. Every agent doing coding work runs inside it, on any repo with a policy. The design is `docs/design/self-improve.md`.
 
 - **`policies`, new.** The rules every change to a repo must pass, as versioned JSON. Editing a policy adds a version, so each piece of evidence names the version that judged it.
