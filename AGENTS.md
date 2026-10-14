@@ -44,6 +44,8 @@ Agents don't have their own ports, test database or packages yet. Until they do:
 - Before a check that uses port 7701, take the lock with `mkdir ~/.agents-app/checks/run.lock`, and `rmdir` it after.
 - Install packages in your own copy with `npm ci`. Never install through a link to main's `node_modules`.
 - Don't edit `.gitignore`, and don't add check scripts to `package.json`.
+- After a check run that builds a Docker image, run `docker image prune -f`. It removes only untagged images no container uses, which nobody needs, so it is the one exception to removing only what you made. Colima's disk filled with them on 2026-10-13 and took the live database down.
+- Never build or tag `agents-box:latest`. It is the image the live server starts boxes from. A check that builds a box image uses its own tag and removes it.
 
 ## Before you say done
 
