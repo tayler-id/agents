@@ -513,4 +513,5 @@ What Tayler must decide:
 - A UI bug seen twice through the real UI before a fix.
 - The runner does not check screenshot coverage or attach screenshots.
 - The app does not show obligations that are due or overdue.
+- The pull request's "Needs the owner" section names each protected file's path in a heading, outside any fence.
 - Holds and task dependencies, including stacked pull requests.

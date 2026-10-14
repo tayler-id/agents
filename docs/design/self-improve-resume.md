@@ -13,7 +13,12 @@ design is `docs/design/self-improve.md`, and the rules are in `AGENTS.md`.
 ## The third review round
 
 Each finding gets a fixture or check, seen failing with the fix broken and
-green with it restored byte for byte, and its own commit.
+green with it restored byte for byte, and its own commit. All eight are
+committed, and at `66680c4` every framework check passed: step16 in full, 95
+checks, step16b 144, step16c 17, step16d 16 and step16f 6. What is left:
+
+- step16d on a database built from migration 0009 alone, which needs Tayler's go-ahead to rebuild 0009's objects in `agents_test` and put them back after, or an Electric of its own for a scratch database.
+- The "Needs the owner" headings still print a protected file's path unfenced.
 
 Blocking:
 
