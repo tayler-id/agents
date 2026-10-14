@@ -42,7 +42,7 @@ Tayler asked for this on 2026-10-13: each agent should have its own computer, wi
 
 ### Agent tools
 
-Every session on a machine with a screen gets one MCP server, `computer` (`daemon/computer-mcp.ts`), with these tools:
+Every session on a machine with a screen, except a judge's, gets one MCP server, `computer` (`daemon/computer-mcp.ts`), with these tools:
 
 | Tool | What it does |
 |---|---|
@@ -52,6 +52,7 @@ Every session on a machine with a screen gets one MCP server, `computer` (`daemo
 | `browser_*` | Playwright MCP 0.0.83's browser tools, proxied with their own schemas, driving the box's Chromium over its DevTools port. `browser_take_screenshot` given a file name refuses as `save_screenshot` does. |
 
 - **Why one server.** A person taking over must stop the agent's use of the screen, through the mouse and keyboard and through the browser's DevTools protocol alike. The `computer` server checks the control state before every action, its own and Playwright's, so one gate covers both. Playwright's tools run in a child process the server starts and talks to over MCP.
+- **Not for judges.** A session the coding framework marks isolated, such as a reviewer's or a verifier's, gets no `computer` server, no standing instructions and no `verify-work` skill. The runner names the only tools a judge may use, a reviewer's being read-only, and the computer would add a browser and a screen to them. No check runs a judge in a box yet, so nothing fails if a judge gets the computer.
 - **How actions reach the screen.** The daemon's screen service keeps one RFB connection to Xvnc for agents. Clicks and keys go out as RFB pointer and key events, and screenshots come back as raw framebuffer updates that the service encodes as PNG, once the screen has been still for 200 ms or after 3 s at most. No xdotool, ImageMagick or ffmpeg is needed. Printable ASCII is typed key by key. Other text is put on the X clipboard with xclip and pasted with ctrl+v, because Xvnc adds a key to its keymap for each such character and the browser often reads the press before the new keymap. Typed key by key, 9 of 18 strings of accented, Greek, Cyrillic, CJK and emoji text arrived whole. Pasted, 90 of 90 did. Pasting needs an app where ctrl+v pastes, which the browser is. Actions from several sessions on one box run one at a time.
 - **Inputs and outputs are zod schemas.** Each tool's input and structured output is a zod schema in `shared/screen.ts`. The proxied browser tools keep Playwright's own schemas.
 
@@ -80,7 +81,7 @@ The standing instructions also tell agents never to type passwords, payment deta
 
 ### Verifying their own work
 
-- **Standing instructions** go into every session on a machine with a screen. They say what the computer is, that every change is checked before the agent calls it done (run its tests, then look at the result in the browser), that each thing checked is saved with `save_screenshot`, and how to behave when a person holds the screen.
+- **Standing instructions** go into every session on a machine with a screen, except a judge's. They say what the computer is, that every change is checked before the agent calls it done (run its tests, then look at the result in the browser), that each thing checked is saved with `save_screenshot`, and how to behave when a person holds the screen.
 - **A skill, `verify-work`,** written into each such session's `.claude/skills` beside the agent's own skills, spells out the loop: run the tests, start the app, open it in the box's browser, exercise the change, read the console, save a screenshot named for what it shows, and say in the reply which screenshots prove what. An agent's own skill of the same name replaces it.
 - **Screenshots become documents.** Files the agent writes in the task folder already become document versions at the end of each turn. Images now do too.
 

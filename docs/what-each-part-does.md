@@ -342,7 +342,7 @@ The design is `docs/design/computers.md`.
 
 ### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`, `daemon/page-secrets.ts`)
 
-- **Solves now.** Every session in a box gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first. No screenshot is saved while a page in the box's browser shows a secret the box holds, since a saved image is never scrubbed.
+- **Solves now.** Every session in a box except a judge's gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first. No screenshot is saved while a page in the box's browser shows a secret the box holds, since a saved image is never scrubbed.
 - **Helps later.** The Mac helper in the design can serve the same tools through the same socket.
 
 ### Watching and taking over a screen (`server/screens.ts`, `server/rfb-filter.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
@@ -362,7 +362,7 @@ The design is `docs/design/computers.md`.
 
 ### Checking their own work (`daemon/computer-guide.ts`)
 
-- **Solves now.** A session on a machine with a screen is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
+- **Solves now.** A session on a machine with a screen, except a judge's, is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
 - **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)

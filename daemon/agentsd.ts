@@ -343,8 +343,9 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   }
   // A machine with a screen gives every session its computer, the standing
   // instructions to check work on it, and the verify-work skill, unless the agent
-  // has a skill of that name itself.
-  const computer = screen
+  // has a skill of that name itself. An isolated session, such as a judge's, gets
+  // none of it, since the runner names the only tools a judge may use.
+  const computer = stage?.isolated ? null : screen
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
