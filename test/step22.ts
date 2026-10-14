@@ -481,6 +481,16 @@ try {
   check(run.code === 1 && run.first.startsWith('failed: done iota') && run.first.includes('the worktree was not touched') && existsSync(join(iota, '.scratch', 'mine.md')) && entry('iota').state === 'active' && !folders().some((folder) => folder.startsWith('iota-')), 'a backup that cannot be made removes nothing, and leaves no half of one behind')
   run = cli(['done', 'iota', '--yes', '--backup', '.scratch/'])
   check(run.code === 0 && !existsSync(iota) && contents(join(backupOf('iota'), '.scratch', 'mine.md')) === 'mine\n', 'once it can be made, done backs up and removes')
+  // A link whose target is gone, such as an .env link to a file since moved, is still a link to keep.
+  cli(['start', 'phi', '--note', 'step22 phi'])
+  const phi = join(root, 'phi')
+  commitFile(phi, 'phi.md', 'phi work\n')
+  git(main, 'merge', '-q', '--no-ff', 'phi', '-m', 'merge phi')
+  const nowhere = join(tmp, 'moved-away.env')
+  symlinkSync(nowhere, join(phi, '.env'))
+  run = cli(['done', 'phi', '--yes', '--backup', '.env'])
+  const phiEnv = join(backupOf('phi'), '.env')
+  check(run.code === 0 && run.first.includes('backed up 1 ignored path') && !existsSync(phi) && lstatSync(phiEnv, { throwIfNoEntry: false })?.isSymbolicLink() === true && readlinkSync(phiEnv) === nowhere, `done backs up a link whose target is gone as the same link, then removes the worktree (${run.first})`)
   git(main, 'worktree', 'unlock', zeta)
 
   // The ledger's lock

@@ -29,7 +29,7 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 
 - `done` lists every ignored path git reports, a folder whole, except `node_modules` and `app/dist`, which `npm ci` and the build make again. The preview gives each one's size and the `--backup` flags that name them.
 - `done --yes` refuses until `--backup <path>` names every one of them. A trailing slash is optional. It never backs up some and removes the rest, since removing the worktree takes all of them.
-- It copies them under `~/.agents-app/backups/agents-git/<name>-<time>/`, each in its place from the worktree root, in a folder only its owner can read, and keeps a link as a link. Before it removes anything it counts the copy's files, folders, links and bytes against the original's. A copy that fails or falls short is deleted and the worktree is left alone. Node's copy leaves out a socket or a pipe, which holds no data, so the result says how many it left out.
+- It copies them under `~/.agents-app/backups/agents-git/<name>-<time>/`, each in its place from the worktree root, in a folder only its owner can read, and keeps a link as a link, even one whose target is gone. Before it removes anything it counts the copy's files, folders, links and bytes against the original's. A copy that fails or falls short is deleted and the worktree is left alone. Node's copy leaves out a socket or a pipe, which holds no data, so the result says how many it left out.
 - `prune` names no path, so it skips a merged, clean worktree that holds one, says which, and leaves it to `done`.
 - Nothing deletes a backup. Tayler removes them.
 
