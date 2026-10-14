@@ -264,6 +264,15 @@ try {
   check(cli(['adopt', hand]).first.includes('already tracked as hand'), 'adopt refuses a worktree the ledger already tracks')
   run = cli(['adopt', join(elsewhere, 'loose'), '--name', 'loose-one'])
   check(run.code === 0 && entry('loose-one')?.branch === null, 'adopt takes a detached worktree under the name given')
+  // submit pushes a name to GitHub as a branch of that name, so main can't be one.
+  const mainBeforeNames = commit('refs/heads/main')
+  run = cli(['start', 'main', '--note', 'step22 main'])
+  check(run.code === 2 && run.first.includes("a name can't be main or HEAD") && !existsSync(join(root, 'main')) && commit('refs/heads/main') === mainBeforeNames, 'start refuses the name main, as a usage error')
+  git(main, 'worktree', 'add', '-q', '-b', 'trunk', join(elsewhere, 'trunk'), 'main')
+  run = cli(['adopt', join(elsewhere, 'trunk'), '--name', 'main'])
+  check(run.code === 2 && run.first.includes("a name can't be main or HEAD") && !entry('main'), 'adopt refuses to track a worktree as main, which submit would push to GitHub as main')
+  git(main, 'worktree', 'remove', join(elsewhere, 'trunk'))
+  git(main, 'branch', '-D', 'trunk')
   check(statSync(ledgerFile).ino !== firstInode, 'each write replaces the ledger with a new file, not the same one rewritten')
   unlinkSync(join(hand, 'wip.txt'))
 

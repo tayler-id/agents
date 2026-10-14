@@ -6,7 +6,7 @@ import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync } from 'no
 import { basename, delimiter, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
 import { aheadOf, commitOf, deleteRef, git, isAncestor, latestRef, mergeBase, moveRef, run, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
-import { alive, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
+import { alive, MAIN_BRANCH, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
 import { doneRef, isLive, mainCommit, MAIN, ok, openRepo, plural, refsOf, refsUnder, refused, replace, savesOf, tracked, worktreeRoot, type Repo, type Report } from './repo.ts'
 
 // npm ci downloads Electron's binary when its cache is cold, which can take minutes.
@@ -59,7 +59,7 @@ function blockers(entry: LiveEntry, facts: Facts): string[] {
   if (facts.git && facts.git.locked !== null) reasons.push(`git has it locked${facts.git.locked ? ` (${facts.git.locked})` : ''}`)
   if (facts.folder && (!facts.git || facts.git.prunable)) reasons.push(`${entry.path} exists, but git has no worktree there`)
   if (facts.git && !facts.git.prunable && facts.git.branch !== entry.branch) reasons.push(`it is on ${facts.git.branch ? `branch ${facts.git.branch}` : 'a detached HEAD'}, and the ledger says ${entry.branch ?? 'a detached HEAD'}`)
-  if (entry.branch === 'main') reasons.push('its branch is main')
+  if (entry.branch === MAIN_BRANCH) reasons.push('its branch is main')
   if (facts.changed && !facts.held) reasons.push(`${plural(facts.changed, 'uncommitted file')} that no save holds`)
   if (facts.ahead) reasons.push(`${plural(facts.ahead, 'commit')} not in main`)
   if (!facts.head) reasons.push(`no commit is left to keep: no worktree, no branch and no ${doneRef(entry.name)}`)
@@ -191,7 +191,7 @@ export async function adopt(ledgerFile: string, cwd: string, target: string, nam
     if (path === repo.main) return refused(`${path} is the main checkout`)
     const found = repo.others.find((w) => w.path === path)
     if (!found?.head || found.prunable) return refused(`git has no worktree at ${path}`)
-    if (found.branch === 'main') return refused(`${path} has main checked out, and done would delete a branch it finishes`)
+    if (found.branch === MAIN_BRANCH) return refused(`${path} has main checked out, and done would delete a branch it finishes`)
     const chosen = Name.safeParse(name ?? basename(path))
     if (!chosen.success) return { code: 2, lines: [`usage: ${basename(path)} can't be a name, so pass --name: ${chosen.error.issues.map((i) => i.message).join('; ')}`] }
     const known = ledger.worktrees.find((e) => isLive(e) && e.path === path)

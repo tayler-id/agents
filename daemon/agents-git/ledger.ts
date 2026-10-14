@@ -23,8 +23,18 @@ export function ledgerFile(env: NodeJS.ProcessEnv): string {
 // logs live there too, so the check's AGENTS_GIT_LEDGER moves them with the ledger.
 export const appHome = (ledger: string) => dirname(ledger)
 
+// The branch every landing goes to, which GitHub also calls its default. It is named
+// here once, and every command that pushes, merges or checks out main reads it.
+export const MAIN_BRANCH = 'main'
+// submit pushes a worktree's name to GitHub as a branch of that name, so a name that
+// is the main branch would push to GitHub's main, and git reads HEAD as the checked-out commit.
+const RESERVED = [MAIN_BRANCH, 'HEAD']
+
 // A name is a branch, a folder and a ref, so it keeps to characters all three accept.
-export const Name = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'a name is 1 to 63 lowercase letters, digits and dashes, starting with a letter or digit').brand<'WorktreeName'>()
+export const Name = z.string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'a name is 1 to 63 lowercase letters, digits and dashes, starting with a letter or digit')
+  .refine((name) => !RESERVED.includes(name), `a name can't be ${RESERVED.join(' or ')}, since submit pushes it to GitHub as a branch of that name`)
+  .brand<'WorktreeName'>()
 export type Name = z.infer<typeof Name>
 const Time = z.iso.datetime()
 const Path = z.string().startsWith('/')

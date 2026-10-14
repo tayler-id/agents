@@ -16,7 +16,7 @@ import { matcher } from '../../shared/gates/glob.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { PATTERNS } from '../../shared/scrub.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, run, Sha, short, Tree, uncommitted } from './git.ts'
-import { withLedger, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
+import { MAIN_BRANCH, withLedger, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, refused, replace, type Repo, type Report } from './repo.ts'
 import { childEnv } from './worktrees.ts'
 
@@ -110,8 +110,8 @@ export async function copyOf(repo: string, commit: Sha): Promise<Sha> {
 // Pushes main's copy to GitHub's main, never forced, and moves the pushed pair.
 export async function mirrorMain(repo: string, main: Sha): Promise<Sha> {
   const copy = await copyOf(repo, main)
-  const pushed = await gitRun(repo, ['push', GITHUB, `${copy}:refs/heads/main`])
-  if (pushed.code !== 0) throw new Error(`git push to ${GITHUB}'s main exited ${pushed.code}: ${pushed.stderr.trim()}`)
+  const pushed = await gitRun(repo, ['push', GITHUB, `${copy}:refs/heads/${MAIN_BRANCH}`])
+  if (pushed.code !== 0) throw new Error(`git push to ${GITHUB}'s ${MAIN_BRANCH} exited ${pushed.code}: ${pushed.stderr.trim()}`)
   await moveRef(repo, PUSHED.local, main, await commitOf(repo, PUSHED.local))
   await moveRef(repo, PUSHED.github, copy, await commitOf(repo, PUSHED.github))
   return copy
@@ -308,7 +308,7 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
     pr = existing.url
   } else {
     const title = plan.merged.message.split('\n')[0] ?? plan.merged.message
-    pr = z.url().parse((await gh(plan.repo.main, ['pr', 'create', '--head', name, '--base', 'main', '--title', title, '--body', body])).trim().split('\n').at(-1))
+    pr = z.url().parse((await gh(plan.repo.main, ['pr', 'create', '--head', name, '--base', MAIN_BRANCH, '--title', title, '--body', body])).trim().split('\n').at(-1))
   }
   await withLedger(ledgerFile, `submit ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.repo === plan.repo.main && e.name === name)

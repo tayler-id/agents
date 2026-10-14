@@ -11,7 +11,7 @@ import { basename, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommitted, worktreeList } from './git.ts'
-import { withLedger, type CheckRun, type Name } from './ledger.ts'
+import { MAIN_BRANCH, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
 import { gates, listed, mirrorMain, withNotes } from './github.ts'
 import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, worktreeRoot, type Report } from './repo.ts'
@@ -44,7 +44,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
     const envFiles = envFilesOf(repo.main)
     const absent = envFiles.filter((file) => !existsSync(file))
     if (absent.length) return refused(`land ${name}: main has no ${absent.join(' or ')}, which the suite loads`)
-    const holder = (await worktreeList(repo.main)).find((w) => w.branch === 'main')
+    const holder = (await worktreeList(repo.main)).find((w) => w.branch === MAIN_BRANCH)
     if (holder && holder.path !== repo.main) return refused(`land ${name}: ${holder.path} has main checked out`)
     const dirty = holder ? await uncommitted(repo.main) : 0
     if (dirty) return refused(`land ${name}: the main checkout has ${plural(dirty, 'uncommitted file')}, so main can't fast-forward there`)
@@ -123,7 +123,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
     if (await mainCommit(repo.main) !== plan.mainSha) return refused(`land ${name}: main moved while the suite ran`, `land ${name} again`)
     if (entry.branch === null) return refused(`land ${name}: it is on a detached HEAD`)
     if ((await commitOf(repo.main, `refs/heads/${entry.branch}`)) !== plan.tip) return refused(`land ${name}: its branch moved while the suite ran`, `submit ${name}, then land again`)
-    const holder = (await worktreeList(repo.main)).find((w) => w.branch === 'main')
+    const holder = (await worktreeList(repo.main)).find((w) => w.branch === MAIN_BRANCH)
     if (holder && holder.path !== repo.main) return refused(`land ${name}: ${holder.path} has main checked out`)
     if (holder) {
       const dirty = await uncommitted(repo.main)

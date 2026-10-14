@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs'
 import { POLICY, type Policy } from '../../shared/policy.ts'
 import { commitOf, git, gitRun, worktreeList, type GitWorktree, type Sha } from './git.ts'
-import type { Entry, Ledger, LiveEntry, Name } from './ledger.ts'
+import { MAIN_BRANCH, type Entry, type Ledger, type LiveEntry, type Name } from './ledger.ts'
 
 export type Report = { code: 0 | 1 | 2 | 3, lines: string[] }
 export const ok = (...lines: string[]): Report => ({ code: 0, lines })
@@ -13,7 +13,7 @@ export const refused = (reason: string, next?: string): Report => ({ code: 3, li
 export const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 export const isReport = <T extends object>(value: T | Report): value is Report => 'code' in value && 'lines' in value
 
-export const MAIN = 'refs/heads/main'
+export const MAIN = `refs/heads/${MAIN_BRANCH}`
 // Worktrees live beside the main checkout, never inside it, in a folder named after
 // it: ~/Projects/agents gets ~/Projects/agents-worktrees.
 export const worktreeRoot = (main: string) => `${main}-worktrees`

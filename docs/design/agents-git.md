@@ -12,9 +12,9 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 
 | Command | What it does | What it refuses |
 |---|---|---|
-| `start <name> --note <text>` | Makes branch `<name>` from local `main` and a worktree at `<main checkout>-worktrees/<name>`, runs `npm ci` there, and records it. When `npm ci` fails it takes back the worktree and branch. | A name the ledger has, an existing branch, folder or kept ref, a main checkout with uncommitted files |
+| `start <name> --note <text>` | Makes branch `<name>` from local `main` and a worktree at `<main checkout>-worktrees/<name>`, runs `npm ci` there, and records it. When `npm ci` fails it takes back the worktree and branch. | A name the ledger has, a name that is `main` or `HEAD`, an existing branch, folder or kept ref, a main checkout with uncommitted files |
 | `list` | Every worktree, tracked or not, with branch, base, head, commits main lacks, uncommitted files, created time and note. Flags where the ledger and git disagree, and a `node_modules` that links elsewhere. | |
-| `adopt <path>` | Tracks a worktree that exists, without changing it. | The main checkout, a folder git has no worktree at, one already tracked |
+| `adopt <path>` | Tracks a worktree that exists, without changing it. | The main checkout, a folder git has no worktree at, one already tracked, a name that is `main` or `HEAD` |
 | `done <name> [--yes]` | Previews, or saves the head as `refs/agents-git/<name>/done`, removes the worktree, deletes the branch once main has it, and marks the entry done. | Uncommitted files the newest save doesn't hold, commits main lacks, a locked worktree, one on another branch, a start still running |
 | `prune [--yes]` | Previews, or runs `done` on each worktree that is merged and clean, or whose folder is gone. Leaves out worktrees with no new commits. | Whatever `done` refuses |
 | `save <name>` | Stores the worktree's uncommitted and untracked files as a commit at `refs/agents-git/<name>/save-<time>`, built in a copy of the index, so the branch, the files and the index stay as they are. | |
