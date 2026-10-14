@@ -665,6 +665,18 @@ try {
   const oldRead = (await meterAfter()).reads[old.path] ?? 0
   check(oldRead > 0 && oldRead <= 128 * 1024, `an old transcript is read only as far as the line that says where it started: ${oldRead} of its ${statSync(old.path).size} bytes`)
 
+  // A transcript whose start line is not written yet is searched on from where the last read ended, not from its first byte.
+  const unstarted = transcript(claudeDir, shop, afterShop)
+  appendFileSync(unstarted.path, padding.repeat(3))
+  const unstartedSize = statSync(unstarted.path).size
+  await settle()
+  await settle()
+  const unstartedRead = (await meterAfter()).reads[unstarted.path] ?? 0
+  unstarted.turn({ prompt: 'The start, at last.', reply: 'Late.' })
+  const unstartedLanded = await until('the turn behind the missing start', LANDS_SEC, async () => (await turnsEnded(unstarted.session)) === 1)
+  check(unstartedLanded && unstartedRead > 0 && unstartedRead <= unstartedSize * 1.5,
+    `a transcript with no start line yet is searched on from where the last read ended: ${unstartedRead} bytes read of ${unstartedSize} over at least four reads`)
+
   // A Mac clock ahead of the server's can make a session look newer than its folder's reconnect, while the API knows it is older.
   check(folders(token, root, ['connect', skewed]).code === 0, 'a folder for a clock running ahead connects')
   const skewedRun = transcript(claudeDir, skewed, new Date(await connectedAt(skewed) + 60_000))

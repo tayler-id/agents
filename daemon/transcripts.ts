@@ -340,13 +340,32 @@ export async function followTerminalSessions(options: {
     if (part.lines) await flush()
   }
 
+  // How far into each transcript the start has been looked for without being found,
+  // by the file's inode, so a transcript still being written is searched on from
+  // there and not from its first byte on every read.
+  const searched = new Map<string, { inode: number; at: number }>()
+
   // Where and when a transcript's session started, once Claude Code has written that line.
   function startOf(file: string): Start | undefined {
-    for (const line of readLines(file, 0, START_BYTES)) {
+    const { ino, size } = statSync(file)
+    const known = searched.get(file)
+    let at = known?.inode === ino && known.at <= size ? known.at : 0
+    for (const line of readLines(file, at, START_BYTES - at)) {
+      at = line.end
       const start = Start.safeParse(parseJson(line.text))
-      if (start.success) return start.data
+      if (start.success) {
+        searched.delete(file)
+        return start.data
+      }
     }
-    if (statSync(file).size > START_BYTES) passed.add(file)
+    // A transcript with no start in its first START_BYTES is passed over for good.
+    // Any other is searched on from here when it has grown.
+    if (size > START_BYTES) {
+      searched.delete(file)
+      passed.add(file)
+    } else {
+      searched.set(file, { inode: ino, at })
+    }
     return undefined
   }
 
