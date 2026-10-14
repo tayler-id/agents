@@ -29,6 +29,16 @@ Every decision about how Agents is built and how work on it happens, newest grou
   After that, other agent engines with durable sessions can run behind `daemon/harness.ts` against the same five tests. One replaces ours only if it clearly wins.
 - **Status.** Decided, being built.
 
+### Only tailscale serve can name a person
+
+- **Purpose.** A person's identity in the app comes from Tailscale, so nothing else can claim it.
+- **How it works.**
+  - In Tailscale's userspace mode, a tailnet device could reach every port on this Mac and send its own identity header. The API now serves people only on a Unix socket that only this Mac's user can open, and tailscale serve proxies to it.
+  - A tailnet policy lets devices reach this Mac only on the app's port 80 and the machines' port 7700. Its tests make Tailscale refuse an edit that reopens any other port.
+  - A person's change must be sent as JSON. A page on another site can make the person's browser post a form, which serve would sign as them, but it can't send JSON without a CORS preflight, which this API never grants.
+- **Implementation.** `server/api.ts`, `test/step19.ts`, the JSON line in `check:step2`, and `test/live-tailnet.ts` for the live system. The detail is in `docs/design/people-port.md`.
+- **Status.** On main. The live steps wait on Tayler: the policy, one `sudo tailscale serve` command and a restart. Nobody is invited until they're done.
+
 ### Coach and improve learn only from checked evidence
 
 - **Purpose.** Instructions and pipelines change only on evidence from real sessions, checked in code, and a change reaches a person only after replays show it helps.
