@@ -4,9 +4,11 @@
 // resumes in the same conversation, the resumed session is told that call may
 // have run, it checks before running it again, and the turn ends. Then only the
 // daemon dies while the agent is mid-call, and its Claude is stopped before the
-// turn resumes, so two processes never work one conversation. Last, the machine
+// turn resumes, so two processes never work one conversation. Then the machine
 // dies mid-call and a person interrupts while it is down, so the restart ends
-// the turn instead of resuming it.
+// the turn instead of resuming it. Last, the daemon is stopped with SIGTERM
+// mid-call, as launchd stops it. It leaves the turn as a crash would, and the
+// next start resumes it instead of the turn failing.
 //   node --env-file=.env --env-file=.env.test test/step18b.ts
 
 import { randomBytes } from 'node:crypto'
@@ -43,6 +45,7 @@ try {
       { match: 'LEDGER', append: { id: 'toolu_ledger', file: 'ledger.txt', line: 'entry-1', hangOnce: true, checkNamed: true }, reply: 'Appended entry-1.' },
       { match: 'DIARY', append: { id: 'toolu_diary', file: 'diary.txt', line: 'day-1', hangOnce: true, checkNamed: true }, reply: 'Appended day-1.' },
       { match: 'JOURNAL', append: { id: 'toolu_journal', file: 'journal.txt', line: 'page-1', hangOnce: true, checkNamed: true }, reply: 'Appended page-1.' },
+      { match: 'NOTEBOOK', append: { id: 'toolu_notebook', file: 'notebook.txt', line: 'note-1', hangOnce: true, checkNamed: true }, reply: 'Appended note-1.' },
     ],
   }))
 
@@ -132,6 +135,28 @@ try {
     'an interrupt sent while the machine was down ended the turn when it came back, and the record says why')
   c.check(fakeLog(folder, 'starts').length === startsBefore && lines(join(folder, 'journal.txt')).length === 1, 'the interrupted turn was not resumed')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after an interrupt during the outage' })
+
+  // The daemon is told to stop mid-call.
+  await say(`/v1/conversations/${conversationId}/messages`, { text: 'Do the NOTEBOOK task.' })
+  await until('the notebook line and its call in the record', 60, async () =>
+    lines(join(folder, 'notebook.txt')).length === 1 && (await called('toolu_notebook')) === 1)
+  const notebook = await c.row(`select id from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [sessionId])
+  const working = fakeLog(folder, 'starts').at(-1)?.pid
+  const fourth = c.children.at(-1)
+  if (typeof working !== 'number' || fourth?.pid === undefined) throw new Error('no pid for the daemon or its Claude')
+  const fourthPid = fourth.pid
+  process.kill(fourthPid, 'SIGTERM')
+  await until('the daemon to stop', 30, async () => !alive(fourthPid))
+  c.check((await c.row('select status from commands where id = $1', [notebook.id]))?.status === 'claimed' && alive(working),
+    'a daemon told to stop mid-turn leaves the turn as a crash would: its message unfinished and its Claude not stopped')
+  const beforeStart = fakeLog(folder, 'starts').length
+  c.start('daemon/agentsd.ts', daemonEnv)
+  await until('a new Claude for the stopped turn', 60, async () => fakeLog(folder, 'starts').length > beforeStart)
+  c.check(!alive(working), 'the next start stopped the old Claude before resuming')
+  await until('the stopped turn to end', TURN_SECONDS, async () => (await turnsEnded()) >= 3)
+  c.check(lines(join(folder, 'notebook.txt')).join() === 'note-1' && (await c.row('select status from commands where id = $1', [notebook.id]))?.status === 'done',
+    'the turn resumed and ended, and the notebook has its line once')
+  await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after the daemon was told to stop' })
 } catch (error) {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
