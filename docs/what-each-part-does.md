@@ -305,12 +305,12 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 The design is `docs/design/durability.md`.
 
-**A regression for Tayler to decide.** A daemon built before this branch breaks against it. An old daemon that starts retries the removed requeue route forever while its machine shows online, and one already running gets 400 when it reports a message done, so its session and any pipeline stage in it are marked failed while its Claude keeps working. A new daemon against an old API retries `/v1/instance/recover` the same way. Rolled out in this order, no old daemon reaches the new API: rebuild the box image with `server/boxes.ts build`, recreate the boxes, restart the Mac's daemon, then the API. The design doc has the details.
+**A regression for Tayler to decide.** A daemon built before this branch breaks against it. An old daemon that starts retries the removed requeue route forever while its machine shows online, and one already running gets 400 when it reports a message done, so its session and any pipeline stage in it are marked failed while its Claude keeps working. A new daemon against an old API retries `/v1/instance/recover` the same way. Rolled out in this order, no old daemon reaches the new API: rebuild the box image with `server/boxes.ts build`, recreate every box's container, stopped boxes included, and check that each runs the new image, then restart the Mac's daemon, then the API. The branch lands without a transition, and Tayler can overrule that. The design doc has the details, including when to do the box steps.
 
 ### Messages finish with their turn (`daemon/claude.ts`, `server/durability.ts`, `shared/lifecycle.ts`)
 
 - **Solves now.** Claude prints each message back when a turn takes it in, and the turn's result says which messages it answered. The server marks those done in the same transaction that records the turn's end, and marks a message failed when its Claude exits first. A follow-up a person sends mid-turn still joins that turn. The daemon's busy flag no longer sticks after Claude answers two messages with one result. `test/step18g.ts`.
-- **Helps later.** A new path that changes a message's status has to call `moveMessages`, which moves it only along the table in `shared/lifecycle.ts` and otherwise throws, so no path can put a handed-over message back in the queue and run its turn twice. `test/step18i.ts` checks the refusals.
+- **Helps later.** `moveMessages` moves a message only along the table in `shared/lifecycle.ts`, which has no move back to the queue, and throws otherwise, so a path that changes a message's status through it can't run a turn twice. Nothing but review keeps a new path from writing the status directly. `test/step18i.ts` checks the refusals.
 
 ### Restart and resume (`daemon/fence.ts`, `POST /v1/instance/recover`)
 
@@ -320,7 +320,7 @@ The design is `docs/design/durability.md`.
 
 ### Approvals across a restart (`asks.request_ended_at`, `server/durability.ts`)
 
-- **Solves now.** An approval card stays answerable while its machine is down and after it restarts. When the resumed session asks again for the same tool and input, the same card takes the request, and an answer already given reaches it, `test/step18c.ts`. A denial given while the machine is down reaches the resumed session as a denial, and a decision that may already have reached Claude is never offered again, however often the machine restarts, `test/step18j.ts`. A card left open when its turn ends expires, and so does a decision the resumed session never asked for, `test/step18h.ts`. A person's answer takes the session's lock before the ask's, as recovery does, so the two can't deadlock, `test/step18k.ts`.
+- **Solves now.** An approval card stays answerable while its machine is down and after it restarts. When the resumed session asks again for the same tool and input, the same card takes the request, and an answer already given reaches it, `test/step18c.ts`. A denial given while the machine is down reaches the resumed session as a denial, and a decision that may already have reached Claude is never offered again, however often the machine restarts, `test/step18j.ts`. A card left open when its turn ends expires, and so does a decision the resumed session never asked for, and an allow an interrupt left undelivered is never offered to a later turn, `test/step18h.ts`. A batch sent again closes no card, `test/step18i.ts`. A person's answer takes the session's lock before the ask's, as recovery does, so the two can't deadlock, `test/step18k.ts`.
 
 ### The machine watchdog (`markLostMachines` in `server/durability.ts`)
 

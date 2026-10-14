@@ -4,7 +4,7 @@ The design is in `docs/design/durability.md`. This note says what is proven, wha
 
 ## A regression for Tayler to decide
 
-A daemon built before this branch breaks against its API, and a new daemon breaks against an old API. "A regression for Tayler to decide" in the design doc has the failure modes, what a run of main's daemon against this branch showed, and the rollout order that avoids them. Keeping the old requeue route answering during a transition is not built.
+A daemon built before this branch breaks against its API, and a new daemon breaks against an old API. "A regression for Tayler to decide" in the design doc has the failure modes, what a run of main's daemon against this branch showed, and the rollout order that avoids them. The branch lands without a transition, and Tayler can overrule that.
 
 ## Setup
 
@@ -14,7 +14,6 @@ A daemon built before this branch breaks against its API, and a new daemon break
 - Checks: `test/step18a.ts` to `test/step18l.ts`, helpers in `test/crash.ts`, teams prefixed `dur-`. People reach each check's API through `servePeople` from `test/people.ts`, which the check closes when it ends. The helpers never import product code, so the checks also run against main.
 - Ports: 8040 and 8046 to 8059. 8041 to 8045 are held by another workstream's leftover API and login proxies. Checks that share ports run one after the other, since a stopped API can take 5 seconds to let go of its port. step18d's API is on 7701, so it takes `~/.agents-app/checks/run.lock` itself and waits up to 20 minutes for it.
 - step7 and step8 also use 7701 but don't take the lock, so take it around them. Never build or tag `agents-box:latest`, which the live server starts boxes from. Since `94cd4b1` step7 builds and removes its own tag.
-- After any run that builds an image, step18d included, run `docker image prune -f`. The colima disk filled once with untagged images from rebuilds.
 - Migration: `0010_durability.sql`, applied to `agents_test`.
 - To run a check against main, `git archive` main into a folder under `~/.agents-app/checks/` (colima mounts only the home folder, which step18d needs), copy in `test/crash.ts`, `test/step18*.ts` and `test/fake-claude.ts`, copy `.env` and `.env.test`, link `node_modules`, run the check there, and remove the folder after.
 - Break tests: break one file, run its check and watch it fail, restore the file byte for byte and compare its hash, run the check and watch it pass. Nothing else may run from the worktree meanwhile.
@@ -32,8 +31,8 @@ The branch runs are on the rebase onto `360c16e`, on 2026-10-13. Main then moved
 | step18e, clients and the app in a browser, for a DM and a task | passes, 20 | never shows the session lost | the watchdog does nothing; the task page has no lost line and shows the continuation |
 | step18f, a restart for a new setup fails | passes, 7 | shows the session idle | the restart's detach removed |
 | step18g, real Claude folds a follow-up into the running turn | passes, 7 | the same process keeps answering | a result ends only the first message |
-| step18h, an approval never outlives its turn | passes, 12 | the card stays open, and a late allow gets 200 | a kept decision does not expire with its turn |
-| step18i, the one writer, a dropped transaction, the watchdog threshold | passes, 11 | can't load, with no `shared/lifecycle.ts` | the status filter removed; the all-or-nothing count removed; the connection listener removed, and the process dies; the threshold's minimum lowered |
+| step18h, an approval never outlives its turn, including an allow an interrupt left undelivered | passes, 14 | the card stays open, and a late allow gets 200 | a kept decision does not expire with its turn; recovery reads asks from earlier turns |
+| step18i, the one writer, an exit batch sent again, a dropped transaction, the watchdog threshold | passes, 13 | can't load, with no `shared/lifecycle.ts` | the status filter removed; the all-or-nothing count removed; asks close on any exit batch; the connection listener removed, and the process dies; the threshold's minimum lowered |
 | step18j, approvals across two restarts | passes, 8 | no resumed session | an answer counts as delivered only while its command is claimed or done; a denial offered as allowed |
 | step18k, an answer during recovery | passes, 4 | Postgres aborts the answer with "deadlock detected" | the session lock removed |
 | step18l, a turn that stops its machine every time | passes, 10 | no resumed session | the cap out of reach |
@@ -48,8 +47,9 @@ Main's daemon at `360c16e`, run against this branch's API with the fake Claude, 
 
 - The gaps in `docs/design/durability.md` under "Not covered": tool commands that outlive a killed Claude on the Mac, lines lost between Claude and the record, a missing conversation, and a session whose machine is gone for good.
 - No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read.
+- An exit batch that arrives late, after a newer process for the same session raised a card, still expires that card. Only a batch sent again is handled.
 - Box images must be rebuilt when this lands, in the order the design doc gives.
 
 ## Decisions waiting on Tayler
 
-- Whether this lands with the rollout order, or with the old requeue route kept answering during a transition.
+- The branch removes the requeue route and lands without a transition, so boxes must be rebuilt and recreated in the order the design doc gives before the API restarts. Tayler can overrule that and have the old route kept answering until every box runs the new image.

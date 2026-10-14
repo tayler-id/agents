@@ -2,7 +2,7 @@
 
 Built on the durability branch. The resume note in `docs/design/durability-resume.md` says what is proven and what is left.
 
-When a person messages an agent, the API queues a `message` command, and the agent's machine runs the turn in a Claude session. The machine is this Mac's daemon or a box running the same daemon. This design makes a turn survive that machine dying. The work resumes, or the app shows it as interrupted, and nothing waits forever.
+When a person messages an agent, the API queues a `message` command, and the agent's machine runs the turn in a Claude session. The machine is this Mac's daemon or a box running the same daemon. This design makes a turn survive that machine dying. When the machine comes back, the turn resumes. While it is gone, the app shows the turn as interrupted, with the reason. A machine that never comes back leaves its turns interrupted, since nothing moves a session to another machine, as "Not covered" says.
 
 ## A regression for Tayler to decide
 
@@ -18,13 +18,16 @@ I ran main's daemon at `360c16e` against this branch's API, both as a fresh star
 Rolled out in this order, no old daemon ever reaches the new API.
 
 1. Rebuild the box image with `server/boxes.ts build`.
-2. Recreate each box's container from the new image. Its home volume stays.
-3. Restart the Mac's daemon.
-4. Restart the API.
+2. Recreate the container of every box `server/boxes.ts list` shows with `server/boxes.ts recreate <team> <name>`, stopped boxes included. The runner starts a stopped box's container again as it was, on its old image. Each box keeps its home volume.
+3. Check that each box container runs the new image. `docker inspect -f '{{.Image}}' <container>` must print what `docker image inspect -f '{{.Id}}' agents-box:latest` prints.
+4. Restart the Mac's daemon.
+5. Restart the API.
 
-Between steps 2 and 4 the new daemons get 404 from the old API and retry, waiting up to 15 seconds between tries, while messages wait in the queue. Each daemon reads its queue once the new API answers. A turn an old daemon was running when it was replaced is not resumed, since the old API had already marked its message done.
+Do steps 2 and 3 when no box has a turn in flight. Teammates' personal boxes are never stopped for being idle, so check that none of their sessions is working, and tell their owners first. A turn cut off by recreating its box is not resumed, since the old API marked its message done when the box took it.
 
-Keeping the old route answering, and taking an old daemon's done report, during a transition would avoid the break. That is not built. Tayler decides whether this lands as it is, with the rollout order above.
+Between steps 2 and 5 the new daemons get 404 from the old API and retry, waiting up to 15 seconds between tries, while messages wait in the queue. Each daemon reads its queue once the new API answers.
+
+The branch lands without a transition and relies on this order. Tayler can overrule that, and have the old route kept answering, with an old daemon's done report taken, until every box runs the new image. That is not built.
 
 ## What breaks today
 
@@ -161,11 +164,12 @@ An ask is answered through the harness request that raised it, and that request 
 
 - The card stays open across the restart, and a person can answer it at any time. The answer is recorded on the ask at once, whether or not a machine is running.
 - While the request is alive, an answer becomes an `answer` command for it, as today.
-- Recovery sets `request_ended_at` on each ask of the cut-off turn whose decision never reached its process, whether it is still open, allowed or denied.
+- Recovery sets `request_ended_at` on each ask of the cut-off turn whose decision never reached its process, whether it is still open, allowed or denied. It reads only asks raised since the turn's first message. An allow given while the machine was down, in a turn a person then interrupted, stays answered and undelivered, and only that limit keeps a later turn's recovery from offering it. Check 8.
 - The continuation tells the resumed session to call the tool again with the same input. When its new permission request arrives, the server looks for an ask of the session with an ended request, the same tool and the same input, ignoring Bash's free-text `description`. A match takes the new request instead of opening a second card. If the ask is already answered, the server records an `answer` event by the same person and queues the decision for the new request at once. Check 3.
 - A decision that may have reached a process is not carried. The call may have run, so the continuation names it as possibly run, and asking again needs a person again. This holds however many times the machine restarts in the turn. Check 9.
 - A denial that never reached its process goes into the continuation as denied, with the person's reason, and is not asked for again. A request for the same call in that turn gets the same denial. Check 9.
 - When a turn ends, its asks still open expire, and so does a decision kept for a resumed session that never asked for it. Neither recovery nor a later request can take them up, and an answer to an expired card gets 409. On main an interrupted turn leaves its card open forever. Check 8.
+- A turn's asks close only when the batch that ends it finishes its messages. The same batch sent again finishes nothing, so it leaves alone a card a newer process has raised since. Check 10.
 - A person's answer locks the session before the ask, the order recovery and a harness's batches take them in, so an answer that arrives while a machine recovers waits for it instead of deadlocking with it. Check 11.
 
 ## Machines that stop answering
@@ -212,6 +216,9 @@ A row that names a check is proven by it. The other rows follow from the code, a
 | The resumed session never asks again | The kept decision expires when the turn ends, and no later turn or recovery takes it up. Check 8. |
 | The resumed session asks for something different | No ask matches, so a new card opens, and the old one expires when the turn ends. |
 | A person answers while a machine recovers | The answer waits for recovery's lock on the session, then goes through. Check 11. |
+| A person allows and then interrupts while the machine is down | The restart ends the turn, and the allow never reaches a process. A later turn's recovery doesn't offer it. Check 8. |
+| A harness's exit batch is sent again | It finishes nothing and closes no asks, so a newer process's card stays open. Check 10. |
+| A harness's exit batch arrives late, after a newer process for the session raised a card | The batch finishes its messages and closes the session's asks, that card included. Not solved, see below. |
 | The conversation to resume is missing from the machine | Claude exits with "No conversation found", and the session shows failed with that reason. Not solved, see below. |
 | The API restarts mid-turn | The daemon retries its posts until the API answers, so nothing is lost. The watchdog waits out its grace period. |
 | Postgres restarts mid-turn | As the API restarting. A transaction whose connection Postgres drops fails, and the process keeps running. Check 10 covers the transaction. |
@@ -239,9 +246,9 @@ Each check starts its own API, daemon and team, prefixed `dur-`, on port 8040 or
 5. `test/step18e.ts`, the fake Claude and the app in a browser. During the outage the app shows the interrupted line with its reason and the open card. After the restart the person answers that card in the app, and the app shows the reply with no card and no line. A client that stays connected and one that reconnects both read the session, its events, its posts and its asks at each point, and both match the record. A task of the same agent, mid-call when the machine dies, shows on its page as interrupted with the reason and an Interrupt button, then shows the reply, and its transcript never shows the continuation as a request. Checks 1 to 4, 6, 8, 9 and 12 run the same comparison of clients and record.
 6. `test/step18f.ts`, the fake Claude. A person adds a plugin whose secret the machine lacks to an agent with a running session, then messages it. The restart fails, and the session shows `failed` with the reason after the old process has exited and the daemon has stopped. It shares ports with check 2.
 7. `test/step18g.ts`, real Claude. A person's follow-up, sent while the agent runs a command, joins that turn, and one result answers both messages. Both commands end with that turn, and when the agent's instructions change, the next message gets a new Claude process. It shares ports with check 1.
-8. `test/step18h.ts`, the fake Claude. Claude dies while an approval waits, and the card expires with the turn, so a late allow gets 409 and runs nothing. Then a person answers an approval the resumed session never asks for again, and the decision expires when the turn ends. Each time a later turn is cut off, and its recovery offers no old approval. It shares ports with check 3.
+8. `test/step18h.ts`, the fake Claude. Claude dies while an approval waits, and the card expires with the turn, so a late allow gets 409 and runs nothing. Then a person answers an approval the resumed session never asks for again, and the decision expires when the turn ends. Last, a person allows an approval and then interrupts while the machine is down, so the restart ends that turn with the allow never delivered. Each time a later turn is cut off, and its recovery offers no old approval. It shares ports with check 3.
 9. `test/step18j.ts`, the fake Claude. A person allows a command, it runs, and the machine dies after its daemon handed Claude the answer. Two restarts later the command has run once, and the continuation names the call as possibly run with no approval to run it again. Then a person denies an approval while the machine is down, and the continuation says denied, with the reason. It shares ports with check 5.
-10. `test/step18i.ts`, the server's code with no daemon. The lifecycle table allows a message command only from queued to claimed and from claimed to done or failed. `moveMessages` refuses a finished message, a failed one, a queued one marked done, a batch with one message in the wrong state, and a message on another machine, and changes nothing each time. A claim hands a queued message over once. A transaction whose connection Postgres drops fails to its caller and the process keeps running. An API given a watchdog threshold of 10 seconds stops at once and names the setting. Its API would use port 8040.
+10. `test/step18i.ts`, the server's code with no daemon. The lifecycle table allows a message command only from queued to claimed and from claimed to done or failed. `moveMessages` refuses a finished message, a failed one, a queued one marked done, a batch with one message in the wrong state, and a message on another machine, and changes nothing each time. A claim hands a queued message over once. A harness's exit batch fails its messages and expires the card its turn left open, and the same batch sent again leaves open a card raised since. A transaction whose connection Postgres drops fails to its caller and the process keeps running. An API given a watchdog threshold of 10 seconds stops at once and names the setting. Its API would use port 8040.
 11. `test/step18k.ts`, the server's code with no daemon. A transaction holds a session as recovery does, an answer waits on it, and the transaction then takes the ask. Both finish, with no deadlock. It uses no ports.
 12. `test/step18l.ts`, the fake Claude. A turn that hangs every time it runs is resumed after each of three restarts, and fails with the reason at the fourth, with no fifth Claude. The person's next message gets an answer. It shares ports with check 3.
 
@@ -260,4 +267,5 @@ Migration `0010_durability.sql`, described in `docs/data-model.md`, adds one col
 - **Lines lost between Claude and the record.** A journal of the harness's lines on the machine's disk, written before each post and replayed on restart, would close that gap.
 - **A missing conversation.** The harness could start a fresh conversation and say so, instead of failing.
 - **A session whose machine is gone for good.** Nothing moves a session to another machine.
+- **A late exit batch.** A harness's exit batch that arrives after a newer process for the same session has raised a card expires that card too. Closing only the asks raised before the session's next unfinished message would fix it.
 - **Statuses from the server and the harness are not ordered.** The watchdog can mark a session `lost` while a machine on the far side of a network outage is still working it. The machine's next line sets the status again, but a session waiting on an approval shows `lost` until the answer arrives.
