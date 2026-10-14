@@ -117,3 +117,6 @@ From `AGENTS.md` on main at `b2aa8b5`.
 - The Claude Code hooks, which live under `.claude/` and need Tayler's approval. A draft is in the report.
 - A batch reader for the graft. Rebuilding from the root takes about 5 seconds now and grows with history.
 - A branch that someone rebases or amends by hand after `submit` can't be pushed again, since `submit` never forces. `sync` merges main in once a branch is submitted, so it never makes that mistake. `submit` says so and names Tayler when GitHub refuses such a push.
+- A signal is acted on when the command next starts a program, so one that comes during a git call or a ledger write waits for it. A second signal during the cleanup changes nothing, and a cleanup that hangs ends only with SIGKILL. The fast-forward and the mirror at the end of `land` run after the run lock is released and are not under the signal handling.
+- `done` copies under the ledger's lock, so other commands wait for the copy. The lock gives up after five minutes.
+- The three static gates that always pass here (`plan`, `playbook` and `pushes`) would need the framework's runner to judge anything.
