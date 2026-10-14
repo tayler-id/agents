@@ -47,7 +47,9 @@ const boxEnv: Record<string, string> = {
   // The box gets no Claude login, since it runs the fake.
   AGENTS_BOX_TOKEN_FILE: join(work, 'no-token'),
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
-    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
+    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`,
+    '-v', `${join(ROOT, 'test/fake-claude-login.ts')}:/opt/fake/fake-claude-login.ts:ro`,
+    '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
     '-e', 'AGENTS_CLAUDE_BIN=/opt/fake/fake-claude.ts', '-e', 'AGENTS_FAKE_SCENARIO=/opt/fake/scenario.json',
   ]),
 }
@@ -121,7 +123,9 @@ try {
   const posts = await c.rows('select speaker, body from messages where conversation_id = $1 order by seq', [conversationId])
   c.check(posts.map((p) => p.speaker).join() === 'person,agent' && posts[1]?.body === 'notes.txt already has note-1, so I left it alone.',
     "the agent's reply reached the conversation")
-  c.check(now.status === 'idle' && (await instance())?.status === 'online', 'the session is idle and the box is online')
+  // The box shows online from its daemon's next heartbeat, at most 15 seconds away.
+  const online = await until('the box online again', 20, async () => (await instance())?.status === 'online').then(() => true, () => false)
+  c.check(now.status === 'idle' && online, 'the session is idle and the box is online')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after the box was replaced' })
 } catch (error) {
   c.failures.push((error as Error).message)
