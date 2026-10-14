@@ -69,8 +69,14 @@ type Append = {
   // When the message names this call's id, read the file first, and leave it
   // alone if the line is there.
   checkNamed?: boolean
+  // Make the call only the first time this rule runs in this folder, as a resumed
+  // session might decide not to ask again.
+  askOnce?: boolean
+  // Exit while the approval waits, before the call has a result.
+  dieAsking?: boolean
 }
-type Rule = { match: string; reply?: string; write?: Record<string, string>; append?: Append }
+// `hang` stops the turn when the rule matches, as if the model never finished.
+type Rule = { match: string; reply?: string; write?: Record<string, string>; append?: Append; hang?: boolean }
 const scenario: Record<string, Record<string, Step[]>> & { turns?: Rule[] } = process.env.AGENTS_FAKE_SCENARIO
   ? JSON.parse(readFileSync(process.env.AGENTS_FAKE_SCENARIO, 'utf8')) : {}
 
@@ -131,6 +137,7 @@ const hang = () => new Promise<never>(() => { setInterval(() => undefined, 60_00
 // the rule's reply, or null.
 async function appendLine(text: string, append: Append): Promise<string | null> {
   const file = join(cwd, append.file)
+  if (append.askOnce && counter(`asked-${append.file}`) > 0) return `I left ${append.file} alone.`
   if (append.checkNamed && append.id && text.includes(append.id)) {
     const readId = `toolu_${randomUUID().slice(0, 8)}`
     const content = existsSync(file) ? readFileSync(file, 'utf8') : ''
@@ -142,7 +149,14 @@ async function appendLine(text: string, append: Append): Promise<string | null> 
   const input = { command: `echo ${append.line} >> ${append.file}`, description: `Append ${append.line} to ${append.file}` }
   callStart(id, 'Bash', input)
   if (append.ask) {
-    const decision = await askPerson(id, input)
+    const asking = askPerson(id, input)
+    if (append.dieAsking) {
+      // On macOS a pipe write is still in flight when the call returns.
+      await new Promise((resolve) => process.stdout.write('', resolve))
+      process.stderr.write('fake claude died while a person was asked\n')
+      process.exit(3)
+    }
+    const decision = await asking
     if (decision.behavior === 'deny') {
       callResult(id, decision.message ?? 'A person denied this.', true)
       return `A person denied appending to ${append.file}.`
@@ -182,6 +196,7 @@ async function turn(text: string, uuid: string | undefined) {
     process.stderr.write('fake claude was told to fail\n')
     process.exit(3)
   }
+  if (rule?.hang) await hang()
   const note = rule?.append ? await appendLine(text, rule.append) : null
   for (const [path, content] of Object.entries(step.write ?? {})) {
     mkdirSync(dirname(join(cwd, path)), { recursive: true })

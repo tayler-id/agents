@@ -33,12 +33,13 @@ export async function endMessages(client: pg.PoolClient, sessionId: string, fini
     [open.map((row) => row.id), to, reason])
 }
 
-// When a turn ends, an ask still open has no request waiting on it, so it
-// expires. A decision kept for a resumed session that never asked again is let
-// go, so a later turn can't pick it up.
+// When a turn ends, an ask still open has no request waiting on it, and a
+// decision kept for a resumed session that never asked again will never be
+// delivered. Both expire, so neither recovery nor a later request can take them up.
 export async function closeTurnAsks(client: pg.PoolClient, sessionId: string) {
-  await client.query(`update asks set status = 'expired' where session_id = $1 and status = 'open'`, [sessionId])
-  await client.query(`update asks set request_ended_at = null where session_id = $1 and status = 'answered' and request_ended_at is not null`, [sessionId])
+  await client.query(
+    `update asks set status = 'expired' where session_id = $1 and (status = 'open' or (status = 'answered' and request_ended_at is not null))`,
+    [sessionId])
 }
 
 // Keys in a stable order, so two inputs compare equal however they were stored.
@@ -170,8 +171,9 @@ export function continuation(messages: string[], open: { calls: OpenCall[]; askA
 }
 
 // Sorts what a session's cut-off turn left open, from the record since `from`,
-// the user event of its first unfinished message. An approval whose decision may
-// have reached the harness is not asked for again, since its call may have run.
+// the user event of its first unfinished message. Asks from earlier turns are
+// over, whatever their state. An approval whose decision may have reached the
+// harness is not asked for again, since its call may have run.
 async function openThreads(client: pg.PoolClient, sessionId: string, from: number) {
   const asks = await many<{
     id: string; status: 'open' | 'answered'; tool_use_id: string | null; payload: AskBody; answer: Answer | null
@@ -182,8 +184,9 @@ async function openThreads(client: pg.PoolClient, sessionId: string, from: numbe
                and c.payload->>'requestId' = a.payload->>'requestId' and c.status in ('claimed', 'done')) as reached
      from asks a
      where a.session_id = $1 and a.kind = 'tool_approval' and a.status in ('open', 'answered')
+       and a.created_at >= (select created_at from events where session_id = $1 and seq = $2)
        and not exists (select 1 from events r where r.session_id = a.session_id and r.kind = 'tool_result' and r.tool_use_id = a.tool_use_id)
-     order by a.created_at for update of a`, [sessionId])
+     order by a.created_at for update of a`, [sessionId, from])
   const carried = asks.filter((ask) => ask.status === 'open' || ask.request_ended_at !== null
     || (!ask.reached && ask.answer !== null && ['allow', 'always'].includes(ask.answer.decision)))
   const denied = asks.filter((ask) => !carried.includes(ask) && ask.request_ended_at === null && !ask.reached && ask.answer !== null)
