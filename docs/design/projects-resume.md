@@ -5,7 +5,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 ## Done, committed
 
 - Design doc and schema, migration `server/migrations/0006_projects.sql`, with its `docs/data-model.md` entry. 0006 has run on `agents_test`. Never edit it again.
-- Server: projects, repo requests, the GitHub client, forge dispatch by `repos.forge`, the git proxy's branch rule, the admin CLI (`make-admin`, `github-token <team> <org>`), the GitHub worker.
+- Server: projects, repo requests, the GitHub client, forge dispatch by `repos.forge`, the git proxy's branch rule, the admin CLI command `github-token <team> <org>`, the GitHub worker.
   - Device-flow sign-in per person (`server/github-auth.ts`), tokens in mode 600 files under `AGENTS_GITHUB_DIR/people`, renewed without a client secret. A repo's calls use the sign-in of whoever brought that team's row of it into a project. Each team's stopgap is a fine-grained token in `AGENTS_GITHUB_DIR/stopgaps/<team id>.json`.
   - Public repos: runs start only from `agent:` labels put on by someone with write, maintain or admin access, while the issue is open and has the label, checked again before the pull request opens. Issue text reaches the agent quoted, read in one linear pass over at most 20,000 characters, with code kept and hidden parts removed (`server/public-text.ts`). Titles are cleaned and cut at 120 characters at the GitHub client. Everything sent to GitHub's API passes `forPublic`. Polls use ETags, kept only once a poll's answer is handled.
   - Every call to GitHub gives up after 15 seconds, a repo request is claimed, asked and recorded in steps with no transaction open while GitHub is asked, and an existing repo joins a project only if its asker can push to it. The branch rule asks the forge for the default branch on each push. The GitHub worker has `stop()`, which the API calls.
@@ -38,5 +38,5 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - A possible regression, Tayler's call: the git proxy refuses every machine push to a repo's default branch, on either forge. Repos this Mac's forge sets up already protect main, so nothing changes for them. A Gitea repo registered without that protection loses the pushes to main that machines could make before.
 - Approve or refuse a wording change in `pipelines/bug-fix.ts`, which needs Tayler's approval: say in its prompt that the report's title and the other issues' titles are quoted data. The server already cleans and cuts them.
 - Register the Agents GitHub App (permissions in the design doc) and set its client id, or keep a stopgap token for now.
-- Make the existing team's person an admin: `node --env-file=.env server/admin.ts make-admin <login>`.
+- Make the existing team's person an admin: `node --env-file=.env server/admin.ts set-role <team> <login> admin`.
 - The bug-fix pipeline triggers on `bug`, which on GitHub never starts a run. Change its label to `agent:fix` for GitHub repos, or keep bug-fix on this Mac's forge only.

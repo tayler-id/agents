@@ -23,11 +23,6 @@ export async function canSeeTask(person: Person, taskId: string): Promise<boolea
   return rows.length > 0
 }
 
-// Admins may change what the whole team relies on, such as the GitHub connection.
-export async function isAdmin(person: Person): Promise<boolean> {
-  return Boolean(await maybe(pool, `select 1 from people where id = $1 and role = 'admin'`, [person.id]))
-}
-
 export async function canSeeSession(person: Person, sessionId: string): Promise<boolean> {
   const session = await maybe<{ conversation_id: string | null; task_id: string | null }>(pool,
     'select conversation_id, task_id from sessions where id = $1 and team_id = $2', [sessionId, person.team_id])

@@ -159,8 +159,7 @@ function RepoList({ repos, empty, label }: { repos: RepoView[]; empty: string; l
 export function ReposView({ me }: { me: Me }) {
   const overview = usePolled(api.repos, listEvery)
   const github = useGithub()
-  const { rows: people } = useSnapshot<Person>('people', {}, 30000)
-  const isAdmin = people.some((p) => p.id === me.person.id && p.role === 'admin')
+  const isAdmin = me.person.role === 'admin'
   const repos = overview.value?.repos ?? []
   return (
     <section className="page" aria-label="Repos">

@@ -12,12 +12,12 @@ import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { instanceFrom, personFrom } from './auth.ts'
+import { adminFrom, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
-import { canSeeSession, canSeeTask, isAdmin } from './access.ts'
+import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
 } from './record.ts'
@@ -488,8 +488,7 @@ const routes: Route[] = [
 
   // The stopgap until people sign in: an admin's fine-grained personal access token for their whole team.
   ['people', 'POST', /^\/v1\/github\/token$/, async (req) => {
-    const person = await personFrom(req)
-    if (!(await isAdmin(person))) throw new HttpError(403, 'Only an admin can set the stopgap token.')
+    const person = await adminFrom(req)
     const body = await parseBody(req, StopgapBody)
     // setStopgap's refusals are written for the admin to act on.
     await setStopgap(person.team_id, body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
