@@ -619,6 +619,14 @@ try {
   check(run.code === 3 && run.out.includes('the merge message: matches the github secret pattern') && !run.out.includes(token), 'land refuses a merge message that holds a secret, and never prints it')
   check(commit('refs/heads/main') === mainBefore && !commit('refs/agents-git/lambda/land') && !existsSync(join(root, '.land-lambda')) && !existsSync(runLock), 'and it refuses before it makes a worktree or a merge')
   writeFileSync(ledgerFile, untampered)
+  // Git's own lock on a ref stops its move after GitHub took the push, as a crash would.
+  const pushedPair = [commit('refs/mirror/local-pushed'), commit('refs/mirror/github-pushed')]
+  const refLock = join(main, '.git', 'refs', 'mirror', 'github-pushed.lock')
+  writeFileSync(refLock, '')
+  run = cli(['land', 'lambda'])
+  unlinkSync(refLock)
+  check(run.code === 1 && run.first.includes('lambda landed on local main') && run.first.includes('mirroring main to GitHub failed'), `land reports a mirror it could not finish, and says to land again (${run.first})`)
+  check(commit('refs/mirror/local-pushed') === pushedPair[0] && commit('refs/mirror/github-pushed') === pushedPair[1], 'a pushed pair that cannot move together does not move at all')
   run = cli(['land', 'lambda'])
   const merge = commit('refs/heads/main') ?? ''
   check(run.code === 0 && run.first.startsWith('ok: landed lambda as'), `land lands a branch that passes every gate (${run.first})`)

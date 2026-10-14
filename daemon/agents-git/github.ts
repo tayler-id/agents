@@ -15,7 +15,7 @@ import { checksOnly, staticGates } from '../../shared/gates/diff.ts'
 import { matcher } from '../../shared/gates/glob.ts'
 import type { Policy } from '../../shared/policy.ts'
 import { PATTERNS } from '../../shared/scrub.ts'
-import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, run, Sha, short, Tree, uncommitted } from './git.ts'
+import { aheadOf, commitOf, git, gitRun, mergeBase, moveRefs, run, Sha, short, Tree, uncommitted } from './git.ts'
 import { MAIN_BRANCH, withLedger, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, refused, replace, type Repo, type Report } from './repo.ts'
 import { childEnv } from './worktrees.ts'
@@ -133,8 +133,11 @@ export async function mirrorMain(repo: string, main: Sha): Promise<Mirrored> {
   const copy = await copyOf(repo, main)
   const pushed = await gitRun(repo, ['push', GITHUB, `${copy}:refs/heads/${MAIN_BRANCH}`])
   if (pushed.code !== 0) throw new Error(`git push to ${GITHUB}'s ${MAIN_BRANCH} exited ${pushed.code}: ${pushed.stderr.trim()}`)
-  await moveRef(repo, PUSHED.local, main, await commitOf(repo, PUSHED.local))
-  await moveRef(repo, PUSHED.github, copy, await commitOf(repo, PUSHED.github))
+  // Each rebuild is checked against the pair, so a pair with one ref moved would stop every later push.
+  await moveRefs(repo, [
+    { ref: PUSHED.local, commit: main, expected: await commitOf(repo, PUSHED.local) },
+    { ref: PUSHED.github, commit: copy, expected: await commitOf(repo, PUSHED.github) },
+  ])
   return { copy }
 }
 

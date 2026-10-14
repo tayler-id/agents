@@ -141,6 +141,12 @@ export async function moveRef(cwd: string, ref: string, commit: Sha, expected: S
   await git(cwd, ['update-ref', ref, commit, expected ?? NO_COMMIT])
 }
 
+// Moves refs that belong together, each by the rule moveRef states. Git moves all of
+// them or none, so a failure on one never leaves the others moved.
+export async function moveRefs(cwd: string, moves: readonly { ref: string, commit: Sha, expected: Sha | null }[]): Promise<void> {
+  await git(cwd, ['update-ref', '--stdin'], { input: moves.map((move) => `update ${move.ref} ${move.commit} ${move.expected ?? NO_COMMIT}\n`).join('') })
+}
+
 // Deletes ref only if it still holds expected.
 export async function deleteRef(cwd: string, ref: string, expected: Sha): Promise<void> {
   await git(cwd, ['update-ref', '-d', ref, expected])
