@@ -251,15 +251,18 @@ class ClaudeSession implements HarnessSession {
     // A clean exit with nothing left to answer leaves the session idle, ready to
     // resume on the next message. Any message still held failed with the process.
     const code = await exited
-    const ended = [...this.sent.values()].flat()
+    const held = [...this.sent.values()].flat()
     this.sent.clear()
-    if (code === 0 && !ended.length) {
+    if (code === 0 && !held.length) {
       yield { events: [], status: 'idle' }
-    } else {
-      const stderr = this.stderr.join('').slice(-8000)
-      const reason = code === 0 ? 'Claude exited before it answered every message it was given.'
-        : stderr || `Claude exited ${code === null ? 'on a signal' : `with code ${code}`} and said nothing.`
-      yield { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { exitCode: code, stderr } }], status: 'failed', ended }
+      return
+    }
+    const stderr = this.stderr.join('').slice(-8000)
+    const reason = code === 0 ? 'Claude exited before it answered every message it was given.'
+      : stderr || `Claude exited ${code === null ? 'on a signal' : `with code ${code}`} and said nothing.`
+    yield {
+      events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { exitCode: code, stderr } }], status: 'failed',
+      ...(held.length ? { ended: { how: 'exited', ids: held, reason } } : {}),
     }
   }
 
@@ -268,7 +271,8 @@ class ClaudeSession implements HarnessSession {
     if (line.type === 'user' && line.isReplay === true && typeof line.uuid === 'string' && this.sent.has(line.uuid)) this.taken.push(line.uuid)
     if (line.type === 'control_request' && batch.events.some((event) => event.kind === 'ask')) this.requests.add(String(line.request_id))
     if (line.type === 'result') {
-      batch.ended = this.taken.flatMap((uuid) => this.sent.get(uuid) ?? [])
+      const ids = this.taken.flatMap((uuid) => this.sent.get(uuid) ?? [])
+      if (ids.length) batch.ended = { how: 'answered', ids }
       for (const uuid of this.taken) this.sent.delete(uuid)
       this.taken = []
     }

@@ -11,17 +11,15 @@ import { many, pool, tx } from './db.ts'
 import {
   MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, messageState, moveMessage, WORKING, type CommandStatus,
 } from '../shared/lifecycle.ts'
-import type { EventBatch, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
+import type { EndedMessages, MessagePayload, Recovery, ResumeTurn, SessionStatus } from '../shared/types.ts'
 import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
 
 // Finishes the messages a batch names. They are done when the batch ends the
 // turn that took them in, and failed when their harness exited first. A retried
 // batch finds them finished already and changes nothing.
-export async function endMessages(client: pg.PoolClient, sessionId: string, batch: EventBatch) {
-  const ended = batch.ended ?? []
-  if (!ended.length) return
-  const turnEnded = batch.events.some((event) => event.kind === 'usage')
-  const to = turnEnded ? 'done' : 'failed'
+export async function endMessages(client: pg.PoolClient, sessionId: string, finished: EndedMessages) {
+  const ended = finished.ids
+  const to = finished.how === 'answered' ? 'done' : 'failed'
   const rows = await many<{ id: string; command: CommandStatus; session: SessionStatus }>(client,
     `select c.id, c.status as command, s.status as session from commands c join sessions s on s.id = c.session_id
      where c.id = any($1) and c.session_id = $2 and c.kind = 'message' for update of c`, [ended, sessionId])
@@ -30,7 +28,7 @@ export async function endMessages(client: pg.PoolClient, sessionId: string, batc
   const open = rows.filter((row) => row.command === 'claimed')
   for (const row of open) moveMessage(messageState(row.command, row.session), to)
   if (!open.length) return
-  const reason = turnEnded ? null : scrub(batch.events.find((event) => event.kind === 'error')?.text ?? 'Its harness exited without saying why.')
+  const reason = finished.how === 'answered' ? null : scrub(finished.reason)
   await client.query(`update commands set status = $2, error = $3, done_at = now() where id = any($1)`,
     [open.map((row) => row.id), to, reason])
 }

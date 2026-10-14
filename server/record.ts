@@ -77,7 +77,7 @@ export async function appendEvents(
        cost_usd = case when $6::numeric > 0 then greatest(coalesce(cost_usd, 0), $6::numeric) else cost_usd end
      where id = $1`,
     [sessionId, seq, turnsEnded.length, batch.status ?? null, batch.harnessSessionId ?? null, cost])
-  await endMessages(client, sessionId, batch)
+  if (batch.ended) await endMessages(client, sessionId, batch.ended)
   if (turnsEnded.length) await closeTurnAsks(client, sessionId)
   if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
     const conversationId = session.conversation_id

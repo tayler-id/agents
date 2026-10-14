@@ -283,7 +283,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       // A process that is no longer the session's current one reports no status.
       if (sessions.get(command.sessionId) !== session) delete batch.status
       if (deltas?.length) live.push(deltas)
-      if (batch.events.length || batch.raw?.length || batch.status || batch.harnessSessionId || batch.ended?.length) await post(command.sessionId, batch)
+      if (batch.events.length || batch.raw?.length || batch.status || batch.harnessSessionId || batch.ended) await post(command.sessionId, batch)
       if (payload.workspaceId && batch.events.some((e) => e.kind === 'usage')) {
         await sendDocuments(command.sessionId, payload.workspaceId).catch((error: unknown) => { console.error('documents:', messageOf(error)) })
       }
@@ -376,7 +376,7 @@ function resume({ command, covers }: ResumeTurn) {
   } catch (error) {
     const reason = scrub(messageOf(error))
     console.error(`resuming session ${command.sessionId}:`, reason)
-    void post(command.sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: covers })
+    void post(command.sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: { how: 'exited', ids: covers, reason } })
   }
 }
 

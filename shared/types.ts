@@ -40,11 +40,7 @@ export type EventBatch = {
   live?: LiveDelta[]
   status?: SessionStatus
   harnessSessionId?: string
-  // The message commands this batch finishes. On a batch with the turn's usage
-  // event they are the messages that turn took in, and they are done. On the
-  // last batch of a harness that exited they are every message it still held,
-  // and they failed.
-  ended?: string[]
+  ended?: EndedMessages
 }
 
 // What a session may do without asking a person, beyond the tools it is given.
@@ -52,6 +48,15 @@ export type EventBatch = {
 // agent may change files inside it. Commands always ask.
 export const Permissions = z.object({ workspaceWrites: z.boolean() })
 export type Permissions = z.infer<typeof Permissions>
+
+// The message commands a batch finishes. A turn that printed its result answered
+// the messages it took in. A harness that exited still holding messages failed
+// them, for the reason it gives.
+export const EndedMessages = z.discriminatedUnion('how', [
+  z.object({ how: z.literal('answered'), ids: z.array(z.uuid()).min(1) }),
+  z.object({ how: z.literal('exited'), ids: z.array(z.uuid()).min(1), reason: z.string() }),
+])
+export type EndedMessages = z.infer<typeof EndedMessages>
 
 // What a daemon needs to hand a person's message to an agent's harness.
 export type MessagePayload = {

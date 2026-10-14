@@ -43,7 +43,7 @@ import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
 import {
-  EVENT_KINDS, SESSION_STATUSES,
+  EndedMessages, EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
 } from '../shared/types.ts'
 
@@ -56,9 +56,6 @@ function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   if (!result.success) throw new HttpError(400, z.prettifyError(result.error))
   return result.data
 }
-
-// The message commands a batch finishes, by id.
-const EndedMessages = z.array(z.uuid()).optional()
 
 function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
@@ -84,8 +81,8 @@ function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (raw.status !== undefined && !SESSION_STATUSES.includes(raw.status as SessionStatus)) {
     throw new HttpError(400, 'status is not a session status')
   }
-  const ended = EndedMessages.safeParse(raw.ended)
-  if (!ended.success) throw new HttpError(400, 'ended must be a list of command ids')
+  const ended = EndedMessages.optional().safeParse(raw.ended)
+  if (!ended.success) throw new HttpError(400, 'ended must say whether the messages were answered or their harness exited, and list their command ids')
   return {
     events,
     raw: rawLines,
