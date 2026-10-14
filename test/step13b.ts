@@ -20,6 +20,7 @@ import { z } from 'zod'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { startFakeGithub, type FakeGithub } from './fake-github.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
@@ -47,6 +48,7 @@ const clientId = `Iv23-proj-ui-${id}`
 const giteaOrg = forgeConfig().org
 const SHOP = `proj-uishop-${id}`
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step13b-')))
+const peopleSocket = join(home, 'people.sock')
 const githubSettings = {
   AGENTS_GITHUB_DIR: join(home, 'github-tokens'), AGENTS_GITHUB_API: `http://127.0.0.1:${GITHUB_PORT}`,
   AGENTS_GITHUB_GIT: `http://127.0.0.1:${GITHUB_PORT}`, AGENTS_GITHUB_CLIENT_ID: clientId,
@@ -255,9 +257,11 @@ try {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
     env: envWith({
       ...githubSettings, AGENTS_REPOS_CACHE_SEC: '1', AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT),
-      AGENTS_PEOPLE_PORT: String(PEOPLE_PORT), AGENTS_STREAMS_PORT: String(STREAMS_PORT), AGENTS_STREAMS_DIR: join(home, 'streams'),
+      AGENTS_PEOPLE_SOCKET: peopleSocket, AGENTS_STREAMS_PORT: String(STREAMS_PORT), AGENTS_STREAMS_DIR: join(home, 'streams'),
     }),
   }))
+  // People reach the API only on its socket. This port forwards to it, as tailscale serve does.
+  await servePeople(PEOPLE_PORT, peopleSocket)
   await within(20, () => fetch(API).then(() => true, () => false))
   writeFileSync(join(home, 'scenario.json'), JSON.stringify({}))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {

@@ -29,6 +29,7 @@ import { z } from 'zod'
 import { forge, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { startFakeGithub, type FakeGithub } from './fake-github.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // This check's ports, 7940 to 7959 being the projects checks' range.
@@ -61,6 +62,7 @@ const giteaOrg = forgeConfig().org
 const [PIPES, SHOP] = [`proj-pipes-${id}`, `proj-shop-${id}`]
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step13-')))
 const githubDir = join(home, 'github-tokens')
+const peopleSocket = join(home, 'people.sock')
 const githubSettings = {
   AGENTS_GITHUB_DIR: githubDir, AGENTS_GITHUB_API: `http://127.0.0.1:${GITHUB_PORT}`, AGENTS_GITHUB_GIT: `http://127.0.0.1:${GITHUB_PORT}`,
   AGENTS_GITHUB_CLIENT_ID: clientId,
@@ -248,7 +250,7 @@ try {
   const half = await admin13({ AGENTS_GITHUB_DIR: githubDir }, ['github-token', team, org], `${stopgapToken}\n`)
   // The API too, on ports of its own and with no runner, stopped if it starts after all.
   const halfApi = await run(process.execPath, ['server/api.ts'], {
-    env: envWith({ AGENTS_GITHUB_DIR: githubDir, AGENTS_RUNNER: 'off', AGENTS_API_PORT: '7944', AGENTS_PEOPLE_PORT: '7945', AGENTS_STREAMS_PORT: '7946', AGENTS_STREAMS_DIR: join(home, 'half-streams') }),
+    env: envWith({ AGENTS_GITHUB_DIR: githubDir, AGENTS_RUNNER: 'off', AGENTS_API_PORT: '7944', AGENTS_PEOPLE_SOCKET: join(home, 'half-people.sock'), AGENTS_STREAMS_PORT: '7946', AGENTS_STREAMS_DIR: join(home, 'half-streams') }),
     timeoutMs: 20_000,
   })
   check(half.status === 1 && halfApi.status === 1 && [half.stderr, halfApi.stderr].every((said) => said.includes("GitHub's settings go together")
@@ -283,9 +285,11 @@ try {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
     env: envWith({
       ...githubSettings, AGENTS_GITHUB_POLL_SEC: '1', AGENTS_REPOS_CACHE_SEC: '1', AGENTS_RUNNER_TEAMS: team,
-      AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PEOPLE_PORT), AGENTS_STREAMS_PORT: String(STREAMS_PORT), AGENTS_STREAMS_DIR: join(home, 'streams'),
+      AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: peopleSocket, AGENTS_STREAMS_PORT: String(STREAMS_PORT), AGENTS_STREAMS_DIR: join(home, 'streams'),
     }),
   })
+  // People reach the API only on its socket. This port forwards to it, as tailscale serve does.
+  await servePeople(PEOPLE_PORT, peopleSocket)
   api.stdout.on('data', (chunk: Buffer) => { apiOutput += chunk.toString() })
   api.stderr.on('data', (chunk: Buffer) => { apiOutput += chunk.toString(); process.stderr.write(chunk) })
   children.push(api)
