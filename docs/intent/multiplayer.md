@@ -29,8 +29,8 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 
 **Team and agents**
 - Every person on the team has agents, and anyone can create a new one from the app.
-- Each person's agents share that person's own box, and each agent has its own seat in it: a screen, a browser and a workspace. Parallel jobs get boxes of their own. Many agents work at once.
-- Agents hand work to other agents and work together in rooms.
+- Every person gets their own computer in the cloud, on a home server or AWS. Each person's agents share it, and each agent has its own seat in it: a screen, a browser and a workspace. Parallel coding jobs get computers of their own, so many agents work at once.
+- Agents create new agents, message other agents directly, hand work to them, and work together in rooms.
 - A teammate's agent setup can be copied, or started from a template.
 - Agents run on more than one engine. Each agent picks its engine and model, such as Claude, Codex or Gemini, behind `daemon/harness.ts`, and every engine's work lands in the same record.
 
@@ -45,7 +45,7 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 - It is understandable. Each session, agent and day has a plain summary of what happened, and any step opens in full.
 
 **Control and cost**
-- People see what each agent and person spends, by agent and by source, and set budgets that stop a runaway agent.
+- A live usage meter shows what each agent and person spends, by agent, by source and by token type, and people set budgets that stop a runaway agent.
 - People are told when an agent needs approval, gets stuck or finishes, on desktop and on phone.
 - It is clear who can drive whose agents, and what agents may do without asking.
 - An admin can remove a person and delete their data.
