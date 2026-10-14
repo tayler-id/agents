@@ -91,7 +91,8 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       if (passing.length) return refused(`land ${name}: ${passing.join(', ')} ${passing.length === 1 ? 'passes' : 'pass'} on main's code, so ${passing.length === 1 ? 'it guards' : 'they guard'} nothing yet`)
       await git(plan.scratch, ['checkout', '--force', '--quiet', '--detach', plan.mainSha])
       await git(plan.scratch, ['clean', '-fdq'])
-      const merging = await gitRun(plan.scratch, ['merge', '--no-ff', '--no-edit', '-m', plan.message, plan.tip])
+      // Unsigned whatever git is set to do, as sync's merge is, since the mirror refuses a signed commit.
+      const merging = await gitRun(plan.scratch, ['merge', '--no-ff', '--no-edit', '--no-gpg-sign', '-m', plan.message, plan.tip])
       if (merging.code !== 0) {
         const conflicts = (await git(plan.scratch, ['diff', '--name-only', '--diff-filter=U'])).split('\n').filter((file) => file !== '')
         return refused(`land ${name}: merging into main ${conflicts.length ? `conflicts in ${conflicts.join(', ')}` : `failed: ${merging.stderr.trim()}`}`, `sync ${name}, which merges main into the branch since it was submitted, resolve what it stops on and commit, then submit ${name} and land ${name} again`)

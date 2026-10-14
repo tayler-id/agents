@@ -192,6 +192,15 @@ if (process.env.STEP22_DOCKER) {
 console.log('pass  no docker asked for')
 `
 
+// git signs a commit by running gpg.program on it, and takes the signature from its stdout
+// once its status output says SIG_CREATED. This one signs anything, with nothing.
+const FAKE_GPG = `process.stdin.resume()
+process.stdin.on('end', () => {
+  process.stderr.write('\\n[GNUPG:] SIG_CREATED D 1 8 00 1700000000 step22\\n')
+  process.stdout.write('-----BEGIN PGP SIGNATURE-----\\n\\nc3RlcDIy\\n-----END PGP SIGNATURE-----\\n')
+})
+`
+
 // npm ci runs the project's preinstall script, which hangs when asked to, as a stuck install would.
 const NPM_HANG = `import { writeFileSync } from 'node:fs'
 if (process.env.STEP22_NPM_HANG) {
@@ -210,6 +219,8 @@ try {
   mkdirSync(bin)
   launcher('gh', join(ROOT, 'test/fake-gh.ts'))
   launcher('docker', join(ROOT, 'test/fake-docker.ts'))
+  writeFileSync(join(tmp, 'fake-gpg.ts'), FAKE_GPG)
+  launcher('fake-gpg', join(tmp, 'fake-gpg.ts'))
   mkdirSync(join(tmp, 'tiny'))
   writeFileSync(join(tmp, 'tiny', 'package.json'), '{ "name": "tiny", "version": "1.0.0" }\n')
   writeFileSync(join(tmp, 'tiny', 'index.js'), 'export const tiny = 1\n')
@@ -916,8 +927,11 @@ try {
   run = cli(['submit', 'upsilon'])
   const upsilonNext = git(main, 'ls-remote', github, 'refs/heads/upsilon').split('\t')[0] ?? ''
   check(run.code === 0 && upsilonNext !== upsilonCopy && isAncestor(upsilonCopy, upsilonNext, github), `submit pushes the merged branch on top of the copy GitHub has, never forced (${run.first})`)
-  run = cli(['land', 'upsilon'])
+  // The mirror refuses a signed commit, so the merge land makes must stay unsigned whatever git is set to do.
+  const signing = { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'true', GIT_CONFIG_KEY_1: 'gpg.program', GIT_CONFIG_VALUE_1: join(bin, 'fake-gpg') }
+  run = cli(['land', 'upsilon'], signing)
   check(run.code === 0 && run.first.startsWith('ok: landed upsilon'), `and land takes it, so the advice it gave works (${run.first})`)
+  check(run.code === 0 && !git(main, 'cat-file', 'commit', 'refs/heads/main').includes('\ngpgsig '), "with git set to sign every commit, land's merge on main carries no signature, and GitHub's main gets its copy")
 
   // A push publishes every commit GitHub lacks, so the scan covers all of them, not only the branch's own.
   cli(['start', 'pi', '--note', 'step22 pi'])
