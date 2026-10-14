@@ -2,6 +2,30 @@
 
 Every decision about how Agents is built and how work on it happens, newest group first. Each entry says what it is for, how it works, how it is built, and where it stands. Parts still being built live on agent branches until they merge, and their design docs in `docs/design/` hold the detail.
 
+## 2026-10-14, Tayler's calls
+
+Tayler went with the coordinator's picks on all of these.
+
+- **Changes that take something away, all accepted.**
+  - Machines can't push to a repo's default branch. Work reaches it through a pull request.
+  - Durability's daemon and API can't mix with older versions, so they roll out together in the design's order.
+  - Coach and improve lose `propose_instructions` and `apply_proposal`, and improve needs checked findings.
+  - Boxes are capped at 4 GB, 2 CPUs and 4,096 processes, and a box takes no work until its desktop is up.
+  - Boxes run without `NET_RAW`. That removes packet capture and raw scans, not ping.
+- **Protected files and packages, approved.**
+  - Verification's `tsconfig.json` and `eslint.config.js` changes, `.claude/skills/verify-agents/`, step17 in `npm run check`, and the binary-file skip in `test/names.ts`.
+  - `ws`, `@types/ws` and `@novnc/novnc` for the Screen view.
+  - A CommonMark parser to close the nine markdown leaks before GitHub is switched on, and the bug-fix prompt line saying issue titles are quoted data.
+  - AWS's `ops/` files. Deploying waits until the Mac version settles, and costs about $217 a month.
+- **Product calls.**
+  - The Claude Code sessions people open in their own terminals get connected, so they land in the record. It is the next workstream after the current branches land.
+  - Box sessions run commands without asking. Macs keep asking.
+  - Personal boxes stop when idle and wake on a message. Only the owner drives agents on their own box. The app warns before a sign-in token runs out. Removing a person gets built. Admins stay out of private rooms.
+  - The browser limits and the 24-hour screen privacy window stay. The daemon refuses to save a screenshot while the page shows a known secret.
+  - AWS boxes reach the server over the VPC, not the tailnet. Colima on the Mac drops the same private ranges as the AWS box host.
+  - Known product bugs stay as failing steps in the verification feature map.
+  - The first build's Docker volumes are deleted, with a backup in `~/.agents-app/backups/first-build-volumes`.
+
 ## 2026-10-13, after the code review
 
 ### Keep the core
