@@ -116,7 +116,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 ### The git proxy (`server/git.ts`)
 
 - **Solves now.** Machines clone and push through the API with their own instance tokens. The API checks the repo is their team's and adds the factory's credentials, so forge tokens never leave the server Mac. A box holds only its instance token.
-- **Helps later.** Branch rules for agents, such as "only push to task branches", go in one place.
+- **Helps later.** Branch rules for agents go in one place. On a repo with a policy it now takes a machine's push only to the task branches of that machine's own workspaces, records any other, and reads only a push's command lines before streaming the pack on. A repo without a policy takes pushes to any branch.
 
 ### Workspaces (`daemon/workspace.ts`)
 
@@ -343,5 +343,69 @@ The design is `docs/design/durability.md`.
 
 ## Rules for agents (`AGENTS.md`, `CLAUDE.md`)
 
-- **Solves now.** Any agent that opens the repo gets the rules in force today: what to read first, names, keeping off the live system, schema changes, sharing the test database, what done means and how changes land. Claude loads them through `CLAUDE.md`, which imports `AGENTS.md`. Other agent tools read `AGENTS.md` directly.
-- **Helps later.** The framework's fuller rules merge into the same file, so there is one rules file to keep current.
+- **Solves now.** Any agent that opens the repo gets the rules in force today: what to read first, names, keeping off the live system, schema changes, sharing the test database, what done means and how changes land. Claude loads them through `CLAUDE.md`, which imports `AGENTS.md`. Other agent tools read `AGENTS.md` directly. It also holds the coding framework's rules, its hard gates and protected paths, with each gate's enforcement and what is not enforced. It says plainly that the framework does not hold changes to this repo until the repo is registered with its policy.
+- **Helps later.** There is one rules file to keep current, and a workspace imports a repo's `AGENTS.md` even when the repo has no `CLAUDE.md`.
+
+## The coding framework
+
+The design is `docs/design/self-improve.md`. None of this holds changes to the Agents repo itself until the repo is registered with its policy.
+
+### Policies (`shared/policy.ts`, `ops/policies/agents.json`, `server/admin.ts set-policy`)
+
+- **Solves now.** A repo's policy is the rules every change to it must pass, as versioned JSON in Postgres. `set-policy` loads one, names the repo's owner, and sets the forge's branch protection to match. A policy may tighten the core's 400-line cap and verdict floors, and the schema refuses one that loosens them.
+- **Helps later.** Any repo a team adds gets the same framework by getting a policy, with no code of its own.
+
+### Static gates (`shared/gates/diff.ts`, `shared/gates/code.ts`, `shared/gates/css.ts`, `shared/gates/prose.ts`, `shared/gates/plan.ts`, `shared/gates/glob.ts`, `shared/gates/source.ts`, `server/mirror.ts`)
+
+- **Solves now.** The API keeps a bare copy of each repo and reads a change's diff from it, running no repo code. Pure functions judge the diff against the policy: protected paths, migrations and the data model, docs and the build log, secrets, dependencies, suppressions, size, the CSS and prose lints, languages, type assertions, shell strings, warning comments, the playbook's scope, the approved plan, refused pushes, UI checks and edits to existing checks. They read only the lines a change adds.
+- **Helps later.** A lesson that becomes a rule lands here as one more function with its fixtures in `test/step16b.ts`.
+
+### Box and check host gates (`daemon/gates.ts`)
+
+- **Solves now.** In the box, the daemon runs the policy's commands on a clean checkout of the pushed commit with the check configuration from main, then runs each changed check on main's code, where it must fail, and on the change, where it must pass. On the check host it merges the change into the current main and runs the full suite and the same checks on the result. Each result names the daemon's build.
+- **Helps later.** Moving the check host into its own VM changes where the daemon runs, not this code.
+
+### The framework's stages (`server/framework.ts`, `pipelines/app-change.ts`)
+
+- **Solves now.** The runner calls these for any run on a repo with a policy: the router, verify, a review on other models with main's rubric, a verifier whose verdict is judged by the commands it ran, the suite with one rerun for a flake, the protected and owner gates, the merge at the judged head, and the deploy. They write evidence, findings, verdicts and decisions, set the forge's statuses, write the pull request for a reviewer who was not there, pass people's decisions to later stages, fail a stage whose machine goes silent, and refuse to merge without a typed proof of every gate. `app-change` is the playbook that strings them together.
+- **Helps later.** A team's own playbooks reuse the same stage kinds.
+
+### Builds and attestation (`shared/build.ts`, `server/build.ts`, `shared/attestation.ts`)
+
+- **Solves now.** Each process knows its build: the commit, a hash over the source it runs, and the Node version. Evidence and verdicts record the builds behind them, and the health check answers with the server's. When the suite passes, the runner writes an attestation into the pull request's description and its sha256 as a status on the head commit, which `checkAttestation` verifies.
+- **Helps later.** A CI job can accept a pull request from the attestation alone, beside an outside contributor's own gate tool.
+
+### Verification evidence (`shared/verification.ts`)
+
+- **Solves now.** The verification agent's schemas for screenshots, the feature map and the verdict ladder. The framework's gates, the check host and `agentsctl` parse evidence with the same ones.
+- **Helps later.** One format for evidence means the gate can read whatever the verifier records.
+
+### Overrules that hold (`shared/findings.ts`)
+
+- **Solves now.** A finding the owner overruled stays overruled when a later round raises the same one: the same rule, the same path and the same body. A reworded finding is a new one, so an overrule never silences a different complaint.
+- **Helps later.** The same key can match findings across runs, such as one raised on every change to a file.
+
+### Obligations (`server/obligations.ts`)
+
+- **Solves now.** A run that starts from an issue promises the reporter its outcome, and the runner posts it when the run ends. The promise closes only with proof of the kind it promised, or a person's named waiver with a reason, and a stale or conflicting delivery changes nothing.
+- **Helps later.** Any promise made outside Agents, such as a reply owed in another tool, fits the same typed row.
+
+### The deployer (`ops/deploy.ts`)
+
+- **Solves now.** It releases an approved commit from the repo's mirror into a release folder, backs up, migrates, switches the `current` link, restarts, and checks the health answer names the new commit. When it does not, it goes back to the release before by itself. It runs as its own process because a deploy restarts the API.
+- **Helps later.** Once installed as a launch agent, deploys of Agents itself go through the owner's approval and this rollback.
+
+### The verification skill (`.claude/skills/verify/SKILL.md`, `.claude/skills/verify/features.json`)
+
+- **Solves now.** It tells the verifier how to check each feature, and the feature map lists each feature's paths and checks, which a plan's Keep items must name.
+- **Helps later.** The verification agent's skill replaces it once that skill has its own feature map.
+
+### The schema (`server/migrations/0009_self_improve.sql`, `shared/framework.ts`)
+
+- **Solves now.** The tables for policies, evidence, findings, verdicts, decisions, lessons, obligations, refused pushes and deploys, and the shapes the server, the daemon and the checks share, each crossing a boundary as a zod schema.
+- **Helps later.** New kinds of evidence add rows, not tables.
+
+### The framework's checks (`test/step16.ts`, `test/step16b.ts`, `test/step16c.ts`, `test/step16d.ts`, `test/step16e.ts`, `test/step16f.ts`, `test/style.ts`, `test/types-framework.ts`)
+
+- **Solves now.** `step16` takes changes through the whole pipeline with a stand-in for Claude, including runs each gate must stop. `step16b` checks every static gate, the policy floors and the attestation on small fixtures, and runs in a box. `step16c` deploys to a stand-in server and rolls back a release that cannot start. `step16d` checks obligations. `step16e` checks the lease on every push against a bare repo on disk. `step16f` checks the git proxy's push reader on pushes built in memory. `STEP16_ONLY` runs some of step16's sections alone, for watching one guard fail. `style` lints the whole repo's CSS and prose, and `types-framework` shows at compile time that no merge proof can be built without each part.
+- **Helps later.** Each new gate gets its fixture here before it can be called built.

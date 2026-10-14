@@ -7,6 +7,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { z } from 'zod'
 
 export type ForgeConfig = {
   // Where the API reaches the forge, and the address the forge reaches the API's machine port at.
@@ -35,10 +36,13 @@ export class ForgeError extends Error {
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown, token = forgeConfig().token): Promise<T> {
+// `sudo` acts as that forge user, which only the admin token may do.
+async function call<T>(method: string, path: string, body?: unknown, token = forgeConfig().token, sudo?: string): Promise<T> {
   const res = await fetch(`${forgeConfig().url}/api/v1${path}`, {
     method,
-    headers: { authorization: `token ${token}`, 'content-type': 'application/json', accept: 'application/json' },
+    headers: {
+      authorization: `token ${token}`, 'content-type': 'application/json', accept: 'application/json', ...(sudo ? { sudo } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const text = await res.text()
@@ -73,10 +77,33 @@ export function verifySignature(body: Buffer, signature: string | undefined, sec
 export type Issue = { number: number; title: string; body: string; html_url: string; state: string; user?: { login: string } }
 export type PullRequest = { number: number; html_url: string; state: string; merged: boolean }
 
+// What the coding framework reads of a pull request, parsed from the forge's answer.
+const PULL = z.object({
+  number: z.number().int(),
+  html_url: z.string(),
+  merged: z.boolean(),
+  mergeable: z.boolean(),
+  merge_commit_sha: z.string().nullable(),
+  head: z.object({ ref: z.string(), sha: z.string() }),
+  body: z.string().nullable(),
+})
+export type Pull = z.infer<typeof PULL>
+const REVIEWS = z.array(z.object({ state: z.string(), commit_id: z.string(), user: z.object({ login: z.string() }).nullable() }))
+export type CommitState = 'pending' | 'success' | 'failure' | 'error'
+// The forge checks a pull request again after each push or review, and refuses
+// to merge until it has. A check takes milliseconds; this bounds the wait.
+const MERGEABLE_WAIT_MS = 30_000
+const MERGEABLE_POLL_MS = 250
+
+async function parsed<T>(schema: z.ZodType<T>, method: string, path: string, body?: unknown, token?: string, sudo?: string): Promise<T> {
+  return schema.parse(await call<unknown>(method, path, body, token, sudo))
+}
+
 export const forge = {
   openIssues: (repo: string) => call<Issue[]>('GET', `/repos/${repo}/issues?state=open&type=issues&limit=50`),
   issue: (repo: string, n: number) => call<Issue>('GET', `/repos/${repo}/issues/${n}`),
   comment: (repo: string, n: number, body: string) => call('POST', `/repos/${repo}/issues/${n}/comments`, { body }),
+  comments: (repo: string, n: number) => call<unknown>('GET', `/repos/${repo}/issues/${n}/comments?limit=50`),
   closeIssue: (repo: string, n: number) => call('PATCH', `/repos/${repo}/issues/${n}`, { state: 'closed' }),
   // An open pull request for the branch, if one exists, so a retried stage never opens two.
   async openPullRequest(repo: string, head: string, base: string, title: string, body: string): Promise<PullRequest> {
@@ -108,6 +135,39 @@ export const forge = {
     return call('PUT', `/repos/${repo}/contents/${path}`, {
       content: Buffer.from(content).toString('base64'), sha: oldSha, branch: base, new_branch: branch, message,
     })
+  },
+
+  pull: (repo: string, n: number) => parsed(PULL, 'GET', `/repos/${repo}/pulls/${n}`),
+  // Replaces a pull request's description, as the runner's evidence changes.
+  describe: (repo: string, n: number, body: string) => call('PATCH', `/repos/${repo}/pulls/${n}`, { body }),
+
+  // A gate's result on a commit, which the forge's branch protection can require.
+  setStatus: (repo: string, sha: string, context: string, state: CommitState, description: string) =>
+    call('POST', `/repos/${repo}/statuses/${sha}`, { context, state, description: description.slice(0, 140) }),
+
+  // Approves a pull request as a person's own forge user, once per head commit.
+  async approveAs(repo: string, n: number, login: string, head: string, body: string) {
+    const reviews = await parsed(REVIEWS, 'GET', `/repos/${repo}/pulls/${n}/reviews`)
+    if (reviews.some((r) => r.state === 'APPROVED' && r.commit_id === head && r.user?.login === login)) return
+    await call('POST', `/repos/${repo}/pulls/${n}/reviews`, { event: 'APPROVED', body, commit_id: head }, forgeConfig().adminToken, login)
+  },
+
+  // Merges a pull request only if its head is still `head`. `owner` merges as
+  // that forge user, and `force` passes protected file patterns, which only an
+  // owner with admin rights on the repo may do.
+  async mergeAt(repo: string, n: number, head: string, owner: { login: string; force: boolean } | null): Promise<Pull> {
+    const deadline = Date.now() + MERGEABLE_WAIT_MS
+    let pull = await forge.pull(repo, n)
+    while (!pull.merged && !pull.mergeable && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, MERGEABLE_POLL_MS))
+      pull = await forge.pull(repo, n)
+    }
+    if (!pull.merged) {
+      const body = { Do: 'merge', head_commit_id: head, delete_branch_after_merge: true, ...(owner?.force ? { force_merge: true } : {}) }
+      if (owner) await call('POST', `/repos/${repo}/pulls/${n}/merge`, body, forgeConfig().adminToken, owner.login)
+      else await call('POST', `/repos/${repo}/pulls/${n}/merge`, body)
+    }
+    return forge.pull(repo, n)
   },
 }
 
@@ -147,5 +207,24 @@ export const forgeAdmin = {
       })
     }
     return repo
+  },
+
+  // Branch protection for a repo with a policy. Nobody pushes to the branch.
+  // Merging needs every gate's status and an approval from the owner, whose
+  // approval goes stale with a new push, and a pull request touching a
+  // protected file merges only when the owner forces it.
+  async protect(repo: string, branch: string, rules: { owner: string; contexts: readonly string[]; protectedFiles: readonly string[] }) {
+    await this.call('PUT', `/repos/${repo}/collaborators/${rules.owner}`, { permission: 'admin' })
+    const settings = {
+      enable_push: false, enable_force_push: false,
+      enable_merge_whitelist: true, merge_whitelist_usernames: ['factory', rules.owner],
+      required_approvals: 1, enable_approvals_whitelist: true, approvals_whitelist_username: [rules.owner],
+      dismiss_stale_approvals: true, block_on_rejected_reviews: true,
+      enable_status_check: true, status_check_contexts: rules.contexts,
+      protected_file_patterns: rules.protectedFiles.join(';'), block_admin_merge_override: false,
+    }
+    const existing = await this.call<{ rule_name: string }[]>('GET', `/repos/${repo}/branch_protections`)
+    if (existing.some((p) => p.rule_name === branch)) await this.call('PATCH', `/repos/${repo}/branch_protections/${branch}`, settings)
+    else await this.call('POST', `/repos/${repo}/branch_protections`, { rule_name: branch, ...settings })
   },
 }

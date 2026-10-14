@@ -335,3 +335,39 @@ Rebased onto main at 5556f3b, the durability merge. Four files conflicted, in fo
 - **Seen failing.** step18d as it was, with its 20-minute wait cut to 3 seconds, failed on the lock the run held, with "run.lock was held for 0.05 minutes". It stopped before it made a team or a container. The file was put back, identical by sha256.
 - **Verified.** Typecheck, lint and the name guard pass. step18d as committed passed all 14 checks while the lock was held. Its first run failed instead, with "timed out after 90s waiting for the session to show as lost", and the next run passed. I did not find the cause. In the failed run the box wrote its note and lost its container, and 90 seconds later its instance still showed online and its session running, so the lost-machine pass had not marked either. The test Postgres log shows 19 Electric replication timeouts between 11:46 and 13:07 that day. The change removes only code that ran before the check's first query.
 - **Not covered.** Run without the lock held, step18d now collides with another agent's check on port 7701, as step7 and step8 do. Nothing in the check enforces the lock. `AGENTS.md` and the durability resume note are what tell the caller to take it.
+
+### The coding framework (in progress)
+
+On the branch `worktree-agent-a1b7e5f238509c562`, not on main. The design is `docs/design/self-improve.md`, and the rules are in `AGENTS.md`.
+
+- **What it is.** On a repo with a policy, the runner judges every coding agent's change: static gates on the diff, the box's gates on a clean checkout, a review and a verdict from agents on other models, the full suite on the merge result, and gates only the owner passes for protected paths, the merge and the deploy. It merges only at the head every gate judged. Evidence names the builds that produced it, and the pull request carries an attestation a CI job can check.
+- **Verified.** `test/step16b.ts` (each static gate, the policy floors and the attestation, on fixtures), `test/step16c.ts` (a deploy to a stand-in server, and the rollback of a release that cannot start), `test/step16d.ts` (obligations) and `test/step16e.ts` (the lease on every push) pass. `test/step16.ts`, end to end with a stand-in for Claude, passes all 73 of its checks, including every run the gates must stop. The existing checks the runner and daemon changes touch, steps 0, 6, 7, 8 and 9, pass on the branch.
+- **Seen failing.** 24 guards, each broken by a scripted edit and restored byte for byte, are listed in the design. The guards only the end-to-end check exercises have not been run broken.
+- **What the checks found.**
+  - A change that only added a check skipped both seen failing and the owner. step16's SEEN run caught it, and a change to checks alone now goes to the owner.
+  - The runner's row types said timestamps were strings, and Postgres returns Date objects, so its time comparisons were wrong. The types now say Date.
+  - The workspace's linked `node_modules` was committed into the task branch by the push's `git add --all`. Each clone now excludes it in `.git/info/exclude`.
+  - A refused push is tied to the machine that made it, so it stops every governed run on that machine. step16 runs that case alone. The limit stays, and fails closed, until a push carries its run.
+  - Rebasing onto main replayed an old revert over main's `.gitignore` fix. I restored main's file.
+  - I ran the cleanup script for leftover test teams while step16 was running, which deleted the running check's team. I clean up only between runs now.
+- **Not done.** The framework does not hold changes to this repo until the repo is registered with its policy. The design's "Not enforced yet" lists the rest.
+
+### The coding framework: the review round (in progress)
+
+A review on another model found the framework not ready to land. On its branch, each finding was fixed with a check or fixture, and each check was seen failing.
+
+- **Fixed.**
+  - A script with one NUL byte, or any file over 2 MiB, hid from every gate. The new `opaque` gate fails it, and the size cap charges it by bytes.
+  - An owner's acceptance of a verdict below the floor could never merge. The merge's proof now carries it.
+  - The deployer could stop with a deploy unfinished. Any error after the switch now rolls back and fails the deploy. Health answers are read with a time limit, half-installed releases are removed, old requests expire, and every subprocess has a time limit.
+  - `AGENTS.md` claimed more than the code did. Each claim now says what holds it, and review and verdict are called advisory until judges run on their own machine.
+  - Results from the box and the check host must answer what they were asked. Only the owner approves running the suite.
+  - The git proxy read whole pushes and refused other branches on every repo. It streams now, and its rule applies only on repos with a policy.
+  - Overrules key on the body too. Inline eslint config is caught. Decisions and gate output are scrubbed, and the agent's text sits in its own fence in the pull request.
+  - One undeliverable promise no longer blocks the rest, and `pipelines/bug-fix.ts` is main's again.
+- **What the checks found.**
+  - Importing `node:crypto` into `shared/framework.ts` broke the app's typecheck, which reads that file. Only the box's `tsc -p app` caught it, on every HAPPY pass.
+  - The record cannot store a NUL byte in an event, so an agent that writes one stalls its stage. step16 writes its NUL with a command instead. Fixing the record is main's.
+  - A break that left the copied repo failing its own lint went red for the wrong reason, so those breaks were redone to keep the code lint-clean.
+- **My mistakes.** My step7 run on 2026-10-13, before main's fix, built `agents-box:latest` from this worktree. The coordinator restored it. step7 now builds its own tag.
+- **Not done.** Judges on a machine of their own. Until then review and verdict are advisory, and the repo must not be registered.

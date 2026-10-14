@@ -3,6 +3,7 @@
 // serve, which proxies to a Unix socket and sets Tailscale-User-Login. Machines,
 // boxes included, reach it on a loopback port with a bearer token instead.
 
+import { BUILD } from './build.ts'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
@@ -27,7 +28,9 @@ import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { forge, repoPath } from './forge.ts'
-import { answerRunAsk, cancelRun, startRun, startRunner, wakeRunner } from './runner.ts'
+import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
+import { recordDecisions } from './framework.ts'
+import { openObligations, waive } from './obligations.ts'
 import { syncPipelines } from './pipelines.ts'
 import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
 import { createRoom } from './rooms.ts'
@@ -278,12 +281,24 @@ const routes: Route[] = [
     return tx((client) => saveChanges(client, instance.id, workspaceId, post))
   }],
 
+  // Whether this API process serves, and the commit it runs. The deployer
+  // checks a new release by it, and nothing in it is secret.
+  ['machines', 'GET', /^\/v1\/health$/, async () => {
+    await pool.query('select 1')
+    return { ok: true, commit: BUILD.commit, build: BUILD }
+  }],
+
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/events$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
     const { rows } = await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
     if (!rows[0]) throw new HttpError(404, 'no such session on this instance')
     const batch = parseBatch(await readJson(req))
-    const seqs = await tx((client) => appendEvents(client, sessionId, batch))
+    const seqs = await tx(async (client) => {
+      const appended = await appendEvents(client, sessionId, batch)
+      // The decision log reads log_decision calls from the record, so it is complete whatever the tool's server did.
+      await recordDecisions(client, sessionId, batch.events)
+      return appended
+    })
     // A finished turn may be what a pipeline run is waiting on.
     if (batch.events.some((e) => e.kind === 'usage')) void wakeRunner()
     return { seqs }
@@ -504,6 +519,31 @@ const routes: Route[] = [
        where h.id = $1 and h.team_id = $2`, [hunkId, person.team_id])
     if (!hunk || !(await canSeeTask(person, hunk.task_id))) throw new HttpError(404, 'no such hunk')
     await tx((client) => decideHunk(client, person, HunkId.parse(hunkId), body.data))
+    return { ok: true }
+  }],
+
+  // Promises made outside Agents that are still open, due soonest first.
+  ['people', 'GET', /^\/v1\/obligations$/, async (req) => {
+    const person = await personFrom(req)
+    return { obligations: await openObligations(pool, person.team_id) }
+  }],
+
+  // A person lets a promise go, by name, with the reason.
+  ['people', 'POST', new RegExp(`^/v1/obligations/${UUID}/waive$`), async (req, [obligationId]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    await tx((client) => waive(client, obligationId, person, text(body.reason, 'reason')))
+    return { ok: true }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/runs/${UUID}/(pause|resume)$`), async (req, [runId, action]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    const run = await maybe<{ task_id: string }>(pool, 'select task_id from runs where id = $1 and team_id = $2', [runId, person.team_id])
+    if (!run || !(await canSeeTask(person, run.task_id))) throw new HttpError(404, 'no such run')
+    if (action === 'pause') await tx((client) => pauseRun(client, runId, person, optionalText(body.note, 'note')))
+    else await tx((client) => resumeRun(client, runId, person))
+    void wakeRunner()
     return { ok: true }
   }],
 

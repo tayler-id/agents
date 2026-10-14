@@ -14,6 +14,7 @@
   --danger: #a3261d;
   --mark: #e2e1d8;
   --mark-strong: #cbcabe;
+  --scrim: rgba(20, 20, 18, 0.35);
   color-scheme: light;
 }
 
@@ -31,6 +32,7 @@
     --danger: #f08177;
     --mark: #3b3b36;
     --mark-strong: #55554e;
+    --scrim: rgba(20, 20, 18, 0.35);
     color-scheme: dark;
   }
 }
@@ -48,6 +50,7 @@
   --danger: #f08177;
   --mark: #3b3b36;
   --mark-strong: #55554e;
+  --scrim: rgba(20, 20, 18, 0.35);
   color-scheme: dark;
 }
 
@@ -373,7 +376,7 @@ dialog.palette {
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text);
 }
 dialog.palette:not([open]) { display: none; }
-dialog.palette::backdrop { background: rgba(20, 20, 18, 0.35); }
+dialog.palette::backdrop { background: var(--scrim); }
 .palette input { padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); font: inherit; font-size: 16px; }
 .palette input:focus { outline: none; }
 .palette-results { overflow-y: auto; padding: 6px; }

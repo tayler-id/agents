@@ -1,0 +1,125 @@
+{
+  "sandbox": "box",
+  "maxRunMinutes": 180,
+  "maxSpendUsd": 25,
+  "protectedPaths": [
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    ".claude/**",
+    "eslint.config.js",
+    "**/tsconfig*.json",
+    "package.json",
+    "test/all.ts",
+    "test/names.ts",
+    "test/step0.ts",
+    "test/style.ts",
+    "test/step16*.ts",
+    "test/types-framework.ts",
+    "test/fake-claude.ts",
+    "shared/gates/**",
+    "shared/policy.ts",
+    "shared/framework.ts",
+    "shared/pipeline.ts",
+    "shared/scrub.ts",
+    "shared/attestation.ts",
+    "shared/build.ts",
+    "shared/verification.ts",
+    "shared/findings.ts",
+    "server/framework.ts",
+    "server/mirror.ts",
+    "server/runner.ts",
+    "server/pipelines.ts",
+    "server/git.ts",
+    "server/obligations.ts",
+    "server/build.ts",
+    "server/forge.ts",
+    "server/admin.ts",
+    "server/tasks.ts",
+    "server/migrations/**",
+    "daemon/gates.ts",
+    "daemon/workspace.ts",
+    "daemon/agentsd.ts",
+    "pipelines/app-change.ts",
+    "ops/**",
+    "box/**",
+    "compose.yaml"
+  ],
+  "maxChangedLines": 400,
+  "lockfiles": ["**/package-lock.json"],
+  "sourceDirs": ["server/**", "daemon/**", "shared/**", "app/src/**", "ops/**", "pipelines/**", "box/**", "desktop/**", "test/**"],
+  "allowedFiles": [
+    "**/*.md",
+    "**/*.json",
+    "**/*.sql",
+    "**/*.css",
+    "**/*.html",
+    "**/*.yaml",
+    "**/.gitignore",
+    ".dockerignore",
+    "box/Dockerfile",
+    "desktop/*.cjs",
+    "ops/seed/**",
+    "docs/evidence/**",
+    "**/*.png",
+    "**/*.svg",
+    "**/*.ico"
+  ],
+  "docs": {
+    "dataModel": "docs/data-model.md",
+    "parts": "docs/what-each-part-does.md",
+    "buildLog": "docs/build-log.md",
+    "migrations": "server/migrations"
+  },
+  "checks": { "pattern": "test/step*.ts", "related": ["test/**"], "boxMarker": "// runs-in: box", "argv": ["node", "{file}"], "timeoutSec": 900 },
+  "box": {
+    "overlay": ["eslint.config.js", "tsconfig.json", "app/tsconfig.json", "test/names.ts", "test/step0.ts", "test/style.ts", "ops/policies/agents.json"],
+    "commands": [
+      { "name": "typecheck", "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "."], "timeoutSec": 300 },
+      { "name": "typecheck-app", "argv": ["node", "node_modules/typescript/bin/tsc", "-p", "app"], "timeoutSec": 300 },
+      { "name": "lint", "argv": ["node", "node_modules/eslint/bin/eslint.js", "."], "timeoutSec": 600 },
+      { "name": "style", "argv": ["node", "test/style.ts"], "timeoutSec": 120 },
+      { "name": "names", "argv": ["node", "test/names.ts"], "timeoutSec": 120 },
+      { "name": "enforcement", "argv": ["node", "test/step0.ts"], "timeoutSec": 600 }
+    ]
+  },
+  "suite": {
+    "commands": [{ "name": "suite", "argv": ["npm", "run", "check"], "timeoutSec": 7200 }],
+    "evidence": "test/ui-shots/evidence.json"
+  },
+  "ui": { "paths": ["app/**", "desktop/**"], "engines": ["chromium", "firefox", "webkit"], "widths": ["desktop", "phone"] },
+  "lint": {
+    "css": {
+      "files": ["app/src/**/*.css"],
+      "tokens": "app/src/styles.css",
+      "neutral": ["bg", "surface", "raised", "line", "text", "muted", "off"]
+    },
+    "prose": {
+      "banned": [
+        "delve", "crucial", "landscape", "pivotal", "showcase", "tapestry", "testament", "underscore",
+        "vibrant", "robust", "seamless", "leverage", "utilize", "comprehensive", "intricate"
+      ],
+      "properNouns": [
+        "Agents", "Tayler", "Claude", "Codex", "Postgres", "Electric", "Tailscale", "Gitea", "GitHub", "Docker",
+        "Node", "React", "TypeScript", "JavaScript", "Electron", "Playwright", "Chromium", "Firefox", "WebKit",
+        "Safari", "Chrome", "Mac", "Linux", "Vite", "Colima", "Anthropic", "Opus",
+        "Sonnet", "Haiku", "Git", "Zod"
+      ],
+      "exempt": ["docs/evidence/**", "research/**", "test/step16b.ts"]
+    }
+  },
+  "dependencies": { "manifests": ["package.json", "ops/seed/shop/package.json"] },
+  "review": { "reviewers": 1, "rounds": 3, "rubric": ".claude/skills/coding-standards/SKILL.md" },
+  "verdict": { "code": "unit-test-verified", "docs": "type-check-only", "ui": "live-ui-verified" },
+  "liveness": { "minutes": 20, "replacements": 2 },
+  "caps": { "repoDailyUsd": 100, "outsiderDailyUsd": 10, "runsPerHour": 6, "concurrent": 2 },
+  "playbooks": ["change", "bug", "docs", "dependency"],
+  "principles": [
+    { "name": "Fix the cause", "text": "Trace a failure to its cause and fix it there. A retry, sleep or fallback that hides it is not a fix." },
+    { "name": "Prove it on the real thing", "text": "Verify against the running code, the actual value, the real diff, never a proxy or your own report." },
+    { "name": "Seen failing first", "text": "A check counts only after it has been seen failing with the thing it guards broken." },
+    { "name": "Lessons become structure", "text": "When a mistake can happen twice, add the check, lint rule or gate that stops it, not more text." },
+    { "name": "Subtract before you add", "text": "Delete dead code and second copies first, then build on the simpler base." },
+    { "name": "Illegal states unrepresentable", "text": "Model the domain in types so the impossible case does not compile." }
+  ],
+  "verification": { "skill": ".claude/skills/verify/SKILL.md", "features": ".claude/skills/verify/features.json" }
+}

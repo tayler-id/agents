@@ -3,12 +3,13 @@
 // once and a draft started later both come through here.
 
 import type pg from 'pg'
-import { maybe, one } from './db.ts'
+import { many, maybe, one } from './db.ts'
 import { HttpError, type Person } from './record.ts'
 import { sendToSession } from './session-messages.ts'
 import { checkoutsOf } from './checkout.ts'
 import type { AgentId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
 import type { WorkspaceRepo } from '../shared/types.ts'
+import { POLICY } from '../shared/policy.ts'
 
 type TaskRow = { id: TaskId; team_id: string; slug: string; title: string; instructions: string; agent_id: AgentId | null }
 type AgentRow = { id: AgentId; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null }
@@ -20,6 +21,15 @@ export async function launchTask(client: pg.PoolClient, person: Person, taskId: 
     'select id, home_instance_id, harness, model from agents where id = $1 and archived_at is null', [task.agent_id])
   if (!agent) throw new HttpError(409, "the task's agent is gone")
   if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
+  // A repo whose policy keeps coding work in boxes takes no task on another machine.
+  const home = await one<{ kind: string }>(client, "the agent's home machine", 'select kind from instances where id = $1', [agent.home_instance_id])
+  if (home.kind !== 'box') {
+    const policies = await many<{ rules: unknown }>(client,
+      'select p.rules from task_repos tr join repos r on r.id = tr.repo_id join policies p on p.id = r.policy_id where tr.task_id = $1', [task.id])
+    if (policies.some((p) => POLICY.parse(p.rules).sandbox === 'box')) {
+      throw new HttpError(409, `This repo's policy keeps coding work in boxes, and the task's agent lives on a ${home.kind}. Start an app-change run on the repo instead.`)
+    }
+  }
   const repos = await checkoutsOf(client, task.id, `task/${task.slug}`)
   const workspace = await one<{ id: WorkspaceId }>(client, 'the new workspace',
     `insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`,
