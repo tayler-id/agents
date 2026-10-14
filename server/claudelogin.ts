@@ -30,11 +30,12 @@ function forgetCode(loginId: ClaudeLoginId) {
   codes.delete(loginId)
 }
 
-function holdCode(loginId: ClaudeLoginId, code: string) {
-  forgetCode(loginId)
-  const timer = setTimeout(() => { codes.delete(loginId) }, CODE_TTL_MS)
-  timer.unref()
-  codes.set(loginId, { code, timer })
+// Holds a code for CODE_TTL_MS. Its timer forgets only this code, never one held after it.
+function holdCode(loginId: ClaudeLoginId, code: string): { code: string; timer: NodeJS.Timeout } {
+  const held = { code, timer: setTimeout(() => { if (codes.get(loginId) === held) codes.delete(loginId) }, CODE_TTL_MS) }
+  held.timer.unref()
+  codes.set(loginId, held)
+  return held
 }
 
 // Each move a sign-in can make, with what that state holds.
@@ -83,15 +84,20 @@ export async function startLogin(person: Person): Promise<ClaudeLoginId> {
 }
 
 // The person's code, held for their box. It is held before the sign-in shows as
-// checking, so the box never sees checking without a code waiting.
+// checking, so the box never sees checking without a code waiting. A code that
+// can't move the sign-in on puts back whatever code was held before it.
 export async function sendCode(person: Person, loginId: ClaudeLoginId, code: string) {
-  holdCode(loginId, code)
+  const earlier = codes.get(loginId)
+  const held = holdCode(loginId, code)
   try {
     await move(pool, loginId, { person }, { to: 'checking' })
   } catch (error) {
-    forgetCode(loginId)
+    clearTimeout(held.timer)
+    if (earlier) codes.set(loginId, earlier)
+    else codes.delete(loginId)
     throw error
   }
+  if (earlier) clearTimeout(earlier.timer)
 }
 
 export async function cancelLogin(person: Person, loginId: ClaudeLoginId) {

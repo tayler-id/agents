@@ -419,7 +419,10 @@ try {
   check(sentCode.status === 200 && !sentCode.text.includes(code) && (await signInRow(loginId))?.status === 'checking'
     && (await asBox(otherToken, `/v1/instance/claude-logins/${loginId}/code`)).status === 404,
   'the person sends their code, the sign-in is checking, and no other machine can take the code')
+  const secondCode = await asPerson(OFF_PEOPLE, invitee, 'POST', `/v1/claude-logins/${loginId}/code`, { code: `other${randomBytes(6).toString('hex')}#${state}` })
   const taken = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/code`)
+  check(secondCode.status === 409 && taken.status === 200 && taken.json?.code === code,
+    `a second code sent while the first is being checked is refused, and the box still gets the first (${secondCode.status}, ${taken.status})`)
   const again = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/code`)
   const back = await signInRow(loginId)
   check(taken.status === 200 && taken.json?.code === code && again.status === 410 && back?.status === 'waiting_for_code'
