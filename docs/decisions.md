@@ -179,7 +179,7 @@ Tayler went with the coordinator's picks on all of these.
   - fixtures, evidence capture, and visual compare and baseline
   
   The browser driver sits behind one interface, so a second driver can slot in.
-- **Status.** Being built. `test/step17.ts` checks the tool, and runs in `npm run check`. `test/step17-breaks.ts` breaks what 67 of its 88 checks guard and watches each fail against a control run with nothing broken. Baseline screenshots are captured but not committed, because the name guard reads PNG bytes as text, and Tayler's approval is needed to skip binary files there. The steps that need real Claude have not run. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
+- **Status.** Being built. `test/step17.ts` checks the tool, and runs in `npm run check`. `test/step17-breaks.ts` has a break for 73 of the 93 checks its control runs make, and watches each go red against a control run with nothing broken. On main at `94cd4b1` step17 fails one check, on a product bug: Firefox logs two console errors on every page load since the onboarding merge. Baseline screenshots are captured but not committed, because the name guard reads PNG bytes as text, and Tayler's approval is needed to skip binary files there. The steps that need real Claude have not run. A Chrome DevTools-based driver is under evaluation for performance traces and memory.
 
 ### How our CLIs talk to agents
 
