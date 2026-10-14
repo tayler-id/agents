@@ -28,7 +28,7 @@ import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
-import { forgeFor, reposOverview, type TeamRepo } from './repos.ts'
+import { forgeFor, refreshDefaultBranches, refreshTaskDefaultBranches, reposOverview, type TeamRepo } from './repos.ts'
 import { githubStatus, setStopgap, signOut, startSignIn } from './github-auth.ts'
 import { startGithubWorker } from './github-worker.ts'
 import { addRepoToProject, askGithub, createProject, retryRepoRequest } from './projects.ts'
@@ -374,7 +374,10 @@ const routes: Route[] = [
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
     const { repoId, ...task } = parsed(NewTask, await readJson(req))
-    return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
+    const repoIds = repoId ? [repoId, ...task.repoIds] : task.repoIds
+    // The workspace is cloned from each repo's default branch, which its owner can rename on the forge.
+    if (!task.draft) await refreshDefaultBranches(person.team_id, repoIds)
+    return tx((client) => startTask(client, person, { ...task, repoIds }))
   }],
 
   // The order of work. Each command answers whether there was anything to change.
@@ -438,6 +441,7 @@ const routes: Route[] = [
     const action = parsed(TaskAction.extract(['edit', 'start', 'discard']), verb)
     switch (action) {
       case 'start':
+        await refreshTaskDefaultBranches(person.team_id, taskId)
         return tx((client) => startDraft(client, person, taskId))
       case 'discard':
         await tx((client) => discardDraft(client, person, taskId))

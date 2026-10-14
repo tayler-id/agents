@@ -6,9 +6,10 @@
 
 import { z } from 'zod'
 import { many, pool } from './db.ts'
-import { forge, gitUpstream, repoPath, type Forge } from './forge.ts'
+import { forge, ForgeError, gitUpstream, repoPath, type Forge } from './forge.ts'
 import { explainGithub, githubFor, githubUpstream } from './github.ts'
 import { githubStatus, type Someone } from './github-auth.ts'
+import { HttpError } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ProjectRef, RepoId, type RepoForge, type ReposOverview, type RepoView } from '../shared/projects.ts'
 
@@ -43,13 +44,42 @@ export async function gitUpstreamFor(repo: TeamRepo): Promise<{ url: string; aut
   }
 }
 
-// The branch the repo's forge says is its default now. A repo's owner can make
-// another branch the default at any time, so the branch rule asks the forge,
-// and the stored one is brought up to date.
+// The branch the repo's forge says is its default now, with the stored one
+// brought up to date. A repo's owner can rename the default or make another
+// branch the default at any time, so the branch rule asks on each push, and
+// tasks and runs ask before their workspace is cloned.
 export async function currentDefaultBranch(repo: TeamRepo & { default_branch: string }): Promise<string> {
   const now = await forgeFor(repo).defaultBranch(repoPath(repo.remote_url))
   if (now !== repo.default_branch) await pool.query('update repos set default_branch = $2 where id = $1', [repo.id, now])
   return now
+}
+
+// A forge's refusal reaches whoever asked with its status and reason, such as a
+// 503 when GitHub is not set up or no sign-in reaches the repo.
+export async function fromForge<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
+    throw error
+  }
+}
+
+// Brings a team's repos up to date with their forge's default branch before a
+// task's workspace is cloned from them, with no transaction open while a forge
+// is asked. A repo the team doesn't have is left for the task to refuse.
+export async function refreshDefaultBranches(teamId: string, repoIds: string[]): Promise<void> {
+  const repos = await many<TeamRepo & { default_branch: string }>(pool,
+    'select id, forge, remote_url, default_branch from repos where team_id = $1 and id = any($2)', [teamId, repoIds])
+  for (const repo of repos) await fromForge(() => currentDefaultBranch(repo))
+}
+
+// The same for a draft's repos, before it starts.
+export async function refreshTaskDefaultBranches(teamId: string, taskId: string): Promise<void> {
+  const repos = await many<TeamRepo & { default_branch: string }>(pool,
+    `select r.id, r.forge, r.remote_url, r.default_branch from task_repos tr join repos r on r.id = tr.repo_id
+     where tr.task_id = $1 and r.team_id = $2`, [taskId, teamId])
+  for (const repo of repos) await fromForge(() => currentDefaultBranch(repo))
 }
 
 // How long the Repos page keeps a forge's answer, so however many people have it

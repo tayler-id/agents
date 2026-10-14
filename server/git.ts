@@ -14,8 +14,7 @@ import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { instanceFrom } from './auth.ts'
 import { many, maybe, pool } from './db.ts'
-import { ForgeError } from './forge.ts'
-import { currentDefaultBranch, gitUpstreamFor, type RepoOnForge } from './repos.ts'
+import { currentDefaultBranch, fromForge, gitUpstreamFor, type RepoOnForge } from './repos.ts'
 import { HttpError } from './record.ts'
 
 export const GIT_PATH = /^\/v1\/git\/([0-9a-f-]{36})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/
@@ -107,17 +106,6 @@ function webStream(chunks: AsyncIterable<Buffer>): ReadableStream<Uint8Array> {
       else controller.enqueue(next.value)
     },
   })
-}
-
-// A forge's refusal reaches the machine with its status and reason, such as a 503
-// when GitHub is not set up or no sign-in reaches the repo.
-async function fromForge<T>(work: () => Promise<T>): Promise<T> {
-  try {
-    return await work()
-  } catch (error) {
-    if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
-    throw error
-  }
 }
 
 export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: URL) {

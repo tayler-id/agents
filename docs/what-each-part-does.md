@@ -367,7 +367,7 @@ The design is in `docs/design/projects.md`.
 
 ### The branch rule (`server/git.ts`)
 
-- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches. The proxy asks the forge for the default branch on each push, so renaming it on GitHub changes nothing, and it refuses a whole push that names it, including one that deletes it.
+- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches. The proxy asks the forge for the default branch on each push, and refuses a whole push that names it, including one that deletes it. Tasks and runs ask the forge too before their workspace is cloned, so after a repo's owner renames the default branch, a new workspace starts from the new name and a new run's pull request goes to it.
 - **Helps later.** Other rules about what machines may push go in the same place.
 
 ### Projects and repos in the app (`app/src/Projects.tsx`, `app/src/App.tsx`, `app/src/Work.tsx`)

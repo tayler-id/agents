@@ -282,6 +282,8 @@ try {
     GHFLOW: { changed: [{ outcome: 'changed', summary: 'Added CHANGE.md.', write: { [`proj-billing-${id}/CHANGE.md`]: 'A change from a pipeline run.\n' } }] },
     // Slow enough for the check to take the asker's access away while it works.
     GHSLOW: { changed: [{ outcome: 'changed', summary: 'Added SLOW.md.', sleepMs: 8000, write: { [`proj-billing-${id}/SLOW.md`]: 'A slow change.\n' } }] },
+    // A change in a repo whose default branch was renamed.
+    GHRENAMED: { changed: [{ outcome: 'changed', summary: 'Added RENAMED.md.', write: { [`proj-renamed-${id}/RENAMED.md`]: 'A change on the renamed default.\n' } }] },
   }))
   const api = spawn(process.execPath, ['server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
@@ -645,6 +647,36 @@ try {
   check(github.issue(full, issue.number)?.state === 'closed' && github.issue(full, issue.number)?.comments.includes('Merged the change.'),
     'the run closed the GitHub issue with its comment')
   check((await one('select project_id from tasks where id = $1', [flowRun?.task_id]))?.project_id === projectId, "the run's task belongs to the project of its repo")
+
+  // A repo's owner renames its default branch on GitHub, so the old name is gone.
+  // A new task's workspace and a new run's start from the new name, and the run's
+  // pull request goes to it.
+  const renamedName = `proj-renamed-${id}`
+  const renamedFull = `${org}/${renamedName}`
+  const addRenamed = await as(admin, 'POST', `/v1/projects/${projectId}/repos`, { name: renamedName, owner: org })
+  const renamedRepo = await one('select id, default_branch from repos where remote_url = $1', [`${github.url}/${renamedFull}.git`])
+  github.renameBranch(renamedFull, 'main', 'trunk')
+  const renamedTask = await as(admin, 'POST', '/v1/tasks', { title: `Proj renamed ${id}`, instructions: '', agentId: fixerId, repoId: renamedRepo?.id })
+  const setupOf = (taskId: unknown) => one(`select c.status, c.error, c.payload from commands c join workspaces w on w.id::text = c.payload->>'workspaceId'
+    where w.task_id = $1 and c.kind = 'setup_workspace' order by c.created_at desc limit 1`, [taskId])
+  const setUp = await within(60, async () => ['done', 'failed'].includes((await setupOf(renamedTask.json?.taskId))?.status))
+  const renamedSetup = await setupOf(renamedTask.json?.taskId)
+  check(addRenamed.status === 200 && renamedRepo?.default_branch === 'main' && onGithub(renamedFull, 'rev-parse', '--verify', '--quiet', 'refs/heads/main') === ''
+    && renamedTask.status === 200 && setUp && renamedSetup?.status === 'done' && renamedSetup.payload.repos[0]?.base === 'trunk'
+    && (await one('select default_branch from repos where id = $1', [renamedRepo?.id]))?.default_branch === 'trunk',
+  `after a repo's owner renames its default branch on GitHub, a new task's workspace starts from the new name (${renamedTask.status} ${renamedSetup?.status ?? 'no setup'}: ${renamedSetup?.error ?? renamedTask.json?.error ?? ''})`)
+  // Renamed again, so only the run itself can find the newest name.
+  github.renameBranch(renamedFull, 'trunk', 'develop')
+  const renamedIssue = github.openIssue(renamedFull, 'GHRENAMED: add a file', 'Please add it.', [], gh.stranger)
+  github.label(renamedFull, renamedIssue.number, 'agent:fix', gh.maintainer)
+  const renamedRunOf = () => one(`select * from runs where team_id = $1 and trigger_payload->'report'->>'url' = $2`,
+    [teamId, `${github.url}/${renamedFull}/issues/${renamedIssue.number}`])
+  const renamedEnded = await within(180, async () => ['done', 'failed', 'cancelled'].includes((await renamedRunOf())?.status))
+  const renamedRun = await renamedRunOf()
+  const renamedPull = github.pulls(renamedFull).find((p) => p.head.startsWith('task/gh-flow'))
+  check(renamedEnded && renamedRun?.status === 'done' && renamedPull?.base === 'develop' && renamedPull.merged
+    && onGithub(renamedFull, 'show', 'develop:RENAMED.md').includes('A change on the renamed default.'),
+  `a new run on that repo, renamed again, starts from the newest name and opens its pull request against it (${renamedRun?.status ?? 'no run'}: ${renamedRun?.note ?? ''})`)
 
   // A poll that fails partway keeps its labels for the next poll: here GitHub
   // fails once to say what the labeller may do.

@@ -13,7 +13,7 @@ import { appendEvents, appendMessage, HttpError, type Person } from './record.ts
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
-import { checkAsker, forgeFor, type RepoOnForge, type TeamRepo } from './repos.ts'
+import { checkAsker, currentDefaultBranch, forgeFor, type RepoOnForge, type TeamRepo } from './repos.ts'
 import { placeTask } from './projects.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
@@ -389,7 +389,14 @@ async function begin(client: pg.PoolClient, run: Run, pipeline: Pipeline): Promi
   const workspace = await one<{ id: string }>(client, 'the new workspace',
     `insert into workspaces (team_id, task_id, instance_id, path) values ($1, $2, $3, '') returning id`,
     [run.team_id, task.id, instanceId])
-  const repos = await reposOf(client, run)
+  // A repo's owner can rename its default branch, or make another branch the
+  // default, at any time, so the workspace starts from the one its forge names
+  // now. A forge that can't be asked fails this step, which rolls back and is
+  // tried again, up to the runner's limit.
+  const repos: RepoRef[] = []
+  for (const r of await reposOf(client, run)) {
+    repos.push({ ...r, default_branch: await currentDefaultBranch({ ...onForge(r), default_branch: r.default_branch }) })
+  }
   const payload: SetupWorkspacePayload = {
     workspaceId: workspace.id,
     repos: repos.map((r) => ({

@@ -64,6 +64,9 @@ export type FakeGithub = {
   close(fullName: string, n: number): void
   // A repo's owner makes another branch its default, starting from the old default's head.
   setDefaultBranch(fullName: string, branch: string): void
+  // A repo's owner renames a branch, as GitHub's rename does: the old name is
+  // gone, and a renamed default stays the default under its new name.
+  renameBranch(fullName: string, from: string, to: string): void
   issue(fullName: string, n: number): Issue | undefined
   pull(fullName: string, n: number): Pull | undefined
   pulls(fullName: string): Pull[]
@@ -465,6 +468,14 @@ export async function startFakeGithub(options: {
       if (!branches(repo).includes(branch)) git(repo, 'update-ref', `refs/heads/${branch}`, git(repo, 'rev-parse', repo.defaultBranch))
       git(repo, 'symbolic-ref', 'HEAD', `refs/heads/${branch}`)
       repo.defaultBranch = branch
+    },
+    renameBranch(fullName, from, to) {
+      const repo = repoNamed(fullName)
+      git(repo, 'branch', '-m', from, to)
+      if (repo.defaultBranch === from) {
+        git(repo, 'symbolic-ref', 'HEAD', `refs/heads/${to}`)
+        repo.defaultBranch = to
+      }
     },
     issue: (fullName, n) => repos.get(fullName.toLowerCase())?.issues.find((i) => i.number === n),
     pull: (fullName, n) => repos.get(fullName.toLowerCase())?.pulls.find((p) => p.number === n),
