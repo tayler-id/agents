@@ -115,8 +115,9 @@ export type ToBox = z.infer<typeof ToBox>
 export const FromBox = z.object({ type: z.literal('ping') })
 export type FromBox = z.infer<typeof FromBox>
 // Colima's port forwarding and cloud load balancers drop TCP connections idle
-// for about a minute. A ping every 15 seconds keeps the control connection open,
-// and three missed answers mean it is gone.
+// for about a minute. A ping every 15 seconds keeps a screen's connections
+// open, and three missed answers mean one is gone. The box pings its control
+// connection, and the API pings each viewer and each tunnel.
 export const SCREEN_PING_MS = 15_000
 export const SCREEN_DEAD_MS = 45_000
 

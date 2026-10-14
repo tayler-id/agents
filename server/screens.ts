@@ -273,6 +273,20 @@ function linkBox(instanceId: InstanceId, ws: WebSocket) {
   send(ws, { type: 'control', control: controlOf(instanceId) })
 }
 
+// Pings a viewer or a tunnel, and drops it once it stops answering. A laptop that
+// sleeps or a box that hangs leaves its connection open with nobody behind it,
+// and a holder's dead view would keep the screen from going back to the agent.
+// Browsers and the box's WebSocket answer pings on their own.
+function keepAlive(ws: WebSocket) {
+  let answered = Date.now()
+  ws.on('pong', () => { answered = Date.now() })
+  const timer = setInterval(() => {
+    if (Date.now() - answered > SCREEN_DEAD_MS) ws.terminate()
+    else ws.ping()
+  }, SCREEN_PING_MS)
+  ws.on('close', () => { clearInterval(timer) })
+}
+
 function watch(person: Person, screen: Watchable, ws: WebSocket) {
   const control = controlOf(screen.id)
   const box = boxes.get(screen.id)
@@ -287,6 +301,7 @@ function watch(person: Person, screen: Watchable, ws: WebSocket) {
     waiting: setTimeout(() => { ws.close(ScreenClose.boxSilent, 'The box did not answer. Try again in a moment.') }, TUNNEL_WAIT_MS),
   }
   viewers.set(tunnel, viewer)
+  keepAlive(ws)
   ws.on('message', (data, isBinary) => {
     if (!isBinary) {
       ws.close(ScreenClose.badInput, 'The screen takes binary frames only.')
@@ -316,6 +331,7 @@ function watch(person: Person, screen: Watchable, ws: WebSocket) {
 function joinTunnel(viewer: Viewer, ws: WebSocket) {
   clearTimeout(viewer.waiting)
   viewer.box = ws
+  keepAlive(ws)
   for (const bytes of viewer.early.splice(0)) ws.send(bytes)
   ws.on('message', (data) => { viewer.ws.send(bytesOf(data), { binary: true }) })
   ws.on('error', (error) => { console.error(`screen tunnel ${viewer.tunnel}:`, error.message) })
