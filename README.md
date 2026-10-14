@@ -33,6 +33,8 @@ npm run api
 
 `add-instance` prints the instance token once. The API applies any new migrations when it starts, and serves the app that `npm run app:build` built. Without that build it answers every page with a 404. To keep everything running across reboots, run `ops/install-launch-agents.sh` once. It starts colima at login, Tailscale in userspace mode, the API, and this Mac's daemon.
 
+The same server can run on AWS instead. The plan, with the costs and the cutover, is `docs/aws.md`.
+
 ### The box firewall
 
 Containers must reach this Mac only on the machine port, never the people port. `ops/box-firewall.sh` enforces that inside the colima VM, and colima runs it at every start once it is in colima's provision steps. After the first `colima start`, print the block:
@@ -75,7 +77,7 @@ Without them, invites are made in the app only and nobody is emailed. With only 
 
 ## Run a daemon
 
-On each machine, put `{"api": "<server URL>", "token": "<instance token>"}` in `~/.agents-app/daemon.json`, then run `npm run daemon`. Each agent whose home is this machine gets a folder under `~/.agents-app/agents/`, and each task a workspace under `~/.agents-app/workspaces/`. Secrets the agents' plugins need go in the daemon's environment or `~/.agents-app/secrets.json`. Their values never reach the server.
+On each machine, put `{"api": "<server URL>", "token": "<instance token>"}` in `~/.agents-app/daemon.json`, then run `npm run daemon`. The machine port listens on loopback unless `AGENTS_MACHINE_HOST` on the server lists other addresses, as it does on AWS, where daemons use `http://agents-server.<your-tailnet>.ts.net:7700`. Each agent whose home is this machine gets a folder under `~/.agents-app/agents/`, and each task a workspace under `~/.agents-app/workspaces/`. Secrets the agents' plugins need go in the daemon's environment or `~/.agents-app/secrets.json`. Their values never reach the server.
 
 ## The forge and pipelines
 
@@ -95,7 +97,7 @@ Boxes are Docker containers that run the daemon for unattended work, built from 
 node --env-file=.env server/boxes.ts build
 ```
 
-A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`). A person's own box never gets that token. Its agents run on the account its owner signs in with.
+Boxes run on another host's Docker when `AGENTS_BOX_DOCKER_HOST` names it, with `AGENTS_BOX_API` saying where they reach the server, as on AWS. A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`). A person's own box never gets that token. Its agents run on the account its owner signs in with.
 
 ## Checks
 
