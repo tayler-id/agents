@@ -25,6 +25,7 @@ What a person can do in Agents, one file per feature, each with the commands tha
 - `bin/agentsctl map run` gives each step a verdict: `live-ui-verified` when it ran and held, `verifier-failed` when it ran on a healthy instance and the app did something else, and `verifier-blocked` when it could not run. An unhealthy instance or a missing prerequisite is blocked, never a pass.
 - A failed step is a lead, not yet a bug. Reproduce it twice through the real UI with `bin/agentsctl browser record start` and `record stop`, and have a second agent, one that did not write the change, confirm the video shows the broken state.
 - Report a path you could not reach with its concrete prerequisite and the command you tried. Never report it as verified through another path.
+- A known product bug stays in its feature as a failing step. The feature's Gotchas note the bug with the date it was seen, and the step turns green when the bug is fixed. The map is never edited to hide a bug, and `bin/agentsctl map guard` fails a change that removes or loosens an expectation. Tayler decided this on 2026-10-14.
 
 ## Full sweep
 

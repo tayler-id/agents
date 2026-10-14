@@ -138,9 +138,9 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** A bug report becomes a reviewed pull request. Triage checks for duplicates and whether the bug is already fixed. The agent writes a failing test, and the runner confirms it fails before any fix. The agent fixes it or writes a plan, the runner confirms the tests pass, opens the pull request and asks the shepherd. Approving merges it, which closes the issue.
 - **Helps later.** It is the first pipeline the improve pipeline works on.
 
-### Boxes (`box/Dockerfile`, `server/boxes.ts`, `ops/box-firewall.sh`)
+### Boxes (`box/Dockerfile`, `server/boxes.ts`, `shared/box-names.ts`, `ops/box-firewall.sh`)
 
-- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port.
+- **Solves now.** A box is a Docker container that runs the daemon, for unattended work. A run on a box pipeline claims one, or makes one while the team is under its limit, and releases it when it ends. A person can claim one too. A box nobody holds stops after 30 idle minutes and starts again for the next run. Its home folder is a volume, so workspaces survive a restart and a rebuild of the image. A firewall in the colima VM lets boxes reach this Mac only on the machine port. `shared/box-names.ts` names a box's container and its home volume, for the server that starts them and for agentsctl's `down` that removes an instance's. Changing a name leaves the containers and volumes already made under the old one.
 - **Helps later.** Boxes run Claude on your subscription once a token from `claude setup-token` is in `~/.agents-app/box-claude-token`.
 
 ### Runs in the app (`app/src/Run.tsx`, `app/src/Pipeline.tsx`, `app/src/Document.tsx`)

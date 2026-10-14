@@ -44,7 +44,7 @@ It refuses with exit 3, before making anything, when the team `verify-<instance>
 - `--instance <name>` names it, so commands can say which. Without it, commands use the only instance running in this checkout.
 - `--claude real` runs real Claude sessions instead of the fake harness, on the agents' haiku model. Use it for what the fake cannot do: tool approvals and interrupting a turn.
 - `--port <first>` picks the block. `--no-build` reuses `app/dist`.
-- It refuses, changing nothing, unless the database and Electric are the ones `.env.test` names, so it never touches the live system's data. It refuses an `AGENTS_PEOPLE_SOCKET` from the shell outside its scratch folders, so it can never take the live server's. It never uses the live ports (7700, 7701, 7710, 4437, 3000) and keeps its daemon's home, streams, socket and browsers in a scratch folder.
+- It refuses, changing nothing, unless the database and Electric are the ones `.env.test` names, so it never touches the live system's data. It refuses an `AGENTS_PEOPLE_SOCKET` outside its scratch folders, from the shell, `.env.test` or `.env`, and says which one set it, so it can never take the live server's. It never uses the live ports (7700, 7701, 7710, 4437, 3000) and keeps its daemon's home, streams, socket and browsers in a scratch folder.
 - The fake harness follows a scenario written at `up` (`scenario()` in `ctl/seed.ts`): a DM gets "fake reply", a room gets fixer's answer and writer's PASS, "Write the release notes" writes `task/notes.md`, and pipeline runs follow the group their title names: TENOFF fixes the shop's bug, PLANME plans, STUCK hands off, SLOW sits in triage, Coach and SkillCoach propose, Improve changes bug-fix.
 
 ## Doctor
@@ -78,7 +78,7 @@ bin/agentsctl browser click --role button --name Remove --within listitem --with
 
 - An element is `--role` with `--name` (its exact accessible name) or `--text` (text inside it). `--within role:name` scopes it to a named container, and `--within <role> --within-text <text>` to one without a name, such as a list item.
 - `wait`, `text --expect` and `count --expect` wait up to `--timeout` seconds (15 by default) for what they look for. `wait --gone` waits for it to go.
-- `--as ben` drives as ben in a page of his own, and `--as <who>` as anyone `seed person <who>` added. `--as stranger` is a login on no team.
+- `--as ben` drives as ben in a page of his own, and `--as <who>` as anyone `seed person <who>` added. `--as stranger` is a login on no team. A person's name is lowercase letters and digits with no dash, or a full login with an `@`, so every login agentsctl makes is `<name>-<instance>@verify.local` and `down` can tell whose it is.
 - `--engine firefox|webkit` and `--width phone` pick the browser and width. Each pairing is a page of its own.
 - `bin/agentsctl browser reset` closes the whole session when a page is stuck. The next command opens a fresh one.
 
@@ -113,7 +113,7 @@ bin/agentsctl db "select status from runs r join tasks t on t.id = r.task_id whe
 bin/agentsctl browser goto "#/a/$(bin/agentsctl db "select id from agents where team_id = {team} and name = 'fixer'" --value)"
 ```
 
-`bin/agentsctl machine read <path>` reads a file on the instance's machine, the way a person looks on their Mac, such as `agents/<agent id>/first.txt`. `bin/agentsctl secret set <NAME> --value <value>` and `secret unset <NAME>` change the machine's `secrets.json`. `bin/agentsctl seed person|agent|box|repo|task` adds fixtures, each safe to repeat.
+`bin/agentsctl machine read <path>` reads a file on the instance's machine, the way a person looks on their Mac, such as `agents/<agent id>/first.txt`. It prints any secret value the machine holds as `[secret:NAME]`, so reading `secrets.json` shows names and no values. `bin/agentsctl secret set <NAME> --value <value>` and `secret unset <NAME>` change the machine's `secrets.json`. `bin/agentsctl seed person|agent|box|repo|task` adds fixtures, each safe to repeat.
 
 ## Evidence
 
@@ -163,7 +163,7 @@ bin/agentsctl visual compare
 
 `visual compare` diffs each capture the run's `evidence.json` lists with `<baselines>/<engine>-<width>/<view>.png`, after checking the capture still has the sha256 the manifest recorded. A pixel counts as changed when a channel moves by more than 8, and a capture fails when more than 0.02% of its pixels changed. A failure names each changed region as size and position and writes a diff image with the change in red. Captures write the instance's team, org and logins with one fixed name, so any instance's captures compare.
 
-Baselines live in `.scratch/verify/baselines/`, which git ignores, until the name guard skips image files: it reads every tracked file as text, and a PNG's bytes can happen to spell a banned name. `--baselines <folder>` points `compare` and `baseline` elsewhere.
+Baselines live in `.scratch/verify/baselines/`, which git ignores. The name guard reads every tracked file as text, and a PNG's bytes can happen to spell a banned name. Tayler approved skipping image files there on 2026-10-14, but the skip is not made yet, so baselines stay out of git until it is. `--baselines <folder>` points `compare` and `baseline` elsewhere.
 
 Baselines change only on purpose, never to make a run pass:
 
@@ -194,7 +194,7 @@ bin/agentsctl map check
 bin/agentsctl down
 ```
 
-It stops what the instance's state file lists, after checking each process's start time and command line with `ps`, so a process that reused a pid is never touched, and nothing is ever stopped by name. It stops their children too: Claude sessions, browsers and the desktop app. It removes only what the instance made: the team (and everything in it, including any box container and volume its boxes started), the forge org and the scratch folder, as the instance's state records them, and the join requests of the instance's own logins, which belong to no team. A login on no team asks to join when it opens the app. Then it confirms no process it started is still running. `--keep-data` keeps the team for a look at the record. Evidence stays.
+It stops what the instance's state file lists, after checking each process's start time and command line with `ps`, so a process that reused a pid is never touched, and nothing is ever stopped by name. It stops their children too: Claude sessions, browsers and the desktop app. It removes only what the instance made: the team (and everything in it, including any box container and volume its boxes started), the forge org and the scratch folder, as the instance's state records them, and the join requests of the instance's own logins, which belong to no team. A login on no team asks to join when it opens the app. Then it confirms no process it started is still running. `--keep-data` stops the processes and keeps the team, repos and boxes for a look at the record. The instance then shows as `kept` in `list`, `up` refuses its name, and `bin/agentsctl down --instance <name>` removes what it kept. Evidence stays.
 
 ## Gotchas
 
@@ -204,8 +204,9 @@ It stops what the instance's state file lists, after checking each process's sta
 - The fake harness finishes a turn at once, so there is no moment to interrupt it, and it never asks to use a tool. Those need `--claude real`, which costs real tokens.
 - Chromium and Firefox reach the instance as `http://agents.test:<port>`, a plain-HTTP name like the tailnet's, so a browser API that needs a secure page fails as it would for a teammate. WebKit uses 127.0.0.1, which browsers treat as secure.
 - The forge can reach only the live API's port, so a forge issue or push never reaches an instance. Start runs from the app, the API, or the pipeline's own webhook, and know that a box can never reach an instance either. An instance's boxes start from an image tag of its own, `agents-box:verify-<instance>`, which nothing builds, so a claimed box records that its image is missing and no container runs. Never build or tag `agents-box:latest`: the live server starts its boxes from it.
+- Start instances one after another. A port lock counts as stale when its instance has no state file, and `up` writes that file only after it claims its ports. For those few milliseconds a new lock looks stale, so a second `up` that starts then takes the same ports. The two instances' processes then fight over the ports. Each `up` that loses says which process exited, and in one real pair both failed with exit 1 on `EADDRINUSE`. Running it again works.
 - Several agents share the test database and its Electric. Electric may answer a live read with a 409, which the app follows by reading again, and `network` reports. Other agents' migrations may already be in the test database.
-- `.claude/` is protected. Baselines and feature files live in this skill's folder, and the tool's code lives in `ctl/`.
+- `.claude/` is protected. Feature files live in this skill's folder, baselines in the ignored `.scratch/verify/baselines/`, and the tool's code in `ctl/`.
 
 ## Keeping it honest
 
