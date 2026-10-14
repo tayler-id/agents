@@ -17,7 +17,7 @@ import { fakeTailscale } from './fake-tailscale.ts'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
-import { START_ERROR_MAX } from '../shared/onboarding.ts'
+import { NAME_MAX, START_ERROR_MAX } from '../shared/onboarding.ts'
 
 // 7921 is the people port of main's step6, so this one takes 7936 from the end of the range.
 const PORTS = { machines: 7920, people: 7936, streams: 7922 }
@@ -190,6 +190,15 @@ try {
   const mine = await asPerson(PEOPLE, invitee, 'POST', '/v1/agents', { name: `mine-${id}`, homeInstanceId: ownBoxId })
   check(theirs.status === 403 && /teammate's own/.test(theirs.json?.error) && mine.status === 200,
     "only a box's owner makes agents whose home it is")
+
+  // A request's login must look like a Tailscale login, and a display name is cut short.
+  const notLogin = await asPerson(PEOPLE, `notlogin12-${id}`, 'POST', '/v1/me/join', {})
+  const longLogin = `long12-${id}@mail.test`
+  const longJoin = await asPerson(PEOPLE, longLogin, 'POST', '/v1/me/join', {}, `Long ${'n'.repeat(5000)}`)
+  const longRow = await row('select name from join_requests where login = $1', [longLogin])
+  check(notLogin.status === 400 && !(await row('select 1 from join_requests where login = $1', [`notlogin12-${id}`]))
+    && longJoin.status === 200 && longRow?.name?.length === NAME_MAX && longJoin.json?.name?.length === NAME_MAX,
+  `a login that isn't a Tailscale login is refused, and a display name is cut to ${NAME_MAX} characters (${notLogin.status}, ${longJoin.status} ${longJoin.json?.kind}, ${longRow?.name?.length}, ${longJoin.json?.name?.length})`)
 
   // Waiting, and one click to add. Reading /v1/me records nothing, and asking to join does.
   const looked = await asPerson(PEOPLE, github, 'GET', '/v1/me', undefined, 'GH Twelve')
@@ -465,7 +474,7 @@ try {
   await tailscale.close()
   if (!failures.length) {
     await db.query('delete from teams where name = any($1)', [[team, `onboard-12x-${id}`]]).catch(() => undefined)
-    await db.query('delete from join_requests where login = $1', [github]).catch(() => undefined)
+    await db.query('delete from join_requests where login = any($1)', [[github, `long12-${id}@mail.test`]]).catch(() => undefined)
     rmSync(home, { recursive: true, force: true })
   }
   await db.end().catch(() => undefined)

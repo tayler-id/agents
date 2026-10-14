@@ -24,6 +24,8 @@ export type ClaudeLoginId = z.infer<typeof ClaudeLoginId>
 // A Tailscale login as tailscale serve passes it. Most identity providers give
 // an email; GitHub gives a name like alice@github.
 export const Login = z.string().trim().min(3).max(320).regex(/@/, 'a Tailscale login has an @ in it')
+// The longest display name kept. Tailscale's names are a person's name, far shorter than this.
+export const NAME_MAX = 200
 // The most of Docker's words a box keeps for why it could not start. Its reason fits in a line or two.
 export const START_ERROR_MAX = 500
 export type Login = z.infer<typeof Login>
@@ -126,7 +128,7 @@ export const TailscaleKey = z.string().trim().regex(/^tskey-api-[A-Za-z0-9]+-\S+
 // Request bodies, people port.
 
 export const InviteBody = z.object({ email: z.email().max(320).transform((email) => email.toLowerCase()), role: TeamRole })
-export const AddPersonBody = z.object({ login: Login, name: z.string().trim().max(200).nullable() })
+export const AddPersonBody = z.object({ login: Login, name: z.string().trim().max(NAME_MAX).nullable() })
 export const TailscaleKeyBody = z.object({ key: TailscaleKey, expires: z.iso.date().nullable() })
 export const TailscaleRoleBody = z.object({ role: TailscaleRole.exclude(['owner']) })
 export const ClaudeCodeBody = z.object({ code: ClaudeCode })
