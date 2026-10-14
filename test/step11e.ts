@@ -231,10 +231,10 @@ try {
 
   // ---- The systemd units and the Compose override ----
   const serverUnits = await script(['ops/install-systemd.ts', 'server', '--aws', '--dry-run'])
-  check(serverUnits.status === 0 && serverUnits.out.includes('--env-file=.env server/api.ts') && serverUnits.out.includes('Restart=always')
+  check(serverUnits.status === 0 && serverUnits.out.includes('--env-file=.env --env-file-if-exists=/home/agents/.agents-app/settings.env server/api.ts') && serverUnits.out.includes('Restart=always')
     && serverUnits.out.includes('Environment=AWS_REGION=us-east-1') && serverUnits.out.includes('OnCalendar=*-*-* 03:30:00 UTC')
     && serverUnits.out.includes('compose.server.yaml up -d --wait electric forge') && serverUnits.out.includes('Before=agents-compose.service agents-api.service'),
-  'install-systemd.ts plans the API, Compose without Postgres, the secrets before them, and the nightly backup')
+  'install-systemd.ts plans the API, with settings that fetch-secrets.ts never writes, Compose without Postgres, the secrets before them, and the nightly backup')
   check(serverUnits.out.includes('would run tailscale serve --bg --http=80 unix:/home/agents/.agents-app/people.sock\n'),
     "it points tailscale serve at the API's people socket in the service user's app home")
   const boxUnits =await script(['ops/install-systemd.ts', 'boxes', '--aws', '--dry-run'], { AGENTS_API_ADDRESS: '10.40.0.10' })

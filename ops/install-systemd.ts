@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import { MACHINE_PORT, PEOPLE_SOCKET_FILE, Role, settingsFrom } from './aws/config.ts'
+import { MACHINE_PORT, PEOPLE_SOCKET_FILE, Role, SETTINGS_FILE, settingsFrom } from './aws/config.ts'
 import { isDryRun, run } from './aws/steps.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
@@ -53,6 +53,9 @@ const dryRun = isDryRun()
 const settings = settingsFrom(Settings, 'the install settings')
 const user = settings.AGENTS_USER
 const home = `/home/${user}`
+// Settings that are not secrets, such as AGENTS_MAX_BOXES. The API reads them after
+// .env, so they win. fetch-secrets.ts writes .env at every boot, and never this file.
+const settingsFile = join(home, '.agents-app', SETTINGS_FILE)
 // Where the API serves people. The service user's .env names the same path, as fetch-secrets.ts writes it.
 const peopleSocket = join(home, '.agents-app', PEOPLE_SOCKET_FILE)
 const path = `${dirname(NODE)}:/usr/local/bin:/usr/bin:/bin`
@@ -95,7 +98,7 @@ function serverUnits(): Planned[] {
         sections: {
           Unit: [['Description', 'Agents API: the machine and people ports, the runner and the stream server'],
             ['After', ['network-online.target', 'agents-compose.service', 'tailscaled.service', ...secrets].join(' ')], ['Wants', 'agents-compose.service network-online.target']],
-          Service: [...asUser, ['ExecStart', `${NODE} --env-file=.env server/api.ts`], ...keepRunning],
+          Service: [...asUser, ['ExecStart', `${NODE} --env-file=.env --env-file-if-exists=${settingsFile} server/api.ts`], ...keepRunning],
           Timer: undefined, Install: atBoot,
         },
       },

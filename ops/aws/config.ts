@@ -49,6 +49,10 @@ export const APP_HOME = `${HOME}/.agents-app`
 // proxies port 80 to it, and no tailnet peer can reach a socket file, as
 // docs/design/people-port.md says.
 export const PEOPLE_SOCKET_FILE = 'people.sock'
+// The file in the app's home for settings that are not secrets, such as
+// AGENTS_MAX_BOXES. The API reads it after .env, so a setting in both takes its
+// value from here. fetch-secrets.ts rewrites .env at every boot and never this.
+export const SETTINGS_FILE = 'settings.env'
 export const NODE_DIR = '/opt/node'
 export const RDS_CA_FILE = `${APP_HOME}/rds-ca.pem`
 
