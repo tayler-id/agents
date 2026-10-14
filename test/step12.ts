@@ -18,7 +18,8 @@ import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within }
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
 
-const PORTS = { machines: 7920, people: 7921, streams: 7922 }
+// 7921 is the people port of main's step6, so this one takes 7936 from the end of the range.
+const PORTS = { machines: 7920, people: 7936, streams: 7922 }
 const TAILSCALE_PORT = 7923
 const OFF_PORTS = { machines: 7924, people: 7925, streams: 7926 }
 const PEOPLE = `http://127.0.0.1:${PORTS.people}`
