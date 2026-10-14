@@ -35,6 +35,7 @@ The branch's commits, oldest first, by subject:
 22. A transcript block is parsed with a zod union on its type, in place of `as string` casts. A block with a field of the wrong type is a notice that holds it as written. A tool call with a number for its id had made the API refuse the whole post, which parked the session.
 23. A tool result for a path outside the connected folder is left on the Mac and replaced by a note, as Tayler decided. The daemon saves the ids it holds results back for with each transcript's offset.
 24. Taking a session up no longer logs and carries on for any error. Only the API being out of reach or failing is tried again, and anything else counts as a failed read, which parks the transcript after 3. A line that isn't JSON is still left out and counted, and any other error from parsing it is thrown.
+25. `daemon/api.ts` returns `unknown` from the API, and each caller parses what it needs. That meant a zod schema for each kind of command the daemon claims, in `shared/types.ts`, where the claim had been cast. A `daemon.json` that is damaged is an error naming it, and was once read as no file.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 

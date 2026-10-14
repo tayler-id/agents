@@ -78,10 +78,12 @@ const daemonSaid = (...parts: string[]) => logs.filter((l) => l.startsWith('daem
   .split('\n').some((line) => parts.every((part) => line.includes(part)))
 
 // The folders command, as the person runs it on their Mac.
-function folders(token: string, cwd: string, args: string[], env: Record<string, string> = {}): { code: number; out: string } {
+// An env value of undefined takes the variable out.
+function folders(token: string, cwd: string, args: string[], env: Record<string, string | undefined> = {}): { code: number; out: string } {
   const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'CLAUDE_CONFIG_DIR'))
+  const merged: Record<string, string | undefined> = { ...base, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: join(tmpdir(), `agents-step21b-${id}-none`), ...env }
   const result = spawnSync(process.execPath, [join(ROOT, 'daemon', 'folders.ts'), ...args], {
-    cwd, encoding: 'utf8', env: { ...base, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: join(tmpdir(), `agents-step21b-${id}-none`), ...env },
+    cwd, encoding: 'utf8', env: Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   })
   return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` }
 }
@@ -581,6 +583,18 @@ try {
   const configured = folders(token, root, ['connect', cased], { CLAUDE_CONFIG_DIR: join(root, 'elsewhere') })
   check(configured.code === 0 && configured.out.includes('warning: this shell sets CLAUDE_CONFIG_DIR'),
     'connect warns when the shell sets CLAUDE_CONFIG_DIR, which the daemon under launchd does not see')
+
+  // daemon.json is read as a config. One that is damaged is an error naming the file, where it was once taken for no file at all.
+  const damagedHome = join(root, 'damaged-home')
+  const goodHome = join(root, 'good-home')
+  mkdirSync(damagedHome)
+  mkdirSync(goodHome)
+  writeFileSync(join(damagedHome, 'daemon.json'), '{ "token": ')
+  writeFileSync(join(goodHome, 'daemon.json'), JSON.stringify({ api: API, token }))
+  const damaged = folders(token, root, [], { AGENTS_HOME: damagedHome })
+  check(damaged.code === 2 && damaged.out.includes(join(damagedHome, 'daemon.json')), `a damaged daemon.json is an error that names the file: ${damaged.out.split('\n')[0] ?? ''}`)
+  const fromFile = folders(token, root, [], { AGENTS_HOME: goodHome, AGENTS_API: undefined, AGENTS_TOKEN: undefined })
+  check(fromFile.code === 0, `the API's address and the token come from daemon.json when the environment has none: ${fromFile.out.split('\n')[0] ?? ''}`)
 
   // A Mac clock ahead of the server's can make a session look newer than its folder's reconnect, while the API knows it is older.
   check(folders(token, root, ['connect', skewed]).code === 0, 'a folder for a clock running ahead connects')

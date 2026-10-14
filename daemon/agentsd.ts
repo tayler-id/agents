@@ -16,7 +16,7 @@ import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import { MessagePayload, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, OtherCommand, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
@@ -180,7 +180,7 @@ async function sendChanges(workspaceId: string) {
   const sent = sentChanges.get(workspaceId) ?? new Map<string, string>()
   const repos = await ws.changes(workspaceId, sent)
   if (!repos) return
-  const reply = ChangesReply.parse(await api<unknown>('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
+  const reply = ChangesReply.parse(await api('POST', `/v1/workspaces/${workspaceId}/changes`, scrub({ repos })))
   const held = new Map<string, string>()
   for (const repo of repos) {
     if (repo.state === 'listed') for (const file of repo.files) held.set(changeKey(repo.repoId, file.path), file.hash)
@@ -260,7 +260,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
 
 // Whether the server still has the workspace's setup queued or running for this machine.
 const settingUp = (workspaceId: string) => async () =>
-  WorkspaceSetup.parse(await api<unknown>('GET', `/v1/instance/workspaces/${workspaceId}/setup`)).settingUp
+  WorkspaceSetup.parse(await api('GET', `/v1/instance/workspaces/${workspaceId}/setup`)).settingUp
 
 // Does what a command asks, and returns what the API should record about it. A
 // message starts or resumes the session; an answer or an interrupt needs the
@@ -370,7 +370,7 @@ async function listen(signal: AbortSignal) {
   // The API may not be up yet, after a reboot or a server restart. Keep trying.
   for (let attempt = 0; !stopping; attempt++) {
     try {
-      const recovery = RecoveryAnswer.parse(await api<unknown>('POST', '/v1/instance/recover', {}))
+      const recovery = RecoveryAnswer.parse(await api('POST', '/v1/instance/recover', {}))
       if (recovery.requeued) console.log(`requeued ${recovery.requeued} unfinished commands`)
       if (recovery.ended) console.log(`ended ${recovery.ended} messages a person asked to stop while this machine was down`)
       if (recovery.gaveUp) console.log(`failed ${recovery.gaveUp} messages whose turn kept stopping this machine`)
@@ -403,26 +403,34 @@ async function listen(signal: AbortSignal) {
   })
 }
 
+// What a claim answers with. A message's payload is read on its own, below.
+const Claimed = z.object({
+  command: z.union([z.object({ id: z.string(), kind: z.literal('message'), sessionId: z.string(), payload: z.unknown() }), OtherCommand]),
+})
+
+// A message with its payload read. An API of another version can queue a payload
+// this daemon can't use, such as one with no permissions, and that turn fails with the reason.
+function readMessage(claimed: { id: string; sessionId: string; payload: unknown }): Command | null {
+  const payload = MessagePayload.safeParse(claimed.payload)
+  if (!payload.success) {
+    failTurn(claimed.sessionId, [claimed.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
+    return null
+  }
+  return { id: claimed.id, kind: 'message', sessionId: claimed.sessionId, payload: payload.data }
+}
+
 async function claimAndHandle(commandId: string) {
   try {
-    const { command } = await api<{ command: Command }>('POST', `/v1/instance/commands/${commandId}/claim`, {})
-    if (command.kind === 'message') {
-      // The claim's answer is cast, not read. An API of another version can queue a
-      // payload this daemon can't use, such as one with no permissions.
-      const payload = MessagePayload.safeParse(command.payload)
-      if (!payload.success) {
-        failTurn(command.sessionId, [command.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
-        return
-      }
-      command.payload = payload.data
-    }
+    const { command: claimed } = Claimed.parse(await api('POST', `/v1/instance/commands/${commandId}/claim`, {}))
+    const command = claimed.kind === 'message' ? readMessage(claimed) : claimed
+    if (command === null) return
     // Workspace work can take minutes, so it runs beside the queue rather than
     // holding up messages and interrupts for sessions.
     if (command.sessionId === null) void handle(command)
     else inOrder(command.sessionId, () => handle(command))
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) return
-    console.error(`claim ${commandId}:`, (error as Error).message)
+    console.error(`claim ${commandId}:`, messageOf(error))
   }
 }
 
