@@ -16,6 +16,17 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
     'select id, team_id, task_id, instance_id, workspace_id, harness_session_id, agent_id from sessions where id = $1 and team_id = $2 for update',
     [sessionId, person.team_id])
   if (!session?.task_id) throw new HttpError(404, 'no such task session')
+  // A judge's session is one a review or confirm row lists among its
+  // reviewers, which startJudges writes in the transaction that creates it.
+  // The message below carries a workspace's permissions and no stage, so it
+  // would lift every limit the runner set on a reviewer or a verifier.
+  const judged = await maybe(client,
+    `select 1 from run_stages s join runs r on r.id = s.run_id
+     where r.task_id = $1 and s.data->'reviewers' @> jsonb_build_array(jsonb_build_object('sessionId', $2::text))`,
+    [session.task_id, session.id])
+  if (judged) {
+    throw new HttpError(409, "A judge's session takes no messages. A message would start the reviewer or verifier with a workspace's permissions, the team-record tools and no budget, and a judge works on its own and never edits the change it judges.")
+  }
   const agent = await one<{ id: string; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client, "the session's agent",
     'select id, harness, model, instructions from agents where id = $1', [session.agent_id])
   const [seq] = await appendEvents(client, session.id, {

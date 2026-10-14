@@ -16,6 +16,7 @@
 // before appending again. Each start and everything it receives is logged in
 // .fake, with its process id.
 
+import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -43,6 +44,10 @@ type Step = {
   data?: Record<string, unknown>
   write?: Record<string, string>
   replace?: Record<string, [string, string]>
+  // Shell commands run in the session's folder, shown as Bash calls with their real output.
+  run?: string[]
+  // Decisions logged with the team-record log_decision tool.
+  decide?: { what: string; why: string; alternatives?: string[] }[]
   // true: report only when reminded. 'always': never report.
   noReport?: boolean | 'always'
   // Report on the first try only if the prompt says this, the way a model
@@ -67,12 +72,15 @@ const cwd = process.cwd()
 const state = join(cwd, '.fake')
 mkdirSync(state, { recursive: true })
 const sessionId = flag('--resume') ?? randomUUID()
+const mcpFile = flag('--mcp-config')
+const mcpServers = mcpFile ? Object.keys(JSON.parse(readFileSync(mcpFile, 'utf8')).mcpServers ?? {}) : []
 // Each start, so a check can see what a process was started with. The Claude
 // token it was given is kept only as a fingerprint.
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
 appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({
   sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid, maxBudgetUsd: flag('--max-budget-usd') ?? null,
+  model: flag('--model') ?? null, allowedTools: flag('--allowedTools') ?? '', mcpServers, permissionMode: flag('--permission-mode') ?? null,
 }) + '\n')
 type Append = {
   // The call's tool_use id. Random when unset.
@@ -110,8 +118,7 @@ function group(text: string): Record<string, Step[]> {
 }
 
 // The stage's outcomes, from the stage server in the MCP config.
-const mcp = flag('--mcp-config')
-const outcomes: string[] = mcp ? JSON.parse(JSON.parse(readFileSync(mcp, 'utf8')).mcpServers?.stage?.env?.AGENTS_STAGE_OUTCOMES ?? '[]') : []
+const outcomes: string[] = mcpFile ? JSON.parse(JSON.parse(readFileSync(mcpFile, 'utf8')).mcpServers?.stage?.env?.AGENTS_STAGE_OUTCOMES ?? '[]') : []
 const key = outcomes.join(',')
 
 const emit = (line: Record<string, unknown>) => process.stdout.write(JSON.stringify({ session_id: sessionId, uuid: randomUUID(), ...line }) + '\n')
@@ -275,6 +282,11 @@ async function turn(text: string, uuid: string | undefined) {
     writeFileSync(file, readFileSync(file, 'utf8').replace(from, to))
     tool('Edit', { file_path: file, old_string: from, new_string: to }, `Edited ${path}`)
   }
+  for (const command of step.run ?? []) {
+    const ran = spawnSync('sh', ['-c', command], { cwd, encoding: 'utf8' })
+    tool('Bash', { command }, `${ran.stdout}${ran.stderr}`.trim() || `exit ${ran.status ?? 'none'}`, ran.status !== 0)
+  }
+  for (const decision of step.decide ?? []) tool('mcp__team-record__log_decision', decision, 'Logged in the decision log.')
   const holdsBack = step.noReport || (step.reportOnlyIf !== undefined && !text.includes(step.reportOnlyIf))
   if (key && step.outcome && !(holdsBack && !nudge)) {
     const data = {

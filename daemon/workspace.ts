@@ -5,7 +5,7 @@
 
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 import { workspaceChanges } from './changes.ts'
@@ -20,16 +20,43 @@ const DOCUMENT_LIMIT = 1024 * 1024
 const pushedRef = (branch: string) => `refs/agents/pushed/${branch}`
 // What a push says when the forge's branch holds commits this workspace never had.
 const FORGE_AHEAD = 'someone added commits on the forge, ask the agent to merge them'
+// The files a repo keeps its rules for agents in, the first found winning.
+const RULES_FILES = ['CLAUDE.md', 'AGENTS.md']
 
 export type Workspaces = ReturnType<typeof workspaces>
 
+// The token reaches git through its environment, never its arguments, because a
+// failed command's message repeats its arguments and the record keeps that message.
+const gitEnvOf = (token: string) => ({ ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` })
+
+// git through the API's proxy, as this machine.
+export function gitAs(token: string) {
+  const env = gitEnvOf(token)
+  return async (cwd: string, ...args: string[]) =>
+    (await run('git', args, { cwd, env, maxBuffer: 16 * 1024 * 1024 })).stdout.trim()
+}
+
+// Runs a program with its arguments in a folder, keeps the end of its output,
+// and kills it after timeoutSec.
+export function runProgram(cwd: string, argv: readonly string[], timeoutSec: number) {
+  return new Promise<ExecResult>((resolve) => {
+    const [program = '', ...args] = argv
+    const child = spawn(program, args, { cwd, env: { ...process.env, CI: '1' } })
+    let output = ''
+    const keep = (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-OUTPUT_LIMIT) }
+    child.stdout.on('data', keep)
+    child.stderr.on('data', keep)
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutSec * 1000)
+    child.on('close', (code) => { clearTimeout(timer); resolve({ exitCode: code, output, timedOut }) })
+    child.on('error', (error) => { clearTimeout(timer); resolve({ exitCode: null, output: error.message, timedOut }) })
+  })
+}
+
 export function workspaces(home: string, api: string, token: string) {
   const dir = (workspaceId: string) => join(home, 'workspaces', workspaceId)
-  // The token reaches git through its environment, never its arguments, because a
-  // failed command's message repeats its arguments and the record keeps that message.
-  const gitEnv = { ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` }
-  const git = async (cwd: string, ...args: string[]) =>
-    (await run('git', args, { cwd, env: gitEnv, maxBuffer: 16 * 1024 * 1024 })).stdout.trim()
+  const gitEnv = gitEnvOf(token)
+  const git = gitAs(token)
   // A git command that answers yes or no with its exit code, 0 or 1.
   const gitSays = (cwd: string, ...args: string[]) => run('git', args, { cwd, env: gitEnv }).then(() => true, (error: unknown) => {
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === 1) return false
@@ -49,17 +76,7 @@ export function workspaces(home: string, api: string, token: string) {
     if (tip === last || await gitSays(path, 'merge-base', '--is-ancestor', tip, 'HEAD')) return tip
     throw new Error(`In ${name}, ${FORGE_AHEAD}.`)
   }
-  const sh = (cwd: string, command: string, timeoutSec: number) => new Promise<ExecResult>((resolve) => {
-    const child = spawn('sh', ['-c', command], { cwd, env: { ...process.env, CI: '1' } })
-    let output = ''
-    const keep = (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(-OUTPUT_LIMIT) }
-    child.stdout.on('data', keep)
-    child.stderr.on('data', keep)
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutSec * 1000)
-    child.on('close', (code) => { clearTimeout(timer); resolve({ exitCode: code, output, timedOut }) })
-    child.on('error', (error) => { clearTimeout(timer); resolve({ exitCode: null, output: error.message, timedOut }) })
-  })
+  const sh = (cwd: string, command: string, timeoutSec: number) => runProgram(cwd, ['sh', '-c', command], timeoutSec)
 
   // Clones each repo and checks out the task branch. Running it again reuses
   // what is already there, so a retried command does no harm.
@@ -72,6 +89,15 @@ export function workspaces(home: string, api: string, token: string) {
       if (!existsSync(join(path, '.git'))) {
         await git(root, 'clone', '--quiet', '--branch', repo.base, `${api}/v1/git/${repo.repoId}.git`, repo.name)
       }
+      // Dependencies are installed or linked into a clone and never belong in
+      // its commits, even as a link a repo's own ignore rules miss. This
+      // exclude is the clone's own and is never committed.
+      const exclude = join(path, '.git', 'info', 'exclude')
+      const excluded = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+      if (!excluded.split('\n').includes('/node_modules')) {
+        mkdirSync(join(path, '.git', 'info'), { recursive: true })
+        writeFileSync(exclude, `${excluded}${excluded && !excluded.endsWith('\n') ? '\n' : ''}/node_modules\n`)
+      }
       const branches = await git(path, 'branch', '--list', repo.branch)
       if (branches) await git(path, 'switch', '--quiet', repo.branch)
       else await git(path, 'switch', '--quiet', '-c', repo.branch, repo.commit ?? `origin/${repo.base}`)
@@ -82,6 +108,12 @@ export function workspaces(home: string, api: string, token: string) {
       }
       worktrees.push({ repoId: repo.repoId, baseCommit })
     }
+    // Sessions start in the workspace root, above the clones, where Claude
+    // Code would not find a repo's own rules. Importing them here loads them.
+    // A repo's CLAUDE.md, which may import its AGENTS.md, comes first, and
+    // its AGENTS.md is imported when it has no CLAUDE.md.
+    const rules = repos.flatMap((r) => RULES_FILES.filter((f) => existsSync(join(root, r.name, f))).slice(0, 1).map((f) => `@${r.name}/${f}`))
+    if (rules.length) writeFileSync(join(root, 'CLAUDE.md'), `Each repo here has its own rules. Follow them.\n\n${rules.join('\n')}\n`)
     return { path: root, worktrees }
   }
 

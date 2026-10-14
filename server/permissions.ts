@@ -9,3 +9,5 @@ import type { Permissions } from '../shared/types.ts'
 
 export const CONVERSATION_PERMISSIONS: Permissions = { workspaceWrites: false }
 export const WORKSPACE_PERMISSIONS: Permissions = { workspaceWrites: true }
+// A judge reads the change it judges and never edits it, so an edit asks.
+export const JUDGE_PERMISSIONS: Permissions = { workspaceWrites: false }

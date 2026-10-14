@@ -27,6 +27,8 @@ Tayler went with the coordinator's picks on all of these.
   - The first build's Docker volumes are deleted, with a backup in `~/.agents-app/backups/first-build-volumes`.
   - The UI gets a design system and a new layout, since the current layout is poor. That work starts after every current branch lands.
   - The desktop app becomes one download, with the Mac connection and terminal-session capture built in. It is signed and notarized with Tayler's Apple Developer ID. Only whoever builds the app needs a developer ID, and teammates download it and open it. This also starts after the current branches land.
+  - The coding framework's section in `AGENTS.md`, its deployer `ops/deploy.ts` and this repo's policy `ops/policies/agents.json` are approved. On a repo with a policy, a change that adds a binary file other than a PNG, JPEG, GIF, WebP or ICO image fails the `opaque` gate. Its other options stay off: inline lint config, signed attestations, judges on their own machine, and a wider landing list.
+  - A browser page that can't give its text within 5 seconds, such as one held by an open alert, refuses every screenshot until it can.
   - Terminal sessions from a connected folder are seen by the team by default, and `connect --private` keeps them to the person. The daemon leaves out tool results for files outside the connected folder. It also learns the secret values in the person's login shell at start so it can scrub them, and those values never leave the Mac. Sessions from before a folder was connected stay on the Mac. Images stay on the Mac, with a note in the record that one was there.
 
 ## 2026-10-13, after the code review
@@ -146,8 +148,8 @@ Tayler went with the coordinator's picks on all of these.
   - a verdict from an agent that did not write the change
   - a clean merge against current main
 - **Grading and the ledger.** Verdicts are graded, from verified in the live UI down to type-checked only. "Couldn't verify" is kept apart from pass and fail. The ledger is keyed by pull request and head commit. After a rebase, a verdict survives only if the patch itself is unchanged.
-- **Implementation.** `docs/design/self-improve.md` and a fuller rules file, on the framework agent's branch. Its rules merge into `AGENTS.md` when it lands. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
-- **Status.** Being built. It still has to decide between forward-only runs and sending failures back to implement, and write down why. The framework and the verifier describe evidence in two different formats, so the merge gate can't read the verifier's screenshots yet. One schema in `shared/`, used by both, comes before either merges.
+- **Implementation.** `docs/design/self-improve.md`, with the rules merged into `AGENTS.md`, on the framework agent's branch. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
+- **Status.** Built on the framework agent's branch, not on main. It sends a failure back to its author, with bounds, and the design says why. The gates and the verifier parse evidence with one schema, `shared/verification.ts`, though the runner does not check screenshots yet. It does not hold changes to this repo until the repo is registered with its policy. The design lists what is not enforced.
 
 ### Size and time limits per task
 

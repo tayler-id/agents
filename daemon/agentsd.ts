@@ -17,11 +17,13 @@ import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import { MessagePayload, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, PUSH_PAYLOAD, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
+import { gates } from './gates.ts'
+import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from '../shared/framework.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -92,6 +94,7 @@ const sessions = new Map<string, HarnessSession>()
 const setups = new Map<string, string>()
 const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions])
 const ws = workspaces(HOME, config.api, config.token)
+const checker = gates(HOME, config.api, config.token)
 let stopping = false
 
 class ApiError extends Error {
@@ -149,9 +152,9 @@ function agentHome(agentId: string): string {
 function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>): string {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
-  const servers: Record<string, unknown> = {
-    ...plugins,
-    'team-record': { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } },
+  const servers: Record<string, unknown> = { ...plugins }
+  if (!stage?.isolated) {
+    servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
   }
   if (stage) servers.stage = { command: process.execPath, args: [STAGE_MCP], env: { AGENTS_STAGE_OUTCOMES: JSON.stringify(stage.outcomes) } }
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 })
@@ -264,7 +267,8 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
-    allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
+    // A judge's session gets no team-record tools, so it cannot read the author's session.
+    allowedTools: [...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
     acceptEdits: payload.permissions.workspaceWrites,
     // A server before this release sends a stage's budget only in the stage.
     maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
@@ -310,7 +314,9 @@ const settingUp = (workspaceId: string) => async () =>
 async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'setup_workspace') return ws.setup(command.payload)
   if (command.kind === 'exec') return ws.exec(command.payload)
-  if (command.kind === 'push') return ws.push(command.payload)
+  if (command.kind === 'push') return ws.push(PUSH_PAYLOAD.parse(command.payload))
+  if (command.kind === 'verify') return checker.verify(VERIFY_PAYLOAD.parse(command.payload))
+  if (command.kind === 'suite') return checker.suite(SUITE_PAYLOAD.parse(command.payload))
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
     // A process keeps the setup it started with. Once the agent's instructions,
@@ -348,7 +354,8 @@ async function handle(command: Command) {
       .catch(() => {})
   }
   // Setting up, a check or a push may have changed what differs from the base.
-  if (command.sessionId === null) refreshChanges(command.payload.workspaceId)
+  // A suite runs in the check host's own clone, outside every workspace.
+  if (command.sessionId === null && command.kind !== 'suite') refreshChanges(command.payload.workspaceId)
 }
 
 // A session's commands run one after another, in the order they arrived, while

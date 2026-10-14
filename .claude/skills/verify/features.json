@@ -1,0 +1,18 @@
+{
+  "features": [
+    { "id": "record", "name": "The shared record", "paths": ["server/record.ts", "server/migrations/**", "shared/scrub.ts", "shared/types.ts"], "checks": ["test/step1.ts"] },
+    { "id": "sync", "name": "Live reading through the sync proxy", "paths": ["server/sync.ts", "server/access.ts", "server/auth.ts"], "checks": ["test/step2.ts", "test/step2b.ts"] },
+    { "id": "streams", "name": "Live tokens", "paths": ["server/streams.ts", "daemon/live.ts"], "checks": ["test/step3.ts"] },
+    { "id": "asks", "name": "Asks, approvals and interrupts", "paths": ["daemon/claude.ts", "server/record.ts"], "checks": ["test/step4a.ts"] },
+    { "id": "app", "name": "The app in three browsers", "paths": ["app/**"], "checks": ["test/step4b.ts", "test/step6b.ts", "test/step10b.ts"] },
+    { "id": "desktop", "name": "The desktop app", "paths": ["desktop/**"], "checks": ["test/step4c.ts"] },
+    { "id": "daemon", "name": "The daemon on each machine", "paths": ["daemon/agentsd.ts", "daemon/harness.ts"], "checks": ["test/step4d.ts"] },
+    { "id": "team-record", "name": "The team-record tools", "paths": ["daemon/record-mcp.ts", "server/teamrecord.ts"], "checks": ["test/step5.ts", "test/step10.ts"] },
+    { "id": "pipelines", "name": "Pipelines, the runner and the forge", "paths": ["server/runner.ts", "server/pipelines.ts", "server/forge.ts", "server/git.ts", "server/hooks.ts", "daemon/workspace.ts", "pipelines/bug-fix.ts", "shared/pipeline.ts"], "checks": ["test/step6.ts", "test/step8.ts"] },
+    { "id": "boxes", "name": "Boxes", "paths": ["server/boxes.ts", "box/**", "ops/box-firewall.sh"], "checks": ["test/step7.ts", "test/step2b.ts"] },
+    { "id": "refinement", "name": "The improve and coach pipelines", "paths": ["server/refine.ts", "pipelines/improve.ts", "pipelines/coach.ts"], "checks": ["test/step9.ts", "test/step9b.ts"] },
+    { "id": "rooms", "name": "Rooms, agents' setup, memory, routines, tasks and comments", "paths": ["server/rooms.ts", "server/agents.ts", "server/routines.ts", "server/tasks.ts", "daemon/agentfiles.ts"], "checks": ["test/step10.ts", "test/step10b.ts"] },
+    { "id": "standards", "name": "The coding standards and the name guard", "paths": ["eslint.config.js", "tsconfig.json", "app/tsconfig.json", ".claude/skills/coding-standards/**", "test/names.ts", "test/step0.ts"], "checks": ["test/step0.ts"] },
+    { "id": "framework", "name": "The coding framework", "paths": ["server/framework.ts", "server/mirror.ts", "shared/gates/**", "shared/policy.ts", "shared/framework.ts", "daemon/gates.ts", "pipelines/app-change.ts", "ops/policies/**", "ops/deploy.ts", "test/style.ts"], "checks": ["test/step16.ts", "test/step16b.ts", "test/step16c.ts"] }
+  ]
+}
