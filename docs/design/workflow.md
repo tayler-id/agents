@@ -151,7 +151,7 @@ The probe didn't try web fetches or searches, so this doc says nothing about the
 
 **What no longer asks.** Creating, editing and deleting files anywhere in the workspace, in each repo's checkout and in the `task` folder, with the file tools or with shell commands that only touch files there. The probe ran `mkdir`, `touch`, `mv`, `rm -f` and `echo x > out.txt` without asking. Reading inside the workspace never asked.
 
-**On a box.** The same rule, so commands ask there too. A box holds its workspaces, its machine token and the Claude token. An earlier version of this branch let a box's sessions run commands without asking, which took away a person's approval of each command. That waits on Tayler's decision, and until then a box asks as a Mac does.
+**On a box.** The same rule, so commands ask there too. A box holds its workspaces, its machine token and a Claude token, which is the team's on a shared box and its owner's own sign-in on a person's box. An earlier version of this branch let a box's sessions run commands without asking, which took away a person's approval of each command. That waits on Tayler's decision, and until then a box asks as a Mac does.
 
 **Unchanged.** Conversations with an agent run in the agent's own folder, and ask as before. Pipeline stages keep their own `allow` lists, and get the same workspace permissions as a task's session.
 
@@ -243,3 +243,4 @@ Nearly every check was seen failing with the thing it guards broken, then passin
 - **The pipeline needs an agent named `builder`.** I chose a new name because the job differs from fixing bugs.
 - **Single-key shortcuts are on by default.** They can be turned off in the palette.
 - **A hold's until date uses the database's date.** `agents_test` reports its time zone as `Etc/UTC`, so a hold until Friday lapses at midnight UTC.
+- **A teammate can start a task with an agent on someone's own box.** The task's session then runs on that person's Claude sign-in, as a message or a room turn to that agent does. `docs/design/onboarding.md` leaves whether only the owner may drive agents on their box to Tayler. Whatever Tayler decides for messages should hold for tasks, in `server/launch.ts`.
