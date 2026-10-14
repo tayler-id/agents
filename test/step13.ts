@@ -117,6 +117,8 @@ const GH_CHECK = `export default {
 `
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
+// A dropped connection fails the check instead of ending it, so the clean-up still stops the API and daemon it started.
+db.on('error', (error) => { failures.push(`Postgres dropped the check's connection: ${error.message}`) })
 const children: ChildProcess[] = []
 const failures: string[] = []
 // Everything the API printed, and every answer it gave a person, to look for tokens in.
