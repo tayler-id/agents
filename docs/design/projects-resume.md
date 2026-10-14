@@ -1,6 +1,6 @@
 # Projects work, where it stands
 
-A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `47a2d31`, with the people socket and the JSON gate, and has its own `node_modules` from `npm ci`.
+A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `360c16e`, with the people socket, the JSON gate and onboarding, and has its own `node_modules` from `npm ci`.
 
 ## Done, committed
 
@@ -31,7 +31,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Team names start with `proj-`. Gitea test repos start with `proj-`. `.scratch/cleanup-proj.ts <id>` removes what a failed run kept.
 - GitHub's settings `AGENTS_GITHUB_DIR`, `AGENTS_GITHUB_API`, `AGENTS_GITHUB_GIT` have no defaults, and `AGENTS_GITHUB_CLIENT_ID` turns sign-in on. Checks strip any of them from the environment and set their own, so they never touch a real token.
 - The fake GitHub runs inside the check's own process, so a child that talks to it must be started without blocking (`spawn`, never `spawnSync`).
-- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs.
+- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs. It leaves out step7, which builds `agents-box:latest`, the live server's box image, from the folder it runs in: run step7 only with `AGENTS_BOX_IMAGE` set to a tag of this branch's own, remove that tag afterwards, and after any check that builds an image run `docker image prune -f`.
 
 ## Open questions for Tayler
 
