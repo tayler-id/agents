@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import { featureEntryOf, FEATURE_MAP, FEATURE_MAP_FILE, VERDICT, type Feature as MapEntry, type FeatureMap, type Verdict } from '../shared/evidence.ts'
+import { featureEntryOf, FEATURE_MAP, FEATURE_MAP_FILE, VERDICT, type Feature as MapEntry, type FeatureMap, type Verdict } from '../shared/verification.ts'
 import { FEATURES_DIR, ROOT } from './config.ts'
 import { nextPath } from './evidence.ts'
 import type { Output } from '../shared/cli/output.ts'
@@ -257,7 +257,7 @@ export function exportMap(): { file: string; map: FeatureMap; already: boolean }
   return { file, map, already }
 }
 
-// A step's verdict on the ladder in shared/evidence.ts, or `not run` when an earlier step
+// A step's verdict on the ladder in shared/verification.ts, or `not run` when an earlier step
 // failed and this one depends on what that one left.
 // The commands in a step that assert something: they wait for a state, compare
 // text or a count, check a view, or read a side effect back. Editing the map

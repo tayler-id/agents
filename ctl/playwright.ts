@@ -13,7 +13,7 @@ import {
 import { AxeBuilder } from '@axe-core/playwright'
 import { childEnv, ROOT } from './config.ts'
 import { describe, PageError, type Driver, type NetworkEntry, type PageKey } from './driver.ts'
-import type { Engine, Width } from '../shared/evidence.ts'
+import type { Engine, Width } from '../shared/verification.ts'
 import type { Handle } from './protocol.ts'
 import type { ReadyState } from './state.ts'
 import { instanceRules, VOLATILE } from './visual.ts'

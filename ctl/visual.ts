@@ -11,7 +11,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { dirname, join, relative } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
-import { ENGINE, ENGINES, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, WIDTH, WIDTHS, type Engine, type EvidenceManifest, type Shot, type Width } from '../shared/evidence.ts'
+import { ENGINE, ENGINES, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, WIDTH, WIDTHS, type Engine, type EvidenceManifest, type Shot, type Width } from '../shared/verification.ts'
 import { BASELINES_DIR, LATEST_MANIFEST, ROOT } from './config.ts'
 import { decode, diff, encode, type Box } from './png.ts'
 import { failing, type Driver, type PageKey } from './driver.ts'

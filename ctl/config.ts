@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { z } from 'zod'
-import { EVIDENCE_MANIFEST_FILE } from '../shared/evidence.ts'
+import { EVIDENCE_MANIFEST_FILE } from '../shared/verification.ts'
 import { envSecrets, makeScrub, type Scrub } from '../shared/scrub.ts'
 import { Refused } from '../shared/cli/output.ts'
 

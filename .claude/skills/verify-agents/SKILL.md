@@ -124,7 +124,7 @@ Everything an instance does is kept in `.scratch/verify/evidence/<instance>-<whe
 - `aria/`, `screens/`, `api/`, `db/` and `network/` captures, numbered in the order taken
 - `failures/`, a screenshot of the page each time a drive fails
 - `videos/` from `browser record`, `traces/` from `browser trace`
-- `visual/` captures, `evidence.json` listing each capture's view, engine, width, path and sha256, and `visual-diff/` from `visual compare`. The latest run's `evidence.json` is also copied to `.scratch/verify/evidence.json`, where the framework's check host reads it. Its shape is `EVIDENCE_MANIFEST` in `shared/evidence.ts`.
+- `visual/` captures, `evidence.json` listing each capture's view, engine, width, path and sha256, and `visual-diff/` from `visual compare`. The latest run's `evidence.json` is also copied to `.scratch/verify/evidence.json`, a path that stays the same between runs. Its shape is `EVIDENCE_MANIFEST` in `shared/verification.ts`.
 - `map/` reports from `map run`, and `instance.json`, the final state, after `down`
 
 `bin/agentsctl evidence` prints the folder and its failed actions. A proof has the user's action and the state it left, with the side effect read back from the record or the machine, never only the final screen. Drive the real path: a fake belongs only at a real boundary, which here is the Claude harness.

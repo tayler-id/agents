@@ -12,7 +12,7 @@
 
 import { writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
-import type { Engine, Width } from '../shared/evidence.ts'
+import type { Engine, Width } from '../shared/verification.ts'
 import type { Found, Handle, Op, Target } from './protocol.ts'
 
 // One page the session holds: the web app in one engine at one width as one

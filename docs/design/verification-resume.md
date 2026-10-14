@@ -1,8 +1,8 @@
 # Verification framework: where the work stands
 
-`shared/evidence.ts` is in its own commit, for the framework branch to take. Rebases change its id; `git log --format=%H -1 -- shared/evidence.ts` finds it.
+The framework took the evidence and feature map schemas as `shared/verification.ts` on main, byte for byte what this branch first wrote as `shared/evidence.ts`. This branch holds no copy. `shared/evidence.ts` on main is coach's findings, hunks and replay scores, and nothing here imports it.
 
-A note for whoever picks this up, kept current with each commit. The design is in `verification.md` beside this file, and `docs/build-log.md` has a section on this work. Branch `worktree-agent-ae995231ee16af626`, in the worktree `.claude/worktrees/agent-ae995231ee16af626`, rebased onto main at `7197f4b`. Nothing is merged to main.
+A note for whoever picks this up, kept current with each commit. The design is in `verification.md` beside this file, and `docs/build-log.md` has a section on this work. Branch `worktree-agent-ae995231ee16af626`, in the worktree `.claude/worktrees/agent-ae995231ee16af626`, rebased onto main at `b2aa8b5`. Nothing is merged to main.
 
 ## Decided by Tayler on 2026-10-14
 
@@ -16,7 +16,7 @@ Product bug 7 below, the Firefox console errors, is fixed on main by `9482e4e`. 
 
 ## Done
 
-Everything from the first round (agentsctl, the skill and feature map, `shared/evidence.ts`, `shared/cli/`, step17 and its breaks, the docs), then two rounds of review fixes, each with a check seen failing first.
+Everything from the first round (agentsctl, the skill and feature map, the evidence schemas, `shared/cli/`, step17 and its breaks, the docs), then two rounds of review fixes, each with a check seen failing first.
 
 The first review:
 
@@ -93,7 +93,7 @@ No second agent has watched the recordings.
 - While `test/step17-breaks.ts` runs, edit nothing it breaks (`ctl/`, `shared/`, `app/src/`, `features/getting-in.md`) or `test/step17.ts`: it restores each file from its own copy. `--check` finds every anchor once, without running anything. A run killed midway leaves one break applied until the next `node test/step17-breaks.ts`, even `--check`, restores it, so read `git diff` before trusting the tree.
 - `map run all` runs the features in the index's order on one instance, so a feature can change what a later one finds. approvals runs before pipelines and proposals.
 - `down --keep-data` leaves the instance `kept`. `list` shows it, `up` refuses its name, and `bin/agentsctl down --instance <name>` removes what it kept.
-- Beside `ctl/`, the branch changes four server files by a few lines each. `server/forge.ts` lets `ensureRepo` take the org it makes a repo in, and `server/api.ts`, `server/boxes.ts` and `server/hooks.ts` each import a definition from `shared/` in place of a copy. `shared/` gains `cli/`, `evidence.ts`, `box-names.ts`, `pipeline-hooks.ts` and `hasCode` in `errors.ts`.
+- Beside `ctl/`, the branch changes four server files by a few lines each. `server/forge.ts` lets `ensureRepo` take the org it makes a repo in, and `server/api.ts`, `server/boxes.ts` and `server/hooks.ts` each import a definition from `shared/` in place of a copy. `shared/` gains `cli/`, `box-names.ts`, `pipeline-hooks.ts` and `hasCode` in `errors.ts`, the only copy of `hasCode`.
 - Tayler approved this branch's `tsconfig.json`, `eslint.config.js` and `.claude/skills/verify-agents/` changes. A new change to those files, to `.claude/` or to `test/names.ts` needs approval again.
 
 ## Open questions for Tayler

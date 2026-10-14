@@ -4,7 +4,7 @@
 
 import type { Page } from '@playwright/test'
 import { z } from 'zod'
-import { ENGINE, WIDTH } from '../shared/evidence.ts'
+import { ENGINE, WIDTH } from '../shared/verification.ts'
 
 // ARIA roles Playwright finds elements by. The list is checked against
 // Playwright's own type, so a role it does not know fails to compile.
