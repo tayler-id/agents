@@ -17,7 +17,7 @@ import { messageOf } from '../shared/errors.ts'
 import { FolderId, SessionId } from '../shared/ids.ts'
 import { makeScrub, type Scrub } from '../shared/scrub.ts'
 import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
-import type { EventBatch } from '../shared/types.ts'
+import { MAX_BODY_BYTES, type EventBatch, type NewEvent, type RawLine, type SessionStatus } from '../shared/types.ts'
 import { ApiError, type Api, type Config } from './api.ts'
 import { TranscriptLine, transcriptBatch, withoutFiles } from './claude.ts'
 import { dotenvFinder, dotenvSecrets, type Secrets } from './secrets.ts'
@@ -27,10 +27,12 @@ const PROJECTS = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'
 // How often the transcripts are read. A line reaches the record about this long
 // after Claude Code writes it, and each read lists one folder per connected folder.
 const READ_EVERY_MS = 1000
-// At most this much of a transcript goes in one post, so a long one read at once
-// after a restart goes in parts well under the API's 20 MB limit.
+// At most this many lines go in one post, so a long transcript read at once after
+// a restart goes in parts, each a short transaction for the API.
 const LINES_PER_POST = 200
-const BYTES_PER_POST = 4 * 1024 * 1024
+// A post's lines, encoded as the API reads them, stay under its limit, with room
+// for the brackets and the status around them.
+const BYTES_PER_POST = MAX_BODY_BYTES - 64 * 1024
 // A post the API failed, or that never reached it, is tried again on a later
 // read, after 1 s, then 2, 4 and so on up to a minute. Every other session goes
 // on meanwhile. After this many failures in a row that the API answered, the
@@ -98,23 +100,9 @@ function linesFrom(file: string, offset: number, limit = Infinity): { text: stri
   }
 }
 
-// A transcript's lines in posts of at most LINES_PER_POST lines and about BYTES_PER_POST bytes.
-function inParts<T extends { text: string }>(lines: T[]): T[][] {
-  const parts: T[][] = []
-  let part: T[] = []
-  let bytes = 0
-  for (const line of lines) {
-    if (part.length && (part.length >= LINES_PER_POST || bytes + line.text.length > BYTES_PER_POST)) {
-      parts.push(part)
-      part = []
-      bytes = 0
-    }
-    part.push(line)
-    bytes += line.text.length
-  }
-  if (part.length) parts.push(part)
-  return parts
-}
+// Lines on their way to the record in one post, and the offset just after them.
+type Part = { events: NewEvent[]; raw: RawLine[]; status?: SessionStatus; lines: number; bytes: number; end: number; unparsed: number }
+const emptyPart = (end: number): Part => ({ events: [], raw: [], lines: 0, bytes: 0, end, unparsed: 0 })
 
 // Follows this Mac's connected folders and sends their terminal sessions until
 // the signal aborts. Nothing is sent before `ready` says the login shell's
@@ -187,10 +175,17 @@ export async function followTerminalSessions(options: {
       return true
     } catch (error) {
       const status = error instanceof ApiError ? error.status : 0
+      if (status === 409) {
+        // The API says the folder is closed to this session, so the daemon stops sending it.
+        sent.delete(file)
+        changed = true
+        console.error(`terminal session ${sessionId}: its folder was disconnected since it started, so the rest of it stays on the Mac`)
+        return false
+      }
       if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-        // The batch itself is wrong, or its session takes no more.
-        console.error(`dropped a batch for ${sessionId}:`, messageOf(error))
-        return true
+        // The offset stays before the refused lines, so a daemon started again, perhaps against a fixed API, sends them.
+        park(file, `the API refused a post for session ${sessionId}: ${messageOf(error)}`)
+        return false
       }
       // fetch fails with a TypeError when the API can't be reached. Anything else is a bug.
       if (!(error instanceof ApiError) && !(error instanceof TypeError)) throw error
@@ -222,24 +217,46 @@ export async function followTerminalSessions(options: {
     return scrub
   }
 
-  // Sends what a transcript gained since last time.
+  // Sends what a transcript gained since last time, in posts the API takes. The
+  // offset moves past a post's lines only once the record has them.
   async function send(file: string, tracked: Tracked, folder: FolderRow) {
     const retry = retries.get(file)
     if (retry && retry.at > Date.now()) return
     const lines = linesFrom(file, tracked.offset)
     if (!lines.length) return
     const scrub = scrubFor(folder)
-    for (const part of inParts(lines)) {
-      const parsed = part.flatMap((line) => {
-        const result = TranscriptLine.safeParse(withoutFiles(parseJson(line.text)))
-        return result.success ? [result.data] : []
-      })
-      const batch = transcriptBatch(parsed, tracked.parentToolUseId)
-      if ((batch.events.length || batch.status) && !await post(file, tracked.sessionId, scrub(batch))) return
-      const last = part[part.length - 1]
-      if (last) tracked.offset = last.end
+    let part = emptyPart(tracked.offset)
+    const flush = async () => {
+      const batch: EventBatch = part.status === undefined ? { events: part.events, raw: part.raw } : { events: part.events, raw: part.raw, status: part.status }
+      if ((batch.events.length || batch.status) && !await post(file, tracked.sessionId, batch)) return false
+      if (part.unparsed) console.error(`terminal sessions, ${file}: ${part.unparsed} line${part.unparsed === 1 ? '' : 's'} did not parse, and were left out`)
+      tracked.offset = part.end
       changed = true
+      part = emptyPart(part.end)
+      return true
     }
+    for (const line of lines) {
+      const value = withoutFiles(parseJson(line.text))
+      const parsed = TranscriptLine.safeParse(value)
+      const piece = parsed.success ? scrub(transcriptBatch([{ line: parsed.data, value }], tracked.parentToolUseId)) : undefined
+      const bytes = piece ? Buffer.byteLength(JSON.stringify(piece.events)) + Buffer.byteLength(JSON.stringify(piece.raw)) : 0
+      if (part.lines && (part.lines >= LINES_PER_POST || part.bytes + bytes > BYTES_PER_POST) && !await flush()) return
+      if (bytes > BYTES_PER_POST) {
+        park(file, `a line of ${Math.round(bytes / 1024 / 1024)} MB is more than one post to the API can hold`)
+        return
+      }
+      if (piece) {
+        part.events.push(...piece.events)
+        part.raw.push(...piece.raw)
+        part.status = piece.status ?? part.status
+      } else {
+        part.unparsed += 1
+      }
+      part.lines += 1
+      part.bytes += bytes
+      part.end = line.end
+    }
+    await flush()
   }
 
   // Where and when a transcript's session started, once Claude Code has written that line.

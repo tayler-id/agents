@@ -67,6 +67,9 @@ async function until(label: string, seconds: number, test: () => Promise<boolean
 }
 
 const count = async (sql: string, params: unknown[]) => Number((await db.query(sql, params)).rows[0].count)
+// Whether one line of the daemon's own log holds every one of these.
+const daemonSaid = (...parts: string[]) => logs.filter((l) => l.startsWith('daemon: ')).map((l) => l.slice('daemon: '.length)).join('')
+  .split('\n').some((line) => parts.every((part) => line.includes(part)))
 
 // The folders command, as the person runs it on their Mac.
 function folders(token: string, cwd: string, args: string[], env: Record<string, string> = {}): { code: number; out: string } {
@@ -89,7 +92,8 @@ async function machine(token: string, method: string, path: string, body?: unkno
 const projectDir = (claudeDir: string, cwd: string) => join(claudeDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
 
 type Call = { name: string; input: Record<string, unknown>; result: unknown }
-type Turn = { prompt: string; calls?: Call[]; reply: string }
+// promptFields go on the prompt's line, as a Claude Code update might write them.
+type Turn = { prompt: string; calls?: Call[]; reply: string; promptFields?: Record<string, unknown> }
 
 // One Claude Code session's transcript, written line by line as Claude Code writes it.
 function transcript(claudeDir: string, cwd: string, startedAt: Date, session: string = randomUUID()) {
@@ -103,9 +107,9 @@ function transcript(claudeDir: string, cwd: string, startedAt: Date, session: st
   return {
     session, path, line, write,
     // A turn: the person's prompt, Claude's tool calls each with its result, and the reply that ends the turn.
-    turn({ prompt, calls = [], reply }: Turn) {
+    turn({ prompt, calls = [], reply, promptFields = {} }: Turn) {
       const model = 'claude-haiku-4-5'
-      const lines: unknown[] = [line({ type: 'user', message: { role: 'user', content: prompt }, turnOrigin: 'human' })]
+      const lines: unknown[] = [line({ type: 'user', message: { role: 'user', content: prompt }, turnOrigin: 'human', ...promptFields })]
       for (const call of calls) {
         const toolUseId = `toolu_${randomBytes(12).toString('hex')}`
         lines.push(line({ type: 'assistant', message: { id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model, stop_reason: 'tool_use', content: [{ type: 'tool_use', id: toolUseId, name: call.name, input: call.input }] } }))
@@ -128,6 +132,7 @@ try {
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, owner)
   const { token } = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-${id}`, 'mac', owner)) as { token: string }
+  node('server/admin.ts', 'add-instance', team, `box-${id}`, 'box', owner)
   const { rows: [ownerRow] } = await db.query('select id, team_id from people where login = $1', [owner])
 
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'agents-step21b-')))
@@ -347,6 +352,41 @@ try {
   const { rows: [journalFolder] } = await db.query('select id from connected_folders where path = $1', [journal])
   const stolen = await machine(token, 'POST', '/v1/instance/terminal-sessions', { folderId: journalFolder?.id, harnessSessionId: first.session, cwd: journal })
   check(stolen.status === 409, `the API refuses another folder's session for the same Claude Code session id (${stolen.status})`)
+
+  // Lines are never lost: a refused post keeps them, posts fit the API's limit in bytes, and lines that don't parse are counted.
+  const refusedRun = transcript(claudeDir, deep, deepAt)
+  refusedRun.turn({ prompt: 'Before the refusal.', reply: 'One.' })
+  await until('the session the API will refuse', LANDS_SEC, async () => (await turnsEnded(refusedRun.session)) === 1)
+  const refusedId = String((await sessionOf(refusedRun.session))?.id)
+  // The session moves to another machine, so the API answers this Mac's posts for it with 404.
+  await db.query('update sessions set instance_id = (select id from instances where name = $2) where id = $1', [refusedId, `box-${id}`])
+  refusedRun.turn({ prompt: 'Refused at first.', reply: 'Two.' })
+  const refusedParked = await until('the daemon to park the refused session', LANDS_SEC, async () => daemonSaid(refusedId, '404', 'parked until the daemon starts again'))
+  await db.query('update sessions set instance_id = (select id from instances where name = $2) where id = $1', [refusedId, `mac-${id}`])
+  await restart()
+  check(refusedParked && await until('the refused turn after a restart', LANDS_SEC, async () => (await turnsEnded(refusedRun.session)) === 2),
+    'a post the API refuses parks its session with a message and keeps its lines, which the daemon sends once started again')
+
+  const wide = transcript(claudeDir, deep, deepAt)
+  // 1.4 million three-byte characters: 4.2 MB in UTF-8, but only 1.4 million units in UTF-16.
+  const big = '\u20ac'.repeat(1_400_000)
+  // A short first turn, as a real session starts with, since the reader looks for a session's start in its first 1 MB.
+  wide.turn({ prompt: 'Start small.', reply: 'Small.' })
+  for (let i = 0; i < 3; i++) wide.turn({ prompt: `${String(i)}${big}`, reply: `Wide ${String(i)}.` })
+  check(await until('three wide turns', 60, async () => (await turnsEnded(wide.session)) === 4),
+    'a session of three 4.2 MB prompts in three-byte characters lands whole, in posts under the 20 MiB limit')
+
+  const messy = transcript(claudeDir, deep, deepAt)
+  messy.turn({ prompt: 'Before the mess.', reply: 'Fine.' })
+  appendFileSync(messy.path, '{"type": "user", "message": \n{"type": 42}\n')
+  messy.turn({ prompt: 'After the mess.', reply: 'Fine again.', promptFields: { isMeta: 'no', origin: 'human' } })
+  const messyLanded = await until('the turns around the mess', LANDS_SEC, async () => (await turnsEnded(messy.session)) === 2)
+  const messyRow = await sessionOf(messy.session)
+  const messyPrompts = messyRow ? (await eventsOf(messyRow.id)).filter((e) => e.kind === 'user').map((e) => String(e.text)) : []
+  check(messyLanded && daemonSaid(messy.path, '2 lines did not parse'), "lines that don't parse are counted in the daemon's log, and the lines around them land")
+  check(messyPrompts.includes('After the mess.') && await count(
+    `select count(*) from raw_events where session_id = $1 and line->>'isMeta' = 'no'`, [String(messyRow?.id)]) === 1,
+  'a prompt whose fields changed type in a Claude Code update still lands, and its raw line keeps them as written')
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

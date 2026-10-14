@@ -160,28 +160,33 @@ function liveDeltas(line: Line): EventBatch['live'] {
 
 // Claude Code's transcripts: one JSON line per entry, written under
 // ~/.claude/projects for every session, in a terminal or headless. The format is
-// Claude Code's own and not documented, so every field is optional here, and a
-// line of a type this file does not map makes no event.
+// Claude Code's own and not documented, so every field but the type is optional
+// here, and one whose type changes in a Claude Code update reads as absent
+// rather than losing the line. A line of a type this file does not map makes no event.
+const optional = <T extends z.ZodType>(schema: T) => schema.optional().catch(undefined)
 const TranscriptBlock = z.looseObject({ type: z.string() })
 export const TranscriptLine = z.looseObject({
   type: z.string(),
-  uuid: z.string().optional(),
-  subtype: z.string().optional(),
+  uuid: optional(z.string()),
+  subtype: optional(z.string()),
   content: z.unknown().optional(),
-  isSidechain: z.boolean().optional(),
-  isMeta: z.boolean().optional(),
-  isCompactSummary: z.boolean().optional(),
-  origin: z.looseObject({ kind: z.string() }).optional(),
-  turnOrigin: z.string().optional(),
-  message: z.looseObject({
-    id: z.string().optional(),
-    model: z.string().optional(),
-    stop_reason: z.string().nullable().optional(),
+  isSidechain: optional(z.boolean()),
+  isMeta: optional(z.boolean()),
+  isCompactSummary: optional(z.boolean()),
+  origin: optional(z.looseObject({ kind: z.string() })),
+  turnOrigin: optional(z.string()),
+  message: optional(z.looseObject({
+    id: optional(z.string()),
+    model: optional(z.string()),
+    stop_reason: optional(z.string().nullable()),
     usage: z.unknown().optional(),
-    content: z.union([z.string(), z.array(TranscriptBlock)]).optional(),
-  }).optional(),
+    content: optional(z.union([z.string(), z.array(TranscriptBlock)])),
+  })),
 })
 export type TranscriptLine = z.infer<typeof TranscriptLine>
+// A transcript line as this file reads it, and as Claude Code wrote it, with what
+// stays on the Mac taken out. The record keeps the second as the raw line.
+export type TranscriptEntry = { line: TranscriptLine; value: unknown }
 
 // Claude Code's own bookkeeping, not part of the conversation.
 const SKIPPED_TRANSCRIPT_SYSTEM = new Set(['stop_hook_summary', 'turn_duration'])
@@ -257,16 +262,16 @@ function transcriptEvents(line: TranscriptLine, id: string, parentToolUseId: str
 // The events and raw lines that transcript lines make, in order. A subagent's
 // lines carry the Agent call that started it. The raw line leaves out
 // toolUseResult, Claude Code's second copy of a tool's result.
-export function transcriptBatch(lines: TranscriptLine[], parentToolUseId: string | null): EventBatch & { raw: RawLine[] } {
+export function transcriptBatch(entries: TranscriptEntry[], parentToolUseId: string | null): EventBatch & { raw: RawLine[] } {
   const events: NewEvent[] = []
   const raw: RawLine[] = []
   let status: SessionStatus | undefined
-  for (const line of lines) {
+  for (const { line, value } of entries) {
     if (line.uuid === undefined) continue
     const mapped = transcriptEvents(line, line.uuid, parentToolUseId)
     if (!mapped) continue
     events.push(...mapped.events)
-    const { toolUseResult: _copy, ...kept } = line
+    const kept = typeof value === 'object' && value !== null ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'toolUseResult')) : value
     raw.push({ clientId: line.uuid, line: kept })
     status = mapped.status ?? status
   }

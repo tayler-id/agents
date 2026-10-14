@@ -10,6 +10,10 @@ export const SESSION_STATUSES = [
 ] as const
 export type SessionStatus = (typeof SESSION_STATUSES)[number]
 
+// The most a request body may hold. The API refuses a bigger one with 413, and
+// the daemon sizes its posts of a transcript to fit.
+export const MAX_BODY_BYTES = 20 * 1024 * 1024
+
 // Agent, skill and plugin names. A skill's name is also its folder on each machine.
 export const NAME = /^[a-z][a-z0-9-]{0,39}$/
 

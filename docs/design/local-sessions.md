@@ -58,7 +58,7 @@ There were two candidates: Claude Code hooks, and the daemon reading the transcr
 
 What reading transcripts costs:
 
-- **The format is Claude Code's own.** It isn't documented and it changes between versions. 2.1.299 writes more than 20 kinds of line. The daemon parses each line with a schema in which every field is optional, maps the few kinds that make the conversation, and ignores the rest. `test/step21.ts` runs the real CLI, so a change in the format fails a check rather than going quiet.
+- **The format is Claude Code's own.** It isn't documented and it changes between versions. 2.1.299 writes more than 20 kinds of line. The daemon parses each line with a schema in which every field but the type is optional, and a field whose type changes in an update reads as absent rather than losing the line, maps the few kinds that make the conversation, and ignores the rest. `test/step21.ts` runs the real CLI, so a change in the format fails a check rather than going quiet.
 - **A headless session lands when it ends,** since `claude -p` writes its transcript at exit. An interactive session lands within about a second of each line.
 - **No live typing.** The record gets whole messages, never the tokens as Claude writes them.
 - **A closed terminal looks like a running session** when it closes mid-turn, since the transcript doesn't say the process ended. `~/.claude/sessions/<pid>.json` could tell, and isn't used yet.
@@ -84,12 +84,13 @@ The daemon follows the `connected_folders` shape for its machine. Every second i
 - **The daemon's own sessions never count.** Anything whose `cwd` is inside `~/.agents-app` is an app session, which reaches the record as an agent's.
 - **A transcript is named after its session.** One whose lines name another session, as a copied file's can, stays on the Mac, and the daemon's log says so. Otherwise its lines would write into that session, which can be another folder's.
 
-A session that passes all three gets its record session from the API, which checks again that `cwd` is inside the folder. From then on the daemon sends each new line, in posts of at most 200 lines and 4 MB, and keeps how far it got in `~/.agents-app/terminal-sessions.json`. A restart goes on from there, and losing that file only costs a reread, since the record skips any line it already has.
+A session that passes all three gets its record session from the API, which checks again that `cwd` is inside the folder. From then on the daemon sends each new line, in posts of at most 200 lines whose encoded size stays under the API's 20 MiB limit, and keeps how far it got in `~/.agents-app/terminal-sessions.json`. A restart goes on from there, and losing that file only costs a reread, since the record skips any line it already has.
 
 **One bad session, line or file stops nothing else.**
 
 - Each transcript, and each folder of transcripts, is read on its own. One that fails 3 reads in a row, such as a file the daemon may not open, is parked until the daemon starts again, and the daemon's log says why. A file removed between listing and reading it, as Claude Code's cleanup does, is skipped without a word.
 - A post the API fails, or that never reaches it, is tried again on a later read, after 1 s, then 2, 4 and so on up to a minute, while every other session goes on. After 10 failures in a row that the API answered, about four minutes of them, the session is parked too. A post that never reached the API doesn't count, since an API that is down holds every session alike.
+- **No line is lost.** The offset moves past a post's lines only once the record has them. A post the API refuses keeps its lines and parks the session, with the API's answer in the daemon's log, so a daemon started again sends them. A 409 is the one exception: the session's folder was disconnected since it started, so the daemon stops sending it. A line too big for one post parks its session too. Lines that don't parse are counted in the log.
 - The scrubber takes NULs out and makes a lone surrogate U+FFFD, in keys as well as values. Postgres refuses either, and the whole post would fail.
 
 Disconnecting a folder stops its sessions at once. The daemon forgets them, and the API refuses their events from then on. A folder connected again starts over, so this holds after the reconnect too. The daemon saves the folder's `connected_at` with each session it takes, and drops one whose folder's `connected_at` has changed since, which catches a disconnect it missed while it was stopped. The API refuses the events of a session made before its folder's `connected_at`, as it does a disconnected folder's.
@@ -170,6 +171,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
+- No line is lost: a post the API refuses with 404 parks its session and a restart sends its lines, three 4.2 MB prompts in three-byte characters land in posts under 20 MiB, lines that don't parse are counted in the log, and a prompt whose fields changed type lands with its raw line as written.
 - A transcript whose lines name another folder's session writes nothing into it, and the daemon says why. The API refuses that session id for another folder.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
