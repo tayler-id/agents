@@ -10,7 +10,8 @@
 // maintain or admin access, and only while the issue is open and still has the
 // label. Triage access can label issues but is not enough. Opening an issue
 // starts nothing, whatever labels its form adds. The issue's text reaches the
-// agent as a quoted report, without the parts a reader can't see.
+// agent as a quoted report, without the hidden parts server/public-text.ts
+// takes out.
 
 import { z } from 'zod'
 import { many, pool } from './db.ts'

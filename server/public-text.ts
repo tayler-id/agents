@@ -1,8 +1,10 @@
 // Text that crosses between the team and the public. Anyone can open an issue on
 // a public GitHub repo, so what an issue says reaches an agent only as a quoted
-// report, without what a reader of the issue can't see: invisible characters,
-// comments, hidden elements, style and script elements, image alt text and link
-// definitions. Code spans and fenced code stay as written, since GitHub shows
+// report, without these parts a reader of the issue can't see: invisible
+// characters, comments, hidden elements, style and script elements, image alt
+// text and link definitions. Nine other constructs a reader can't see, such as
+// link titles and fence info strings, still pass, as docs/design/projects.md
+// lists. Code spans and fenced code stay as written, since GitHub shows
 // them as written, and only what parses as an HTML tag is taken out. Each pass
 // reads the text once, after it is cut to BODY_MAX, so no issue can hold the
 // API. Going the other way, everything the app sends GitHub's API loses links to

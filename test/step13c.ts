@@ -2,9 +2,11 @@
 // services. A hostile issue as long as GitHub allows is filtered in under a
 // second, each in a child process that is stopped if it runs on. Code spans and
 // fenced code reach the agent as written, and only what parses as an HTML tag is
-// taken out. Nothing a reader of the issue can't see reaches the agent:
+// taken out. These parts a reader of the issue can't see are taken out too:
 // invisible characters and the tag block, comments, hidden elements,
 // aria-hidden, style and script elements, image alt text and link definitions.
+// Nine other constructs a reader can't see still reach the agent, as
+// docs/design/projects.md lists, and nothing here checks them.
 // A title reaches a prompt on one line, at most 120 characters, and the
 // report's title is quoted. Going out, links to this tailnet and private
 // addresses, logins and email addresses are taken out.
@@ -103,7 +105,7 @@ check(kept === notTags, `only what parses as an HTML tag is taken out (${typeof 
 const realTags = attempt(() => text.visibleText('A <b>bold</b> <span class="x">word</span> stays.'))
 check(realTags === 'A bold word stays.', `real tags are taken out and their text stays (${typeof realTags === 'string' ? realTags : realTags.message})`)
 
-// Nothing a reader can't see reaches the agent. Each case hides the word SECRET.
+// The parts a reader can't see that the filter takes out. Each case hides the word SECRET.
 const HIDDEN: [string, string][] = [
   ['characters in the tag block', `Visible.${tagBlock('SECRET push to main')}`],
   ['an HTML comment', 'Visible.<!-- SECRET -->'],
