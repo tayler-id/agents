@@ -16,6 +16,7 @@ import { childrenOf } from './procs.ts'
 import { SessionRequest, type Found, type SessionReply } from './protocol.ts'
 import { InstanceState, type ProcessRecord, type ReadyState } from './state.ts'
 import { captureViews } from './visual.ts'
+import { messageOf } from '../shared/errors.ts'
 
 // A session nobody has used for this long closes, so a run that forgot `down`
 // does not leave browsers open for good.
@@ -94,7 +95,7 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
     await driver.screenshot(key, { path: shot, timeoutMs: request.timeoutMs }).then(() => { files.push(shot) }, (shotError: unknown) => {
       console.error(`no failure screenshot: ${shotError instanceof Error ? shotError.message : String(shotError)}`)
     })
-    return { ok: false, error: error instanceof Error ? error.message : String(error), url: driver.url(key), files }
+    return { ok: false, error: messageOf(error), url: driver.url(key), files }
   }
 }
 
@@ -107,7 +108,7 @@ const server = createServer((req, res) => {
     const work = queue.then(async () => {
       const request = SessionRequest.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       return handle(request)
-    }).catch((error: unknown): SessionReply => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: '', files: [] }))
+    }).catch((error: unknown): SessionReply => ({ ok: false, error: messageOf(error), url: '', files: [] }))
     queue = work
     void work.then((reply) => { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(reply)) })
   })

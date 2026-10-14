@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { config } from './config.ts'
 import { JSON_VALUE, Refused } from '../shared/cli/output.ts'
 import type { Seed } from './state.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
 
 export const Rows = z.array(z.record(z.string(), JSON_VALUE))
 export type Rows = z.infer<typeof Rows>
@@ -68,8 +69,8 @@ export async function readOnly(sql: string, values: string[]): Promise<Rows> {
       const result = await client.query<Record<string, unknown>>({ name: READ_STATEMENT, text: sql, values })
       return Rows.parse(result.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, plain(v)]))))
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === READ_ONLY_VIOLATION) {
-        throw new Refused(`db reads only, so Postgres refused: ${error.message}`, ['Change the record the way a person or an agent does: through bin/agentsctl browser, desktop or api'])
+      if (hasCode(error, READ_ONLY_VIOLATION)) {
+        throw new Refused(`db reads only, so Postgres refused: ${messageOf(error)}`, ['Change the record the way a person or an agent does: through bin/agentsctl browser, desktop or api'])
       }
       if (error instanceof Error && MULTIPLE_COMMANDS.test(error.message)) {
         throw new Refused('db runs one statement at a time, so Postgres refused a second', ['Run each select as its own db command'])

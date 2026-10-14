@@ -5,13 +5,14 @@
 // port some other program holds is skipped.
 
 import { createServer } from 'node:net'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { LIVE_PORTS, PORT_RANGE } from './config.ts'
 import { Refused } from '../shared/cli/output.ts'
 import { stateFile, type InstanceName, type Ports } from './state.ts'
+import { claimFile, readLock } from './lock.ts'
 
 export const PORTS_PER_INSTANCE = 3
 const LOCKS = join(tmpdir(), 'agentsctl', 'ports')
@@ -30,31 +31,22 @@ function free(port: number): Promise<boolean> {
 
 // A lock is stale when the instance that wrote it has no state file any more.
 function stale(port: number): boolean {
-  const file = join(LOCKS, String(port))
-  if (!existsSync(file)) return true
-  const lock = Lock.safeParse(JSON.parse(readFileSync(file, 'utf8')))
+  const lock = Lock.safeParse(readLock(join(LOCKS, String(port))))
   return !lock.success || !existsSync(lock.data.stateFile)
 }
 
 function lockPort(port: number, name: InstanceName): boolean {
   mkdirSync(LOCKS, { recursive: true })
   const file = join(LOCKS, String(port))
-  if (existsSync(file) && stale(port)) rmSync(file)
-  try {
-    writeFileSync(file, JSON.stringify({ instance: name, stateFile: stateFile(name) }), { flag: 'wx' })
-    return true
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false
-    throw error
-  }
+  if (existsSync(file) && stale(port)) rmSync(file, { force: true })
+  return claimFile(file, JSON.stringify({ instance: name, stateFile: stateFile(name) }))
 }
 
 export function releasePorts(ports: Ports, name: InstanceName) {
   for (const port of portsOf(ports)) {
     const file = join(LOCKS, String(port))
-    if (!existsSync(file)) continue
-    const lock = Lock.safeParse(JSON.parse(readFileSync(file, 'utf8')))
-    if (lock.success && lock.data.instance === name) rmSync(file)
+    const lock = Lock.safeParse(readLock(file))
+    if (lock.success && lock.data.instance === name) rmSync(file, { force: true })
   }
 }
 

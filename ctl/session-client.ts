@@ -3,11 +3,13 @@
 // everything it opened.
 
 import { request } from 'node:http'
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { childEnv, ROOT } from './config.ts'
-import { isOurs, spawnRecorded } from './procs.ts'
+import { z } from 'zod'
+import { claimFile, readLock } from './lock.ts'
+import { describe, isOurs, spawnRecorded } from './procs.ts'
 import { SessionReply, type SessionRequest } from './protocol.ts'
 import { readState, saveState, stateFile, type InstanceState, type ReadyState } from './state.ts'
 
@@ -44,28 +46,42 @@ async function answers(state: InstanceState): Promise<boolean> {
   return send(state, PING).then(() => true, () => false)
 }
 
-// Starts the session if none answers. A lock file keeps two calls from starting two.
+// Who holds the lock that starts the session: a process, by its pid and start time.
+const Holder = z.object({ pid: z.number().int().positive(), started: z.string() })
+
+// Whether the lock's holder is gone, so the lock is left over from a command that died.
+async function abandoned(lock: string): Promise<boolean> {
+  const holder = Holder.safeParse(readLock(lock))
+  if (!holder.success) return true
+  const seen = await describe(holder.data.pid)
+  return seen?.started !== holder.data.started
+}
+
+// Starts the session if none answers. A lock file keeps two calls from starting
+// two; one left by a command that died is taken over.
 async function ensure(state: ReadyState): Promise<void> {
   if (await answers(state)) return
   const lock = join(state.scratch, 'session.lock')
-  let mine = false
-  try {
-    writeFileSync(lock, String(process.pid), { flag: 'wx' })
-    mine = true
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
+  const me = await describe(process.pid)
+  if (!me) throw new Error('ps does not show this process, so it cannot take the browser session lock')
+  const content = JSON.stringify({ pid: process.pid, started: me.started })
+  let mine = claimFile(lock, content)
+  if (!mine && await abandoned(lock)) {
+    rmSync(lock, { force: true })
+    mine = claimFile(lock, content)
   }
   try {
-    if (mine) {
-      const record = await spawnRecorded('session', [process.execPath, join(ROOT, 'ctl', 'session-server.ts'), stateFile(state.name)], {
-        cwd: ROOT, env: childEnv('session', {}), log: join(state.evidence, 'session.log'),
-      })
+    const record = mine ? await spawnRecorded('session', [process.execPath, join(ROOT, 'ctl', 'session-server.ts'), stateFile(state.name)], {
+      cwd: ROOT, env: childEnv('session', {}), log: join(state.evidence, 'session.log'),
+    }) : null
+    if (record) {
       const latest = readState(state.name)
       if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while its browser session started`)
       saveState({ ...latest, processes: [...latest.processes, record] })
     }
     const deadline = Date.now() + START_MS
     while (!(await answers(state))) {
+      if (record && !(await isOurs(record))) throw new Error(`the browser session exited as it started. Its log is ${record.log}`)
       if (Date.now() > deadline) throw new Error(`the browser session did not start within ${String(START_MS / 1000)}s. Its log is ${join(state.evidence, 'session.log')}`)
       await sleep(LOOK_MS)
     }

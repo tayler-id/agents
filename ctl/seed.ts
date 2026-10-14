@@ -14,6 +14,7 @@ import { withClient } from './db.ts'
 import { Refused } from '../shared/cli/output.ts'
 import { ForgeError, forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { AgentId, InstanceId, PersonId, readState, RepoId, saveState, TeamId, type ForgeRepo, type InstanceName, type ReadyState, type Seed } from './state.ts'
+import { messageOf } from '../shared/errors.ts'
 
 const run = promisify(execFile)
 
@@ -38,7 +39,7 @@ export async function admin(...args: string[]): Promise<string> {
     return (await run(process.execPath, [join(ROOT, 'server', 'admin.ts'), ...args], { cwd: ROOT, env: childEnv('admin', {}) })).stdout
   } catch (error) {
     const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr.trim() : ''
-    throw new Error(`server/admin.ts ${args.join(' ')} failed: ${stderr || (error instanceof Error ? error.message : String(error))}`)
+    throw new Error(`server/admin.ts ${args.join(' ')} failed: ${stderr || (messageOf(error))}`)
   }
 }
 

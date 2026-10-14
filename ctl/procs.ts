@@ -9,6 +9,7 @@ import { closeSync, openSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { ProcessRecord, ProcessRole } from './state.ts'
+import { hasCode } from '../shared/errors.ts'
 
 const run = promisify(execFile)
 // How often stop() looks again while a process shuts down.
@@ -19,7 +20,7 @@ async function ps(args: string[]): Promise<string> {
     return (await run('ps', args)).stdout
   } catch (error) {
     // ps exits 1 when no process matches, which is an answer, not a failure.
-    if (error instanceof Error && 'code' in error && error.code === 1) return ''
+    if (hasCode(error, 1)) return ''
     throw error
   }
 }
@@ -115,7 +116,7 @@ const signal = (pid: number, name: NodeJS.Signals) => {
     process.kill(pid, name)
   } catch (error) {
     // ESRCH: it exited between the look and the signal, which is what we wanted.
-    if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error
+    if (!(hasCode(error, 'ESRCH'))) throw error
   }
 }
 

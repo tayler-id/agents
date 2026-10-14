@@ -19,6 +19,9 @@ export type Method = z.infer<typeof Method>
 export const Reply = z.object({ status: z.number().int(), body: z.union([JSON_VALUE, z.string()]) })
 export type Reply = z.infer<typeof Reply>
 
+// An API call answers in well under a second. One that takes this long has hung, and the command says so.
+const FETCH_TIMEOUT_MS = 30_000
+
 const PIPELINE_HOOK = /^\/v1\/hooks\/pipelines\/([0-9a-f-]{36})$/
 
 export const url = (state: ReadyState, door: Door, path: string) =>
@@ -42,7 +45,7 @@ export async function call(state: ReadyState, options: {
     const secret = createHmac('sha256', config().AGENTS_HOOK_SECRET).update(pipelineId).digest('hex')
     headers['x-agents-signature'] = `sha256=${createHmac('sha256', secret).update(body ?? '').digest('hex')}`
   }
-  const res = await fetch(url(state, door, options.path), { method: options.method, headers, body })
+  const res = await fetch(url(state, door, options.path), { method: options.method, headers, body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
   const text = await res.text()
   const parsed = text ? JSON_VALUE.safeParse(safeJson(text)) : { success: true as const, data: null }
   return { status: res.status, body: parsed.success ? parsed.data : text }

@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import type { Scrub } from '../scrub.ts'
 import { CliError, counted, EXIT, JSON_VALUE, OUTPUT, UsageError, type ExitCode, type Outside, type Output, type UntrustedField } from './output.ts'
+import { messageOf } from '../errors.ts'
 
 // `secret` marks a flag whose value is never logged or shown, such as a password.
 export type Flag = { kind: 'string' | 'boolean' | 'strings'; about: string; secret?: true }
@@ -238,7 +239,7 @@ const helpOutput = (text: string, commandName: string): Output => {
 const failure = (commandName: string, error: unknown, help: string[]): Output => {
   const known = error instanceof CliError
   const code = known ? error.code : EXIT.failed
-  const message = error instanceof Error ? error.message : String(error)
+  const message = messageOf(error)
   return OUTPUT.parse({
     ok: false, command: commandName, head: `error: ${commandName}: ${message}`, detail: '', outside: [], untrusted: [], already: false, code,
     files: [], help: known && error.help.length ? error.help : help, data: null,

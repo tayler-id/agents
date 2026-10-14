@@ -21,6 +21,7 @@ import { claimPorts, releasePorts } from './ports.ts'
 import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
 import { makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
 import { stopSessionServer } from './session-client.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
 import {
   InstanceName, listStates, ProcessRecord, readState, saveState, stateFile, toFailed, toReady, toStopped, toStopping,
   type Harness, type InstanceState, type ReadyState, type StartingState, type StoppedState,
@@ -170,7 +171,7 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
     saveState(done)
     return { state: done, already: false }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = messageOf(error)
     saveState(toFailed(state, message))
     await down(name, { keepData: false })
     throw new CliError(EXIT.failed, `up failed, and stopped everything it started: ${message}`, [
@@ -222,7 +223,7 @@ async function listener(port: number): Promise<number | null> {
     return out ? Number(out.split('\n')[0]) : null
   } catch (error) {
     // lsof exits 1 when nothing listens there.
-    if (error instanceof Error && 'code' in error && error.code === 1) return null
+    if (hasCode(error, 1)) return null
     throw error
   }
 }
@@ -257,7 +258,7 @@ async function appUsable(state: ReadyState): Promise<{ ok: boolean; detail: stri
     const ok = team && !lacking.length
     return { ok, detail: ok ? `the app opens for ${state.seed.owner.login} on ${state.team}, with ${agents.join(', ')} in the sidebar` : `the app opened, but ${lacking.length ? `the sidebar lacks ${lacking.join(', ')}` : `shows no ${state.team}`}` }
   } catch (error) {
-    return { ok: false, detail: `the app did not render its workspace: ${(error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''}` }
+    return { ok: false, detail: `the app did not render its workspace: ${(messageOf(error)).split('\n')[0] ?? ''}` }
   } finally {
     await driver.shutdown()
   }
@@ -276,7 +277,7 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
     const { DATABASE_URL } = config()
     add('test database', true, `${redact(DATABASE_URL)}, the database .env.test names`)
   } catch (error) {
-    add('test database', false, error instanceof Error ? error.message : String(error))
+    add('test database', false, messageOf(error))
   }
   const livePort = Object.values(state.ports).find((p) => LIVE_PORTS.includes(p))
   add('not live', livePort === undefined, livePort === undefined ? `ports ${Object.values(state.ports).join(', ')} are the instance's own` : `port ${String(livePort)} is the live system's`)
@@ -297,7 +298,7 @@ export async function doctor(name: InstanceName | undefined): Promise<{ instance
     add(door, pid !== null && pid === owner?.pid, pid === null ? `nothing listens on ${String(port)}` : pid === owner?.pid ? `the ${role} process (pid ${String(pid)}) listens on ${String(port)}` : `pid ${String(pid)} listens on ${String(port)}, not the instance's ${role} process`)
   }
   if (state.phase === 'ready') {
-    const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ status: 0, body: error instanceof Error ? error.message : String(error) }))
+    const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ status: 0, body: messageOf(error) }))
     const parsed = Me.safeParse(me.body)
     add('people door answers', parsed.success && parsed.data.team.name === state.team, parsed.success ? `${parsed.data.person.login} is on ${parsed.data.team.name}` : `GET /v1/me answered ${String(me.status)}: ${JSON.stringify(me.body)}`)
     // Electric must serve what the database holds: a shape that stopped following
@@ -338,7 +339,7 @@ const docker = async (...args: string[]) => {
   try {
     return (await run('docker', args)).stdout.trim()
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+    if (hasCode(error, 'ENOENT')) {
       throw new CliError(EXIT.failed, "docker is not on PATH, and down needs it to remove the instance's boxes", [
         'Put the folder holding docker on PATH (/opt/homebrew/bin on this Mac), then run down again. It carries on where it stopped',
       ])
@@ -352,7 +353,7 @@ async function dockerHas(kind: 'container' | 'volume', name: string): Promise<bo
     return true
   } catch (error) {
     // docker exits 1 when there is no such container or volume.
-    if (error instanceof Error && 'code' in error && error.code === 1) return false
+    if (hasCode(error, 1)) return false
     throw error
   }
 }

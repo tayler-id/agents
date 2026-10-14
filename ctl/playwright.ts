@@ -16,7 +16,8 @@ import { describe, type Driver, type NetworkEntry, type PageKey } from './driver
 import type { Engine, Width } from '../shared/evidence.ts'
 import type { Handle } from './protocol.ts'
 import type { ReadyState } from './state.ts'
-import { VOLATILE } from './visual.ts'
+import { instanceRules, VOLATILE } from './visual.ts'
+import { messageOf } from '../shared/errors.ts'
 
 const SIZES: Record<Width, { width: number; height: number }> = { desktop: { width: 1280, height: 820 }, phone: { width: 390, height: 844 } }
 // Over the tailnet the app is plain HTTP on a name that is not localhost, so
@@ -67,7 +68,7 @@ function explain(error: unknown, handle: Handle | undefined, timeoutMs: number):
   if (error instanceof errors.TimeoutError) {
     return new Error(handle ? `${describe(handle)} was not there within ${String(timeoutMs / 1000)}s` : `timed out after ${String(timeoutMs / 1000)}s`)
   }
-  const first = (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''
+  const first = (messageOf(error)).split('\n')[0] ?? ''
   const strict = /strict mode violation: .* resolved to (\d+) elements/.exec(first)
   if (strict && handle) return new Error(`${strict[1] ?? 'several'} elements match ${describe(handle)}. Narrow it with --within or --text.`)
   return new Error(first)
@@ -107,7 +108,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       void r.response().then((response) => {
         holder.network.push({ method: r.method(), url: r.url(), status: response?.status() ?? null, failed: null, ms: Math.round(r.timing().responseEnd) })
       }, (error: unknown) => {
-        holder.network.push({ method: r.method(), url: r.url(), status: null, failed: error instanceof Error ? error.message : String(error), ms: Math.round(r.timing().responseEnd) })
+        holder.network.push({ method: r.method(), url: r.url(), status: null, failed: messageOf(error), ms: Math.round(r.timing().responseEnd) })
       })
     })
     page.on('requestfailed', (r) => {
@@ -309,7 +310,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
           }
         }
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
-      }, VOLATILE)
+      }, [...VOLATILE, ...instanceRules(state.name)])
     },
     record: async (key, action, label, name, timeoutMs) => {
       const holder = await open(key)

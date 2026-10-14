@@ -21,8 +21,9 @@ import { Role, type Found, type Handle, type Op, type Target } from './protocol.
 import { sessionCall, stopSessionServer } from './session-client.ts'
 import { addAgent, addBox, addPerson, seedExtraRepo } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
-import { baseline, compare } from './visual.ts'
+import { baseline, BaselineReason, compare } from './visual.ts'
 import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
+import { messageOf } from '../shared/errors.ts'
 
 const INVOKE = 'bin/agentsctl'
 // How long a browser step waits for its element by default: long enough for
@@ -276,7 +277,7 @@ const apiCommand = command({
       try {
         body = JSON_VALUE.parse(JSON.parse(values.body))
       } catch (error) {
-        throw new UsageError(`--body is not JSON: ${error instanceof Error ? error.message : String(error)}`)
+        throw new UsageError(`--body is not JSON: ${messageOf(error)}`)
       }
     }
     return async () => {
@@ -596,8 +597,10 @@ const visualBaseline = command({
   name: 'visual baseline', args: '', about: "make a run's captures the baselines, logging why",
   flags: { ...FROM, reason: { kind: 'string', about: 'why the view changed on purpose' }, view: { kind: 'strings', about: 'only this view' } }, schema: VisualArgs,
   prepare: (values) => {
-    const reason = values.reason
-    if (!reason) throw new UsageError('visual baseline needs --reason "<why the view changed on purpose>"')
+    // Checked before anything is copied, so a refused reason leaves the baselines as they were.
+    const parsedReason = BaselineReason.safeParse(values.reason)
+    if (!parsedReason.success) throw new UsageError(`visual baseline needs --reason "<why the view changed on purpose>": ${z.prettifyError(parsedReason.error)}`)
+    const reason = parsedReason.data
     return async () => {
       const evidence = evidenceOf(values)
       const dir = values.baselines === undefined ? BASELINES_DIR : fromRoot(values.baselines)
@@ -677,11 +680,12 @@ const mapRun = command({
       }
       const report = await runMap(state, positionals, { visual: values.visual === true, keepGoing: values['keep-going'] === true }, runCli, health)
       const failing = report.features.filter((f) => f.verdict === 'verifier-failed')
+      const blocked = report.features.filter((f) => f.verdict === 'verifier-blocked')
       // Step results quote what the page and the record said.
       const source = 'step results, which quote the page and the record'
       const shared = { outside: [{ source, text: report.text }], untrusted: [{ source, field: 'data.features' }, { source, field: 'data.text' }], files: [report.file], data: report, log: state.evidence }
       if (!report.ok) {
-        return failed(`${String(failing.length)} features failed`, {
+        return failed(`of ${String(report.features.length)} features, ${String(failing.length)} failed and ${String(blocked.length)} could not be checked (blocked)`, {
           ...shared, help: [
             ...(failing.length ? [run('browser record start --label "<what it shows>"', 'and reproduce each failed step twice through the UI before calling it a bug')] : []),
             ...(values['keep-going'] ? [] : [run(`map run ${positionals.join(' ')} --keep-going`, 'to give every step a verdict')]),
@@ -844,7 +848,7 @@ function dryRun(target: Command, argv: string[], values: Record<string, unknown>
       instance = resolve(named)
       where = ` It would act on instance ${instance.name}, which is ${instance.phase}.`
     } catch (error) {
-      where = ` It would fail: ${error instanceof Error ? error.message : String(error)}`
+      where = ` It would fail: ${messageOf(error)}`
     }
   }
   return { kind: 'read', answer: `dry run: ${INVOKE} ${shown} parses.${where} Nothing ran.`, help: [`Run it without --dry-run: ${INVOKE} ${shown}`], data: { argv, instance: instance?.name ?? null } }

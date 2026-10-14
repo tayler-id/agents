@@ -20,6 +20,7 @@ import { FEATURES_DIR, ROOT } from './config.ts'
 import { nextPath } from './evidence.ts'
 import type { Output } from '../shared/cli/output.ts'
 import type { ReadyState } from './state.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
 
 const exec = promisify(execFile)
 
@@ -194,7 +195,7 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
     try {
       parseCommand(argv.slice(1))
     } catch (error) {
-      problems.push(`${where}: ${argv.join(' ')}: ${(error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''}`)
+      problems.push(`${where}: ${argv.join(' ')}: ${(messageOf(error)).split('\n')[0] ?? ''}`)
     }
   }
   const entries = new Map<string, MapEntry>()
@@ -210,7 +211,7 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
       for (const path of [...entry.paths, ...entry.checks]) if (!existsSync(join(ROOT, path))) problems.push(`${f}: its map entry names ${path}, which does not exist`)
       entries.set(f, entry)
     } catch (error) {
-      problems.push(error instanceof Error ? error.message : String(error))
+      problems.push(messageOf(error))
     }
     if (feature.sections.join('|') !== SECTIONS.join('|')) problems.push(`${f} has sections ${feature.sections.join(', ')}; it needs exactly ${SECTIONS.join(', ')}`)
     if (!feature.subFeatures.length) problems.push(`${f} lists no sub-features`)
@@ -224,7 +225,7 @@ export function checkMap(parseCommand: (argv: string[]) => void): string[] {
         try {
           words = tokenize(command)
         } catch (error) {
-          problems.push(`${where}: ${error instanceof Error ? error.message : String(error)}`)
+          problems.push(`${where}: ${messageOf(error)}`)
           continue
         }
         const verb = words[1]?.map((p) => (p.kind === 'text' ? p.text : '')).join('')
@@ -276,7 +277,7 @@ export async function guardMap(base: string): Promise<string[]> {
       return (await exec('git', ['show', `${base}:${path}`], { cwd: ROOT, maxBuffer: 16 * 1024 * 1024 })).stdout
     } catch (error) {
       // git exits 128 when the path is not in that commit: a file the change adds.
-      if (error instanceof Error && 'code' in error && error.code === 128) return null
+      if (hasCode(error, 128)) return null
       throw error
     }
   }
@@ -384,7 +385,7 @@ export async function runMap(state: ReadyState, targets: string[], options: { vi
             break
           }
         } catch (error) {
-          failure = `${command}: ${error instanceof Error ? error.message : String(error)}`
+          failure = `${command}: ${messageOf(error)}`
           commands.push({ command, ok: false, skipped: false, summary: failure })
           break
         }
