@@ -18,6 +18,7 @@ import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
@@ -126,8 +127,9 @@ try {
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   children.push(spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
-    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 1), AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams') },
+    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams') },
   }))
+  await servePeople(PORT + 1, join(home, 'people.sock'))
   await within(20, () => fetch(API).then(() => true, () => false))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
