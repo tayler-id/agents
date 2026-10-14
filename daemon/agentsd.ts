@@ -5,6 +5,7 @@
 // AGENTS_TOKEN, or $AGENTS_HOME/daemon.json. AGENTS_HOME defaults to ~/.agents-app and holds each
 // agent's folder and each task's workspace.
 
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -13,9 +14,10 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import { Permissions, type Command, type EventBatch, type MessagePayload, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
@@ -23,10 +25,12 @@ import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
+import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
 
-const HEARTBEAT_MS = 15_000
 const HOME = process.env.AGENTS_HOME ?? join(homedir(), '.agents-app')
+// Each session's MCP config, and the process id of the harness running it.
+const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
 const STAGE_MCP = fileURLToPath(new URL('./stage-mcp.ts', import.meta.url))
 // Every agent is told about the shared record, so it looks for teammates' work first.
@@ -81,6 +85,8 @@ let secrets = knownSecrets()
 let scrub = makeScrub(secrets)
 // Live text is held back long enough to catch a secret split across chunks.
 const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length + 16))
+// Each session's current process. Only it sets the session's status. A process
+// the daemon stopped or that exited still has its lines recorded, but no status.
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
@@ -141,9 +147,8 @@ function agentHome(agentId: string): string {
 // for a pipeline stage the report_result tool. The file holds the machine's
 // token, so only this user can read it.
 function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>): string {
-  const dir = join(HOME, 'sessions')
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const file = join(dir, `${sessionId}.mcp.json`)
+  mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
+  const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = {
     ...plugins,
     'team-record': { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } },
@@ -238,6 +243,10 @@ async function sendDocuments(sessionId: string, workspaceId: string) {
 }
 
 function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSession {
+  // From here the session's process is the one this starts, so a process stopped
+  // for this restart can't report the session idle over a start that fails.
+  sessions.delete(command.sessionId)
+  setups.delete(command.sessionId)
   const { payload } = command
   if (payload.harness !== 'claude') throw new Error(`no ${payload.harness} harness on this machine`)
   const cwd = payload.workspaceId ? ws.dir(payload.workspaceId) : agentHome(payload.agentId)
@@ -251,28 +260,29 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
   if (payload.skills) writeSkills(cwd, payload.skills)
-  const permissions = Permissions.parse(payload.permissions)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
     allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
-    acceptEdits: permissions.workspaceWrites,
+    acceptEdits: payload.permissions.workspaceWrites,
     maxBudgetUsd: stage?.maxBudgetUsd,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)
   setups.set(command.sessionId, setupOf(payload))
+  const { pid } = session
+  if (pid !== undefined) rememberHarness(SESSIONS_DIR, command.sessionId, pid)
   const live = new LiveStream({
     url: `${config.api}/v1/streams/sessions/${command.sessionId}`, token: config.token,
     name: `daemon-${command.sessionId}`, scrub, hold: liveHold(),
   })
   void (async () => {
     for await (const { live: deltas, ...batch } of session.updates()) {
-      // Once a restart has replaced this process, the session's status is the new one's to report.
+      // A process that is no longer the session's current one reports no status.
       if (sessions.get(command.sessionId) !== session) delete batch.status
       if (deltas?.length) live.push(deltas)
-      if (batch.events.length || batch.raw?.length || batch.status || batch.harnessSessionId) await post(command.sessionId, batch)
+      if (batch.events.length || batch.raw?.length || batch.status || batch.harnessSessionId || batch.ended) await post(command.sessionId, batch)
       if (payload.workspaceId && batch.events.some((e) => e.kind === 'usage')) {
         await sendDocuments(command.sessionId, payload.workspaceId).catch((error: unknown) => { console.error('documents:', messageOf(error)) })
       }
@@ -280,6 +290,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       if (payload.workspaceId && batch.events.some((e) => e.kind === 'tool_result' || e.kind === 'usage')) refreshChanges(payload.workspaceId)
     }
     await live.close()
+    if (pid !== undefined) forgetHarness(SESSIONS_DIR, command.sessionId, pid)
     if (sessions.get(command.sessionId) === session) {
       sessions.delete(command.sessionId)
       setups.delete(command.sessionId)
@@ -306,12 +317,12 @@ async function apply(command: Command): Promise<unknown> {
     // the new setup, resuming the same conversation. One mid-turn finishes first.
     if (live?.alive && !live.busy && command.payload.harnessSessionId && setups.get(command.sessionId) !== setupOf(command.payload)) live.stop()
     if (live?.alive) {
-      live.send(command.payload.text)
+      live.send(command.payload.text, [command.id])
       return null
     }
     const { workspaceId } = command.payload
     if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
-    startSession(command).send(command.payload.text)
+    startSession(command).send(command.payload.text, [command.id])
     return null
   }
   if (command.kind === 'stop') {
@@ -327,7 +338,8 @@ async function apply(command: Command): Promise<unknown> {
 async function handle(command: Command) {
   try {
     const result = await apply(command)
-    await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
+    // A message is finished by the turn that answers it, which the harness reports.
+    if (command.kind !== 'message') await api('POST', `/v1/instance/commands/${command.id}`, { status: 'done', result })
   } catch (error) {
     const message = scrub(error instanceof Error ? error.message : String(error))
     console.error(`command ${command.id} failed:`, message)
@@ -350,18 +362,60 @@ function inOrder(sessionId: string, work: () => Promise<void>) {
 async function heartbeat() {
   while (!stopping) {
     await api('POST', '/v1/instance/heartbeat', { status: 'online' }).catch((error: unknown) => { console.error(messageOf(error)) })
-    await sleep(HEARTBEAT_MS)
+    await sleep(HEARTBEAT_SEC * 1000)
+  }
+}
+
+// The API's answer to recover, with each turn to resume read on its own, so a
+// turn this daemon can't read fails alone and holds up no other.
+const RecoveryAnswer = Recovery.extend({ resumed: z.array(z.unknown()) })
+// Enough of a turn to fail it.
+const TurnTarget = z.object({ command: z.object({ sessionId: z.uuid() }), covers: z.array(z.uuid()).min(1) })
+
+function failTurn(sessionId: string, covers: string[], why: string) {
+  const reason = scrub(why)
+  console.error(`session ${sessionId}:`, reason)
+  void post(sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: { how: 'exited', ids: covers, reason } })
+}
+
+// Resumes a session the last run cut off, with one message that answers all of
+// its unfinished messages. A session that can't start fails them with the reason.
+function resume(turn: unknown) {
+  const parsed = ResumeTurn.safeParse(turn)
+  if (!parsed.success) {
+    const target = TurnTarget.safeParse(turn)
+    const reason = `This machine could not read the turn to resume: ${z.prettifyError(parsed.error)}`
+    if (target.success) failTurn(target.data.command.sessionId, target.data.covers, reason)
+    else console.error(scrub(reason))
+    return
+  }
+  const { command, covers } = parsed.data
+  console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
+  try {
+    startSession(command).send(command.payload.text, covers)
+  } catch (error) {
+    failTurn(command.sessionId, covers, messageOf(error))
   }
 }
 
 // The machine's queue arrives through sync. Each queued command is claimed, which
 // only one claimer can win, then handled in the order it arrived.
 async function listen(signal: AbortSignal) {
+  // Resuming beside a harness the last run left would put two processes on one
+  // conversation, so a daemon that can't stop one exits, and its next start tries again.
+  const stopped = await stopLeftHarnesses(SESSIONS_DIR).catch((error: unknown) => {
+    console.error('stopping the harnesses the last run left:', messageOf(error))
+    process.exit(1)
+  })
+  if (stopped.length) console.log(`stopped the harnesses the last run left for ${stopped.length} sessions`)
   // The API may not be up yet, after a reboot or a server restart. Keep trying.
   for (let attempt = 0; !stopping; attempt++) {
     try {
-      const { requeued } = await api<{ requeued: number }>('POST', '/v1/instance/commands/requeue', {})
-      if (requeued) console.log(`requeued ${requeued} unfinished commands`)
+      const recovery = RecoveryAnswer.parse(await api<unknown>('POST', '/v1/instance/recover', {}))
+      if (recovery.requeued) console.log(`requeued ${recovery.requeued} unfinished commands`)
+      if (recovery.ended) console.log(`ended ${recovery.ended} messages a person asked to stop while this machine was down`)
+      if (recovery.gaveUp) console.log(`failed ${recovery.gaveUp} messages whose turn kept stopping this machine`)
+      for (const turn of recovery.resumed) resume(turn)
       // Workspaces from before this process may have changes the API has not seen.
       for (const workspaceId of ws.ids()) refreshChanges(workspaceId)
       break
@@ -393,6 +447,16 @@ async function listen(signal: AbortSignal) {
 async function claimAndHandle(commandId: string) {
   try {
     const { command } = await api<{ command: Command }>('POST', `/v1/instance/commands/${commandId}/claim`, {})
+    if (command.kind === 'message') {
+      // The claim's answer is cast, not read. An API of another version can queue a
+      // payload this daemon can't use, such as one with no permissions.
+      const payload = MessagePayload.safeParse(command.payload)
+      if (!payload.success) {
+        failTurn(command.sessionId, [command.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
+        return
+      }
+      command.payload = payload.data
+    }
     // Workspace work can take minutes, so it runs beside the queue rather than
     // holding up messages and interrupts for sessions.
     if (command.sessionId === null) void handle(command)
@@ -510,12 +574,17 @@ function followSignIns(signal: AbortSignal) {
   new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
 }
 
+// A session mid-turn is left as a crash leaves it, for the next start to stop
+// its process and resume its messages. The others end cleanly.
 async function shutdown() {
   if (stopping) return
   stopping = true
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
-  for (const session of sessions.values()) session.stop()
+  for (const [id, session] of sessions) {
+    if (session.busy) sessions.delete(id)
+    else session.stop()
+  }
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)

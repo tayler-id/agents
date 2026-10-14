@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
+import { isWorking } from '../../shared/lifecycle.ts'
 import {
   act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
@@ -147,8 +148,6 @@ function Welcome({ me }: { me: Me }) {
   )
 }
 
-const LIVE = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
-
 function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs: Run[]; openPalette: () => void }) {
   const { rows: agents } = useSnapshot<Agent>('agents')
   const { rows: conversations } = useSnapshot<Conversation>('conversations')
@@ -212,7 +211,7 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
     return <button type="button" className="link small" onClick={act(() => box(i, 'claim'))}>Claim</button>
   }
 
-  const running = sessions.filter((s) => LIVE.has(s.status))
+  const running = sessions.filter((s) => isWorking(s.status))
   // Replays score proposals. They show on their proposal's run, not here.
   const recentRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8)
   const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)

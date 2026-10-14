@@ -8,6 +8,13 @@
 // fail. Outside a stage, the first of the scenario's `turns` rules whose `match`
 // appears in the message decides the reply and any files written. Otherwise it
 // answers "fake reply".
+//
+// A rule can also append a line to a file through one Bash call, asking a person
+// first the way Claude asks before a gated tool. For crash checks it can stop
+// once the line is written and before the call's result is printed, and wait to
+// be killed. Told about that call by its id after a restart, it reads the file
+// before appending again. Each start and everything it receives is logged in
+// .fake, with its process id.
 
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -48,8 +55,28 @@ const sessionId = flag('--resume') ?? randomUUID()
 // token it was given is kept only as a fingerprint.
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
-appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha }) + '\n')
-type Rule = { match: string; reply?: string; write?: Record<string, string> }
+appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid }) + '\n')
+type Append = {
+  // The call's tool_use id. Random when unset.
+  id?: string
+  file: string
+  line: string
+  // Ask a person before the line is written.
+  ask?: boolean
+  // The first time this rule runs in this folder, stop after writing the line and
+  // before printing the call's result.
+  hangOnce?: boolean
+  // When the message names this call's id, read the file first, and leave it
+  // alone if the line is there.
+  checkNamed?: boolean
+  // Make the call only the first time this rule runs in this folder, as a resumed
+  // session might decide not to ask again.
+  askOnce?: boolean
+  // Exit while the approval waits, before the call has a result.
+  dieAsking?: boolean
+}
+// `hang` stops the turn when the rule matches, as if the model never finished.
+type Rule = { match: string; reply?: string; write?: Record<string, string>; append?: Append; hang?: boolean }
 const scenario: Record<string, Record<string, Step[]>> & { turns?: Rule[] } = process.env.AGENTS_FAKE_SCENARIO
   ? JSON.parse(readFileSync(process.env.AGENTS_FAKE_SCENARIO, 'utf8')) : {}
 
@@ -76,17 +103,81 @@ const counter = (name: string) => {
 }
 const costFile = join(state, `${sessionId}.cost`)
 
+const received = (entry: Record<string, unknown>) =>
+  appendFileSync(join(state, 'received.jsonl'), JSON.stringify({ pid: process.pid, sessionId, ...entry }) + '\n')
+
+function callStart(id: string, name: string, input: Record<string, unknown>) {
+  emit({ type: 'assistant', parent_tool_use_id: null, message: { id: `msg_${randomUUID().slice(0, 8)}`, model: 'fake', content: [{ type: 'tool_use', id, name, input }] } })
+}
+
+function callResult(id: string, result: string, isError = false) {
+  emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: isError }] } })
+}
+
 function tool(name: string, input: Record<string, unknown>, result: string, isError = false) {
   const id = `toolu_${randomUUID().slice(0, 8)}`
-  emit({ type: 'assistant', parent_tool_use_id: null, message: { id: `msg_${randomUUID().slice(0, 8)}`, model: 'fake', content: [{ type: 'tool_use', id, name, input }] } })
-  emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: isError }] } })
+  callStart(id, name, input)
+  callResult(id, result, isError)
+}
+
+// Permission requests waiting for the daemon's answer, by request id.
+type Decision = { behavior: 'allow' | 'deny'; message?: string }
+const waiting = new Map<string, (decision: Decision) => void>()
+
+function askPerson(toolUseId: string, input: Record<string, unknown>): Promise<Decision> {
+  const requestId = randomUUID()
+  emit({ type: 'control_request', request_id: requestId, request: { subtype: 'can_use_tool', tool_name: 'Bash', input, tool_use_id: toolUseId, description: input.description } })
+  return new Promise((resolve) => waiting.set(requestId, resolve))
+}
+
+// Stays alive, as Claude does mid-turn, until something kills it.
+const hang = () => new Promise<never>(() => { setInterval(() => undefined, 60_000) })
+
+// Appends the rule's line through one Bash call. Returns what to say instead of
+// the rule's reply, or null.
+async function appendLine(text: string, append: Append): Promise<string | null> {
+  const file = join(cwd, append.file)
+  if (append.askOnce && counter(`asked-${append.file}`) > 0) return `I left ${append.file} alone.`
+  if (append.checkNamed && append.id && text.includes(append.id)) {
+    const readId = `toolu_${randomUUID().slice(0, 8)}`
+    const content = existsSync(file) ? readFileSync(file, 'utf8') : ''
+    callStart(readId, 'Read', { file_path: file })
+    callResult(readId, content)
+    if (content.split('\n').includes(append.line)) return `${append.file} already has ${append.line}, so I left it alone.`
+  }
+  const id = append.id ?? `toolu_${randomUUID().slice(0, 8)}`
+  const input = { command: `echo ${append.line} >> ${append.file}`, description: `Append ${append.line} to ${append.file}` }
+  callStart(id, 'Bash', input)
+  if (append.ask) {
+    const asking = askPerson(id, input)
+    if (append.dieAsking) {
+      // On macOS a pipe write is still in flight when the call returns.
+      await new Promise((resolve) => process.stdout.write('', resolve))
+      process.stderr.write('fake claude died while a person was asked\n')
+      process.exit(3)
+    }
+    const decision = await asking
+    if (decision.behavior === 'deny') {
+      callResult(id, decision.message ?? 'A person denied this.', true)
+      return `A person denied appending to ${append.file}.`
+    }
+  }
+  appendFileSync(file, `${append.line}\n`)
+  if (append.hangOnce && counter(`hang-${append.file}`) === 0) await hang()
+  callResult(id, '')
+  return null
 }
 
 function say(text: string) {
   emit({ type: 'assistant', parent_tool_use_id: null, message: { id: `msg_${randomUUID().slice(0, 8)}`, model: 'fake', content: [{ type: 'text', text }] } })
 }
 
-async function turn(text: string) {
+// With --replay-user-messages, Claude prints each message back, with the uuid it
+// was sent with, when a turn takes it in.
+const replays = args.includes('--replay-user-messages')
+
+async function turn(text: string, uuid: string | undefined) {
+  if (replays) emit({ type: 'user', isReplay: true, uuid: uuid ?? randomUUID(), parent_tool_use_id: null, message: { role: 'user', content: text } })
   emit({ type: 'system', subtype: 'init', cwd, tools: [], model: 'fake' })
   let step: Step = {}
   const nudge = text.startsWith('You ended your turn without calling report_result')
@@ -105,6 +196,8 @@ async function turn(text: string) {
     process.stderr.write('fake claude was told to fail\n')
     process.exit(3)
   }
+  if (rule?.hang) await hang()
+  const note = rule?.append ? await appendLine(text, rule.append) : null
   for (const [path, content] of Object.entries(step.write ?? {})) {
     mkdirSync(dirname(join(cwd, path)), { recursive: true })
     writeFileSync(join(cwd, path), content)
@@ -119,7 +212,7 @@ async function turn(text: string) {
   if (key && step.outcome && !(holdsBack && !nudge)) {
     tool('mcp__stage__report_result', { outcome: step.outcome, summary: step.summary ?? `fake ${step.outcome}`, data: step.data ?? {} }, `Recorded ${step.outcome}.`)
   }
-  say(key ? `Done with this stage (${step.outcome ?? 'no outcome'}).` : rule?.reply ?? 'fake reply')
+  say(key ? `Done with this stage (${step.outcome ?? 'no outcome'}).` : note ?? rule?.reply ?? 'fake reply')
   const cost = (existsSync(costFile) ? Number(readFileSync(costFile, 'utf8')) : 0) + (step.cost ?? 0.01)
   writeFileSync(costFile, String(cost))
   emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', num_turns: 1, total_cost_usd: cost })
@@ -131,9 +224,17 @@ for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line)
   if (message.type === 'user') {
     const content = message.message?.content
-    queue = queue.then(() => turn(typeof content === 'string' ? content : ''))
+    const text = typeof content === 'string' ? content : ''
+    received({ kind: 'message', text })
+    const uuid = typeof message.uuid === 'string' ? message.uuid : undefined
+    queue = queue.then(() => turn(text, uuid))
   } else if (message.type === 'control_request') {
     emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id } })
+  } else if (message.type === 'control_response') {
+    const { request_id: requestId, response: decision } = message.response ?? {}
+    received({ kind: 'answer', requestId, behavior: decision?.behavior })
+    waiting.get(requestId)?.(decision)
+    waiting.delete(requestId)
   }
 }
 await queue

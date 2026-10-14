@@ -10,6 +10,8 @@ import { DraftView } from './Draft.tsx'
 import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { taskState } from '../../shared/work.ts'
+import { Interrupted } from './Conversation.tsx'
+import { inFlight, isWorking } from '../../shared/lifecycle.ts'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -109,8 +111,6 @@ export function NewTask() {
   )
 }
 
-const WORKING = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
-
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
 export function TaskView({ taskId, openSession, openFile }: { taskId: string; openSession: string | null; openFile: string | null }) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
@@ -147,7 +147,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         </div>
         <div className="head-actions">
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
-          {session && WORKING.has(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
+          {session && inFlight(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>
       </header>
       <div className="page-body">
@@ -155,7 +155,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
         <TaskOrder task={task} state={state} />
         <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
-          {(changed) => <PullRequests task={task} working={Boolean(session && WORKING.has(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
+          {(changed) => <PullRequests task={task} working={Boolean(session && inFlight(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
         </Changes>
         {!!documents.length && (
           <>
@@ -181,11 +181,12 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
   )
 }
 
-// What was asked of the task's agent and what it said back, live.
+// What was asked of the task's agent and what it said back, live. The text a
+// resumed session is sent after its machine stopped is the server's, not a request.
 function Transcript({ session, agentName }: { session: Session; agentName: string }) {
   const { rows: events } = useRows<EventRow>('events', { session: session.id })
   const said = useMemo(() => [...events].sort(byNumber((e: EventRow) => e.seq))
-    .filter((e) => (e.kind === 'user' || e.kind === 'error' || (e.kind === 'assistant' && !e.parent_tool_use_id)) && e.text), [events])
+    .filter((e) => ((e.kind === 'user' && !('resumes' in e.body)) || e.kind === 'error' || (e.kind === 'assistant' && !e.parent_tool_use_id)) && e.text), [events])
   return (
     <ol className="messages task-messages" aria-label="Messages">
       {said.map((e) => (
@@ -197,7 +198,8 @@ function Transcript({ session, agentName }: { session: Session; agentName: strin
           {e.kind === 'error' ? <p className="text">{e.text}</p> : <div className="text"><Markdown text={e.text ?? ''} /></div>}
         </li>
       ))}
-      {WORKING.has(session.status) && <li className="message agent typing"><span className="small working"><span className="dot running" aria-hidden="true" />working</span></li>}
+      {isWorking(session.status) && <li className="message agent typing"><span className="small working"><span className="dot running" aria-hidden="true" />working</span></li>}
+      {session.status === 'lost' && <Interrupted session={session} agentName={agentName} />}
     </ol>
   )
 }

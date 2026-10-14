@@ -107,6 +107,9 @@ export function toBatch(line: Line): EventBatch {
   if (type === 'system') {
     return { events: SKIPPED_SYSTEM.has(subtype ?? '') ? [] : [{ clientId, kind: 'notice', text: subtype, body: { subtype, ...rest } }], raw }
   }
+  // A message printed back as Claude takes it into a turn. It is already in the
+  // record as the person's user event, so it only tells the harness which turn took it.
+  if (type === 'user' && line.isReplay === true) return { events: [], raw }
   if (type === 'assistant' || type === 'user') {
     const content = line.message?.content
     const blocks: Block[] = typeof content === 'string' ? [{ type: 'text', text: content }] : content ?? []
@@ -157,18 +160,28 @@ function liveDeltas(line: Line): EventBatch['live'] {
 class ClaudeSession implements HarnessSession {
   private child
   private stderr: string[] = []
-  private turns = 0
+  // Each message sent and not yet answered, by the uuid it was sent with, and
+  // the message commands it answers.
+  private sent = new Map<string, readonly string[]>()
+  // The uuids of the messages the running turn has taken in, in order.
+  private taken: string[] = []
+  // Permission requests waiting for an answer, by request id.
+  private requests = new Set<string>()
   alive = true
 
   get busy() {
-    return this.turns > 0
+    return this.sent.size > 0
+  }
+
+  get pid() {
+    return this.child.pid
   }
 
   constructor(options: HarnessStart) {
     // An agent runs the same on every machine: none of the host user's own Claude
     // settings, hooks, plugins or MCP servers, only what the agent is given.
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-      '--include-partial-messages', '--permission-prompt-tool', 'stdio',
+      '--include-partial-messages', '--replay-user-messages', '--permission-prompt-tool', 'stdio',
       '--setting-sources', 'project,local', '--strict-mcp-config']
     if (options.model) args.push('--model', options.model)
     if (options.resume) args.push('--resume', options.resume)
@@ -191,12 +204,16 @@ class ClaudeSession implements HarnessSession {
     })
   }
 
-  send(text: string) {
-    this.turns += 1
-    this.write({ type: 'user', message: { role: 'user', content: text } })
+  // Claude prints a message back with its uuid when a turn takes it in, which is
+  // how the turn's result knows which messages it answered.
+  send(text: string, ids: readonly string[]) {
+    const uuid = randomUUID()
+    this.sent.set(uuid, ids)
+    this.write({ type: 'user', uuid, message: { role: 'user', content: text } })
   }
 
   answer({ requestId, behavior, message, updatedInput }: AnswerPayload) {
+    if (!this.requests.delete(requestId)) throw new Error(`no request ${requestId} is waiting in this session's process`)
     const response = behavior === 'allow'
       ? { behavior, updatedInput: updatedInput ?? {} }
       : { behavior, message: message ?? 'A person denied this.' }
@@ -227,16 +244,37 @@ class ClaudeSession implements HarnessSession {
         yield { events: [{ clientId, kind: 'notice', text: rawLine, body: { unparsed: rawLine } }], raw: [{ clientId, line: rawLine }] }
         continue
       }
-      if (line.type === 'result') this.turns = Math.max(0, this.turns - 1)
-      yield toBatch(line)
+      const batch = toBatch(line)
+      this.follow(line, batch)
+      yield batch
     }
-    // A clean exit leaves the session idle, ready to resume on the next message.
+    // A clean exit with nothing left to answer leaves the session idle, ready to
+    // resume on the next message. Any message still held failed with the process.
     const code = await exited
-    if (code === 0) {
+    const held = [...this.sent.values()].flat()
+    this.sent.clear()
+    if (code === 0 && !held.length) {
       yield { events: [], status: 'idle' }
-    } else {
-      const stderr = this.stderr.join('').slice(-8000)
-      yield { events: [{ clientId: randomUUID(), kind: 'error', text: stderr, body: { exitCode: code, stderr } }], status: 'failed' }
+      return
+    }
+    const stderr = this.stderr.join('').slice(-8000)
+    const reason = code === 0 ? 'Claude exited before it answered every message it was given.'
+      : stderr || `Claude exited ${code === null ? 'on a signal' : `with code ${code}`} and said nothing.`
+    yield {
+      events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { exitCode: code, stderr } }], status: 'failed',
+      ...(held.length ? { ended: { how: 'exited', ids: held, reason } } : {}),
+    }
+  }
+
+  // Which messages the running turn has taken in, and which permission requests wait.
+  private follow(line: Line, batch: EventBatch) {
+    if (line.type === 'user' && line.isReplay === true && typeof line.uuid === 'string' && this.sent.has(line.uuid)) this.taken.push(line.uuid)
+    if (line.type === 'control_request' && batch.events.some((event) => event.kind === 'ask')) this.requests.add(String(line.request_id))
+    if (line.type === 'result') {
+      const ids = this.taken.flatMap((uuid) => this.sent.get(uuid) ?? [])
+      if (ids.length) batch.ended = { how: 'answered', ids }
+      for (const uuid of this.taken) this.sent.delete(uuid)
+      this.taken = []
     }
   }
 

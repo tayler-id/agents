@@ -29,10 +29,10 @@ export function SessionPanel({ sessionId, of, onClose }: { sessionId: string; of
         <button type="button" className="ghost" onClick={onClose}>Close</button>
       </header>
       <ol className="events" tabIndex={0} aria-label="Events">
-        {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init').map((e) => (
+        {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init' || e.body.subtype === 'interrupted').map((e) => (
           <li key={String(e.id)} className={`event ${e.kind}${e.parent_tool_use_id ? ' sub' : ''}`}>
             <div className="meta">
-              <span className="kicker">{LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
+              <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
               <span className="muted small">{clock(e.created_at)}</span>
             </div>
             {e.text && (e.text.length > 280

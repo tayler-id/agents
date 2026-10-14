@@ -7,7 +7,7 @@
 
 import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
-import { many, maybe, one, pool } from './db.ts'
+import { many, maybe, one, pool, tx } from './db.ts'
 import { appendEvents, appendMessage, HttpError, type Person } from './record.ts'
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
@@ -17,6 +17,7 @@ import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startR
 import { expireTurns } from './rooms.ts'
 import { finishPushes } from './pulls.ts'
 import { WORKSPACE_PERMISSIONS } from './permissions.ts'
+import { markLostMachines } from './durability.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -703,20 +704,17 @@ async function step(client: pg.PoolClient, run: Run, pipeline: Pipeline): Promis
 const failures = new Map<string, number>()
 
 async function advance(runId: string) {
-  const client = await pool.connect()
   try {
-    await client.query('begin')
-    const run = await maybe<Run>(client, `select * from runs where id = $1 and status in ('queued', 'running', 'waiting') for update skip locked`, [runId])
-    if (run) {
+    await tx(async (client) => {
+      const run = await maybe<Run>(client, `select * from runs where id = $1 and status in ('queued', 'running', 'waiting') for update skip locked`, [runId])
+      if (!run) return
       const pipeline = await loadVersion(client, run.pipeline_version_id)
       for (let i = 0; i < 25 && ACTIVE.includes(run.status); i++) {
         if (!(await step(client, run, pipeline))) break
       }
-    }
-    await client.query('commit')
+    })
     failures.delete(runId)
   } catch (error) {
-    await client.query('rollback').catch(() => undefined)
     const count = (failures.get(runId) ?? 0) + 1
     failures.set(runId, count)
     console.error(`run ${runId}:`, messageOf(error))
@@ -727,23 +725,6 @@ async function advance(runId: string) {
         `update runs set status = 'failed', note = $2, ended_at = now() where id = $1 and status in ('queued', 'running', 'waiting')`,
         [runId, `The runner kept failing: ${messageOf(error)}`]).catch(() => undefined)
     }
-  } finally {
-    client.release()
-  }
-}
-
-async function withClient<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    const result = await fn(client)
-    await client.query('commit')
-    return result
-  } catch (error) {
-    await client.query('rollback').catch(() => undefined)
-    throw error
-  } finally {
-    client.release()
   }
 }
 
@@ -767,7 +748,7 @@ async function fireCron(teamIds: string[] | null) {
         console.error(`cron for pipeline ${row.id}: no repo ${trigger.repo}`)
         continue
       }
-      await withClient((client) => startRun(client, {
+      await tx((client) => startRun(client, {
         pipelineId: row.id, trigger: 'cron', report: { title: trigger.title, body: trigger.body ?? '' },
         repoId: repo.id, once: `cron:${row.id}:${trigger.schedule}:${due.toISOString()}`,
       })).catch((error: unknown) => { console.error(`cron for pipeline ${row.id}:`, messageOf(error)) })
@@ -785,7 +766,7 @@ async function fireRoutines(teamIds: string[] | null) {
      where r.enabled and r.trigger = 'cron' and a.archived_at is null and ($1::uuid[] is null or a.team_id = any($1))`, [teamIds])
   for (const routine of rows) {
     const due = routine.checked && lastFire(routine.schedule, new Date(routine.checked), now)
-    await withClient(async (client) => {
+    await tx(async (client) => {
       const { rowCount } = await client.query(
         `update routines set trigger_config = trigger_config || jsonb_build_object('checkedAt', $2::text)
          where id = $1 and trigger_config->>'checkedAt' is not distinct from $3`, [routine.id, now.toISOString(), routine.checked])
@@ -838,8 +819,9 @@ export function startRunner() {
           await fireRoutines(teams).catch(logged('routines'))
           await stopIdleBoxes(teams).catch(logged('idle boxes'))
         }
-        await withClient((client) => expireTurns(client, teams)).catch(logged('turns'))
+        await tx((client) => expireTurns(client, teams)).catch(logged('turns'))
         await finishPushes(teams).catch(logged('pull requests'))
+        await markLostMachines(teams).catch(logged('lost machines'))
         const rows = await many<{ id: string }>(pool,
           `select id from runs where status in ('queued', 'running', 'waiting') and ($1::uuid[] is null or team_id = any($1))
            order by created_at`, [teams])

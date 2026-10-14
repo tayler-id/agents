@@ -32,11 +32,11 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 - **Solves now.** It is the only door into Postgres. People open a DM with an agent and post messages. Machines claim their commands, report them done, and post their sessions' events. It checks who is calling: a machine by its token, a person by their Tailscale login.
 - **Helps later.** The app, webhooks and pipelines all write through this door.
-- **Survives Postgres restarting.** It waits for Postgres when it starts, replaces connections Postgres drops, and its runner listens again, so restarting colima or the Mac needs nothing from you. `check:step2` drops its connections to prove it.
+- **Survives Postgres restarting.** It waits for Postgres when it starts, replaces connections Postgres drops, and its runner listens again, so restarting colima or the Mac needs nothing from you. `check:step2` drops its connections to prove it. A connection Postgres drops in the middle of a transaction fails that transaction and leaves the pool, and the process keeps running. `test/step18i.ts` drops one inside `tx` in `server/db.ts`. Every connection the server takes from the pool, for a transaction or for the migrations, comes through `withConnection` there and listens the same way, except the runner's listening connection, which has its own listener.
 
 ### Commands (`commands` table)
 
-- **Solves now.** A queue of work for each machine. The daemon waits on it and claims what arrives, and each command records whether it was done.
+- **Solves now.** A queue of work for each machine. The daemon waits on it and claims what arrives, and each command records whether it was done. A `message` command stays claimed until the turn that answers it ends, so a machine that dies mid-turn leaves its unfinished messages marked.
 - **Helps later.** Interrupts, approvals answered from the app, and running a tool on your Mac for an agent on a box all travel the same way. In step 2 the daemon reads its queue through sync, like the app does.
 
 ### The daemon (`daemon/agentsd.ts`, `daemon/claude.ts`)
@@ -300,6 +300,35 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 - **Solves now.** step14 drives the API, daemon, forge and runner with the stand-in for Claude. step14b is Tayler's README task in three browsers at desktop and phone width. step14c covers drafts, the order of work, the palette, pinned comments and a run's gate the same way. All but 16 of step14's checks, which the build log names, were seen failing with what they guard broken.
 - **Helps later.** A change that breaks any of these parts fails a named check.
+
+## Durability
+
+The design is `docs/design/durability.md`.
+
+**A regression for Tayler to decide.** A daemon built before this branch breaks against it. An old daemon that starts retries the removed requeue route forever while its machine shows online, and one already running gets 400 when it reports a message done, so its session and any pipeline stage in it are marked failed while its Claude keeps working. A new daemon against an old API retries `/v1/instance/recover` the same way. Rolled out in this order, no old daemon reaches the new API: rebuild the box image with `server/boxes.ts build`, recreate every box's container, stopped boxes included, and check that each runs the new image, then restart the Mac's daemon, then the API. The branch lands without a transition, and Tayler can overrule that. The design doc has the details, including when to do the box steps.
+
+### Messages finish with their turn (`daemon/claude.ts`, `server/durability.ts`, `shared/lifecycle.ts`)
+
+- **Solves now.** Claude prints each message back when a turn takes it in, and the turn's result says which messages it answered. The server marks those done in the same transaction that records the turn's end, and marks a message failed when its Claude exits first. A follow-up a person sends mid-turn still joins that turn. The daemon's busy flag no longer sticks after Claude answers two messages with one result. `test/step18g.ts`.
+- **Helps later.** `moveMessages` moves a message only along the table in `shared/lifecycle.ts`, which has no move back to the queue, and throws otherwise, so a path that changes a message's status through it can't run a turn twice. Nothing but review keeps a new path from writing the status directly. `test/step18i.ts` checks the refusals.
+
+### Restart and resume (`daemon/fence.ts`, `POST /v1/instance/recover`)
+
+- **Solves now.** A daemon that starts stops any Claude its last run left, then reports in. Every session it had unfinished messages in is marked interrupted in the record and resumed in the same Claude conversation, told which tool calls may or may not have run and every message it had not answered. In `test/step18a.ts` real Claude killed mid-poem finishes the poem. In `test/step18b.ts` a line appended before the crash stays written once, and a daemon stopped with SIGTERM mid-turn leaves the turn for its next start to resume. A turn resumed three times that stops its machine a fourth time fails with the reason instead, `test/step18l.ts`. The daemon parses what recover returns, each session on its own, and a claimed message's payload the same way, so a message an older API queued without `permissions` fails with the reason, `test/step18l.ts`.
+- **Helps later.** Another engine with durable sessions can run behind `daemon/harness.ts` against the same checks.
+- **Not done.** No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read. A daemon killed during a task's first clone can resume the turn in a half-cloned tree while the requeued setup runs beside it. No check holds a `setup_workspace`, `exec` or `push` command across a restart, for the requeue in `recoverMachine`.
+
+### Approvals across a restart (`asks.request_ended_at`, `server/durability.ts`)
+
+- **Solves now.** An approval card stays answerable while its machine is down and after it restarts. When the resumed session asks again for the same tool and input, the same card takes the request, and an answer already given reaches it, `test/step18c.ts`. A denial given while the machine is down reaches the resumed session as a denial, and a decision that may already have reached Claude is never offered again, however often the machine restarts, `test/step18j.ts`. A card left open when its turn ends expires, and so does a decision the resumed session never asked for, and an allow an interrupt left undelivered is never offered to a later turn, `test/step18h.ts`. A batch sent again closes no card, `test/step18i.ts`. A person's answer takes the session's lock before the ask's, as recovery does, so the two can't deadlock, `test/step18k.ts`.
+
+### The machine watchdog (`markLostMachines` in `server/durability.ts`)
+
+- **Solves now.** A machine silent for `AGENTS_MACHINE_LOST_SEC`, 45 seconds by default, shows as stale, and its working sessions as lost, with the reason in the record. The app shows an interrupted line with an Interrupt button in place of an agent typing forever, in a DM and on a task's page. `test/step18e.ts` checks it in a browser, and checks that a connected and a reconnecting client read what the record holds. An API given less than two heartbeats refuses to start, `test/step18i.ts`.
+
+### A restart for a new setup (`startSession` in `daemon/agentsd.ts`)
+
+- **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
