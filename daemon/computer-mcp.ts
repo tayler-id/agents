@@ -20,7 +20,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import {
-  ActDone, ActRefused, ComputerAction, ComputerOutput, SavedScreenshot, ScreenStatus, ScreenStatusOutput, ScreenshotName,
+  ActDone, ActRefused, ComputerAction, ComputerOutput, SavedScreenshot, ScreenStatus, ScreenStatusOutput, ScreenshotName, SecretsShown,
   type ScreenControl,
 } from '../shared/screen.ts'
 import { parseJson } from '../shared/json.ts'
@@ -85,6 +85,19 @@ async function act(action: ComputerAction): Promise<Acted> {
   return { done: answerOf(ActDone, answer.text) }
 }
 
+// A saved screenshot is never scrubbed, so none is saved while a page in the
+// box's browser shows a secret the box holds. Null when no page shows one.
+async function secretRefusal(): Promise<CallToolResult | null> {
+  const answer = await call('GET', '/secrets-shown')
+  if (answer.status !== 200) {
+    return failure(`No screenshot was saved, since the box could not read what its browser's pages show (${answerOf(ErrorBody, answer.text).error}).`)
+  }
+  const { names } = answerOf(SecretsShown, answer.text)
+  if (names.length === 0) return null
+  return failure(`A page in the browser shows ${names.join(', ')}, which this box holds as a secret, so no screenshot was saved. `
+    + 'Close that page or change what it shows, then save again.')
+}
+
 // The epoch of control this session last acted under, to notice a person used
 // the screen in between.
 let lastEpoch: number | null = null
@@ -114,6 +127,10 @@ async function saveScreenshot(args: unknown): Promise<CallToolResult> {
   if (!config.AGENTS_TASK_FOLDER) return failure("This session has no task folder, so a screenshot can't become a document here. Use the computer tool to look instead.")
   const acted = await act({ action: 'screenshot' })
   if ('refused' in acted) return acted.refused
+  // Read once the shot is taken, after the screen settled, so the pages are read
+  // as the shot shows them.
+  const secretShown = await secretRefusal()
+  if (secretShown) return secretShown
   const bytes = Buffer.from(acted.done.shot.png, 'base64')
   const path = `checks/${input.data.name}.png`
   mkdirSync(join(config.AGENTS_TASK_FOLDER, 'checks'), { recursive: true })
@@ -167,7 +184,7 @@ const OWN_TOOLS: Tool[] = [
     title: 'Save a screenshot as proof',
     description: "Save what the screen shows now as checks/<name>.png in this task's folder, where it becomes a document "
       + 'on the task that your teammates see. Save one for each thing you checked, named for what it shows, such as '
-      + '"signup-error-message".',
+      + '"signup-error-message". Nothing is saved while a page in the browser shows a secret this box holds.',
     inputSchema: InputSchema.parse(z.toJSONSchema(z.object({ name: ScreenshotName.describe('Lowercase letters, digits and dashes') }))),
     outputSchema: OutputSchema.parse(z.toJSONSchema(SavedScreenshot)),
   },
@@ -235,7 +252,16 @@ mcp.server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToo
   if (name === 'computer') return computer(args)
   if (name === 'save_screenshot') return saveScreenshot(args)
   if (name === 'screen_status') return screenStatus()
-  if ((await browserTools).some((tool) => tool.name === name)) return browserCall(name, args)
+  if ((await browserTools).some((tool) => tool.name === name)) {
+    // Given a file name, Playwright's screenshot tool saves where the name says,
+    // which can be the task folder, where an image becomes a document. Without
+    // one it saves only in its own output folder.
+    if (name === 'browser_take_screenshot' && typeof args?.filename === 'string') {
+      const secretShown = await secretRefusal()
+      if (secretShown) return secretShown
+    }
+    return browserCall(name, args)
+  }
   return failure(`There is no tool named ${name}.`)
 })
 // Claude Code closing the session closes this server, and Playwright's with it.

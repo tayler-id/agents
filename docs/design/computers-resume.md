@@ -47,6 +47,7 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 | Step 15b waits for the saved screenshot to load | It read the image's width before WebKit had it, in one run |
 | Docs for the review round, the rebases, and two trades for Tayler | The design, the build log, decisions, data model, parts and this note |
 | Say what Tayler decided for agent computers on 2026-10-14 | The design, decisions, onboarding's resume note and this note |
+| The daemon saves no screenshot while a page shows a secret the box holds | `daemon/page-secrets.ts` reads every tab over DevTools. `save_screenshot`, and Playwright's screenshot tool given a file name, refuse and name the secret |
 
 ## Before this lands
 
@@ -56,6 +57,7 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 ## Checks
 
 - Step 15 has 45 checks and step 15b has 17 in each of Chromium, WebKit and Firefox, 51 in all. Both passed on the final code, at 01:32 and 01:33 on 2026-10-14.
+- Step 15's two lines for the screenshot refusal came after those runs and have not run yet.
 - Every check was seen failing under `.scratch/breaks.ts`, a local file that git ignores. `node .scratch/breaks.ts check-all` checks every anchor, `node .scratch/breaks.ts <set>` applies one set, and `git checkout -- <files it lists>` restores. Step 15's sets are quiet, input, stuck, flow, team, noscreen, notunnel, filter and told. Step 15b's are ui-a to ui-d, run with `AGENTS_UI_ENGINES=chromium`. Before the review round's fixes, step 15's new lines failed on the old code in one run.
 - `.scratch/each-commit.ts <from> <to>` typechecks and lints every commit on its own. `.scratch/clean-teams.ts` deletes the `comp-` teams and folders that failed runs keep, and refuses any database but `agents_test`.
 - If the API ever aborts at start with no message, look at `ipcs -s -b`. This Mac ran out of System V semaphores once, and lmdb aborts without them.
@@ -78,4 +80,4 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 
 - The Mac helper is a design only.
 - No x86 image, nothing tried over the tailnet, and no real Claude session at the computer in a box.
-- The screenshot refusal Tayler chose on 2026-10-14. Every other call is made, as "Tayler's calls" in the design lists.
+- A secret outside the page's text can still reach a saved screenshot, as the design's "What the refusal can't cover" lists.

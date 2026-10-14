@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { connect } from 'node:net'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
-  ActRequest, AGENT_HOLDS, type ActDone, type ComputerAction, type ScreenControl, type ScreenStatus,
+  ActRequest, AGENT_HOLDS, type ActDone, type ComputerAction, type ScreenControl, type ScreenStatus, type SecretsShown,
 } from '../shared/screen.ts'
 import { keyEvent, pointerEvent } from '../shared/rfb.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -17,6 +17,7 @@ import type { ClipboardOffer, Desktop } from './desktop.ts'
 import { BadAction, plan, type Pointer, type Step } from './actions.ts'
 import { RfbClient } from './rfb.ts'
 import { encodePng } from './png.ts'
+import { secretsShown } from './page-secrets.ts'
 
 // A screenshot waits for the screen to stop changing. The browser finishes a
 // page some time after its own tools say the page has loaded. In a box, a
@@ -47,7 +48,11 @@ class Refused extends Error {
   }
 }
 
-export function startScreenService(config: { desktop: Desktop; socketPath: string }): ScreenService {
+// `secrets` gives the box's secrets by name, read again on each use, so one
+// added while the box runs counts too.
+export function startScreenService(config: {
+  desktop: Desktop; socketPath: string; secrets: () => [name: string, value: string][]
+}): ScreenService {
   const { desktop } = config
   let control: ScreenControl = AGENT_HOLDS
   // Counts changes of control, so a session can tell someone used the screen
@@ -182,6 +187,12 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
     const reply = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(body)) }
     try {
       if (req.method === 'GET' && req.url === '/status') return reply(200, status())
+      // Only the daemon holds the secrets' values, so it reads the pages and
+      // answers with names.
+      if (req.method === 'GET' && req.url === '/secrets-shown') {
+        const shown: SecretsShown = { names: await secretsShown(desktop.cdpUrl, config.secrets()) }
+        return reply(200, shown)
+      }
       if (req.method !== 'POST' || req.url !== '/act') return reply(404, { error: 'no such route' })
       const chunks: Buffer[] = []
       let size = 0
@@ -197,7 +208,7 @@ export function startScreenService(config: { desktop: Desktop; socketPath: strin
     } catch (error) {
       if (error instanceof Refused) return reply(409, { control: error.control })
       if (error instanceof BadAction) return reply(400, { error: error.message })
-      console.error('screen action:', messageOf(error))
+      console.error('screen service:', messageOf(error))
       reply(500, { error: messageOf(error) })
     }
   }

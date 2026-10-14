@@ -191,6 +191,10 @@ export type ActDone = z.infer<typeof ActDone>
 export const ActRefused = z.object({ control: ScreenControl })
 export const ScreenStatus = z.object({ control: ScreenControl, size: ScreenSize, epoch: z.int().min(0), lastPerson: z.string().nullable() })
 export type ScreenStatus = z.infer<typeof ScreenStatus>
+// The names of the box's secrets that a page open in its browser shows now. A
+// saved screenshot is never scrubbed, so none is saved while this names any.
+export const SecretsShown = z.object({ names: z.array(z.string().min(1)) })
+export type SecretsShown = z.infer<typeof SecretsShown>
 
 // The `computer` MCP server's structured results.
 export const ComputerOutput = z.object({

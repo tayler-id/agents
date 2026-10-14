@@ -139,7 +139,7 @@ let screen: Screen | null = null
 const desktopUp: Promise<boolean> = desktop && desktopConfig
   ? desktop.ready.then(() => {
     const socket = join(SCREEN_DIR, 'agent.sock')
-    const service = startScreenService({ desktop, socketPath: socket })
+    const service = startScreenService({ desktop, socketPath: socket, secrets: knownSecrets })
     screen = {
       size: desktop.size, socket, cdpUrl: desktop.cdpUrl, browserMcp: desktopConfig.AGENTS_BROWSER_MCP, service,
       link: linkScreen({ api: config.api, token: config.token, vncSocket: desktop.vncSocket, onControl: (control) => { service.setControl(control) } }),

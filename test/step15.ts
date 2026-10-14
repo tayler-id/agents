@@ -9,7 +9,8 @@
 // hand it back, the record shows it, a view closed without handing back gives
 // the screen back on its own, and private work that starts on the box cuts off
 // whoever can't see it. Dead viewers and tunnels are dropped. A screenshot the
-// agent saves becomes an image document. When the box stops, its viewers are
+// agent saves becomes an image document, and none is saved while a page in the
+// box's browser shows a secret the box holds. When the box stops, its viewers are
 // told. When it starts again, is killed or is recreated, its screen and browser
 // come back, and work that was waiting for it gets its computer. A box whose
 // desktop can't come up starts again, and a connection reset mid-upgrade leaves
@@ -62,6 +63,8 @@ const KEY_SHOWS_MS = 3000
 const IDLE_SAMPLE_MS = 6000
 // Where the daemon keeps the box browser's profile, AGENTS_HOME/browser.
 const BOX_PROFILE = '/home/agent/.agents-app/browser'
+// The box's secrets.json, whose values the daemon treats as secrets.
+const BOX_SECRETS = '/home/agent/.agents-app/secrets.json'
 // Xvnc's lock for display :1, which holds its process id in ten columns.
 const X_LOCK = '/tmp/.X1-lock'
 // The origin of the app's pages in this check. A browser sends its page's origin
@@ -316,6 +319,26 @@ try {
   check(!clicked.isError && typed === 'typed:héllo from the agent ✓', `the agent's clicks and typing reach the page, accents and symbols included (${typed})`)
   const badKey = await tools.callTool({ name: 'computer', arguments: { action: 'key', text: 'NoSuchKey' } })
   check(badKey.isError && textOf(badKey).includes('not a key name'), 'a key name the screen does not know is refused with a reason')
+
+  // While a page in the browser shows a secret the box holds, no screenshot is
+  // saved, since a saved one is never scrubbed. The box gets a secret of the
+  // check's own, and the page shows it without losing what was typed there.
+  const secret = `comp-secret-${randomBytes(8).toString('hex')}`
+  execFileSync('docker', ['exec', '-i', container, 'tee', BOX_SECRETS], { input: JSON.stringify({ COMP_CHECK_SECRET: secret }), stdio: ['pipe', 'ignore', 'inherit'] })
+  await tools.callTool({ name: 'browser_evaluate', arguments: {
+    function: `() => { const shown = document.createElement('p'); shown.id = 'shown-secret'; shown.textContent = '${secret}'; document.body.append(shown) }`,
+  } })
+  const withSecret = await tools.callTool({ name: 'save_screenshot', arguments: { name: 'secret-page' } })
+  const secretSaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/secret-page.png`) !== null
+  // Playwright's own screenshot tool saves where a file name says, here in the task folder.
+  const browserShot = await tools.callTool({ name: 'browser_take_screenshot', arguments: { filename: 'task/checks/secret-page-browser.png' } })
+  const browserShotSaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/secret-page-browser.png`) !== null
+  await tools.callTool({ name: 'browser_evaluate', arguments: { function: "() => { document.getElementById('shown-secret')?.remove() }" } })
+  docker('exec', container, 'rm', '-f', BOX_SECRETS)
+  check(withSecret.isError === true && textOf(withSecret).includes('COMP_CHECK_SECRET') && !secretSaved,
+    `save_screenshot refuses while a page shows a secret the box holds, and saves nothing (${secretSaved ? 'saved' : 'not saved'})`)
+  check(browserShot.isError === true && textOf(browserShot).includes('COMP_CHECK_SECRET') && !browserShotSaved,
+    `browser_take_screenshot refuses the same way when given a file in the task folder (${browserShotSaved ? 'saved' : 'not saved'})`)
 
   // A screenshot the agent saves becomes an image document on the task when its
   // turn ends. That turn also takes a screenshot through the computer tool.

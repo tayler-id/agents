@@ -347,7 +347,7 @@ Tayler went with the coordinator's picks on all of these.
   - The box limits are accepted, though they take something away. A box running three browser engines at once used 2.5 CPUs before the 2-CPU limit, and boxes had no limits before.
   - A box whose desktop can't come up takes no work, where before it worked without its computer. Accepted too.
   - `ws`, `@types/ws` and `@novnc/novnc` are approved for the Screen view.
-  - The daemon is to refuse to save a screenshot while a page in the box's browser shows a known secret value. Not built yet.
+  - The daemon refuses to save a screenshot while a page in the box's browser shows a known secret value. It can't cover a secret shown outside the page.
 
 ### The cloud half moves to AWS
 
