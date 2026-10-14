@@ -285,8 +285,8 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - Each new person gets their own box, and signs in to their own Claude account from the app.
   - People can be added to existing rooms.
   - The Tailscale key lives only on the server and needs renewing every 90 days at most.
-- **Implementation.** On the onboarding agent's branch.
-- **Status.** Being built.
+- **Implementation.** `server/onboarding.ts`, `server/tailscale.ts`, `server/claudelogin.ts`, `daemon/claude-login.ts`, the Team, Tailscale and Your box pages, and migration 0005. Checked by step12, 12b and 12c.
+- **Status.** Merged on main. Nobody is invited and no Tailscale key is saved until the people socket's live steps are done and `test/live-tailnet.ts` passes. Removing a person from the team isn't built.
 
 ### Projects and repos
 
