@@ -89,6 +89,8 @@ export function boxCheckEnv(team: string, work: string, streamsPort: number, ori
     AGENTS_BOX_IMAGE: IMAGE, AGENTS_BOX_API: `http://host.docker.internal:${MACHINE_PORT}`,
     AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
       '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/check/fake-claude.ts:ro`,
+      // The stand-in imports its stand-in for `claude setup-token` from beside it.
+      '-v', `${join(ROOT, 'test/fake-claude-login.ts')}:/opt/check/fake-claude-login.ts:ro`,
       '-v', `${join(ROOT, 'test/box-browsers.ts')}:/opt/check/box-browsers.ts:ro`,
       '-v', `${join(work, 'scenario.json')}:/opt/check/scenario.json:ro`,
       '-e', 'AGENTS_CLAUDE_BIN=/opt/check/fake-claude.ts', '-e', 'AGENTS_FAKE_SCENARIO=/opt/check/scenario.json',
