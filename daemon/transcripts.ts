@@ -78,7 +78,7 @@ const HasUuid = z.looseObject({ uuid: z.string() })
 // within the first few lines, after a short queue line.
 const FIRST_UUID_BYTES = 64 * 1024
 function firstUuidOf(file: string): string | null {
-  for (const line of linesFrom(file, 0, FIRST_UUID_BYTES)) {
+  for (const line of readLines(file, 0, FIRST_UUID_BYTES)) {
     const found = HasUuid.safeParse(parseJson(line.text))
     if (found.success) return found.data.uuid
   }
@@ -99,21 +99,38 @@ const parseJson = (raw: string): unknown => {
   }
 }
 
-// The complete lines from an offset up to a limit, each with the offset just after it.
-function linesFrom(file: string, offset: number, limit = Infinity): { text: string; end: number }[] {
-  const size = Math.min(statSync(file).size, offset + limit)
-  if (size <= offset) return []
+// How much of a transcript is read at a time.
+const CHUNK_BYTES = 64 * 1024
+
+type FileLine = { text: string; end: number }
+
+// The complete lines of a file from an offset, up to a limit of bytes, each with
+// the offset just after it. The file is read a chunk at a time and a line is
+// handed over as soon as it is whole, so a long transcript is never held in
+// memory, and a caller that stops early leaves the rest unread. A line still
+// being written, with no newline yet, is left unread.
+function* readLines(file: string, offset: number, limit = Infinity): Generator<FileLine> {
   const fd = openSync(file, 'r')
   try {
-    const buffer = Buffer.alloc(size - offset)
-    readSync(fd, buffer, 0, buffer.length, offset)
-    const lines: { text: string; end: number }[] = []
-    let from = 0
-    for (let at = buffer.indexOf(0x0a); at >= 0; at = buffer.indexOf(0x0a, from)) {
-      lines.push({ text: buffer.subarray(from, at).toString('utf8'), end: offset + at + 1 })
-      from = at + 1
+    const stop = offset + limit
+    // The bytes of the line being read that earlier chunks held.
+    let begun: Buffer[] = []
+    let at = offset
+    while (at < stop) {
+      const chunk = Buffer.alloc(Math.min(CHUNK_BYTES, stop - at))
+      const read = readSync(fd, chunk, 0, chunk.length, at)
+      if (read === 0) return
+      const bytes = chunk.subarray(0, read)
+      let from = 0
+      for (let end = bytes.indexOf(0x0a); end >= 0; end = bytes.indexOf(0x0a, from)) {
+        const text = Buffer.concat([...begun, bytes.subarray(from, end)]).toString('utf8')
+        begun = []
+        from = end + 1
+        yield { text, end: at + from }
+      }
+      if (from < read) begun.push(bytes.subarray(from))
+      at += read
     }
-    return lines
   } finally {
     closeSync(fd)
   }
@@ -276,9 +293,7 @@ export async function followTerminalSessions(options: {
       tracked.firstUuid = first
       changed = true
     }
-    const lines = linesFrom(file, tracked.offset)
-    if (!lines.length) return
-    const scrub = scrubFor(folder)
+    let scrub: Scrub | undefined
     let part = emptyPart(tracked.offset)
     // The calls whose results stay on the Mac, as of the lines the record has.
     // A post that fails leaves tracked.withheld as it was, with the offset.
@@ -293,7 +308,8 @@ export async function followTerminalSessions(options: {
       part = emptyPart(part.end)
       return true
     }
-    for (const line of lines) {
+    for (const line of readLines(file, tracked.offset)) {
+      scrub ??= scrubFor(folder)
       const value = withoutWhatStays(parseJson(line.text), withheld)
       const parsed = TranscriptLine.safeParse(value)
       const piece = parsed.success ? scrub(transcriptBatch([{ line: parsed.data, value }], tracked.parentToolUseId)) : undefined
@@ -321,12 +337,12 @@ export async function followTerminalSessions(options: {
         for (const id of answered) withheld.delete(id)
       }
     }
-    await flush()
+    if (part.lines) await flush()
   }
 
   // Where and when a transcript's session started, once Claude Code has written that line.
   function startOf(file: string): Start | undefined {
-    for (const line of linesFrom(file, 0, START_BYTES)) {
+    for (const line of readLines(file, 0, START_BYTES)) {
       const start = Start.safeParse(parseJson(line.text))
       if (start.success) return start.data
     }

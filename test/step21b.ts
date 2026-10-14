@@ -7,13 +7,14 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
+import { z } from 'zod'
 import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
@@ -55,8 +56,8 @@ function check(ok: unknown, label: string) {
   if (!ok) failures.push(label)
 }
 
-function run(name: string, script: string, env: Record<string, string>) {
-  const child = spawn(process.execPath, [script], { cwd: ROOT, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+function run(name: string, script: string, env: Record<string, string>, execArgv: string[] = []) {
+  const child = spawn(process.execPath, [...execArgv, script], { cwd: ROOT, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
   for (const stream of [child.stdout, child.stderr]) stream.setEncoding('utf8').on('data', (text: string) => { logs.push(`${name}: ${text}`) })
   children.push(child)
   return child
@@ -202,14 +203,25 @@ try {
   // Another run's API still on the port would answer too, so this one must also be alive.
   if (!await until('the API', 30, async () => api.exitCode === null && await fetch(API).then(() => true, () => false))) throw new Error('the API did not start')
   const daemonEnv = { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home, CLAUDE_CONFIG_DIR: claudeDir, SHELL: '/bin/zsh', ZDOTDIR: zdot }
-  let daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
+  // The daemon runs with test/read-meter.ts loaded, which writes how much it read, so the check can say how much that was.
+  const meter = join(root, 'read-meter.json')
+  const startDaemon = (env: Record<string, string> = daemonEnv) =>
+    run('daemon', 'daemon/agentsd.ts', { ...env, AGENTS_READ_METER: meter }, ['--import', join(ROOT, 'test', 'read-meter.ts')])
+  let daemon = startDaemon()
   const stopDaemon = async () => {
     daemon.kill('SIGTERM')
     if (!await until('the daemon to stop', STOP_SEC, async () => daemon.exitCode !== null || daemon.signalCode !== null)) throw new Error('the daemon did not stop')
   }
   const restart = async (env: Record<string, string> = daemonEnv) => {
     await stopDaemon()
-    daemon = run('daemon', 'daemon/agentsd.ts', env)
+    daemon = startDaemon(env)
+  }
+  // What the daemon has read, from a write of the meter that follows this call. It writes five times a second.
+  const Meter = z.object({ reads: z.record(z.string(), z.number()), largest: z.number(), cpuMs: z.number() })
+  const meterAfter = async () => {
+    const after = Date.now()
+    await until('the meter to write', 5, async () => existsSync(meter) && statSync(meter).mtimeMs > after)
+    return Meter.parse(JSON.parse(readFileSync(meter, 'utf8')))
   }
 
   const connected = folders(token, root, ['connect', shop])
@@ -436,7 +448,7 @@ try {
   folders(token, root, ['disconnect', journal])
   journalRun.turn({ prompt: 'Written while the folder was disconnected.', reply: 'Noted again.' })
   folders(token, root, ['connect', journal])
-  daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
+  daemon = startDaemon()
   check(await settle() && await turnsEnded(journalRun.session) === 1,
     'what a session wrote while its folder was disconnected stays on the Mac after the folder is connected again, though the daemon missed the disconnect')
   const late = await machine(token, 'POST', `/v1/sessions/${String((await sessionOf(journalRun.session))?.id)}/events`,
@@ -631,6 +643,27 @@ try {
     'the daemon reads no session in a home folder that something holding its token connected, and still reads a project inside it')
   folders(token, root, ['disconnect', fakeHome])
   await restart()
+
+  // A transcript is read a chunk at a time. A backlog of 24 MB is never held whole, and an old transcript is read only as
+  // far as the line that says where it started, which is in its first chunk, where a read of 1 MiB would take far more.
+  const padding = `${JSON.stringify({ type: 'attachment', uuid: randomUUID(), padding: 'x'.repeat(100_000) })}\n`
+  const heavy = transcript(claudeDir, shop, afterShop)
+  heavy.turn({ prompt: 'A short start.', reply: 'Short.' })
+  await until('the session before its backlog', LANDS_SEC, async () => (await turnsEnded(heavy.session)) === 1)
+  // 24 MB of lines that make no event, in one write, and a turn behind them that must land.
+  appendFileSync(heavy.path, padding.repeat(240))
+  heavy.turn({ prompt: 'After the backlog.', reply: 'Long.' })
+  const heavyLanded = await until('the turn behind the backlog', LANDS_SEC, async () => (await turnsEnded(heavy.session)) === 2)
+  const biggest = (await meterAfter()).largest
+  check(heavyLanded && biggest <= 1024 * 1024, `a backlog of 24 MB is read in chunks, the biggest buffer a read was given being ${biggest} bytes`)
+
+  const old = transcript(claudeDir, shop, new Date(await connectedAt(shop) - 3_600_000))
+  old.turn({ prompt: 'From before the folder was connected.', reply: 'Before.' })
+  appendFileSync(old.path, padding.repeat(30))
+  await restart()
+  await settle()
+  const oldRead = (await meterAfter()).reads[old.path] ?? 0
+  check(oldRead > 0 && oldRead <= 128 * 1024, `an old transcript is read only as far as the line that says where it started: ${oldRead} of its ${statSync(old.path).size} bytes`)
 
   // A Mac clock ahead of the server's can make a session look newer than its folder's reconnect, while the API knows it is older.
   check(folders(token, root, ['connect', skewed]).code === 0, 'a folder for a clock running ahead connects')

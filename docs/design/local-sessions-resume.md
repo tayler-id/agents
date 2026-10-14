@@ -38,6 +38,7 @@ The branch's commits, oldest first, by subject:
 25. `daemon/api.ts` returns `unknown` from the API, and each caller parses what it needs. That meant a zod schema for each kind of command the daemon claims, in `shared/types.ts`, where the claim had been cast. A `daemon.json` that is damaged is an error naming it, and was once read as no file.
 26. `server/folders.ts` uses `SessionId` and `PersonId`. The kinds a person writes, `user` and `answer`, are `PERSON_KINDS` in `shared/types.ts`, and both `server/folders.ts` and `server/record.ts` read them from there. `Session` in `server/record.ts` is the schema's two arms, an agent's session with an `agent_id` that is always a string and a terminal session with none, where `agent_id` had been widened to allow null.
 27. The home folder and any folder above it can't be connected, and the daemon reads none that something with the machine token connected through the API.
+28. A transcript is read 64 KB at a time with each line handed over when whole, not as one buffer of everything past the offset. An old transcript costs its first 64 KB, where it cost a read of 1 MiB. `test/read-meter.ts` counts what the daemon reads for step21b.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
