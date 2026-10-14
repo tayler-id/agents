@@ -316,7 +316,7 @@ The design is `docs/design/durability.md`.
 
 - **Solves now.** A daemon that starts stops any Claude its last run left, then reports in. Every session it had unfinished messages in is marked interrupted in the record and resumed in the same Claude conversation, told which tool calls may or may not have run and every message it had not answered. In `test/step18a.ts` real Claude killed mid-poem finishes the poem. In `test/step18b.ts` a line appended before the crash stays written once, and a daemon stopped with SIGTERM mid-turn leaves the turn for its next start to resume. A turn resumed three times that stops its machine a fourth time fails with the reason instead, `test/step18l.ts`. The daemon parses what recover returns, each session on its own, and a claimed message's payload the same way, so a message an older API queued without `permissions` fails with the reason, `test/step18l.ts`.
 - **Helps later.** Another engine with durable sessions can run behind `daemon/harness.ts` against the same checks.
-- **Not done.** No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read. A daemon killed during a task's first clone can resume the turn in a half-cloned tree while the requeued setup runs beside it.
+- **Not done.** No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read. A daemon killed during a task's first clone can resume the turn in a half-cloned tree while the requeued setup runs beside it. No check holds a `setup_workspace`, `exec` or `push` command across a restart, for the requeue in `recoverMachine`.
 
 ### Approvals across a restart (`asks.request_ended_at`, `server/durability.ts`)
 
