@@ -25,6 +25,8 @@ Tayler went with the coordinator's picks on all of these.
   - AWS boxes reach the server over the VPC, not the tailnet. Colima on the Mac drops the same private ranges as the AWS box host.
   - Known product bugs stay as failing steps in the verification feature map.
   - The first build's Docker volumes are deleted, with a backup in `~/.agents-app/backups/first-build-volumes`.
+  - The UI gets a design system and a new layout, since the current layout is poor. That work starts after every current branch lands.
+  - The desktop app becomes one download, with the Mac connection and terminal-session capture built in. It is signed and notarized with Tayler's Apple Developer ID. Only whoever builds the app needs a developer ID, and teammates download it and open it. This also starts after the current branches land.
 
 ## 2026-10-13, after the code review
 
