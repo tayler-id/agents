@@ -202,6 +202,12 @@ async function run(engine: string, ids: { team: string; writer: string; repo: st
       && await gone(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Base work \\(${engine}\\)`)),
     `${engine}: a held task leaves Ready and shows under Held with its reason`)
     await page.screenshot({ path: join(SHOTS, `${engine}-order-held-light.png`), fullPage: true })
+    // A long title gives way to the marks beside it, such as draft, which stay inside the sidebar.
+    check(await page.evaluate(() => {
+      const sidebar = document.querySelector('nav.sidebar')
+      const marks = [...document.querySelectorAll('nav.sidebar ul.list button.row > span + span')]
+      return sidebar !== null && marks.length > 0 && marks.every((mark) => mark.getBoundingClientRect().right <= sidebar.getBoundingClientRect().right + 1)
+    }), `${engine}: beside a long title, the sidebar's draft and priority marks stay inside it`)
     check(await serious(page) === 0, `${engine}: the task page with its order of work has no serious accessibility problems`)
     await order.getByRole('button', { name: 'Lift hold' }).click()
     check(await visible(page, 'nav ul[aria-label="Ready"] button', 15, new RegExp(`Base work \\(${engine}\\)`)), `${engine}: lifting the hold puts it back in Ready`)
