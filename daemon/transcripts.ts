@@ -257,6 +257,13 @@ export async function followTerminalSessions(options: {
   async function track(file: string): Promise<Tracked | undefined> {
     const start = startOf(file)
     if (!start) return undefined
+    // A transcript is named after its session. One whose lines name another, as a
+    // copied file's can, would write into that session's record, in another folder.
+    if (basename(file, '.jsonl') !== start.sessionId) {
+      passed.add(file)
+      console.error(`terminal sessions, ${file}: its lines name session ${start.sessionId}, not the one in its name, so it stays on the Mac`)
+      return undefined
+    }
     const folder = folders.find((f) => insideFolder(f.path, start.cwd))
     // A time that does not parse never counts as after, so such a session stays on the Mac.
     const startedAfter = folder !== undefined && Date.parse(start.timestamp) >= Date.parse(folder.connected_at)
@@ -275,8 +282,9 @@ export async function followTerminalSessions(options: {
       changed = true
       return tracked
     } catch (error) {
-      // The API refused it for good: it started outside the folder, as the API sees it.
-      if (error instanceof ApiError && error.status === 400) passed.add(file)
+      // The API refused it for good: it started outside the folder, or its session
+      // id is another folder's session, as the API sees it.
+      if (error instanceof ApiError && (error.status === 400 || error.status === 409)) passed.add(file)
       // Anything else, such as the API restarting, is tried again on the next read.
       else console.error(`terminal session in ${start.cwd}:`, messageOf(error))
       return undefined

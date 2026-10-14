@@ -76,12 +76,16 @@ export async function terminalSession(client: pg.PoolClient, instance: Instance,
   const cwd = scrub(ask.cwd)
   const harnessSessionId = scrub(ask.harnessSessionId)
   if (!insideFolder(folder.path, cwd)) throw new HttpError(400, `${cwd} is outside ${folder.path}`)
-  const session = await one<{ id: string }>(client, 'the terminal session',
+  // A Claude Code session id already taken by another folder's session gets
+  // nothing back, so one folder's transcript can't write into another's session.
+  const session = await maybe<{ id: string }>(client,
     `insert into sessions (team_id, instance_id, folder_id, cwd, harness, harness_session_id, started_by)
      values ($1, $2, $3, $4, 'claude', $5, $6)
      on conflict (instance_id, harness_session_id) where folder_id is not null
        do update set harness_session_id = excluded.harness_session_id
+       where sessions.folder_id = excluded.folder_id
      returning id`, [folder.team_id, instance.id, folder.id, cwd, harnessSessionId, folder.connected_by])
+  if (!session) throw new HttpError(409, `Claude Code session ${harnessSessionId} is another connected folder's session on this Mac`)
   return session.id
 }
 

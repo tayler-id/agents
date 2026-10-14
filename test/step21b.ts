@@ -334,6 +334,19 @@ try {
   const lockedParked = await until('the daemon to park the transcript it cannot read', LANDS_SEC, async () =>
     logs.join('').includes(`${locked.path}: EACCES`) && logs.join('').includes('It is parked until the daemon starts again'))
   check(lockedParked && await settle(), "a transcript the daemon can't read is reported and parked, and the other folders' sessions land")
+
+  // A transcript whose lines name another session can't write into it.
+  const firstEventsBefore = await count('select count(*) from events where session_id = $1', [String(firstRow?.id)])
+  const impostor = transcript(claudeDir, journal, new Date(await connectedAt(journal) + 1000), randomUUID())
+  impostor.write([impostor.line({ type: 'user', sessionId: first.session, message: { role: 'user', content: 'Written into another session.' }, turnOrigin: 'human' })])
+  const impostorSaid = await until('the daemon to say the file names another session', LANDS_SEC, async () =>
+    logs.join('').includes(`${impostor.path}: its lines name session ${first.session}`))
+  check(impostorSaid && await settle() && await count('select count(*) from events where session_id = $1', [String(firstRow?.id)]) === firstEventsBefore
+    && !await sessionOf(impostor.session),
+  "a transcript whose lines name another folder's session writes nothing into it, and the daemon says why")
+  const { rows: [journalFolder] } = await db.query('select id from connected_folders where path = $1', [journal])
+  const stolen = await machine(token, 'POST', '/v1/instance/terminal-sessions', { folderId: journalFolder?.id, harnessSessionId: first.session, cwd: journal })
+  check(stolen.status === 409, `the API refuses another folder's session for the same Claude Code session id (${stolen.status})`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

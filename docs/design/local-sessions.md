@@ -82,6 +82,7 @@ The daemon follows the `connected_folders` shape for its machine. Every second i
 - **The session belongs to the deepest connected folder its `cwd` is inside.** A sibling such as `/a/repo-old`, whose transcript folder name starts like `/a/repo`'s, is not inside `/a/repo`, and its transcript is passed over for good.
 - **It must have started after the folder was connected.** A session started earlier stays on the Mac, even if it is resumed later. A time that doesn't parse never counts as after.
 - **The daemon's own sessions never count.** Anything whose `cwd` is inside `~/.agents-app` is an app session, which reaches the record as an agent's.
+- **A transcript is named after its session.** One whose lines name another session, as a copied file's can, stays on the Mac, and the daemon's log says so. Otherwise its lines would write into that session, which can be another folder's.
 
 A session that passes all three gets its record session from the API, which checks again that `cwd` is inside the folder. From then on the daemon sends each new line, in posts of at most 200 lines and 4 MB, and keeps how far it got in `~/.agents-app/terminal-sessions.json`. A restart goes on from there, and losing that file only costs a reread, since the record skips any line it already has.
 
@@ -135,7 +136,7 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 ## The API
 
 - `GET /v1/instance/folders`, `POST /v1/instance/folders` and `POST /v1/instance/folders/disconnect` list, connect and disconnect the calling Mac's folders.
-- `POST /v1/instance/terminal-sessions` gives the record's session for a Claude Code session, the same one each time.
+- `POST /v1/instance/terminal-sessions` gives the record's session for a Claude Code session, the same one each time. It answers 409 when that Claude Code session id is another folder's session on the Mac.
 - `POST /v1/sessions/:id/events` takes `user` events from a machine only into a terminal session, and authors them as the folder's person. It refuses `ask` and `answer` events there, since the person answers Claude in their terminal. It refuses with 409 the events of a session whose folder was disconnected since the session started, whether or not the folder is connected again, and the daemon stops sending that session.
 - `POST /v1/sessions/:id/interrupt` refuses a terminal session with 409. The daemon reads that session and doesn't run it, so it couldn't stop it.
 - A person sees a terminal session when its folder is the team's, or when they connected it. The `sessions` shape takes `of=folders`, there is a `connected_folders` shape, and the events shape and `search_record` follow the same rule.
@@ -169,6 +170,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
+- A transcript whose lines name another folder's session writes nothing into it, and the daemon says why. The API refuses that session id for another folder.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
 ## Tayler's calls

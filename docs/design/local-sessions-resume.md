@@ -26,6 +26,7 @@ The branch's commits, oldest first, by subject:
 13. A bare `connect` keeps a folder's visibility, and `--team` widens a private one, saying how many sessions that shows.
 14. What a session writes while its folder is disconnected stays on the Mac after a reconnect: the daemon keys each session to its folder's `connected_at`, and the API refuses a session older than it.
 15. One bad session, line or file stops nothing else: each transcript is read in its own attempt and parked after 3 failed reads, a failed post backs off without holding up the others, and the scrubber takes out NULs and lone surrogates.
+16. A transcript whose lines name another session stays on the Mac, and the API refuses one folder a session id that is another folder's.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
