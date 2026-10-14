@@ -519,3 +519,4 @@ Main now holds durability (5556f3b), evidence (9ee5b17) and the stage budget fix
   - The plan, playbook and pushes gates always pass here, so the plan lint, the playbook scope and the push gate judge nothing for a branch agents-git runs.
   - The branch is about 3,300 lines against main, over the framework's 400-line cap, so `submit` would refuse it on its own size gate.
   - None of it has run on the real repo, against GitHub, or with the Mac's Docker.
+- **Corrections.** Three commit messages above give the wrong number of new step22 lines. The commit that copies ignored files says 16 and adds 14, the signal commit says 14 and adds 13, and the scan range commit says four and adds five. The counts in this entry come from the final run.
