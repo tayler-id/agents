@@ -19,17 +19,15 @@ Everything from the first round (agentsctl, the skill and feature map, `shared/e
 5. Should-fix items: checks and breaks for the live-system guards, a `down` check that can fail, a control run per section in the breaks harness, the baseline reason checked before copying, baselines in the ignored `.scratch/verify/baselines/`, the machine token kept out of output and evidence with everything scrubbed, environments from an allowlist by role, `features/agent-setup.md` (was `agents.md`), and docs that claim only what ran.
 6. Notes: locks written whole and stale session locks taken over, waits that notice a dead process, fetch and query timeouts, `map run` counting blocked features, one `messageOf` and `hasCode`, no casts in step17, no tailnet name in the map.
 
-The last full `node test/step17.ts` passed all 80 checks. The last full `node test/step17-breaks.ts` counted 57 of 61 breaks (a check that passed in the control and failed under the break). `npm run typecheck`, `npm run lint` and `node test/names.ts` pass.
+The last full `node test/step17.ts` passed all 80 checks in 51 seconds. All 61 breaks in `test/step17-breaks.ts` count (a check that passed in the control and failed under the break): 57 in the full run, and the last four on a rerun after their fixes. `npm run typecheck`, `npm run lint` and `node test/names.ts` pass.
 
-## In progress, and blocked
+## In progress
 
-The colima VM's disk is full (60 GB, 57.8 GB of it Docker images, 36.5 GB reclaimable, none made by this work), so the forge refuses writes with `database or disk is full`. Until someone frees space:
+Nothing is running, and no instance is left. The colima VM's disk filled at about 21:45 on 2026-10-13, and the coordinator freed it. The one step17 instance it caught was finished with `bin/agentsctl down`, and every check that ran in that window was rerun.
 
-- Instance `s17-919476` is half down: its processes are stopped, and its team, forge org and state file wait for `bin/agentsctl down --instance s17-919476`, which carries on where it stopped.
-- Four breaks need a rerun: `node test/step17-breaks.ts db-multi fence manifest compare-threshold`. db-multi's check had a placeholder, which made it a parameterized query either way, and fence's break named a renamed rule; both are fixed. manifest and compare-threshold turned red, but their control run had two of the page's reads hang for 15 seconds. A capture that times out now names the reads still in flight, to find why.
-- Then a full `node test/step17.ts`.
+One open lead: in one control run, two of the page's reads hung for 15 seconds during a visual capture. It did not happen again in four visual runs. A capture that times out now names the reads still in flight.
 
-Never build or tag `agents-box:latest`. agentsctl doesn't; an instance's API only starts containers from it when a box is claimed.
+Never build or tag `agents-box:latest`. agentsctl doesn't; an instance's API only starts containers from it when a box is claimed. After any check that builds an image, run `docker image prune -f`.
 
 ## Product bugs found
 
