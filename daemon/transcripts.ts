@@ -57,15 +57,30 @@ const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
 // How far each transcript has been sent, so a restart goes on from there. Losing
 // this file costs only a reread, since the record skips lines it already has.
 // `connectedAt` is when the folder was connected as the session was taken, since a
-// folder connected again starts over.
+// folder connected again starts over. `inode` and `firstUuid` tell the same file
+// from one replaced or cut short, which is read again from its start.
 const Sent = z.record(z.string(), z.object({
-  sessionId: SessionId, folderId: FolderId, connectedAt: z.string(), cwd: z.string(), offset: z.number().int().min(0), parentToolUseId: z.string().nullable(),
+  sessionId: SessionId, folderId: FolderId, connectedAt: z.string(), cwd: z.string(), offset: z.number().int().min(0), inode: z.number().int(), firstUuid: z.string().nullable(), parentToolUseId: z.string().nullable(),
 }))
 type Sent = z.infer<typeof Sent>
 type Tracked = Sent[string]
 
 // A subagent's transcript sits beside a file of facts that names the Agent call that started it.
 const SubagentFacts = z.looseObject({ toolUseId: z.string() })
+
+// The first line that carries a uuid. A transcript keeps it for as long as it is
+// the same file, so a different one means it was rewritten.
+const HasUuid = z.looseObject({ uuid: z.string() })
+// How far into a transcript its first uuid is looked for. Claude Code writes one
+// within the first few lines, after a short queue line.
+const FIRST_UUID_BYTES = 64 * 1024
+function firstUuidOf(file: string): string | null {
+  for (const line of linesFrom(file, 0, FIRST_UUID_BYTES)) {
+    const found = HasUuid.safeParse(parseJson(line.text))
+    if (found.success) return found.data.uuid
+  }
+  return null
+}
 
 // The first line of a transcript that says where and when its session started.
 const Start = z.looseObject({ cwd: z.string(), timestamp: z.string(), sessionId: z.string() })
@@ -222,6 +237,25 @@ export async function followTerminalSessions(options: {
   async function send(file: string, tracked: Tracked, folder: FolderRow) {
     const retry = retries.get(file)
     if (retry && retry.at > Date.now()) return
+    const { ino, size } = statSync(file)
+    if (ino === tracked.inode && size === tracked.offset) return
+    const first = firstUuidOf(file)
+    if (ino !== tracked.inode || size < tracked.offset || (tracked.firstUuid !== null && first !== tracked.firstUuid)) {
+      // Cut short or replaced, so it is read again from its start. The record skips the lines it has.
+      console.error(`terminal sessions, ${file}: it was cut short or replaced, so it is read again from its start`)
+      changed = true
+      // A main transcript is taken again, so where and when it started is checked again.
+      if (tracked.parentToolUseId === null) {
+        sent.delete(file)
+        return
+      }
+      tracked.offset = 0
+      tracked.inode = ino
+    }
+    if (first !== tracked.firstUuid) {
+      tracked.firstUuid = first
+      changed = true
+    }
     const lines = linesFrom(file, tracked.offset)
     if (!lines.length) return
     const scrub = scrubFor(folder)
@@ -294,7 +328,10 @@ export async function followTerminalSessions(options: {
       const scrub = scrubFor(folder)
       const { sessionId } = TerminalSessionAnswer.parse(await api('POST', '/v1/instance/terminal-sessions',
         { folderId: folder.id, harnessSessionId: scrub(start.sessionId), cwd: scrub(start.cwd) }))
-      const tracked: Tracked = { sessionId, folderId: folder.id, connectedAt: folder.connected_at, cwd: start.cwd, offset: 0, parentToolUseId: null }
+      const tracked: Tracked = {
+        sessionId, folderId: folder.id, connectedAt: folder.connected_at, cwd: start.cwd, offset: 0,
+        inode: statSync(file).ino, firstUuid: firstUuidOf(file), parentToolUseId: null,
+      }
       sent.set(file, tracked)
       changed = true
       return tracked
@@ -318,7 +355,7 @@ export async function followTerminalSessions(options: {
       if (sent.has(path) || !existsSync(facts)) continue
       const parsed = SubagentFacts.safeParse(parseJson(readFileSync(facts, 'utf8')))
       if (!parsed.success) continue
-      sent.set(path, { ...main, offset: 0, parentToolUseId: parsed.data.toolUseId })
+      sent.set(path, { ...main, offset: 0, inode: statSync(path).ino, firstUuid: firstUuidOf(path), parentToolUseId: parsed.data.toolUseId })
       changed = true
     }
   }

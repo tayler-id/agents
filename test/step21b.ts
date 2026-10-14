@@ -103,9 +103,10 @@ function transcript(claudeDir: string, cwd: string, startedAt: Date, session: st
   const stamp = () => startedAt.toISOString()
   const line = (fields: Record<string, unknown>) => ({ parentUuid: null, isSidechain: false, userType: 'external', cwd, sessionId: session, version: '2.1.299', uuid: randomUUID(), timestamp: stamp(), ...fields })
   const write = (lines: unknown[]) => { appendFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join('')) }
-  write([{ type: 'queue-operation', operation: 'enqueue', timestamp: stamp(), sessionId: session }])
+  const head = { type: 'queue-operation', operation: 'enqueue', timestamp: stamp(), sessionId: session }
+  write([head])
   return {
-    session, path, line, write,
+    session, path, line, write, head,
     // A turn: the person's prompt, Claude's tool calls each with its result, and the reply that ends the turn.
     turn({ prompt, calls = [], reply, promptFields = {} }: Turn) {
       const model = 'claude-haiku-4-5'
@@ -117,6 +118,7 @@ function transcript(claudeDir: string, cwd: string, startedAt: Date, session: st
       }
       lines.push(line({ type: 'assistant', message: { id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model, stop_reason: 'end_turn', content: [{ type: 'text', text: reply }], usage: { input_tokens: 10, output_tokens: 2 } } }))
       write(lines)
+      return lines
     },
   }
 }
@@ -387,6 +389,47 @@ try {
   check(messyPrompts.includes('After the mess.') && await count(
     `select count(*) from raw_events where session_id = $1 and line->>'isMeta' = 'no'`, [String(messyRow?.id)]) === 1,
   'a prompt whose fields changed type in a Claude Code update still lands, and its raw line keeps them as written')
+
+  // A transcript cut short, or rewritten, is read again from its start, and the record skips the lines it has.
+  const replaced = transcript(claudeDir, deep, deepAt)
+  const kept = replaced.turn({ prompt: 'Turn one of three.', reply: 'One.' })
+  replaced.turn({ prompt: `Turn two of three, a long one: ${'x'.repeat(5000)}`, reply: 'Two.' })
+  replaced.turn({ prompt: 'Turn three of three.', reply: 'Three.' })
+  await until('the transcript to be replaced', LANDS_SEC, async () => (await turnsEnded(replaced.session)) === 3)
+  const replacedId = String((await sessionOf(replaced.session))?.id)
+  const eventsBefore = await count('select count(*) from events where session_id = $1', [replacedId])
+  // A new file in its place, with the same first line and longer than what the daemon read, so only its inode tells.
+  rmSync(replaced.path)
+  replaced.write([replaced.head, ...kept])
+  replaced.turn({ prompt: `Turn four, in the new file: ${'z'.repeat(12000)}`, reply: 'Four.' })
+  const replacedLanded = await until('the turn in the new file', LANDS_SEC, async () => (await turnsEnded(replaced.session)) === 4)
+  check(replacedLanded && await count('select count(*) from events where session_id = $1', [replacedId]) === eventsBefore + 3,
+    "a transcript replaced by a new file is read again from its start, and the record takes only the lines it didn't have")
+
+  const shortened = transcript(claudeDir, deep, deepAt)
+  const shortenedKept = shortened.turn({ prompt: 'Kept when cut short.', reply: 'Kept.' })
+  shortened.turn({ prompt: `Cut away: ${'w'.repeat(5000)}`, reply: 'Cut.' })
+  await until('the transcript to be cut short', LANDS_SEC, async () => (await turnsEnded(shortened.session)) === 2)
+  // The same file cut back to its first turn, then a short new one, so only its size tells.
+  writeFileSync(shortened.path, '')
+  shortened.write([shortened.head, ...shortenedKept])
+  shortened.turn({ prompt: 'After the cut.', reply: 'After.' })
+  check(await until('the turn after the cut', LANDS_SEC, async () => (await turnsEnded(shortened.session)) === 3),
+    'a transcript cut short in place is read again from its start')
+
+  const rewritten = transcript(claudeDir, deep, deepAt)
+  rewritten.turn({ prompt: 'Before the rewrite.', reply: 'Before.' })
+  await until('the transcript to be rewritten', LANDS_SEC, async () => (await turnsEnded(rewritten.session)) === 1)
+  // The same file, cut to nothing and written again, longer than what the daemon read and different from its first line.
+  writeFileSync(rewritten.path, '')
+  rewritten.write([rewritten.head])
+  rewritten.turn({ prompt: `A new start, written in place: ${'y'.repeat(3000)}`, reply: 'New.' })
+  rewritten.turn({ prompt: 'And more after it.', reply: 'More.' })
+  const rewrittenLanded = await until('the rewritten turns', LANDS_SEC, async () => (await turnsEnded(rewritten.session)) === 3)
+  const rewrittenRow = await sessionOf(rewritten.session)
+  const rewrittenPrompts = rewrittenRow ? (await eventsOf(rewrittenRow.id)).filter((e) => e.kind === 'user').map((e) => String(e.text).slice(0, 30)) : []
+  check(rewrittenLanded && rewrittenPrompts.join('|') === 'Before the rewrite.|A new start, written in place:|And more after it.',
+    `a transcript rewritten in place with a different first line is read again from its start: ${rewrittenPrompts.join('|')}`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
