@@ -15,7 +15,7 @@ import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
 import { expireTurns } from './rooms.ts'
-import { finishPushes, leasesOf } from './pulls.ts'
+import { finishPushes } from './pulls.ts'
 import { WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { sendRoutine } from './routines.ts'
 import { lastFire } from '../shared/cron.ts'
@@ -377,10 +377,9 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
   const task = await taskOf(client, run)
   const repo = await repoOf(client, run)
   if (stage.action === 'open_pull_request' || stage.action === 'score_change') {
-    const leases = await leasesOf(client, workspace.id)
     const push: PushPayload = {
       workspaceId: workspace.id, message: stage.title?.(ctx) ?? ctx.report.title, author: pipeline.agent,
-      repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task), base: r.default_branch, lease: leases.get(r.repoId) ?? null })),
+      repos: (await reposOf(client, run)).map((r) => ({ repoId: r.repoId, name: r.name, branch: branchOf(run, task), base: r.default_branch })),
     }
     const sent = await one<{ id: string }>(client, 'the new push command',
       `insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'push', $3) returning id`,

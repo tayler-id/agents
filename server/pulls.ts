@@ -17,18 +17,10 @@ import type { PushId, TaskId } from '../shared/ids.ts'
 
 // While a session is in one of these, its agent may still be changing files.
 const WORKING: SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
-// A machine that goes away mid-push never reports the push, which would block
-// every later one. A push still running after this long is marked failed.
+// A machine that goes away mid-push never reports the push, which would leave it
+// running and the page's button disabled. The runner's loop fails a push still
+// running after this long, so the page offers to try again.
 const PUSH_EXPIRY_MINUTES = 15
-
-// The commit each repo's branch was last pushed at from this workspace, which the
-// next push expects the forge to still hold.
-export async function leasesOf(client: pg.PoolClient, workspaceId: string): Promise<Map<string, string>> {
-  const last = await maybe<{ result: unknown }>(client,
-    `select result from commands where kind = 'push' and status = 'done' and payload->>'workspaceId' = $1 order by done_at desc limit 1`, [workspaceId])
-  if (!last) return new Map()
-  return new Map(PushResult.parse(last.result).pushed.map((p) => [p.repoId, p.commit]))
-}
 
 export async function askForPullRequests(client: pg.PoolClient, person: Person, taskId: TaskId, ask: PullRequestAsk): Promise<{ pushId: PushId }> {
   if (!(await canSeeTask(person, taskId))) throw new HttpError(404, 'no such task')
@@ -43,17 +35,11 @@ export async function askForPullRequests(client: pg.PoolClient, person: Person, 
   }
   const repos = await checkoutsOf(client, taskId, `task/${task.slug}`)
   if (!repos.length) throw new HttpError(409, 'this task has no repo to open a pull request on')
-  await client.query(
-    `update pushes p set status = 'failed', error = $2, finished_at = now()
-     where p.task_id = $1 and p.status = 'pushing' and p.created_at < now() - make_interval(mins => $3)
-       and not exists (select 1 from commands c where c.id = p.command_id and c.status in ('done', 'failed'))`,
-    [taskId, `The machine did not finish the push within ${PUSH_EXPIRY_MINUTES} minutes.`, PUSH_EXPIRY_MINUTES])
   // What a person types reaches the forge, the commit and the record, so it is scrubbed first.
   const [title, body] = [scrub(ask.title), scrub(ask.body)]
-  const leases = await leasesOf(client, workspace.id)
   const payload: PushPayload = {
     workspaceId: workspace.id, message: title, author: task.agent,
-    repos: repos.map((r) => ({ repoId: r.repoId, name: r.name, branch: r.branch, base: r.base, lease: leases.get(r.repoId) ?? null })),
+    repos: repos.map((r) => ({ repoId: r.repoId, name: r.name, branch: r.branch, base: r.base })),
   }
   const command = await one<{ id: string }>(client, 'the push command',
     `insert into commands (team_id, instance_id, kind, payload) values ($1, $2, 'push', $3) returning id`,
@@ -116,8 +102,18 @@ async function finishPush(client: pg.PoolClient, pushId: PushId) {
   return end(client, push, { status: 'done' })
 }
 
-// Finishes every push whose command has ended, for the runner's teams.
+// Fails every push still running past the expiry whose command never ended.
+async function expireStuckPushes(teamIds: string[] | null) {
+  await pool.query(
+    `update pushes p set status = 'failed', error = $2, finished_at = now()
+     where p.status = 'pushing' and p.created_at < now() - make_interval(mins => $3) and ($1::uuid[] is null or p.team_id = any($1))
+       and not exists (select 1 from commands c where c.id = p.command_id and c.status in ('done', 'failed'))`,
+    [teamIds, `The machine did not finish the push within ${PUSH_EXPIRY_MINUTES} minutes.`, PUSH_EXPIRY_MINUTES])
+}
+
+// Finishes every push whose command has ended, and fails every stuck one, for the runner's teams.
 export async function finishPushes(teamIds: string[] | null) {
+  await expireStuckPushes(teamIds)
   const due = await many<{ id: PushId }>(pool,
     `select p.id from pushes p join commands c on c.id = p.command_id
      where p.status = 'pushing' and c.status in ('done', 'failed') and ($1::uuid[] is null or p.team_id = any($1))`, [teamIds])

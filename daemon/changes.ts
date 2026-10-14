@@ -110,7 +110,10 @@ function parseNumstat(out: string): Map<string, Counts> {
 async function repoChanges(path: string, repoId: RepoId, sent: ReadonlyMap<string, string>, budget: { left: number }): Promise<RepoChanges> {
   const base = await baseCommit(path)
   // Counting writes nothing, unlike staging, so a repo past the limit is never staged.
-  const tracked = await countUpTo(path, ['diff', '--name-only', '--no-renames', '-z', base], CHANGE_LIMITS.files)
+  // git diff rewrites the index when a file's time changed and its content did not,
+  // unless autoRefreshIndex is off. Such a file then counts as changed here, which
+  // matters only past the limit.
+  const tracked = await countUpTo(path, ['-c', 'diff.autoRefreshIndex=false', 'diff', '--name-only', '--no-renames', '-z', base], CHANGE_LIMITS.files)
   const untracked = tracked > CHANGE_LIMITS.files ? 0 : await countUpTo(path, ['ls-files', '--others', '--exclude-standard', '-z'], CHANGE_LIMITS.files - tracked)
   if (tracked + untracked > CHANGE_LIMITS.files) return { state: 'too_many', repoId }
   const index = join(tmpdir(), `agents-index-${randomUUID()}`)

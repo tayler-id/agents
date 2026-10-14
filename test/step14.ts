@@ -6,9 +6,9 @@
 //   node --env-file=.env --env-file=.env.test test/step14.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { once } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -414,6 +414,18 @@ try {
     await turn('All readable again.')
     check(await within(60, async () => !(await unlistedOf(draftTask)).length), 'once git can read it again, the repo is listed again')
 
+    // Counting a repo's changes leaves the agent's own index alone. A tracked file
+    // whose time changed and whose content did not is what makes git diff rewrite it.
+    const index = join(service, '.git', 'index')
+    const hashOf = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex')
+    const later = new Date(Date.now() + 60_000)
+    utimesSync(join(service, 'server.js'), later, later)
+    const indexBefore = hashOf(index)
+    writeFileSync(join(service, 'counted.txt'), 'Counted.\n')
+    await turn('Count again.')
+    const counted = await within(60, async () => (await changesOf(draftTask)).some((r) => r.path === 'counted.txt'))
+    check(counted && hashOf(index) === indexBefore, "counting a repo's changes leaves the agent's own index as it was")
+
     const foreign = await fetch(`${API}/v1/workspaces/${workspace.id}/changes`, {
       method: 'POST', headers: { authorization: `Bearer ${otherToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ repos: [] }),
     })
@@ -459,13 +471,46 @@ try {
     const openAgain = await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${SHOP}/pulls?state=open`)
     check(linksAgain.length === 2 && openAgain.length === open.length, 'asking again opens no second pull request')
 
+    // The check plays the agent in the shop's checkout, and reads the task branch back from the forge.
+    const shopDir = join(must(await workspaceOf(draftTask), 'the workspace').path, SHOP)
+    const gitIn = (...args: string[]) => execFileSync('git', ['-c', 'user.name=helper', '-c', 'user.email=helper@agents.local', ...args], { cwd: shopDir, encoding: 'utf8' }).trim()
+    const branch = `task/${slug}`
+    const branchPath = `/repos/${org}/${SHOP}/branches/${encodeURIComponent(branch)}`
+    const forgeTip = () => forgeAdmin.call<{ commit: { id: string } }>('GET', branchPath).then((b) => b.commit.id, () => null)
+    const pushAgain = async () => {
+      const { pushId: next } = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
+      await pushed(next)
+      return must(await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [next]), 'the push')
+    }
+
+    writeFileSync(join(shopDir, 'second.txt'), 'A second commit.\n')
+    gitIn('add', 'second.txt')
+    gitIn('commit', '--quiet', '-m', 'A second commit')
+    const second = await pushAgain()
+    check(second.status === 'done' && await forgeTip() === gitIn('rev-parse', 'HEAD'), `a commit the agent adds after a push goes up with the next one: ${second.error ?? second.status}`)
+
     const branchFile = `/repos/${org}/${SHOP}/contents/from-the-forge.txt`
-    await forgeAdmin.call('POST', branchFile, { content: Buffer.from('Added on the forge.\n').toString('base64'), message: 'Added on the forge', branch: `task/${slug}` })
-    const third = await post(`/v1/tasks/${draftTask}/pull-requests`, ask)
-    await pushed(third.pushId)
-    const refused = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [third.pushId])
-    const survived = await forgeAdmin.call('GET', `${branchFile}?ref=task/${slug}`).then(() => true, () => false)
-    check(refused?.status === 'failed' && survived, `a push never overwrites a commit added on the forge since the last push: ${refused?.error?.slice(0, 120) ?? 'no error'}`)
+    await forgeAdmin.call('POST', branchFile, { content: Buffer.from('Added on the forge.\n').toString('base64'), message: 'Added on the forge', branch })
+    const refused = await pushAgain()
+    const survived = await forgeAdmin.call('GET', `${branchFile}?ref=${encodeURIComponent(branch)}`).then(() => true, () => false)
+    check(refused.status === 'failed' && refused.error?.includes('someone added commits on the forge, ask the agent to merge them') && survived,
+      `a push never overwrites commits someone added on the forge, and says so plainly: ${refused.error?.slice(0, 160) ?? 'no error'}`)
+
+    gitIn('merge', '--quiet', '--no-edit', `origin/${branch}`)
+    const merged = await pushAgain()
+    check(merged.status === 'done' && await forgeTip() === gitIn('rev-parse', 'HEAD') && existsSync(join(shopDir, 'from-the-forge.txt')),
+      `once the agent merges them, the push goes through: ${merged.error ?? merged.status}`)
+
+    gitIn('commit', '--quiet', '--amend', '-m', 'Merge the forge commit, reworded')
+    const rewritten = await pushAgain()
+    check(rewritten.status === 'done' && await forgeTip() === gitIn('rev-parse', 'HEAD'),
+      `the agent may rewrite a branch it pushed, and the push goes through: ${rewritten.error ?? rewritten.status}`)
+
+    await forgeAdmin.call('DELETE', branchPath)
+    const deleted = await forgeTip() === null
+    const recreated = await pushAgain()
+    check(deleted && recreated.status === 'done' && await forgeTip() === gitIn('rev-parse', 'HEAD'),
+      `a push after the branch was deleted on the forge makes it again: ${recreated.error ?? recreated.status}`)
 
     const quiet = await post('/v1/tasks', { title: 'Look around', instructions: 'Change nothing.', agentId: writer, repoIds: [shopRepo] })
     await within(60, async () => (await one<{ status: string }>('select status from sessions where id = $1', [quiet.sessionId]))?.status === 'idle')
@@ -483,7 +528,8 @@ try {
     ])
     check(!stored.includes(leaked) && stored.includes('[secret:github]'), "a pull request's title and body are scrubbed before they are stored or pushed")
 
-    // A machine that went away mid-push leaves the push running. Once it is old, it no longer blocks a new one.
+    // A machine that went away mid-push leaves the push running, and the page's button
+    // disabled, so nobody can ask again. Once it is old, the runner's loop fails it.
     const mac = must(await one<{ id: string }>('select id from instances where name = $1', [`flow-mac-${id}`]), 'the mac').id
     const quietWorkspace = must(await workspaceOf(quiet.taskId), 'the quiet workspace').id
     const lostPayload = { workspaceId: quietWorkspace, repos: [], message: 'Lost', author: 'writer' }
@@ -491,9 +537,11 @@ try {
       values ($1, $2, 'push', $3, 'claimed', now() - interval '20 minutes') returning id`, [teamId, mac, JSON.stringify(lostPayload)]), 'the lost push command').id
     const stuck = must(await one<{ id: string }>(`insert into pushes (team_id, task_id, workspace_id, command_id, title, body, created_at)
       values ($1, $2, $3, $4, 'Lost', '', now() - interval '20 minutes') returning id`, [teamId, quiet.taskId, quietWorkspace, lost]), 'the stuck push').id
-    const fresh = await as(alice, `/v1/tasks/${quiet.taskId}/pull-requests`, { title: 'After the lost one', body: '' })
+    const failedAlone = await within(20, async () => (await one<{ status: string }>('select status from pushes where id = $1', [stuck]))?.status === 'failed')
     const expired = await one<{ status: string; error: string | null }>('select status, error from pushes where id = $1', [stuck])
-    check(fresh.ok && expired?.status === 'failed' && expired.error?.includes('did not finish'), `a push stuck for 20 minutes expires, and a new one starts: ${expired?.error ?? expired?.status ?? 'gone'}`)
+    const fresh = await as(alice, `/v1/tasks/${quiet.taskId}/pull-requests`, { title: 'After the lost one', body: '' })
+    check(failedAlone && expired?.error?.includes('did not finish') && fresh.ok,
+      `a push stuck for 20 minutes fails without anyone asking, and a new one starts: ${expired?.error ?? expired?.status ?? 'gone'}`)
     if (fresh.ok) await pushed(((await fresh.json()) as { pushId: string }).pushId)
   })
 
