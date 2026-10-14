@@ -139,8 +139,10 @@ const launcher = (name: string, script: string) => {
   chmodSync(join(bin, name), 0o755)
 }
 
-// Steps of the temp repo. step1 reports what it can see, and hangs with a child when
-// asked to. step2 fails while red.md exists. step3 calls docker when asked to.
+// Steps of the temp repo. step1 reports what it can see, including the settings the
+// caller had, and hangs with a child when asked to. A hung step can leave a mark when
+// it hears SIGTERM and then exit or stay, and a step can commit in its worktree.
+// step2 fails while red.md exists. step3 calls docker when asked to.
 const STEP1 = `import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 const seen = [

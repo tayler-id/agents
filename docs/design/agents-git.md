@@ -74,6 +74,8 @@ git update-ref refs/mirror/local-root 65e378ee3218c4ab1d445735f359ba62a27fb6f2
 git update-ref refs/mirror/github-root 28f046c81e67f40f8d528547fba2d74098c411bf
 ```
 
+  Then set the pair last pushed, `refs/mirror/local-pushed` to the newest local commit GitHub has and `refs/mirror/github-pushed` to its copy there. Without them agents-git cannot tell which commits GitHub already has, so the first `submit` scans every commit since the root and the push carries them all.
+
 ## The rules in AGENTS.md and what enforces them
 
 From `AGENTS.md` on main at `b2aa8b5`.
