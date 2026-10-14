@@ -165,6 +165,10 @@ export function startDesktop(config: DesktopConfig): Desktop {
     DISPLAY, '-geometry', `${width}x${height}`, '-depth', '24', '-desktop', 'Agents box',
     // Viewers come only through the daemon's tunnels, over this socket. No TCP at all.
     '-rfbunixpath', vncSocket, '-rfbunixmode', '0600', '-rfbport', '-1', '-nolisten', 'tcp',
+    // X clients reach the display only through its socket file in this container's
+    // /tmp. Xvnc's abstract socket belongs to the network namespace, so boxes on
+    // the host's network, as step 12c runs them, would fight over display :1.
+    '-nolisten', 'local',
     // The daemon's own connection and every viewer's share the screen. None is a
     // reason to drop another, and nobody resizes it under the agent's coordinates.
     '-SecurityTypes', 'None', '-AlwaysShared', '-DisconnectClients=0', '-AcceptSetDesktopSize=0',
