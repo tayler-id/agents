@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { addPersonalBox } from './boxes.ts'
 import { HttpError, Person } from './record.ts'
+import { messageOf } from '../shared/errors.ts'
 import { wakeRunner } from './runner.ts'
 import { lastSeenOf, sentAtOf, tailscale, tailscaleConnected } from './tailscale.ts'
 import {
@@ -180,17 +181,29 @@ export async function resendInvite(admin: Person, inviteId: InviteId): Promise<I
   return { link: made.inviteUrl ?? null }
 }
 
+// Asks Tailscale to delete one of its invites. Null once it is gone there, or why it isn't.
+async function deleteTailnetInvite(tailscaleInviteId: string): Promise<string | null> {
+  try {
+    if (!(await tailscaleConnected())) return 'Tailscale is not connected.'
+    await tailscale.deleteInvite(tailscaleInviteId)
+    return null
+  } catch (error) {
+    // Tailscale has no such invite once the person accepted it or someone deleted it in its console.
+    if (error instanceof HttpError && error.status === 404) return null
+    return messageOf(error)
+  }
+}
+
+// Closed here first, so the invite lets nobody in whatever Tailscale answers. Then
+// Tailscale is asked to delete its own, and the admin reads why when it can't.
 export async function cancelInvite(admin: Person, inviteId: InviteId) {
   const invite = await openInvite(admin, inviteId)
-  if (invite.tailscale_invite_id !== null && await tailscaleConnected()) {
-    try {
-      await tailscale.deleteInvite(invite.tailscale_invite_id)
-    } catch (error) {
-      // Tailscale has no such invite once the person accepted it or someone deleted it in its console.
-      if (!(error instanceof HttpError && error.status === 404)) throw error
-    }
-  }
   await tx((client) => moveInvite(client, invite.id, admin.team_id, 'cancelled', null))
+  if (invite.tailscale_invite_id === null) return
+  const failed = await deleteTailnetInvite(invite.tailscale_invite_id)
+  if (failed !== null) {
+    throw new HttpError(502, `Cancelled the invite for ${invite.email} here, but its invite in Tailscale stays until someone removes it there. ${failed}`)
+  }
 }
 
 const Standing = z.object({ login: z.string(), team_id: TeamId, role: TeamRole })

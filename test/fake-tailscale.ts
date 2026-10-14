@@ -33,6 +33,8 @@ export type FakeState = {
   calls: Call[]
   // When set, the next invite Tailscale is asked to make fails with this message.
   refuseNextInvite: string | null
+  // When set, the next invite Tailscale is asked to delete stays, and the call fails with this message.
+  refuseNextDelete: string | null
 }
 
 const RESEND_EVERY_MS = 60_000
@@ -56,6 +58,7 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
     lastSent: new Map(),
     calls: [],
     refuseNextInvite: null,
+    refuseNextDelete: null,
   }
 
   const user = (loginName: string, displayName: string, role = 'member', status = 'active'): FakeUser => {
@@ -157,6 +160,11 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
       if (!found) return send(res, 404, { message: 'user invite not found' })
       if (method === 'GET') return send(res, 200, found)
       if (method === 'DELETE') {
+        if (state.refuseNextDelete !== null) {
+          const message = state.refuseNextDelete
+          state.refuseNextDelete = null
+          return send(res, 500, { message })
+        }
         state.invites.delete(found.id)
         return send(res, 200)
       }

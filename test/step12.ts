@@ -124,6 +124,15 @@ try {
   check(cancel.status === 200 && (await row('select status from invites where email = $1', [later]))?.status === 'cancelled'
     && laterInvite && !tailscale.state.invites.has(laterInvite.id),
   'cancelling an invite cancels it in Tailscale too')
+  // Tailscale failing to delete its invite still cancels it here, and the admin reads why.
+  const stuckEmail = `stuck12-${id}@mail.test`
+  const stuckInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: stuckEmail, role: 'member' })
+  tailscale.state.refuseNextDelete = 'the invite service is down'
+  const stuckCancel = await asPerson(PEOPLE, owner, 'POST', `/v1/invites/${stuckInvite.json?.invite?.id}/cancel`)
+  check(stuckCancel.status === 502 && /invite service is down/.test(stuckCancel.json?.error) && /Cancelled the invite/.test(stuckCancel.json?.error)
+    && (await row('select status from invites where email = $1', [stuckEmail]))?.status === 'cancelled'
+    && tailscale.state.invites.has(stuckInvite.json?.invite?.tailscale_invite_id),
+  `cancelling closes the invite here even when Tailscale refuses to delete its own, and the admin reads Tailscale's reason (${stuckCancel.status} ${stuckCancel.text})`)
 
   // Reading who you are changes nothing, so a page on another site that makes a
   // browser load it cannot make someone join.
@@ -329,6 +338,8 @@ try {
     `the room's agent is told who is in the room, the added teammates among them (${posted.status})`)
 
   // A key that expires after it was saved stops the Tailscale page without calling Tailscale.
+  const lapsedEmail = `lapse12-${id}@mail.test`
+  const lapsedInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: lapsedEmail, role: 'member' })
   const briefKey = `tskey-api-k${id}BRIEF-${randomBytes(12).toString('hex')}`
   tailscale.useKey(briefKey, 3 / 86_400)
   const savedBrief = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key: briefKey, expires: null })
@@ -339,6 +350,10 @@ try {
   check(savedBrief.status === 200 && lapsed.status === 409 && /expired on/.test(lapsed.json?.error) && /Settings, then Keys/.test(lapsed.json?.error)
     && tailscale.state.calls.length === callsBefore,
   `a key that expires after it was saved stops the tailnet routes, which say how to make a new one, without calling Tailscale (${lapsed.status} ${lapsed.text})`)
+  const lapsedCancel = await asPerson(PEOPLE, owner, 'POST', `/v1/invites/${lapsedInvite.json?.invite?.id}/cancel`)
+  check(lapsedInvite.status === 200 && lapsedCancel.status === 502 && /expired on/.test(lapsedCancel.json?.error)
+    && (await row('select status from invites where email = $1', [lapsedEmail]))?.status === 'cancelled',
+  `with the key expired, cancelling still closes the invite here, and says Tailscale was not told (${lapsedCancel.status} ${lapsedCancel.text})`)
   tailscale.useKey(key, 30)
   const keyBack = await asPerson(PEOPLE, owner, 'POST', '/v1/tailscale/key', { key, expires: null })
   if (keyBack.status !== 200) throw new Error(`could not put the long-lived key back: ${keyBack.text}`)
