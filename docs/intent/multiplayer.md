@@ -23,6 +23,47 @@ Confirmed with Tayler on 2026-10-11 through an interview. This is what the rebui
 
 The shared record moves to the front. Phase 1 sits on Postgres and the sync stack from day one instead of a local database that gets replaced later.
 
+## Definition of done
+
+Tayler set this on 2026-10-14. Agents is done when a team can do all of it from the app, first on the Mac and then on AWS, with nothing taken away.
+
+**Team and agents**
+- Every person on the team has agents, and anyone can create a new one from the app.
+- Each person's agents share that person's own box, and each agent has its own seat in it: a screen, a browser and a workspace. Parallel jobs get boxes of their own. Many agents work at once.
+- Agents hand work to other agents and work together in rooms.
+- A teammate's agent setup can be copied, or started from a template.
+
+**Building**
+- People and agents build from the app, with tasks, files, diffs, pull requests, reviews and approvals on the team's repos, both the Mac's forge and GitHub.
+- Agents load skills and plugins, and run hooks.
+- People keep using Claude Code in their own terminals, and those sessions land in the record.
+
+**The record**
+- Everything is saved. That covers every conversation, message, tool call, tool result and error, and everything an agent thinks, says or does.
+- People search all of it from the app, and agents search it with their record tools.
+- It is understandable. Each session, agent and day has a plain summary of what happened, and any step opens in full.
+
+**Control and cost**
+- People see what each agent and person spends, by agent and by source, and set budgets that stop a runaway agent.
+- People are told when an agent needs approval, gets stuck or finishes, on desktop and on phone.
+- It is clear who can drive whose agents, and what agents may do without asking.
+- An admin can remove a person and delete their data.
+
+**Where the team already works**
+- GitHub, Slack and email.
+
+**Joining**
+- A new teammate goes from invite to first message in under 10 minutes: install Tailscale, download the signed Agents app, open it.
+
+**Proof**
+- Every item above has a check in `npm run check` or a case in the test plan, and has been tried on the live system with a second person.
+
+### Where it stands on 2026-10-14
+
+- **Live:** teams, agents, rooms, tasks with files, diffs and pull requests on the Mac's forge, pipelines with approvals, skills and plugins, personal boxes, and a record of every session the app starts, thinking and errors included.
+- **Built, landing:** terminal sessions, agents' own screens and browsers, GitHub, agents testing their own work, the coding framework, and AWS (written, not switched on).
+- **Not built:** a seat per agent in a box, bigger boxes and more job boxes, hooks, people's search page, summaries, spend view and budgets per agent, notifications, Slack and email, copying agents and templates, removing a person, and the one-download signed app.
+
 ## Sources
 
 - Electric's auth guide, `electric.ax/docs/guides/auth`: shapes are plain HTTP, and a proxy sets the table and `where` filter server side.
