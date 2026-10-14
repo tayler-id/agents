@@ -4,12 +4,20 @@
 // With both stopped, as at cutover, it and ops/aws/restore.ts run for real
 // against a fake AWS. In between, the box's container and home volume are
 // removed, as if the box had moved to a new host, and the restore refuses while
-// a container holds the home. The restore reaches the box host's Docker over
-// SSH, as it does on AWS. When the API starts again, the runner starts the box on
+// a container holds the home, before it makes the database. The restore reaches
+// the box host's Docker over SSH, as it does on AWS, and checks and removes only
+// the check team's boxes. When the API starts again, the runner starts the box on
 // its restored home, and a new message to the task resumes the same Claude
 // session in the same workspace, with the file still there and every file in
 // the home byte for byte. Without the boxes' homes in the export, the task's
 // session fails instead, because its workspace is gone.
+//
+// Then the restore runs again over the database it made. It refuses while the
+// box runs. With the box stopped, its container still holds the token it
+// started with after the move, which the restored database does not know, so
+// the restore removes it. The API then runs on the restored database, and the
+// runner starts the box with a new token, and it comes online. With the stopped
+// container kept, the box would start with its old token and never come online.
 //
 // The box reaches the API on port 7701, the one port besides the live API's that
 // colima's box firewall leaves open. Whoever runs this check holds the shared lock
@@ -119,8 +127,8 @@ const apiEnv: Record<string, string> = {
 // signal keeps a null exitCode and has already sent 'exit', so waiting for 'exit'
 // only after stopping it could wait forever.
 let api: { child: ChildProcess; exited: Promise<unknown> } | undefined
-function startApi() {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...apiEnv }
+function startApi(extra: Record<string, string> = {}) {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...apiEnv, ...extra }
   for (const name of ['AGENTS_MACHINE_HOST', 'DOCKER_HOST', 'AGENTS_BOX_DOCKER_HOST', 'AGENTS_BOX_TOKEN_FILE']) delete env[name]
   const child = spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] })
   children.push(child)
@@ -148,8 +156,19 @@ async function one(sql: string, params: unknown[]): Promise<unknown> {
 const said = async (sessionId: string, text: string) =>
   Boolean(await one(`select 1 from events where session_id = $1 and kind = 'assistant' and text = $2`, [sessionId, text]))
 const status = async (sessionId: string) => z.object({ status: z.string() }).parse(await one('select status from sessions where id = $1', [sessionId])).status
-const online = async (boxId: string, since: Date) =>
-  Boolean(await one(`select 1 from instances where id = $1 and status = 'online' and last_seen_at > $2`, [boxId, since]))
+const ONLINE_SQL = `select 1 from instances where id = $1 and status = 'online' and last_seen_at > $2`
+const online = async (boxId: string, since: Date) => Boolean(await one(ONLINE_SQL, [boxId, since]))
+// Whether a query finds a row in the database the restore made, on a connection of its own.
+async function foundInScratch(sql: string, params: unknown[]): Promise<boolean> {
+  const client = new pg.Client({ connectionString: urlFor(scratch) })
+  await client.connect()
+  try {
+    return (await client.query(sql, params)).rows.length > 0
+  } finally {
+    await client.end()
+  }
+}
+const scratchExists = async () => Boolean(await one('select 1 from pg_database where datname = $1', [scratch]))
 // Every file in a volume with its SHA-256, sorted, for comparing a home before and after.
 const fingerprint = (volume: string) => docker('run', '--rm', '-v', `${volume}:/data:ro`, 'alpine:3.20', 'find', '/data', '-type', 'f', '-exec', 'sha256sum', '{}', '+')
   .split('\n').sort().join('\n')
@@ -241,21 +260,28 @@ try {
 
   // The move: the box host is new, so the box's container and home are not there.
   // The restore first refuses while any container uses the box's home.
+  // AGENTS_RUNNER_TEAMS keeps the restore to this check's team. Unset, it would
+  // look at every box agents_test holds, other checks' included.
   const restoreEnv = {
-    DATABASE_URL: urlFor(scratch), AGENTS_FORGE_VOLUME: forge2, AGENTS_ELECTRIC_VOLUME: electricVolume,
+    DATABASE_URL: urlFor(scratch), AGENTS_FORGE_VOLUME: forge2, AGENTS_ELECTRIC_VOLUME: electricVolume, AGENTS_RUNNER_TEAMS: team,
     AGENTS_BOX_DOCKER_HOST: 'ssh://colima', PATH: `${bin}:${process.env.PATH ?? ''}`,
   }
+  const from = `s3://${BUCKET}/${prefix}`
   docker('run', '-d', '--name', holder, '-v', `agents-box-${boxId}-home:/data`, 'alpine:3.20', 'sleep', '600')
-  const homeInUse = await fake.script(['ops/aws/restore.ts', `s3://${BUCKET}/${prefix}`], restoreEnv)
-  check(homeInUse.status !== 0 && homeInUse.out.includes(`agents-box-${boxId}-home is in use by ${holder}`), "the restore refuses while a container uses the box's home, and names it")
+  const homeInUse = await fake.script(['ops/aws/restore.ts', from], restoreEnv)
+  check(homeInUse.status !== 0 && homeInUse.out.includes(`agents-box-${boxId}-home is in use by ${holder}`) && !await scratchExists(),
+    "the restore refuses while a container uses the box's home, names it, and has not made the database")
   docker('rm', '-f', holder, `agents-box-${boxId}`)
   docker('volume', 'rm', `agents-box-${boxId}-home`)
   rmSync(sshLog, { force: true })
-  const restored = await fake.script(['ops/aws/restore.ts', `s3://${BUCKET}/${prefix}`], restoreEnv)
+  const restored = await fake.script(['ops/aws/restore.ts', from], restoreEnv)
   const after = tryDocker('volume', 'inspect', `agents-box-${boxId}-home`) === null ? '' : fingerprint(`agents-box-${boxId}-home`)
   const overSsh = existsSync(sshLog) && readFileSync(sshLog, 'utf8').includes('colima docker system dial-stdio')
   check(restored.status === 0 && after === before && before.includes('notes/plan.md') && overSsh,
     `the restore brings back every file in the box's home byte for byte, on the box host over SSH (${before.split('\n').length} files)`)
+  const sessionRestored = () => foundInScratch('select 1 from sessions where id = $1', [task.sessionId])
+  check(restored.status === 0 && await sessionRestored() && restored.out.includes('removed no stopped box containers'),
+    "the restored database holds the task's session, and there was no stopped box container to remove")
 
   // After the move: the runner starts the box on its home, and the task resumes.
   const secondStart = new Date()
@@ -269,6 +295,23 @@ try {
     .map((line) => z.object({ sessionId: z.string(), resumed: z.boolean() }).parse(JSON.parse(line)))
   check(starts.at(-1)?.resumed === true && starts.at(-1)?.sessionId === harness, 'the box resumed the same Claude session, in the same workspace')
   check(tryDocker('exec', `agents-box-${boxId}`, 'cat', join(path, 'notes/plan.md')) === plan.trim(), "the agent's file is still in its workspace")
+
+  // The restore again, over the database it made. The box's container started
+  // after the move with a new token, which the export's database does not know.
+  await stopApi()
+  const replace = ['--replace', scratch]
+  const boxRuns = await fake.script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
+  check(boxRuns.status !== 0 && boxRuns.out.includes(`is in use by agents-box-${boxId}.`) && await sessionRestored(),
+    'restoring again refuses while the box runs, names it, and leaves the database alone')
+  docker('stop', `agents-box-${boxId}`)
+  const again = await fake.script(['ops/aws/restore.ts', from, ...replace], restoreEnv)
+  check(again.status === 0 && again.out.includes('removed one stopped box container') && tryDocker('container', 'inspect', `agents-box-${boxId}`) === null,
+    "with the box stopped and --replace naming the database, it restores again and removes the box's stopped container")
+  // The API on the restored database, as on AWS after the move.
+  const thirdStart = new Date()
+  startApi({ DATABASE_URL: urlFor(scratch) })
+  check(await within(ONLINE_MS, () => foundInScratch(ONLINE_SQL, [boxId, thirdStart])),
+    'on the restored database, the runner starts the box again with a token that database knows, and it comes online')
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
