@@ -129,6 +129,8 @@ export const TailscaleKeyBody = z.object({ key: TailscaleKey, expires: z.iso.dat
 export const TailscaleRoleBody = z.object({ role: TailscaleRole.exclude(['owner']) })
 export const ClaudeCodeBody = z.object({ code: ClaudeCode })
 export const RoomMemberBody = z.object({ login: Login })
+// Asking to join carries nothing. The login comes from Tailscale.
+export const JoinBody = z.object({}).strict()
 
 // Request bodies, machine port, from a box's daemon during a Claude sign-in.
 
@@ -139,17 +141,23 @@ export const LoginCodeReply = z.object({ code: ClaudeCode })
 
 // Answers.
 
-export const MeView = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('member'),
-    person: z.object({ id: PersonId, login: z.string(), name: z.string().nullable(), role: TeamRole }),
-    team: z.object({ id: TeamId, name: z.string() }),
-  }),
-  // On no team yet. An admin sees the login under "Wants to join".
-  z.object({ kind: z.literal('waiting'), login: z.string(), name: z.string().nullable() }),
-])
+export const MemberView = z.object({
+  kind: z.literal('member'),
+  person: z.object({ id: PersonId, login: z.string(), name: z.string().nullable(), role: TeamRole }),
+  team: z.object({ id: TeamId, name: z.string() }),
+})
+export type MemberView = z.infer<typeof MemberView>
+// On no team, with an open invite. Nothing happens until the app asks to join.
+const InvitedView = z.object({ kind: z.literal('invited'), login: z.string(), name: z.string().nullable() })
+// On no team and not invited. Once the app asks to join, admins see the login under "Wants to join".
+export const WaitingView = z.object({ kind: z.literal('waiting'), login: z.string(), name: z.string().nullable() })
+export type WaitingView = z.infer<typeof WaitingView>
+// What GET /v1/me reads. It writes nothing, so a page that makes a browser load it changes nothing.
+export const MeView = z.discriminatedUnion('kind', [MemberView, InvitedView, WaitingView])
 export type MeView = z.infer<typeof MeView>
-export type MemberView = Extract<MeView, { kind: 'member' }>
+// What POST /v1/me/join answers: on the team, or waiting for an admin.
+export const JoinAnswer = z.discriminatedUnion('kind', [MemberView, WaitingView])
+export type JoinAnswer = z.infer<typeof JoinAnswer>
 
 export const TailscaleView = z.discriminatedUnion('state', [
   // The server has no AGENTS_TAILSCALE_KEY_FILE, so no key can be saved.

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { JoinRequestRow, type MeView } from '../../shared/onboarding.ts'
+import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import {
   act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
@@ -58,9 +58,13 @@ function useRoute(): Route {
 }
 
 export function App() {
-  const [me, setMe] = useState<MeView | null>(null)
+  const [me, setMe] = useState<JoinAnswer | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => { api.me().then(setMe, (e: unknown) => { setError(messageOf(e)) }) }, [])
+  // Reading who you are changes nothing. A login on no team then asks to join,
+  // which joins it through an invite or puts it under "Wants to join".
+  useEffect(() => {
+    api.me().then((seen) => (seen.kind === 'member' ? seen : api.join())).then(setMe, (e: unknown) => { setError(messageOf(e)) })
+  }, [])
 
   if (error) {
     return (

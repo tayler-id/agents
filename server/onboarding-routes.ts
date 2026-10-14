@@ -5,13 +5,13 @@ import { adminFrom, loginFrom, nameFrom, personFrom } from './auth.ts'
 import { tx } from './db.ts'
 import { parseBody, pathId, type Route } from './http.ts'
 import {
-  addToTeam, arrive, cancelInvite, cancelTailnetInvite, inviteLink, makeInvite, meOf, resendInvite, tailnetDevices, tailnetInvites, tailnetUsers,
+  addToTeam, arrive, cancelInvite, cancelTailnetInvite, inviteLink, lookUp, makeInvite, meOf, resendInvite, tailnetDevices, tailnetInvites, tailnetUsers,
 } from './onboarding.ts'
 import { addRoomMember } from './rooms.ts'
 import { removeKey, saveKey, tailscale, tailscaleView } from './tailscale.ts'
 import {
-  AddPersonBody, ConversationId, DeviceAction, InviteBody, InviteId, RoomMemberBody, TailnetInviteAction, TailscaleKeyBody, TailscaleRoleBody, UserAction,
-  type Done, type InviteMade, type MeView, type PersonAdded, type TailnetDevices, type TailnetInvites, type TailnetUsers, type TailscaleView,
+  AddPersonBody, ConversationId, DeviceAction, InviteBody, InviteId, JoinBody, RoomMemberBody, TailnetInviteAction, TailscaleKeyBody, TailscaleRoleBody, UserAction,
+  type Done, type InviteMade, type JoinAnswer, type MeView, type PersonAdded, type TailnetDevices, type TailnetInvites, type TailnetUsers, type TailscaleView,
 } from '../shared/onboarding.ts'
 
 const UUID = '([0-9a-f-]{36})'
@@ -22,7 +22,13 @@ const done: Done = { ok: true }
 export const onboardingRoutes: Route[] = [
   // Who is calling. A login with an open invite joins its team here, and one
   // with none is recorded as wanting to join.
-  ['people', 'GET', /^\/v1\/me$/, async (req): Promise<MeView> => meOf(await arrive(loginFrom(req), nameFrom(req)))],
+  ['people', 'GET', /^\/v1\/me$/, async (req): Promise<MeView> => lookUp(loginFrom(req), nameFrom(req))],
+
+  // The app asks to join once /v1/me says the login is on no team.
+  ['people', 'POST', /^\/v1\/me\/join$/, async (req): Promise<JoinAnswer> => {
+    await parseBody(req, JoinBody)
+    return meOf(await arrive(loginFrom(req), nameFrom(req)))
+  }],
 
   ['people', 'POST', /^\/v1\/invites$/, async (req): Promise<InviteMade> => {
     const admin = await adminFrom(req)

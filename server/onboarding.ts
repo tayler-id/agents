@@ -12,7 +12,7 @@ import { wakeRunner } from './runner.ts'
 import { lastSeenOf, sentAtOf, tailscale, tailscaleConnected } from './tailscale.ts'
 import {
   INVITE_MOVES, InviteRow, JOIN_REQUEST_MOVES, JoinRequestRow, movesInto, PersonId, TeamId, TeamRole,
-  type InviteId, type InviteLink, type InviteMade, type InviteResent, type InviteStatus, type MeView,
+  type InviteId, type InviteLink, type InviteMade, type InviteResent, type InviteStatus, type JoinAnswer, type MemberView, type MeView,
   type TailnetDevice, type TailnetInvite, type TailnetUser,
 } from '../shared/onboarding.ts'
 
@@ -71,6 +71,16 @@ async function askToJoin(client: pg.PoolClient, login: string, name: string | nu
      returning ${JOIN_REQUEST}`, [login, name]))
 }
 
+// Who a login is, read without writing anything.
+export async function lookUp(login: string, name: string | null): Promise<MeView> {
+  const known = await personByLogin(pool, login)
+  if (known) return memberView(known)
+  const invited = await maybe(pool, `select 1 from invites where status = 'open' and email = lower($1)`, [login])
+  return { kind: invited ? 'invited' : 'waiting', login, name }
+}
+
+// A login on no team asks to join: it joins through an open invite for its
+// email, or it waits for an admin.
 export async function arrive(login: string, name: string | null): Promise<Arrival> {
   const known = await personByLogin(pool, login)
   if (known) return { kind: 'member', person: known }
@@ -92,11 +102,15 @@ export async function arrive(login: string, name: string | null): Promise<Arriva
 
 const MemberRow = z.object({ id: PersonId, login: z.string(), name: z.string().nullable(), role: TeamRole, team_id: TeamId, team_name: z.string() })
 
-export async function meOf(arrival: Arrival): Promise<MeView> {
+export async function meOf(arrival: Arrival): Promise<JoinAnswer> {
   if (arrival.kind === 'waiting') return { kind: 'waiting', login: arrival.request.login, name: arrival.request.name }
+  return memberView(arrival.person)
+}
+
+async function memberView(person: Person): Promise<MemberView> {
   const row = MemberRow.parse(await one(pool, 'the person and their team',
     `select p.id, p.login, p.name, p.role, t.id as team_id, t.name as team_name
-     from people p join teams t on t.id = p.team_id where p.id = $1`, [arrival.person.id]))
+     from people p join teams t on t.id = p.team_id where p.id = $1`, [person.id]))
   return {
     kind: 'member',
     person: { id: row.id, login: row.login, name: row.name, role: row.role },

@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import {
-  BoxMade, Done, InviteLink, InviteMade, InviteResent, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
+  BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
   type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
 } from '../../shared/onboarding.ts'
 
@@ -224,6 +224,7 @@ async function call<S extends z.ZodType>(schema: S, method: string, path: string
 
 export const api = {
   me: () => call(MeView, 'GET', '/v1/me'),
+  join: () => call(JoinAnswer, 'POST', '/v1/me/join', {}),
   invite: (email: string, role: TeamRole) => call(InviteMade, 'POST', '/v1/invites', { email, role }),
   resendInvite: (inviteId: string) => call(InviteResent, 'POST', `/v1/invites/${inviteId}/resend`, {}),
   cancelInvite: (inviteId: string) => call(Done, 'POST', `/v1/invites/${inviteId}/cancel`, {}),

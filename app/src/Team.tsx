@@ -1,5 +1,5 @@
 import { useEffect, useState, type SyntheticEvent } from 'react'
-import { InviteRow, JoinRequestRow, TeamRole, type InviteMade, type MeView, type TailscaleView } from '../../shared/onboarding.ts'
+import { InviteRow, JoinRequestRow, TeamRole, type InviteMade, type MemberView, type TailscaleView, type WaitingView } from '../../shared/onboarding.ts'
 import { act, api, day, messageOf, useSnapshot, useSnapshotOf, type Instance, type Me, type Person } from './data.ts'
 import { LinkField } from './LinkField.tsx'
 import { KeyWarning, useTailscaleView } from './Tailscale.tsx'
@@ -9,13 +9,16 @@ import { go } from './App.tsx'
 const WAITING_POLL_MS = 5000
 
 // A login on no team. It asks again every few seconds, so the app opens as soon
-// as an admin adds it.
-export function Waiting({ me, onJoined }: { me: Extract<MeView, { kind: 'waiting' }>; onJoined: (me: MeView) => void }) {
+// as an admin adds it, or joins as soon as someone invites it.
+export function Waiting({ me, onJoined }: { me: WaitingView; onJoined: (me: MemberView) => void }) {
   const [error, setError] = useState('')
   useEffect(() => {
-    const timer = setInterval(() => {
-      api.me().then((next) => { if (next.kind === 'member') onJoined(next) }, (e: unknown) => { setError(messageOf(e)) })
-    }, WAITING_POLL_MS)
+    const look = async () => {
+      const next = await api.me()
+      const joined = next.kind === 'invited' ? await api.join() : next
+      if (joined.kind === 'member') onJoined(joined)
+    }
+    const timer = setInterval(() => { look().catch((e: unknown) => { setError(messageOf(e)) }) }, WAITING_POLL_MS)
     return () => { clearInterval(timer) }
   }, [onJoined])
   return (

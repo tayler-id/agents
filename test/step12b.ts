@@ -102,6 +102,12 @@ async function run(engine: string) {
       baseURL: ORIGINS[engine], viewport: { width: 1280, height: 820 },
       extraHTTPHeaders: { 'tailscale-user-login': login, ...(name ? { 'tailscale-user-name': name } : {}) }, ...options,
     })
+    // Notes whether the waiting screen ever showed, so a check can tell joining at once from joining later.
+    await context.addInitScript(() => {
+      new MutationObserver(() => {
+        if (document.querySelector('main[aria-label="Waiting to join"]')) document.documentElement.dataset.sawWaiting = 'yes'
+      }).observe(document, { childList: true, subtree: true })
+    })
     const page = await context.newPage()
     page.on('pageerror', (error) => errors.push(`${login}: ${error.message}`))
     await page.goto('/')
@@ -132,7 +138,8 @@ async function run(engine: string) {
 
     // The invited person opens the app and is on the team at once.
     const newcomer = await open(invited.toLowerCase(), {}, `Invited ${engine}`)
-    check(await visible(newcomer, '.team strong', 15, new RegExp(team)), `${engine}: the invited person opens the app straight onto the team`)
+    check(await visible(newcomer, '.team strong', 15, new RegExp(team)) && !(await newcomer.evaluate(() => document.documentElement.dataset.sawWaiting === 'yes')),
+      `${engine}: the invited person opens the app straight onto the team, never seeing the waiting screen`)
     const machines = newcomer.getByRole('list', { name: 'Machines' })
     const ownBox = machines.locator('li', { hasText: new RegExp(`box-inv12b-${engine}-${id}`) }).getByText('yours', { exact: true })
     const listed = await ownBox.waitFor({ timeout: 20_000 }).then(() => true, () => false)
@@ -176,6 +183,13 @@ async function run(engine: string) {
     await admin.getByRole('button', { name: `Add ${waiting}` }).click()
     check(await visible(admin, '[role="status"]', 10, new RegExp(`Added ${waiting}`)), `${engine}: one click adds them`)
     check(await visible(stranger, '.team strong', 20, new RegExp(team)), `${engine}: the waiting screen opens the app by itself once they are added`)
+    // Someone waiting who is then invited joins from the waiting screen.
+    const late = `late12b-${engine}-${id}@mail.test`
+    const latecomer = await open(late, {}, `Late ${engine}`)
+    await visible(latecomer, 'main[aria-label="Waiting to join"] h1', 15)
+    const lateInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: late, role: 'member' })
+    check(lateInvite.status === 200 && await visible(latecomer, '.team strong', 20, new RegExp(team)),
+      `${engine}: someone waiting who is then invited joins from the waiting screen by itself (${lateInvite.status})`)
 
     // A member sees the team, and none of the admin's forms.
     const memberPage = await open(memberOf(engine))
@@ -342,7 +356,7 @@ try {
   await tailscale.close()
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
-    await db.query(`delete from join_requests where login like $1`, [`gh12b-%-${id}@github`]).catch(() => undefined)
+    await db.query(`delete from join_requests where login like $1 or login like $2`, [`gh12b-%-${id}@github`, `late12b-%-${id}@mail.test`]).catch(() => undefined)
     rmSync(home, { recursive: true, force: true })
   }
   await db.end().catch(() => undefined)

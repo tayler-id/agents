@@ -115,15 +115,22 @@ try {
     && laterInvite && !tailscale.state.invites.has(laterInvite.id),
   'cancelling an invite cancels it in Tailscale too')
 
+  // Reading who you are changes nothing, so a page on another site that makes a
+  // browser load it cannot make someone join.
+  tailscale.accept(invitee, 'Dev Twelve')
+  const peek = await asPerson(PEOPLE, invitee, 'GET', '/v1/me', undefined, 'Dev Twelve')
+  check(peek.status === 200 && peek.json?.kind === 'invited' && !(await row('select 1 from people where login = $1', [invitee]))
+    && (await row('select status from invites where email = $1', [invitee]))?.status === 'open',
+  `reading /v1/me with an open invite says so, and joins nothing until the app asks to join (${peek.text})`)
+
   // Joining with an invite. Three first requests at once must make one person.
   // The check holds the invite's row lock until all three are waiting in
   // Postgres, so they truly race instead of finishing one after another.
-  tailscale.accept(invitee, 'Dev Twelve')
   const holder = new pg.Client({ connectionString: process.env.DATABASE_URL })
   await holder.connect()
   await holder.query('begin')
   await holder.query('select 1 from invites where email = $1 for update', [invitee])
-  const racing = Promise.all([1, 2, 3].map(() => asPerson(PEOPLE, invitee, 'GET', '/v1/me', undefined, 'Dev Twelve')))
+  const racing = Promise.all([1, 2, 3].map(() => asPerson(PEOPLE, invitee, 'POST', '/v1/me/join', {}, 'Dev Twelve')))
   const waitingInPostgres = await within(10, async () => (await row(
     `select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
      and (query like '%hashtext(''join:''%' or query like '%from invites where status = ''open'' and email = lower%')`, [])).n === 3)
@@ -141,7 +148,7 @@ try {
   check(boxes.length === 1 && boxes[0]?.kind === 'box' && boxes[0].owner_id === person?.id && boxes[0].claimed_by === person?.id
     && boxes[0].name === `box-dev12-${id}`, `they get their own box, named after their login, held by them (${boxes.map((b) => b.name).join(', ')})`)
   await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: boss, role: 'admin' })
-  const bossMe = await asPerson(PEOPLE, `Boss12-${id}@Mail.Test`, 'GET', '/v1/me')
+  const bossMe = await asPerson(PEOPLE, `Boss12-${id}@Mail.Test`, 'POST', '/v1/me/join', {})
   check(bossMe.json?.kind === 'member' && bossMe.json.person.role === 'admin', 'an invite for an admin makes an admin, matching the login whatever its case')
 
   // Boxes. This API's box image is never built, so the runner's tries to start them fail.
@@ -160,8 +167,11 @@ try {
   check(theirs.status === 403 && /teammate's own/.test(theirs.json?.error) && mine.status === 200,
     "only a box's owner makes agents whose home it is")
 
-  // Waiting, and one click to add.
-  const waiting = await asPerson(PEOPLE, github, 'GET', '/v1/me', undefined, 'GH Twelve')
+  // Waiting, and one click to add. Reading /v1/me records nothing, and asking to join does.
+  const looked = await asPerson(PEOPLE, github, 'GET', '/v1/me', undefined, 'GH Twelve')
+  check(looked.status === 200 && looked.json?.kind === 'waiting' && !(await row('select 1 from join_requests where login = $1', [github])),
+    `reading /v1/me with no invite records no request to join (${looked.text})`)
+  const waiting = await asPerson(PEOPLE, github, 'POST', '/v1/me/join', {}, 'GH Twelve')
   // Electric follows Postgres's log, so a row reaches a shape a moment after it is written.
   const listed = await within(10, async () => (await shapeRows(PEOPLE, owner, 'join_requests')).rows
     .some((r) => r.login === github && r.name === 'GH Twelve' && r.status === 'waiting'))
