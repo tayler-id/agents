@@ -260,7 +260,7 @@ export const DEPLOY_NEXT: Record<DeployStatus, readonly DeployStatus[]> = {
   requested: ['preparing', 'failed'],
   preparing: ['switching', 'failed'],
   switching: ['checking', 'rolling_back', 'failed'],
-  checking: ['healthy', 'rolling_back'],
+  checking: ['healthy', 'rolling_back', 'failed'],
   rolling_back: ['rolled_back', 'failed'],
   healthy: [],
   rolled_back: [],

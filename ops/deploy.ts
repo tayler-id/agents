@@ -53,13 +53,18 @@ let stopping = false
 
 type Deploy = { id: string; commit: string; status: DeployStatus; log: string[] }
 
-// Moves a deploy to its next status, refusing any move the lifecycle does not allow.
+// Moves a deploy to its next status, refusing any move the lifecycle does not
+// allow. The row moves only from the status this deployer last gave it. When
+// another process moved it first, such as the runner failing a deploy past its
+// hour, nothing is written and the deployer stops, since the deploy is no
+// longer its to finish.
 async function move(deploy: Deploy, to: DeployStatus, note: string | null = null) {
   if (!DEPLOY_NEXT[deploy.status].includes(to)) throw new Error(`a deploy cannot go from ${deploy.status} to ${to}`)
   const done = DEPLOY_NEXT[to].length === 0
-  await pool.query(
-    `update deploys set status = $2, log = $3, note = coalesce($4, note), ended_at = case when $5 then now() else ended_at end where id = $1`,
-    [deploy.id, to, scrub(deploy.log.join('\n')), note, done])
+  const { rowCount } = await pool.query(
+    `update deploys set status = $2, log = $3, note = coalesce($4, note), ended_at = case when $5 then now() else ended_at end where id = $1 and status = $6`,
+    [deploy.id, to, scrub(deploy.log.join('\n')), note, done, deploy.status])
+  if (!rowCount) throw new Error(`deploy ${deploy.id} is no longer ${deploy.status}, since another process moved it, so this deployer stops`)
   deploy.status = to
   console.log(`deploy ${deploy.id}: ${to}${note ? `, ${note}` : ''}`)
 }
@@ -182,8 +187,8 @@ async function expireWaiting() {
 }
 
 // Fails each deploy of the repo that a deployer left part done, stopped while
-// preparing, switching, checking or going back. One deployer runs for a repo,
-// so when one starts, any such deploy is an earlier one's.
+// preparing, switching, checking or going back. It runs only under the repo's
+// deployer lock, so any such deploy is an earlier deployer's.
 async function failStuck() {
   const { rows } = await pool.query<{ id: string }>(
     `update deploys set status = 'failed', ended_at = now(),
@@ -201,11 +206,7 @@ async function claim(): Promise<Deploy | null> {
   return row ? { id: row.id, commit: row.commit, status: 'preparing', log: [] } : null
 }
 
-process.on('SIGTERM', () => { stopping = true })
-process.on('SIGINT', () => { stopping = true })
-// A signal sets the flag between awaits, so it is read through a function.
-const stopped = (): boolean => stopping
-try {
+async function work() {
   await failStuck()
   while (!stopped()) {
     await expireWaiting()
@@ -220,6 +221,29 @@ try {
     if (mode === '--once') break
     if (!deploy) await sleep(IDLE_POLL_MS)
   }
+}
+
+process.on('SIGTERM', () => { stopping = true })
+process.on('SIGINT', () => { stopping = true })
+// A signal sets the flag between awaits, so it is read through a function.
+const stopped = (): boolean => stopping
+// One deployer runs for a repo at a time. It holds a lock keyed by the repo on
+// a connection of its own for as long as it runs, so a second deployer for the
+// repo stops before failStuck could fail a deploy the first one is working on.
+const lock = await pool.connect()
+lock.on('error', (error) => {
+  console.error(`the deployer's lock connection failed, so it stops: ${error.message}`)
+  stopping = true
+})
+try {
+  const { held } = await one<{ held: boolean }>(lock, 'the deployer lock', `select pg_try_advisory_lock(hashtext('deployer:' || $1)) as held`, [target.repoId])
+  if (held) {
+    await work()
+  } else {
+    console.error(`Another deployer runs for repo ${target.repoId}, so this one stops.`)
+    process.exitCode = 1
+  }
 } finally {
+  lock.release(true)
   await pool.end()
 }

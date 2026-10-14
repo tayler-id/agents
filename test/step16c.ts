@@ -189,6 +189,24 @@ try {
     && realpathSync(join(home, 'releases', 'current')) === realpathSync(join(home, 'releases', good)),
   `a release that failed its health check rolled back by itself, and the release before answers again: ${three.status} ${three.note ?? ''}`)
 
+  // One deployer runs for a repo at a time. A second one for the same repo
+  // stops at once, before it could fail a deploy the first one is working on.
+  const { id: heldId } = must(await one(`insert into deploys (team_id, repo_id, commit, approved_by, status, started_at) values ($1, $2, $3, $4, 'checking', now()) returning id`,
+    [teamId, repoId, good, ownerId]), 'a deploy the running deployer is checking')
+  const second = await new Promise<{ exit: number | null; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'ops/deploy.ts', join(home, 'target.json'), '--once'], {
+      cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, AGENTS_HOME: join(home, 'deployer-second') },
+    })
+    let stderr = ''
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+    const timer = setTimeout(() => { child.kill('SIGKILL') }, ONCE_LIMIT_MS)
+    child.on('close', (code) => { clearTimeout(timer); resolve({ exit: code, stderr }) })
+  })
+  const heldRow = await one('select status from deploys where id = $1', [heldId])
+  check(second.exit === 1 && second.stderr.includes('Another deployer runs') && heldRow?.status === 'checking',
+    `a second deployer for a repo stops at once, and leaves the first one's deploy alone: exit ${second.exit ?? 'none'}, ${heldRow?.status ?? 'gone'}`)
+  await db.query('delete from deploys where id = $1', [heldId])
+
   // The deployer's failure paths. Each deploys a small spare repo, handled by a
   // deployer that takes one deploy and exits, with stand-ins for the restart and
   // the health answer. A deployer that crashed or hung would leave the deploy
@@ -267,6 +285,23 @@ try {
   const lostRow = await spareRow(lostId)
   check(lostRow.status === 'failed' && String(lostRow.note).includes('did not finish within'),
     `the runner fails a deploy whose deployer started it and never finished: ${lostRow.status} ${lostRow.note ?? ''}`)
+  // The runner fails a deploy while its deployer still works on it. The
+  // deployer's next move finds the row moved, writes nothing and stops, so
+  // the deploy never switches.
+  const movedId = await spareDeploy()
+  const [backingUp, goOn] = [join(home, 'moved.started'), join(home, 'moved.go')]
+  const waitToGoOn = [process.execPath, '-e',
+    "const fs = process.getBuiltinModule('node:fs'); fs.writeFileSync(process.argv[1], ''); const t = setInterval(() => { if (fs.existsSync(process.argv[2])) clearInterval(t) }, 100)",
+    backingUp, goOn]
+  const moving = once('moved', { backup: waitToGoOn })
+  const reachedBackup = await within(90, async () => existsSync(backingUp))
+  await db.query(`update deploys set started_at = now() - interval '2 hours' where id = $1`, [movedId])
+  await expireDeploy(db, movedId)
+  writeFileSync(goOn, '')
+  const moved = await moving
+  const movedRow = await spareRow(movedId)
+  check(reachedBackup && moved.exit === 1 && movedRow.status === 'failed' && String(movedRow.note).includes('did not finish within') && !existsSync(join(moved.releases, 'current')),
+    `a deployer whose deploy the runner failed meanwhile writes nothing more and stops before the switch: exit ${moved.exit ?? 'none'}, ${movedRow.status} ${movedRow.note ?? ''}`)
   garbage.close()
   silent.close()
 

@@ -240,7 +240,7 @@ The check host reads `evidence.json` after the suite, in that `{ shots }` shape,
 
 A deploy is a row in `deploys`, written by the runner once the owner approves it, and carried out by the deployer, `ops/deploy.ts`. The deployer is a separate process because a deploy restarts the API, which is where the runner lives. On the server it runs as its own launch agent, `com.agents.deployer`, which this work does not install.
 
-The lifecycle is a typed transition table: requested, preparing, switching, checking, then healthy, rolled back or failed. For each deploy the deployer:
+The lifecycle is a typed transition table: requested, preparing, switching, checking, then healthy, rolled back or failed. Every status a deployer works in may end failed, since a deployer starting up and the runner's hour limit fail a deploy from any of them. One deployer runs for a repo at a time: it holds an advisory lock keyed by the repo, on a connection of its own, for as long as it runs, and a second one for the same repo stops at once. For each deploy the deployer:
 
 1. Fails any requested row older than 30 minutes, so a stale approval never goes out, then claims the oldest requested row. The runner fails its own deploy on the same rule, so a run never waits on a deployer that is not running.
 2. Makes a release folder for the commit from the repo under a `.partial` name, runs the target's install command in it, and renames it into place only once it installed. A failed install removes it.
@@ -250,9 +250,9 @@ The lifecycle is a typed transition table: requested, preparing, switching, chec
 6. Polls `GET /v1/health` until it answers with the new commit, or the time runs out. Each request has a 3 second limit, and an answer that is slow, unreachable or not the health JSON counts as no answer.
 7. On failure, points `current` back at the previous release, restarts, and checks that the previous commit answers. The row ends `rolled_back`, or `failed` when the previous release does not come back either, which asks Tayler at once. Any error after the switch also goes back, and ends the row `failed`.
 
-Every subprocess, and every git command against the mirror, has a time limit. Rollback puts the code back, never the migrations.
+Every subprocess, and every git command against the mirror, has a time limit. Rollback puts the code back, never the migrations. The deployer moves a deploy only from the status it last gave it. When another process moved the deploy first, such as the runner failing one past its hour, the deployer writes nothing more and stops.
 
-`GET /v1/health` answers on the machine port once Postgres answers, with the build the process runs, read once at start. The deployer compares the build's commit. The target is a config file parsed at start: the release folder, the repo, and each command as an argument list. `test/step16c.ts` deploys to a target in a temporary folder, with a test API on a test port, and shows a healthy deploy and a rollback. Then a deployer that takes one deploy and exits meets each failure path: an install that fails, a health answer that is not JSON, one that never comes, a switch that throws, and a deploy that waited too long. It never touches launchd or the live database.
+`GET /v1/health` answers on the machine port once Postgres answers, with the build the process runs, read once at start. The deployer compares the build's commit. The target is a config file parsed at start: the release folder, the repo, and each command as an argument list. `test/step16c.ts` deploys to a target in a temporary folder, with a test API on a test port, and shows a healthy deploy and a rollback. Then a deployer that takes one deploy and exits meets each failure path: an install that fails, a health answer that is not JSON, one that never comes, a switch that throws, a deploy that waited too long, and a deploy the runner fails while its deployer still works on it. A second deployer for a repo whose deployer runs stops at once. It never touches launchd or the live database.
 
 ## Router and playbooks
 
@@ -410,6 +410,9 @@ Each guard below was broken with a scripted edit whose anchor matched once, its 
 | A promise that failed 40 times waits an hour, and holds none of the others up | The exponent was not capped, so the cast overflowed at 31 tries and every pass rolled back | `test/step16d.ts` "a promise that failed 40 times waits an hour before its next try: 40 tries so far", and the outcome was never delivered |
 | A deployer that starts fails deploys left part done | It never looked for them | `test/step16c.ts` "a deploy left checking by a deployer that stopped fails when the next deployer starts: checking" |
 | The runner fails a deploy whose deployer never finished | Its cap was a thousand times longer | `test/step16c.ts` "the runner fails a deploy whose deployer started it and never finished: switching" |
+| Every status a deployer works in may end failed | `checking` could not end `failed`, as before | `test/step16b.ts` "deploy: every status a deployer works in may end failed, but checking may not" |
+| A second deployer for a repo stops at once | The lock's answer was always yes | `test/step16c.ts` "a second deployer for a repo stops at once, and leaves the first one's deploy alone: exit 0, failed" |
+| A deployer whose deploy the runner failed writes nothing more and stops | `move()` updated the row whatever its status | `test/step16c.ts` "a deployer whose deploy the runner failed meanwhile writes nothing more and stops before the switch: exit 0, failed The release failed its health check. There is no release before it to go back to." |
 | The pull request fences the review findings and the decisions | The decisions were plain text | `test/step16.ts`, HAPPY, "the review findings and the decisions sit in fences" |
 | The pull request and the attestation mark review and verdict advisory | No gate counted as a judge's | `test/step16.ts`, HAPPY, "the pull request marks the review and the verdict advisory" |
 | An unreadable file counts toward the size cap by its bytes | The cap charged it nothing | `test/step16b.ts` "counts toward the cap by its bytes" |

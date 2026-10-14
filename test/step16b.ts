@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { changes, untrusted } from '../server/mirror.ts'
 import { checkAttestation, statusText, withAttestation, type Attestation } from '../shared/attestation.ts'
 import { findingKey } from '../shared/findings.ts'
-import { fenced, resultProblems } from '../shared/framework.ts'
+import { DEPLOY_NEXT, DEPLOY_WORKING, fenced, resultProblems } from '../shared/framework.ts'
 import type { GateResult, GateStatus, MapOnMain } from '../shared/framework.ts'
 import { imageFormat, staticGates, type FileChange, type ImageFormat, type StaticContext } from '../shared/gates/diff.ts'
 import { cssFindings, tokensOf } from '../shared/gates/css.ts'
@@ -357,6 +357,11 @@ check(verdictOf(withAttestation('x', thin), statusText(thin), thin.head).include
 check(verdictOf(described, null, attestation.head).includes('no agents/attestation status'), 'attestation: a head with no status fails')
 check(verdictOf('What changed.', statusText(attestation), attestation.head).includes('no attestation block'), 'attestation: a description with no block fails')
 check(verdictOf('<!-- agents-attestation:v1 bm90IGpzb24 -->', statusText(attestation), attestation.head).includes('not JSON'), 'attestation: a block that is not JSON fails')
+
+// Every status a deployer works in may end failed, since a deployer starting
+// up and the runner's hour limit both fail a deploy from any of them.
+const stuckIn = DEPLOY_WORKING.filter((s) => !DEPLOY_NEXT[s].includes('failed'))
+check(stuckIn.length === 0, `deploy: every status a deployer works in may end failed${stuckIn.length ? `, but ${stuckIn.join(', ')} may not` : ''}`)
 
 // The whole repo passes the design and prose lints, which is how npm run check enforces them.
 const style = spawnSync(process.execPath, [`${ROOT}test/style.ts`], { encoding: 'utf8' })
