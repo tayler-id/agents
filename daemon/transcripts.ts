@@ -72,13 +72,12 @@ type Tracked = Sent[string]
 const SubagentFacts = z.looseObject({ toolUseId: z.string() })
 
 // The first line that carries a uuid. A transcript keeps it for as long as it is
-// the same file, so a different one means it was rewritten.
+// the same file, so a different one means it was rewritten. It is looked for as
+// far in as the start is, since it is usually the same line, and Claude Code's
+// first lines run to 100 KB or more.
 const HasUuid = z.looseObject({ uuid: z.string() })
-// How far into a transcript its first uuid is looked for. Claude Code writes one
-// within the first few lines, after a short queue line.
-const FIRST_UUID_BYTES = 64 * 1024
 function firstUuidOf(file: string): string | null {
-  for (const line of readLines(file, 0, FIRST_UUID_BYTES)) {
+  for (const line of readLines(file, 0, START_BYTES)) {
     const found = HasUuid.safeParse(parseJson(line.text))
     if (found.success) return found.data.uuid
   }

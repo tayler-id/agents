@@ -595,6 +595,20 @@ try {
   check(rewrittenLanded && rewrittenPrompts.join('|') === 'Before the rewrite.|A new start, written in place:|And more after it.',
     `a transcript rewritten in place with a different first line is read again from its start: ${rewrittenPrompts.join('|')}`)
 
+  // A transcript whose first line is longer than 64 KB, as Claude Code's often are, is told from a rewrite of itself just the same.
+  const longRewritten = transcript(claudeDir, deep, deepAt)
+  longRewritten.turn({ prompt: `Before the rewrite, after a long first line: ${'v'.repeat(100_000)}`, reply: 'Before.' })
+  await until('the transcript with a long first line to be rewritten', LANDS_SEC, async () => (await turnsEnded(longRewritten.session)) === 1)
+  writeFileSync(longRewritten.path, '')
+  longRewritten.write([longRewritten.head])
+  longRewritten.turn({ prompt: `A new start, written in place: ${'u'.repeat(130_000)}`, reply: 'New.' })
+  longRewritten.turn({ prompt: 'And more after it.', reply: 'More.' })
+  const longLanded = await until('the turns after the long first line was rewritten', LANDS_SEC, async () => (await turnsEnded(longRewritten.session)) === 3)
+  const longRow = await sessionOf(longRewritten.session)
+  const longPrompts = longRow ? (await eventsOf(longRow.id)).filter((e) => e.kind === 'user').map((e) => String(e.text).slice(0, 30)) : []
+  check(longLanded && longPrompts.join('|') === 'Before the rewrite, after a lo|A new start, written in place:|And more after it.',
+    `a transcript rewritten in place after a first line of 100 KB is read again from its start: ${longPrompts.join('|')}`)
+
   // connect takes each name's case from the disk, and says where the daemon reads the transcripts.
   // This means something only on a case-insensitive volume, as macOS's default one is.
   if (!existsSync(cased.toUpperCase())) throw new Error(`${root} is on a case-sensitive volume, so this check can't show the case taken from the disk`)
