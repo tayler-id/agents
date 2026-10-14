@@ -691,6 +691,19 @@ try {
   check(run.out.includes('name.md:1: uses the studied app'), "submit runs main's name guard on each new commit")
   check(run.out.includes('.gitignore changed, and agents never edit .gitignore') && run.out.includes('adds the check script check:step9'), 'submit refuses an edit to .gitignore and a new check script')
   check(!git(main, 'ls-remote', github).includes('refs/heads/mu') && gh().calls.length === 0, 'a refused submit pushes nothing and opens no pull request')
+  // A secret goes public whatever git calls the file that holds it, and a private key spans lines.
+  cli(['start', 'nu', '--note', 'step22 nu'])
+  const nu = join(root, 'nu')
+  // Built here, so this file never holds the lines the private-key pattern looks for.
+  const armor = (edge: string) => `-----${edge} OPENSSH PRIVATE KEY-----`
+  const keyBody = 'c3RlcDIyIG5vdCBhIHJlYWwga2V5'
+  commitFile(nu, 'id_rsa', `${armor('BEGIN')}\n${keyBody}\n${armor('END')}\n`)
+  commitFile(nu, 'nul.txt', `token ${token}\0\n`)
+  commitFile(nu, 'blob.db', `SQLite format 3\0${'\0'.repeat(64)}${token}${'\0'.repeat(64)}`)
+  run = cli(['submit', 'nu', '--message', 'nu work'])
+  check(run.code === 3 && run.out.includes('id_rsa: matches the private-key secret pattern') && !run.out.includes(keyBody), 'submit refuses a commit that adds a private key over several lines, and never prints it')
+  check(run.out.includes('nul.txt:1: matches the github secret pattern') && !run.out.includes(token), 'submit reads a file git calls binary, here text with one NUL byte, and never prints the secret')
+  check(run.out.includes('blob.db:1: matches the github secret pattern'), 'submit reads a binary blob and finds the token inside it')
 
   // The pull request's text and the merge message go public too, so they are scanned the same way.
   cli(['start', 'tau', '--note', 'step22 tau'])
