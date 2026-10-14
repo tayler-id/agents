@@ -37,7 +37,7 @@ export async function launchTask(client: pg.PoolClient, person: Person, taskId: 
     : await one<{ id: SessionId }>(client, 'the new session',
       `insert into sessions (team_id, task_id, workspace_id, instance_id, agent_id, started_by, harness, model)
        values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`, [task.team_id, task.id, ...values])
-  await sendToSession(client, person, session.id, introOf(task, repos))
+  await sendToSession(client, person, session.id, introOf(task, repos), `${task.title}\n\n${task.instructions}`)
   return { taskId: task.id, sessionId: session.id }
 }
 

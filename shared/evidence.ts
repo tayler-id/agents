@@ -62,7 +62,8 @@ export const ReadFinding = z.discriminatedUnion('kind', [
 export type ReadFinding = z.infer<typeof ReadFinding>
 // Two open candidates the reader judged to be one correction, the one kept first.
 export const MergePair = z.tuple([z.uuid(), z.uuid()])
-export const ReadReport = z.object({ findings: z.array(z.unknown()), merges: z.array(z.unknown()).optional() })
+// Merges left out or null are none.
+export const ReadReport = z.object({ findings: z.array(z.unknown()), merges: z.array(z.unknown()).nullish() })
 
 // Improve's study, one finding about a pipeline's run.
 export const StudyFinding = z.object({ kind: FindingKind, session: z.uuid(), step: Step, quote: z.string(), note: Said })

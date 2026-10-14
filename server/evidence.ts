@@ -48,7 +48,9 @@ const READ_CHARS = 100_000
 // are never evidence about an agent.
 const LEARNING_ACTIONS: ReadonlySet<Action> = new Set(['pick_sessions', 'record_findings', 'propose_hunks', 'score_change'])
 
-const collapse = (text: string) => text.replace(/\s+/g, ' ').trim()
+// Every run of whitespace as one space. JavaScript's \s leaves out U+0085, a
+// next-line, which ends a line for some readers.
+export const collapse = (text: string) => text.replace(/[\s\u0085]+/g, ' ').trim()
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
 // A reason as a sentence in a summary, which a person may have ended already.
 export const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`)
@@ -249,11 +251,13 @@ export type Recorded = { kept: FindingId[]; dropped: Dropped[]; ready: boolean; 
 
 type CitedEvent = {
   id: string; seq: number; kind: EventKind; parent_tool_use_id: string | null; author: string | null; text: string | null; at: string; conversation_id: string | null
+  // A person's own words, when the app wrapped them in text of its own, as it does a task's first message.
+  said: string | null
 }
 
 async function citedEvent(db: Db, sessionId: string, step: number): Promise<CitedEvent | undefined> {
   const row = await maybe<Omit<CitedEvent, 'kind'> & { kind: string }>(db,
-    `select e.id::text, e.seq::int, e.kind, e.parent_tool_use_id, e.author, e.text, e.created_at::text as at, s.conversation_id
+    `select e.id::text, e.seq::int, e.kind, e.parent_tool_use_id, e.author, e.text, e.body->>'said' as said, e.created_at::text as at, s.conversation_id
      from events e join sessions s on s.id = e.session_id where e.session_id = $1 and e.seq = $2`, [sessionId, step])
   return row && { ...row, kind: EventKindSchema.parse(row.kind) }
 }
@@ -345,8 +349,12 @@ export async function recordFindings(client: pg.PoolClient, input: {
       drop(`a gap quotes a person's correction, and step ${finding.step} of session ${finding.session} is not a person's words`)
       continue
     }
+    if (finding.kind === 'gap' && event.said !== null && !collapse(event.said).includes(collapse(finding.quote))) {
+      drop(`step ${finding.step} of session ${finding.session} quotes text the app added to a person's message, not their words`)
+      continue
+    }
     const common = {
-      teamId: input.teamId, sessionId: finding.session, event, quote: finding.quote.trim(), source: p.source,
+      teamId: input.teamId, sessionId: finding.session, event, quote: collapse(finding.quote), source: p.source,
       personId, occasion: p.runId ?? p.sessionId, runId: input.runId,
     }
     if (finding.kind !== 'gap') {
@@ -551,7 +559,7 @@ export async function recordStudyFindings(client: pg.PoolClient, input: {
       continue
     }
     kept.push(await insertFinding(client, {
-      teamId: input.teamId, sessionId: finding.session, event, quote: finding.quote.trim(), source: 'pipeline',
+      teamId: input.teamId, sessionId: finding.session, event, quote: collapse(finding.quote), source: 'pipeline',
       personId: event.author ? PersonId.parse(event.author) : null, occasion: run.run_id, runId: input.runId,
       subject: { pipelineId: input.pipelineId }, kind: finding.kind, note: finding.note,
     }))

@@ -26,7 +26,7 @@ The team's pipelines are in ./${ctx.repo}/pipelines, one file per pipeline, name
 
 Find the one change to that pipeline's file most likely to make its runs go better, such as a clearer prompt for a stage that keeps needing a reminder or a second try. Make that one change in ./${ctx.repo}/pipelines. Keep it small, keep the file loading (it may import types only), and do not commit.
 
-Report changed with a summary of what you changed, and data.findings, the evidence it rests on. Each finding quotes the exact words of one step of a run's session, as read_session shows them, at least 12 characters long: {"kind": "followed" | "ignored" | "harm" | "gap", "session": "<session id>", "step": <n>, "quote": "...", "note": "<what went wrong>"}. Code keeps only quotes it finds in their steps, and a change resting on none never reaches anyone. Report nothing if the runs give no reason to change anything.`,
+Report changed with a summary of what you changed, and data.findings, the evidence it rests on. Each finding quotes the exact words of one step of a run's session, as read_session shows them, at least 12 characters and at most 300 characters; for a longer one quote its key sentence. Each is {"kind": "followed" | "ignored" | "harm" | "gap", "session": "<session id>", "step": <n>, "quote": "...", "note": "<what went wrong>"}. Code keeps only quotes it finds in their steps, and a change resting on none never reaches anyone. Report nothing if the runs give no reason to change anything.`,
       next: { changed: 'record', nothing: { done: 'succeeded', note: 'The runs gave no reason to change anything.' } },
     },
 

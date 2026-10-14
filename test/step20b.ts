@@ -221,6 +221,11 @@ try {
   const ask = await one<{ status: string; answer: any }>(`select status, answer from asks where session_id = $1`, [replay.session_id])
   check(asked.status === 200 && ask?.status === 'answered' && ask.answer.decision === 'deny', `a replay's request for a tool is denied, not put to a person: ${JSON.stringify(ask)}`)
 
+  // The reader is told the longest quote code keeps.
+  const readPrompt = await one<{ text: string }>(`select e.text from events e join run_stages s on s.session_id = e.session_id
+    where s.run_id = $1 and s.stage = 'read' and e.kind = 'user' order by e.seq limit 1`, [first])
+  check(readPrompt?.text.includes('at most 300 characters'), "the reader's prompt says a quote is at most 300 characters")
+
   // A stage's budget is in its stage, where daemons before this release read it,
   // and in the message. Every session the run started had a budget: its stage's,
   // or $0.50 for each replay.

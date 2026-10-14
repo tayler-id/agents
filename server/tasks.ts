@@ -80,7 +80,8 @@ export async function addComment(client: pg.PoolClient, person: Person, artifact
   if (sendTo) {
     const quote = body.quote ? `On "${body.quote}":\n` : ''
     await sendToSession(client, person, sendTo,
-      `${person.login} commented on ./task/${artifact.path}, version ${body.version}:\n\n${quote}${body.text}\n\nRevise the document in ./task/${artifact.path} if the comment calls for it, then say what you changed.`)
+      `${person.login} commented on ./task/${artifact.path}, version ${body.version}:\n\n${quote}${body.text}\n\nRevise the document in ./task/${artifact.path} if the comment calls for it, then say what you changed.`,
+      body.text)
   }
   return comment.id
 }

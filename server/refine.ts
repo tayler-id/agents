@@ -15,6 +15,7 @@ import { diffText } from './diff.ts'
 import { forge, repoPath } from './forge.ts'
 import { recordVersion } from './pipelines.ts'
 import { appendEvents, skillsOf } from './record.ts'
+import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { memoryText } from './agents.ts'
 import { nameIn, pickSessions, recordFindings, recordStudyFindings, sentence } from './evidence.ts'
 import { editInstructions, editsOf, insertHunks, planPipelineHunks, proposeHunks, settleHunks, withLine, writePrompt } from './hunks.ts'
@@ -249,8 +250,14 @@ const REPLAY_MINUTES = 15
 // Kept from the run's cap for the judge, which reads every reply in one turn of
 // a cheap model, and for a replay that runs past its own budget before it stops.
 const JUDGE_RESERVE_USD = 0.5
-// Steps of the conversation shown before the message a replay answers.
+// Steps of the conversation shown before the message a replay answers. Forty
+// holds most conversations whole, and keeps a replay's one message small enough
+// to stay inside its budget.
 const HISTORY_STEPS = 40
+// Recent sessions looked through, newest first, for the unrelated cases. Most
+// have a message a person sent that the agent answered, so twenty find two
+// without reading every session of the agent.
+const UNRELATED_SCAN = 20
 // Session text the judge reads for each replay, the message and each reply alike.
 const JUDGE_TEXT_CHARS = 4000
 
@@ -341,14 +348,18 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
     if (!turn || behind.some((c) => c.sessionId === finding.session_id && c.upto === turn.seq)) continue
     behind.push({ kind: 'behind', findingId, sessionId: finding.session_id, upto: turn.seq })
   }
+  // A score without a turn behind the change could only ever lose, so the stage
+  // fails and says why, and the change never reaches the shepherd unscored.
+  if (!behind.length) throw new Error('each finding behind the change has no message before it to replay from, so the change cannot be scored')
   // Unrelated cases: recent sessions of people with the agent, at the last
-  // message a person sent that the agent answered.
+  // message a person sent that the agent answered. No session a hunk cites is unrelated.
+  const cited = await many<{ session_id: string }>(client, 'select distinct session_id from session_findings where id = any($1)', [hunks.flatMap((h) => h.finding_ids)])
   const recent = await many<{ id: string; upto: number | null }>(client,
     `select s.id, (select max(u.seq)::int from events u where u.session_id = s.id and u.kind = 'user' and u.author is not null
         and exists (select 1 from events a where a.session_id = s.id and a.kind = 'assistant' and a.parent_tool_use_id is null and a.seq > u.seq)) as upto
      from sessions s left join conversations c on c.id = s.conversation_id left join tasks t on t.id = s.task_id
      where s.agent_id = $1 and s.stage is null and coalesce(c.visibility, t.visibility) = 'team' and t.source is distinct from 'replay'
-       and s.id <> all($2::uuid[]) order by s.last_active_at desc, s.id limit 20`, [agentId, behind.map((c) => c.sessionId)])
+       and s.id <> all($2::uuid[]) order by s.last_active_at desc, s.id limit $3`, [agentId, cited.map((c) => c.session_id), UNRELATED_SCAN])
   const unrelated = recent.flatMap((s): Case[] => (s.upto === null ? [] : [{ kind: 'unrelated', sessionId: s.id, upto: s.upto }])).slice(0, UNRELATED_CASES)
   // When not every case fits, one unrelated case stays whenever two fit, since a
   // change must also not make other turns worse.
@@ -382,8 +393,9 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
       [teamId, proposalId, c.kind, variant, c.sessionId, c.upto, c.kind === 'behind' ? c.findingId : null, `R${n + 1}`, task.id, session.id])
     const [seq] = await appendEvents(client, session.id, { events: [{ clientId: 'replay', kind: 'user', text, body: { text } }] })
     if (seq === undefined) throw new Error('the replay prompt was not recorded')
+    // A replay asks before it writes, and its asks are denied, so it changes nothing.
     const payload: MessagePayload = {
-      text, agentId, harness: agent.harness, model: agent.model, instructions: setup.instructions, harnessSessionId: null,
+      permissions: CONVERSATION_PERMISSIONS, text, agentId, harness: agent.harness, model: agent.model, instructions: setup.instructions, harnessSessionId: null,
       workspaceId: workspace.id, skills: setup.skills, plugins: [], memory: await replayMemory(client, agentId, people, setup.added), maxBudgetUsd: REPLAY_BUDGET_USD,
     }
     await client.query(
@@ -441,12 +453,15 @@ const replayRows = async (client: pg.PoolClient, proposalId: ProposalId) => (awa
    from session_replays r left join session_findings f on f.id = r.finding_id
    where r.proposal_id = $1 and r.superseded_at is null order by length(r.label), r.label`, [proposalId])).map((r) => ReplayRow.parse(r))
 
+// Every character that may end a line for a model or a terminal, not only LF.
+const LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/
+
 // Session text in the judge's prompt, indented on every line, so nothing in it
 // can start a line the way a replay's heading does.
 const fenced = (text: string) => {
   const trimmed = text.trim()
   const shown = trimmed.length > JUDGE_TEXT_CHARS ? `${trimmed.slice(0, JUDGE_TEXT_CHARS)}…` : trimmed
-  return shown.split('\n').map((l) => `    ${l}`).join('\n')
+  return shown.split(LINE_BREAK).map((l) => `    ${l}`).join('\n')
 }
 
 // What the judge reads: each replayed reply under its label, with what went wrong

@@ -35,6 +35,8 @@ const CHARS_PER_TOKEN = 4
 const TURNED_DOWN_SHOWN = 10
 
 export const contentHash = (text: string) => createHash('sha256').update(text).digest('hex')
+// The content hash of an empty `before`: a new rule, skill or profile line.
+const NOTHING = contentHash('')
 export const tokensOf = (texts: string[]) => Math.ceil(texts.reduce((n, t) => n + t.length, 0) / CHARS_PER_TOKEN)
 
 export type Edit = { op: 'add'; after: RuleHash | null; text: string } | { op: 'change'; rule: RuleHash; text: string } | { op: 'delete'; rule: RuleHash }
@@ -185,7 +187,8 @@ function columnsOf(planned: PlannedChange): HunkChange {
 // The hunk the team turned down that this one repeats, as a reason, or null. A
 // hunk repeats one with the same scope, target, skill or person, and `before`,
 // that either makes the same change or rests on a finding it cites, when no more
-// occasions back it now.
+// occasions back it now. A new skill or rule repeats one with the same text under
+// any skill name, so renaming a turned-down skill does not bring it back.
 export async function turnedDown(db: Db, scope: Subject, hunk: {
   change: HunkChange; contentHash: string; afterHash: string; findingIds: string[]; occasions: number
 }): Promise<string | null> {
@@ -193,11 +196,12 @@ export async function turnedDown(db: Db, scope: Subject, hunk: {
     `select h.reason, to_char(h.decided_at, 'YYYY-MM-DD') as at, p.login, h.occasions from proposal_hunks h
      join proposals pr on pr.id = h.proposal_id left join people p on p.id = h.decided_by
      where ${'agentId' in scope ? 'pr.agent_id' : 'pr.pipeline_id'} = $1 and h.decision = 'rejected' and h.target = $2
-       and h.skill_name is not distinct from $3 and h.person_id is not distinct from $4 and h.content_hash = $5
-       and (h.after_hash = $6 or h.finding_ids && $7::uuid[]) and h.occasions >= $8
+       and h.person_id is not distinct from $4 and h.content_hash = $5 and h.occasions >= $8
+       and ((h.skill_name is not distinct from $3 and (h.after_hash = $6 or h.finding_ids && $7::uuid[]))
+         or (h.content_hash = $9 and h.after_hash = $6))
      order by h.decided_at desc limit 1`,
     ['agentId' in scope ? scope.agentId : scope.pipelineId, hunk.change.target, hunk.change.skill_name, hunk.change.person_id,
-      hunk.contentHash, hunk.afterHash, hunk.findingIds, hunk.occasions])
+      hunk.contentHash, hunk.afterHash, hunk.findingIds, hunk.occasions, NOTHING])
   return found ? `${found.login ?? 'someone'} turned down this hunk on ${found.at} with ${found.occasions} occasions behind it, `
     + `and no more back it now: ${found.reason}` : null
 }
@@ -478,12 +482,23 @@ async function applyAgentHunks(client: pg.PoolClient, teamId: string, agentId: A
   const agent = await one<{ instructions: string }>(client, `agent ${agentId}`, 'select instructions from agents where id = $1 for update', [agentId])
   const skills = new Map((await many<{ name: string; description: string; content: string }>(client,
     'select name, description, content from skills where agent_id = $1 for update', [agentId])).map((s) => [s.name, s]))
+  // A rule a kept hunk names that is gone means the instructions changed. Anything
+  // else that stops the hunks applying is said as it is.
+  const now = unitsOf(agent.instructions)
+  for (const h of kept) {
+    if (h.target !== 'instructions' || h.rule_hash === null) continue
+    const found = now.filter((u) => u.hash === h.rule_hash).length
+    if (found !== 1) {
+      const rule = h.op === 'add' ? `the rule hunk ${h.n} follows` : `the rule "${h.before}"`
+      throw new Error(`the instructions changed after this proposal: ${rule} is ${found ? `there ${found} times` : 'gone'}`)
+    }
+  }
   const edits = editsOf(kept)
   let instructions: string
   try {
     instructions = editInstructions(agent.instructions, edits)
   } catch (error) {
-    throw new Error(`the instructions changed after this proposal, so it no longer applies: ${messageOf(error)}`)
+    throw new Error(`the hunks kept do not apply to the instructions as they are now: ${messageOf(error)}`)
   }
   const skillHunks = kept.flatMap((h) => (h.target === 'skill' ? [{ name: h.skill_name, description: h.skill_description, content: h.after, before: h.content_hash }] : []))
   for (const h of skillHunks) {

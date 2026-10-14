@@ -9,7 +9,9 @@ import { CONVERSATION_PERMISSIONS, WORKSPACE_PERMISSIONS } from './permissions.t
 import type { MessagePayload } from '../shared/types.ts'
 
 // It runs once the workspace is set up, since the machine handles a session's commands in order.
-export async function sendToSession(client: pg.PoolClient, person: Person, sessionId: string, text: string) {
+// `said` is the person's own words when the app wrapped them in text of its own.
+// The event keeps it, since coach counts only a person's words as their correction.
+export async function sendToSession(client: pg.PoolClient, person: Person, sessionId: string, text: string, said = text) {
   const session = await maybe<{ id: string; team_id: string; task_id: string | null; instance_id: string; workspace_id: string | null; harness_session_id: string | null; agent_id: string }>(client,
     'select id, team_id, task_id, instance_id, workspace_id, harness_session_id, agent_id from sessions where id = $1 and team_id = $2 for update',
     [sessionId, person.team_id])
@@ -17,7 +19,7 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
   const agent = await one<{ id: string; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client, "the session's agent",
     'select id, harness, model, instructions from agents where id = $1', [session.agent_id])
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text, body: { text } }],
+    events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text, body: said === text ? { text } : { text, said } }],
   }, person.id)
   const payload: MessagePayload = {
     permissions: session.workspace_id ? WORKSPACE_PERMISSIONS : CONVERSATION_PERMISSIONS,

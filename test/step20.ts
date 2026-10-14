@@ -14,7 +14,8 @@ import { candidatesOf, pickSessions, recordFindings, recordStudyFindings, rulesO
 import { pool, tx } from '../server/db.ts'
 import { appendEvents, openDm, sendPersonMessage, type Person } from '../server/record.ts'
 import { createRoom } from '../server/rooms.ts'
-import { sendToSession, startTask } from '../server/tasks.ts'
+import { startTask } from '../server/tasks.ts'
+import { sendToSession } from '../server/session-messages.ts'
 import { recordVersion } from '../server/pipelines.ts'
 import { AgentId, PipelineId, RunId, TeamId } from '../shared/ids.ts'
 import type { NewEvent } from '../shared/types.ts'
@@ -148,7 +149,7 @@ try {
   const privateSession = String(must(await one(`insert into sessions (team_id, conversation_id, instance_id, agent_id) values ($1, $2, $3, $4) returning id`,
     [teamId, hidden, mac, fixer]), 'the private session').id)
   await tx((client) => appendEvents(client, privateSession, { events: [{ clientId: randomUUID(), kind: 'user', text: 'Please use British English, colour not color.', body: {} }] }, carol.id))
-  const busy = await tx((client) => startTask(client, alice, { title: 'Tidy the cart', instructions: 'Make the cart code shorter.', agentId: fixer }))
+  const busy = await tx((client) => startTask(client, alice, { title: 'Tidy the cart', instructions: 'Make the cart code shorter.', agentId: fixer, repoIds: [], draft: false }))
   await agentSays(busy.sessionId, 'I rewrote the whole cart module in three long paragraphs.')
   // A tool's result, the agent's thinking and the agent's own words, none of them a person's.
   await tx((client) => appendEvents(client, busy.sessionId, { events: [
@@ -266,6 +267,8 @@ try {
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'STYLE.md: every summary'), quote: 'every summary fits on one line, always', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'She wants every summary'), quote: 'She wants every summary on one line', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'Got it. Release notes'), quote: 'Release notes go newest first, always', correction: 'Newest first.', same: 'echo', fix: 'text' },
+      // The task's first message is Alice's title and instructions inside text the app wrote.
+      { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'Put any documents you write'), quote: 'Put any documents you write for people in ./task', correction: 'Keep documents in the task folder.', same: 'folder', fix: 'text' },
     ],
     merges: [[britA.id, britB.id], [britA.id, randomUUID()]],
   }
@@ -274,6 +277,7 @@ try {
   check(reasons2.filter((r) => r.includes("not a person's words")).length === 3,
     `a gap quoting the agent's own words, even repeating a person's, or a tool's result is dropped, since a correction is a person's words: ${reasons2.join(' | ')}`)
   check(reasons2.some((r) => r.includes('not one the reader was shown')), 'a finding citing a step the reader was never shown is dropped')
+  check(reasons2.some((r) => r.includes('text the app added')), `a gap quoting text the app wrapped around a person's message is dropped, since only their words count: ${reasons2.join(' | ')}`)
   check(recorded2.dropped.filter((d) => d.reason.includes('names no open candidate')).length === 2,
     "a gap naming a candidate that does not exist, or another agent's, is dropped")
   check(recorded2.dropped.some((d) => d.reason.includes('merge')), 'a merge naming a candidate that does not exist is refused')
@@ -337,6 +341,23 @@ try {
   const goneNow = await one('select status, merged_into from candidates where id = $1', [gone])
   check(merging.dropped.filter((d) => d.reason.startsWith('not a merge')).length === 2 && goneNow?.status === 'merged' && goneNow.merged_into === keep,
     `a malformed merge pair is dropped on its own, and the good one merges: ${merging.dropped.map((d) => d.reason).join(' | ')}`)
+
+  // A quote is stored as code checked it, with each run of whitespace one space,
+  // so the 300-character cap bounds what is stored.
+  await tx((client) => sendPersonMessage(client, bob, bobDm.conversation, 'Please write it in British English, colour not color.', randomUUID()))
+  await pool.query(`update sessions set last_active_at = now() - interval '2 hours' where id = $1`, [bobDm.session])
+  const spacedPick = await pickSessions(pool, teamId, fixer)
+  const spacedStep = await stepOf(bobDm.session, 'Please write it in British')
+  await tx((client) => recordFindings(client, { teamId, runId, agentId: fixer, picked: spacedPick.picked, report: { findings: [
+    { kind: 'gap', session: bobDm.session, step: spacedStep, quote: 'Please   write it in\n   British English', correction: 'Write in British English.', candidate: britA.id, fix: 'text' },
+  ] } }))
+  const stored = await one('select quote from session_findings where session_id = $1 and seq = $2', [bobDm.session, spacedStep])
+  check(stored?.quote === 'Please write it in British English', `a quote is stored with its whitespace collapsed: ${JSON.stringify(stored?.quote)}`)
+
+  // A report whose merges are null is read as having none.
+  const nullMerges = await tx((client) => recordFindings(client, { teamId, runId, agentId: fixer, picked: [], report: { findings: [], merges: null } }))
+    .then(() => 'recorded', (error: unknown) => `threw: ${(error as Error).message}`)
+  check(nullMerges === 'recorded', `a report whose merges are null is read as having none: ${nullMerges}`)
 
   // The reader's transcript has a length cap. What does not fit waits for the next run.
   const improverId = AgentId.parse(String(improver))

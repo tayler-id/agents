@@ -168,6 +168,10 @@ try {
   check(proposal.status === 'open' && gate?.kind === 'gate' && gate.payload.question.includes('It rests on: Kept 2 findings')
     && pr?.body.includes('The evidence, checked in code') && pr.body.includes(NUDGE) && !pr.body.includes(INVENTED) && !gate.payload.question.includes(INVENTED),
   'the pull request and the gate give only the reasons code found in the runs')
+  // The study is told the longest quote code keeps.
+  const studyPrompt = await one<{ text: string }>(`select e.text from events e join run_stages s on s.session_id = e.session_id
+    where s.run_id = $1 and s.stage = 'study' and e.kind = 'user' order by e.seq limit 1`, [first])
+  check(studyPrompt?.text.includes('at most 300 characters'), "the study's prompt says a quote is at most 300 characters")
   // The change was scored whole, so one of its hunks is never decided alone.
   const alone = await fetch(`${PEOPLE}/v1/hunks/${must(hunks[0], 'the hunk').id}/decision`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': login }, body: JSON.stringify({ decision: 'accept' }),

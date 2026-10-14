@@ -38,7 +38,7 @@ ${ctx.report.body}
 
 ${given(ctx, 'pick')}
 
-Read each session above once, and report what it shows about the agent's rules. Report read, with data.findings, a list. Each finding quotes the exact words of one step, copied character for character, at least 12 characters long, and names its session and step:
+Read each session above once, and report what it shows about the agent's rules. Report read, with data.findings, a list. Each finding quotes the exact words of one step, copied character for character, at least 12 characters and at most 300 characters; for a longer one quote its key sentence. Each names its session and step:
 - {"kind": "followed" | "ignored" | "harm", "session": "<id>", "step": <n>, "quote": "...", "rule": "<rule hash>"}: the agent followed a rule, ignored it, or did the wrong thing because of it.
 - {"kind": "gap", "session": "<id>", "step": <n>, "quote": "...", "correction": "<the rule, in one sentence, that would have prevented it>", "fix": "check" | "text"}: a person corrected the agent and no rule covers it. Quote the person's correction. Say "check" when a lint rule, type or check could catch the mistake, and "text" when only an instruction can. When an open candidate above is the same correction, add "candidate": "<its id>". Otherwise add "same": "<a short label>", with one label for gaps that are the same correction. When it applies only to one kind of task, add "when": "<that kind of task>".
 Add data.merges, pairs of open candidate ids that are the same correction. Report empty lists when the sessions show nothing.`,

@@ -5,7 +5,7 @@
 import { many, maybe, pool } from './db.ts'
 import { canSeeTask } from './access.ts'
 import { HttpError, type Person } from './record.ts'
-import { diffText } from './refine.ts'
+import { diffText } from './diff.ts'
 import type { ArtifactId } from '../shared/ids.ts'
 
 export async function versionDiff(person: Person, artifactId: ArtifactId, version: number): Promise<string> {
