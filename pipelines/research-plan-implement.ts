@@ -6,6 +6,8 @@
 // and the runner checks the repo is untouched after each written phase rather
 // than trusting the agent. Then the agent implements the plan, the runner runs
 // the plan's test command, and a person reviews the pull request.
+// Research and plan have no allow list, so a command there waits on a person.
+// docs/design/workflow.md says why no read-only list.
 
 import type { Pipeline, RunContext } from '../shared/pipeline.ts'
 
