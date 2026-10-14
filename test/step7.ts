@@ -88,7 +88,8 @@ const boxEnv: Record<string, string> = {
   AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(work, 'people', 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2),
   AGENTS_BOX_API: `http://host.docker.internal:${PORT}`, AGENTS_MAX_BOXES: '1', AGENTS_BOX_IDLE_MIN: '1',
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
-    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
+    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(ROOT, 'test/fake-claude-login.ts')}:/opt/fake/fake-claude-login.ts:ro`,
+    '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
     '-e', 'AGENTS_CLAUDE_BIN=/opt/fake/fake-claude.ts', '-e', 'AGENTS_FAKE_SCENARIO=/opt/fake/scenario.json',
   ]),
 }
