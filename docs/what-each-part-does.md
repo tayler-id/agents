@@ -298,7 +298,7 @@ The design, with what is not done, is `docs/design/workflow.md`.
 
 ### The step 14 checks (`test/step14.ts`, `test/step14b.ts`, `test/step14c.ts`)
 
-- **Solves now.** step14 drives the API, daemon, forge and runner with the stand-in for Claude. step14b is Tayler's README task in three browsers at desktop and phone width. step14c covers drafts, the order of work, the palette, pinned comments and a run's gate the same way. Each check was seen failing with what it guards broken.
+- **Solves now.** step14 drives the API, daemon, forge and runner with the stand-in for Claude. step14b is Tayler's README task in three browsers at desktop and phone width. step14c covers drafts, the order of work, the palette, pinned comments and a run's gate the same way. All but 16 of step14's checks, which the build log names, were seen failing with what they guard broken.
 - **Helps later.** A change that breaks any of these parts fails a named check.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)

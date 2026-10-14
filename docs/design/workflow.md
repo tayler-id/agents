@@ -219,7 +219,7 @@ Run each with `node --env-file=.env --env-file=.env.test test/<file>`.
 - `test/step14b.ts`, ports 7965 to 7967, the README scenario in Chromium, Firefox and WebKit, at desktop and phone width, with an accessibility scan. A task asks for a README in a test repo. The person sees README.md in Changes, opens it rendered, sees its diff, clicks Open pull request, and sees the pull request on the task.
 - `test/step14c.ts`, ports 7973 to 7975, the other views in the three browsers at both widths: a draft saved, edited by a teammate and started, the order of work, the palette by keyboard alone, pinned comments, a pull request that stays once nothing differs, and a run's Changes and labeled gate.
 
-Each check was seen failing with the thing it guards broken, then passing after a byte-for-byte restore. The commit messages that add step14 and step14b list their breaks, and `docs/build-log.md` describes step14c's.
+Nearly every check was seen failing with the thing it guards broken, then passing after a byte-for-byte restore. The commit messages that add step14 and step14b list their breaks, and `docs/build-log.md` describes step14c's and the later step14 breaks, and names the 16 step14 checks never broken.
 
 ## Not done
 
