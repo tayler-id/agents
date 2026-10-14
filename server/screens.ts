@@ -137,6 +137,18 @@ async function noteSessions(client: pg.PoolClient, instanceId: InstanceId, sessi
   }
 }
 
+// The notice in the record when a person's hold on a screen ends.
+function endNotice(event: HandoffEvent, login: string): string {
+  switch (event.kind) {
+    case 'take': throw new Error('taking over starts a hold, it never ends one')
+    case 'hand_back': return `${login} handed the screen back`
+    case 'left': switch (event.why) {
+      case 'view_closed': return `The screen went back to the agent after ${login} closed the Screen view`
+      case 'not_allowed': return `The screen went back to the agent because ${login} may no longer watch it`
+    }
+  }
+}
+
 // Moves control by one event, in one transaction with the takeover row it
 // opens or closes, then tells the box and the viewers.
 async function move(instanceId: InstanceId, event: HandoffEvent, person: { id: PersonId; login: string }, sessionId: SessionId | null): Promise<ScreenControl> {
@@ -161,10 +173,8 @@ async function move(instanceId: InstanceId, event: HandoffEvent, person: { id: P
         const row = await one(client, 'the open takeover',
           `update screen_takeovers set ended_at = now(), ended_by = $2 where instance_id = $1 and ended_at is null returning id`,
           [instanceId, step.change])
-        const text = step.change === 'handed_back'
-          ? `${person.login} handed the screen back`
-          : `The screen went back to the agent after ${person.login} closed the Screen view`
-        await noteSessions(client, instanceId, sessionId, ScreenTakeoverId.parse(row.id), event.kind, text, step.change === 'handed_back' ? person.id : null)
+        await noteSessions(client, instanceId, sessionId, ScreenTakeoverId.parse(row.id), event.kind, endNotice(event, person.login),
+          step.change === 'handed_back' ? person.id : null)
         break
       }
     }
@@ -181,14 +191,40 @@ export async function takeScreen(person: Person, instanceId: string, sessionId: 
   return move(screen.id, { kind: 'take', personId: id, login: person.login, at: new Date().toISOString() }, { id, login: person.login }, sessionId)
 }
 
+// Handing back runs no watch rule, so a person cut off from a screen they held
+// can still give it back. Only its holder can, as the handoff says, and it must
+// be a screen of their team's.
 export async function handBackScreen(person: Person, instanceId: string, sessionId: SessionId | null): Promise<ScreenControl> {
-  const screen = await watchable(person, instanceId)
-  const id = PersonId.parse(person.id)
-  return move(screen.id, { kind: 'hand_back', personId: id }, { id, login: person.login }, sessionId)
+  const id = InstanceId.safeParse(instanceId)
+  const ours = id.success && await maybe(pool, 'select 1 from instances where id = $1 and team_id = $2', [id.data, person.team_id])
+  if (!id.success || !ours) throw new HttpError(404, 'no such screen')
+  const personId = PersonId.parse(person.id)
+  return move(id.data, { kind: 'hand_back', personId }, { id: personId, login: person.login }, sessionId)
+}
+
+// Runs the watch rule again for everyone watching a screen, or every screen,
+// since work they can't see may have started on the box after they opened it.
+// A viewer who may no longer watch is closed, and a screen they held goes back
+// to the agent.
+export async function recheckViewers(instanceId: InstanceId | null) {
+  for (const viewer of [...viewers.values()]) {
+    if (instanceId !== null && viewer.instanceId !== instanceId) continue
+    const refused = await watchable(viewer.person, viewer.instanceId).then(() => null, (error: unknown) => {
+      if (error instanceof HttpError) return error.message
+      throw error
+    })
+    if (refused === null) continue
+    viewer.ws.close(ScreenClose.notAllowed, refused)
+    const personId = PersonId.parse(viewer.person.id)
+    if (holds(controlOf(viewer.instanceId), personId)) {
+      await move(viewer.instanceId, { kind: 'left', personId, why: 'not_allowed' }, { id: personId, login: viewer.person.login }, null)
+    }
+  }
 }
 
 // Gives screens back to the agents when the person holding one has had no view
-// of it open for SCREEN_GRACE_MS, so a closed tab never strands an agent.
+// of it open for SCREEN_GRACE_MS, so a closed tab never strands an agent, and
+// runs the watch rule again for everyone watching.
 export function startScreenSweep(): () => void {
   // A screen nobody has opened since this server started counts from the start,
   // so a holder gets the same grace to come back after a restart.
@@ -203,8 +239,9 @@ export function startScreenSweep(): () => void {
       const watching = [...viewers.values()].some((v) => v.instanceId === row.instance_id && v.person.id === row.person_id)
       const since = lastSeen.get(seenKey(row.instance_id, row.person_id)) ?? started
       if (watching || Date.now() - since < SCREEN_GRACE_MS) continue
-      await move(row.instance_id, { kind: 'left', personId: row.person_id }, { id: row.person_id, login: row.login }, null)
+      await move(row.instance_id, { kind: 'left', personId: row.person_id, why: 'view_closed' }, { id: row.person_id, login: row.login }, null)
     }
+    await recheckViewers(null)
   }
   const timer = setInterval(() => {
     // A failed sweep is tried again on the next tick, so it is logged, not fatal.

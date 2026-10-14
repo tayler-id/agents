@@ -26,12 +26,13 @@ type AgentHolds = Extract<ScreenControl, { holder: 'agent' }>
 type PersonHolds = Extract<ScreenControl, { holder: 'person' }>
 export const AGENT_HOLDS: AgentHolds = { holder: 'agent' }
 
-// What moves control. `left` is the server noticing the holder has had no
-// Screen view open for SCREEN_GRACE_MS.
+// What moves control. `left` is the server giving the screen back because the
+// holder has had no Screen view open for SCREEN_GRACE_MS, or may no longer
+// watch it, since the box started work they can't see.
 export type HandoffEvent =
   | { kind: 'take'; personId: PersonId; login: string; at: string }
   | { kind: 'hand_back'; personId: PersonId }
-  | { kind: 'left'; personId: PersonId }
+  | { kind: 'left'; personId: PersonId; why: 'view_closed' | 'not_allowed' }
 
 // Where an event leads. Each change carries the control it can lead to, so code
 // that handles a takeover always has the person who took it.

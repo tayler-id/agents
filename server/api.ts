@@ -47,7 +47,8 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
-import { handBackScreen, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { InstanceId } from '../shared/ids.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
@@ -308,6 +309,11 @@ const routes: Route[] = [
     })
     // A finished turn may be what a pipeline run is waiting on.
     if (batch.events.some((e) => e.kind === 'usage')) void wakeRunner()
+    // A session that starts may be work some of the box's viewers can't see. A
+    // failed recheck waits for the screen sweep, which runs it again within seconds.
+    if (batch.status !== undefined) {
+      recheckViewers(InstanceId.parse(instance.id)).catch((error: unknown) => { console.error(`screen recheck: ${messageOf(error)}`) })
+    }
     return { seqs }
   }],
 
