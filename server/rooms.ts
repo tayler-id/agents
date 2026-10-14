@@ -37,17 +37,17 @@ const RoomAccess = z.object({ visibility: z.enum(['team', 'private']), member: z
 const Teammate = z.object({ id: PersonId })
 
 // Adds a teammate to a room. Its agents then name them among the room's people on
-// their turns, with what they remember about them. An admin may add to any of the
-// team's rooms, anyone else only to a room they are in.
+// their turns, with what they remember about them. Someone in the room may add to
+// it, and an admin may add to any of the team's rooms but a private one they are not in.
 export async function addRoomMember(client: pg.PoolClient, person: Person, roomId: ConversationId, login: Login): Promise<PersonId> {
   const found = await maybe(client,
     `select c.visibility, exists (select 1 from conversation_members m where m.conversation_id = c.id and m.person_id = $3) as member
      from conversations c where c.id = $1 and c.team_id = $2 and c.kind = 'room' and c.archived_at is null`,
     [roomId, person.team_id, person.id])
   const room = found ? RoomAccess.parse(found) : undefined
-  const allowed = person.role === 'admin' || room?.member === true
-  // A private room is not shown to people outside it, so they are told it does not exist.
-  if (!room || (room.visibility === 'private' && !allowed)) throw new HttpError(404, 'no such room')
+  // A private room is not shown to people outside it, admins included, so they are told it does not exist.
+  if (!room || (room.visibility === 'private' && !room.member)) throw new HttpError(404, 'no such room')
+  const allowed = room.member || person.role === 'admin'
   if (!allowed) throw new HttpError(403, 'Only people in the room, or an admin, can add someone to it.')
   const teammate = await maybe(client, 'select id from people where team_id = $1 and login = $2', [person.team_id, login])
   if (!teammate) throw new HttpError(404, `${login} is not on your team.`)

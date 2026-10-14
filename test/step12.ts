@@ -319,6 +319,9 @@ try {
   const hidden = await addTo(github, quiet, github)
   check(notIn.status === 403 && hidden.status === 404 && !(await inRoom(roomId, ownerId)) && !(await inRoom(quiet, githubId)),
     `a member outside a room cannot add anyone to it, and a private room they are not in does not exist for them (${notIn.status}, ${hidden.status})`)
+  const adminHidden = await addTo(owner, quiet, owner)
+  check(adminHidden.status === 404 && !(await inRoom(quiet, ownerId)),
+    `an admin outside a private room cannot add anyone to it, themselves included, so it stays private (${adminHidden.status})`)
   const byAdmin = await addTo(owner, roomId, github)
   check(byAdmin.status === 200 && await inRoom(roomId, githubId) && !(await inRoom(roomId, ownerId)),
     `an admin adds a teammate to a room the admin is not in, without joining it (${byAdmin.status} ${byAdmin.text})`)
