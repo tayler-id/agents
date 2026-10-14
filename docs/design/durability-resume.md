@@ -49,7 +49,7 @@ Main's daemon at `360c16e`, run against this branch's API with the fake Claude, 
 - No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read.
 - A daemon killed during a task's first clone can resume the turn in a half-cloned tree while the requeued setup runs beside it. A resumed session starts at once. `ready` waits only when the workspace folder is missing, and a setup makes the folder first, so a wait before the resume would not catch this.
 - A push the runner fails after 15 minutes keeps its command queued or claimed, so a machine that comes back later runs it, and the branch reaches the forge with no pull request. Main's requeue did the same. Failing the command with the push would close it.
-- A message queued or claimed under an API from before the work layer has no `permissions`, so the new daemon fails it with the reason instead of running or resuming it.
+- A message queued or claimed under an API from before the work layer has no `permissions`, so the new daemon fails it with the reason instead of running or resuming it. step18l covers a queued message the daemon claims. No check covers a claimed one it would resume.
 - An exit batch that arrives late, after a newer process for the same session raised a card, still expires that card. Only a batch sent again is handled.
 - Box images must be rebuilt when this lands, in the order the design doc gives.
 

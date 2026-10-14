@@ -17,7 +17,7 @@ import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import { Permissions, Recovery, ResumeTurn, type Command, type EventBatch, type MessagePayload, type StageSpec } from '../shared/types.ts'
+import { MessagePayload, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
@@ -260,13 +260,12 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
       + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
   if (payload.skills) writeSkills(cwd, payload.skills)
-  const permissions = Permissions.parse(payload.permissions)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
     allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
-    acceptEdits: permissions.workspaceWrites,
+    acceptEdits: payload.permissions.workspaceWrites,
     maxBudgetUsd: stage?.maxBudgetUsd,
     oauthToken: ownClaudeToken(HOME),
   })
@@ -375,7 +374,7 @@ const TurnTarget = z.object({ command: z.object({ sessionId: z.uuid() }), covers
 
 function failTurn(sessionId: string, covers: string[], why: string) {
   const reason = scrub(why)
-  console.error(`resuming session ${sessionId}:`, reason)
+  console.error(`session ${sessionId}:`, reason)
   void post(sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: { how: 'exited', ids: covers, reason } })
 }
 
@@ -448,6 +447,16 @@ async function listen(signal: AbortSignal) {
 async function claimAndHandle(commandId: string) {
   try {
     const { command } = await api<{ command: Command }>('POST', `/v1/instance/commands/${commandId}/claim`, {})
+    if (command.kind === 'message') {
+      // The claim's answer is cast, not read. An API of another version can queue a
+      // payload this daemon can't use, such as one with no permissions.
+      const payload = MessagePayload.safeParse(command.payload)
+      if (!payload.success) {
+        failTurn(command.sessionId, [command.id], `This machine could not read the message: ${z.prettifyError(payload.error)}`)
+        return
+      }
+      command.payload = payload.data
+    }
     // Workspace work can take minutes, so it runs beside the queue rather than
     // holding up messages and interrupts for sessions.
     if (command.sessionId === null) void handle(command)

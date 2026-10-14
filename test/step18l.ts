@@ -1,9 +1,10 @@
 // Durability check 12, with the fake Claude. A turn that never finishes, because
 // its machine dies every time it runs, is resumed after each of the first three
 // restarts. At the fourth, recovery fails the turn with the reason instead of
-// resuming it again, so a turn can't keep a machine restarting forever. The
-// person's next message starts a turn that ends. It shares ports with step18c
-// and step18h, which the suite runs before it.
+// resuming it again, so a turn can't keep a machine restarting forever. A message
+// an older API queued, with no permissions, fails with the reason the daemon could
+// not read it, and starts no Claude. The person's next message starts a turn that
+// ends. It shares ports with step18c and step18h, which the suite runs before it.
 //   node --env-file=.env --env-file=.env.test test/step18l.ts
 
 import { randomBytes } from 'node:crypto'
@@ -77,6 +78,18 @@ try {
   c.check(/restarted in the middle of this turn 4 times/.test(String(loop.error)) && session.status === 'failed' && error?.text === loop.error,
     'the turn fails with the reason, in its command, its session and the record')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after the turn failed' })
+
+  // A message an older API queued has no permissions. The daemon reads the payload
+  // when it claims the message, and fails it with the reason instead of starting Claude.
+  const { id: unreadableId } = await c.row(
+    `insert into commands (team_id, instance_id, session_id, kind, payload)
+     select team_id, instance_id, session_id, kind, payload - 'permissions' from commands where id = $1 returning id`, [loopId])
+  await until('the unreadable message to fail', 60, async () => (await c.row('select status from commands where id = $1', [unreadableId]))?.status === 'failed')
+  const unreadable = await c.row('select error from commands where id = $1', [unreadableId])
+  const shown = await c.row(`select text from events where session_id = $1 and kind = 'error' order by seq desc limit 1`, [sessionId])
+  c.check(/could not read the message.*at permissions/s.test(String(unreadable.error)) && shown?.text === unreadable.error
+    && fakeLog(folder, 'starts').length === RESUMES + 1,
+  'a message with no permissions fails with the reason it could not be read, in its command and the record, and starts no Claude')
 
   await say(`/v1/conversations/${conversationId}/messages`, { text: 'GREET me.' })
   await until('the next turn to end', TURN_SECONDS, async () =>
