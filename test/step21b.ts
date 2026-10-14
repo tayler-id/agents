@@ -195,6 +195,11 @@ try {
     const s = await sessionOf(harness)
     return s ? count(`select count(*) from events where session_id = $1 and kind = 'usage'`, [s.id]) : 0
   }
+  // The events of a Claude Code session, none until the record has the session.
+  const eventsOfHarness = async (harness: string) => {
+    const s = await sessionOf(harness)
+    return s ? eventsOf(s.id) : []
+  }
 
   // A session in the connected folder lands: the prompt as the person's, the tool call and its result, and the reply.
   const first = transcript(claudeDir, shop, afterShop)
@@ -207,6 +212,17 @@ try {
   check(firstEvents.map((e) => e.kind).join(',') === 'user,tool_call,tool_result,assistant,usage'
     && firstEvents[0]?.author === ownerRow.id && firstEvents[2]?.text === 'The word is pelican.',
   `its prompt is the person's, then the call, its result, the reply and the turn's end: ${firstEvents.map((e) => e.kind).join(',')}`)
+
+  // Esc ends a turn with no reply. The record keeps a notice the terminal page draws as Interrupted, and the session is idle.
+  const escaped = transcript(claudeDir, shop, afterShop)
+  escaped.write([
+    escaped.line({ type: 'user', message: { role: 'user', content: 'Count to a million.' }, turnOrigin: 'human' }),
+    escaped.line({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }),
+  ])
+  await until('the interrupted session', LANDS_SEC, async () => (await eventsOfHarness(escaped.session)).length >= 2)
+  const stop = (await eventsOfHarness(escaped.session)).find((e) => e.kind === 'notice')
+  check(stop?.body.subtype === 'interrupted' && stop.text === '[Request interrupted by user]' && (await sessionOf(escaped.session))?.status === 'idle',
+    `a turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle: ${JSON.stringify(stop?.body)}`)
 
   // Secrets: a nested .env, values under any name, a PDF, a folder and a session named with a secret, and the login shell's.
   const secrets = transcript(claudeDir, shop, afterShop)

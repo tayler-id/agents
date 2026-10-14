@@ -246,7 +246,8 @@ function transcriptEvents(line: TranscriptLine, id: string, parentToolUseId: str
     const images = blocks.filter((b) => b.type === 'image').length
     if (!said && !images) return { events, status: subagent ? undefined : 'running' }
     if (INTERRUPTED.test(said)) {
-      return { events: [...events, { clientId: `${id}:said`, kind: 'notice', text: said, body: { interrupted: true, text: said } }], status: subagent ? undefined : 'idle' }
+      // The terminal page draws a notice with this subtype as Interrupted, and hides the other notices.
+      return { events: [...events, { clientId: `${id}:said`, kind: 'notice', text: said, body: { subtype: 'interrupted', text: said } }], status: subagent ? undefined : 'idle' }
     }
     if (!subagent && fromPerson(line)) {
       return { events: [...events, { clientId: `${id}:said`, kind: 'user', text: said, body: { text: said, images } }], status: 'running' }

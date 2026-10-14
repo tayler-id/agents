@@ -111,7 +111,7 @@ The mapping is `transcriptBatch` in `daemon/claude.ts`, beside the mapping for t
 | Text, thinking and tool calls in an assistant line | `assistant`, `thinking` and `tool_call`, as in an app session |
 | The last line of a message that ends the turn | also `usage`, which the app shows as the turn's end, and the session is idle |
 | Tool results in a user line | `tool_result`, linked to its call by `tool_use_id` |
-| `[Request interrupted by user]` | `notice`, and the session is idle |
+| `[Request interrupted by user]` | `notice` with `body.subtype` `interrupted`, which the terminal page draws as Interrupted, and the session is idle |
 | Other user text, such as a task notice or a subagent's orders | `notice`, as the app's sessions record them |
 | A `system` line other than `stop_hook_summary` and `turn_duration` | `notice` |
 | A subagent's lines | the same, with `parent_tool_use_id` set to its Agent call |
@@ -171,7 +171,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 
 `test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about 10 s, on ports 8110 to 8112, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
 
-- A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end.
+- A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end. A turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle.
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried. A session from a Mac clock a minute ahead of the server's, closed by a reconnect, is refused once and then passed over. Every session in the check starts exactly at its folder's `connected_at`, so a folder connected again a moment later is newer than all of them.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
