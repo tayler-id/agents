@@ -14,7 +14,7 @@ import { z } from 'zod'
 import type { Policy } from '../../shared/policy.ts'
 import { run, short, uncommitted } from './git.ts'
 import { appHome, errorCode, withLedger, type CheckRun, type Name } from './ledger.ts'
-import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, refused, replace, type Report } from './repo.ts'
+import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, quote, refused, replace, stampOf, type Report } from './repo.ts'
 import { childEnv } from './worktrees.ts'
 
 // A step told to stop gets this long to stop its own children before it is killed.
@@ -108,7 +108,6 @@ function dockerFor(ledgerFile: string): Docker | null {
   })
   if (real === undefined) return null
   mkdirSync(folder, { recursive: true })
-  const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`
   const launcher = join(folder, 'docker')
   writeFileSync(launcher, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(SHIM)} "$@"\n`)
   chmodSync(launcher, 0o755)
@@ -185,8 +184,6 @@ export async function record(ledgerFile: string, repo: string, name: Name, entry
     write(replace(ledger, { ...entry, checks: [...entry.checks, entryRun] }))
   })
 }
-
-const stampOf = (at: Date) => at.toISOString().replace(/[-:.]/g, '')
 
 export async function check(ledgerFile: string, cwd: string, name: Name, steps: readonly StepId[], limitSec: number | undefined, buildLimitSec: number | undefined): Promise<Report> {
   const plan = await withLedger(ledgerFile, `check ${name}`, async (ledger) => {

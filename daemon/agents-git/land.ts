@@ -14,14 +14,13 @@ import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommi
 import { MAIN_BRANCH, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
 import { gates, listed, mirrorMain, publicProblems, withNotes, type Mirrored } from './github.ts'
-import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, worktreeRoot, type Report } from './repo.ts'
+import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, stampOf, worktreeRoot, type Report } from './repo.ts'
 import { npmCi } from './worktrees.ts'
 
 // all.ts ends with one line a step, and the suite's counts come from those lines.
 const SUITE_LINE = /^(pass|FAIL) {2}step[0-9a-z]+\.ts \(\d+s\)$/gm
 // Where land keeps the merge commit it made, so it stays reachable after its worktree goes.
 const landRef = (name: Name) => `${refsOf(name)}/land`
-const stampOf = (at: Date) => at.toISOString().replace(/[-:.]/g, '')
 
 type Plan = { main: string, tip: Sha, mainSha: Sha, base: Sha, envFiles: string[], scratch: string, policy: Policy, approved: string[], message: string }
 

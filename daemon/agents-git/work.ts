@@ -4,10 +4,7 @@
 import { existsSync } from 'node:fs'
 import { aheadOf, git, gitRun, isAncestor, latestRef, moveRef, Sha, short, snapshotTree, treeOf, uncommitted } from './git.ts'
 import { withLedger, type Name } from './ledger.ts'
-import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, reachable, refused, replace, savesOf, type Report } from './repo.ts'
-
-// A save's ref is named for the moment it was made, in a form a ref name allows.
-const stamp = () => new Date().toISOString().replace(/[-:.]/g, '')
+import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, reachable, refused, replace, savesOf, stampOf, type Report } from './repo.ts'
 
 export async function save(ledgerFile: string, cwd: string, name: Name): Promise<Report> {
   return withLedger(ledgerFile, `save ${name}`, async (ledger) => {
@@ -23,7 +20,8 @@ export async function save(ledgerFile: string, cwd: string, name: Name): Promise
     const latest = await latestRef(repo.main, savesOf(name))
     if (latest?.tree === tree) return ok(`ok: ${latest.ref} already holds ${name}'s uncommitted work`)
     const commit = Sha.parse((await git(entry.path, ['commit-tree', '--no-gpg-sign', tree, '-p', worktree.head], { input: `agents-git save of ${name}\n` })).trim())
-    const ref = `${savesOf(name)}${stamp()}`
+    // A save's ref is named for the moment it was made.
+    const ref = `${savesOf(name)}${stampOf(new Date())}`
     await moveRef(repo.main, ref, commit, null)
     return ok(`ok: saved ${name}'s ${plural(await uncommitted(entry.path), 'uncommitted file')} as ${ref}, on top of ${short(worktree.head)}`)
   })

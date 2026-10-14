@@ -11,6 +11,10 @@ export const ok = (...lines: string[]): Report => ({ code: 0, lines })
 export const failed = (what: string, ...lines: string[]): Report => ({ code: 1, lines: [`failed: ${what}`, ...lines] })
 export const refused = (reason: string, next?: string): Report => ({ code: 3, lines: [`refused: ${reason}. Nothing changed.`, ...(next === undefined ? [] : [`next: ${next}`])] })
 export const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+// A word as a shell reads it back, in quotes only when it needs them.
+export const quote = (word: string) => (/^[\w./@%+=:,-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`)
+// A moment in a form a ref or a folder name allows, such as 20261014T143105123Z.
+export const stampOf = (at: Date) => at.toISOString().replace(/[-:.]/g, '')
 export const isReport = <T extends object>(value: T | Report): value is Report => 'code' in value && 'lines' in value
 
 export const MAIN = `refs/heads/${MAIN_BRANCH}`
