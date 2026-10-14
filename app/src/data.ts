@@ -12,6 +12,9 @@ import {
 } from '../../shared/onboarding.ts'
 import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
+import {
+  AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
+} from '../../shared/projects.ts'
 
 export type Me = MemberView
 
@@ -24,8 +27,12 @@ export type Instance = Row & {
   claimed_by: string | null; claimed_by_run: string | null
   // A person's own box belongs to its owner for good. start_error says why its container did not start.
   owner_id: string | null; personal: boolean; start_error: string | null
+  // The size of the machine's screen, when it has one.
+  screen_width: number | null; screen_height: number | null
 }
-export type Conversation = Row & { id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string }
+export type Conversation = Row & {
+  id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
+}
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
 export type Message = Row & {
   id: string; conversation_id: string; seq: bigint; speaker: 'person' | 'agent'; person_id: string | null
@@ -49,7 +56,9 @@ export type Ask = Row & {
   }
   created_at: string
 }
-export type Repo = Row & { id: string; remote_url: string; default_branch: string }
+export type Repo = Row & { id: string; remote_url: string; default_branch: string; forge: string; project_id: string | null }
+// Which repos a task works in.
+export type TaskRepo = Row & { task_id: string; repo_id: string; is_primary: boolean }
 export type Pipeline = Row & {
   id: string; name: string; description: string; path: string; current_version_id: string | null
   conversation_id: string | null; shepherd_id: string | null
@@ -57,7 +66,7 @@ export type Pipeline = Row & {
 export type PipelineVersion = Row & { id: string; pipeline_id: string; git_sha: string; source: string; error: string | null; created_at: string }
 export type Task = Row & {
   id: string; slug: string; title: string; instructions: string; owner_id: string | null; agent_id: string | null; conversation_id: string | null
-  source: string | null; priority: number; done_at: string | null; created_at: string
+  source: string | null; priority: number; done_at: string | null; created_at: string; project_id: string | null
 }
 export type Run = Row & {
   id: string; pipeline_version_id: string; task_id: string; trigger: string; status: string; stage: string | null
@@ -89,7 +98,11 @@ export type Memory = Row & { id: string; agent_id: string; scope: 'person' | 'te
 export type Template = Row & { id: string; name: string; version: number; share_slug: string; recipe: { title: string | null; instructions: string; skills: unknown[]; plugins: unknown[]; routines: unknown[] }; created_at: string }
 export type Turn = Row & { id: string; conversation_id: string; agent_id: string; requested_at: string; started_at: string | null; outcome: string | null; finished_at: string | null }
 export type Comment = Row & { id: string; artifact_id: string; version: number; anchor: { quote?: string } | null; author_person: string | null; body: string; status: string; sent_to_session: string | null; created_at: string }
-export type ArtifactVersion = Row & { artifact_id: string; version: number; content: string; author_session: string | null; created_at: string }
+// An image version has no text, and its bytes come from imageUrl.
+export type ArtifactVersion = Row & {
+  artifact_id: string; version: number; content: string; blob_id: string | null; author_session: string | null; created_at: string
+}
+export const imageUrl = (version: ArtifactVersion) => `/v1/artifacts/${version.artifact_id}/versions/${version.version}/image`
 
 const origin = () => window.location.origin
 
@@ -201,6 +214,26 @@ export function conversationLabel(c: Conversation, names: { me: Me; members: Mem
   return c.name ?? [agent, who.join(', ')].filter(Boolean).join(' · ')
 }
 
+// A value read from the API now, again every few seconds, and at once when asked,
+// holding no connection open in between. `everyMs` picks the wait from the
+// latest value, so a view can read more often while something is about to change.
+export function usePolled<T>(read: () => Promise<T>, everyMs: (latest: T | null) => number) {
+  const [state, setState] = useState<{ value: T | null; error: string }>({ value: null, error: '' })
+  const [asked, setAsked] = useState(0)
+  const delay = everyMs(state.value)
+  useEffect(() => {
+    let stopped = false
+    const load = () => read().then(
+      (value) => { if (!stopped) setState({ value, error: '' }) },
+      (error: unknown) => { if (!stopped) setState((s) => ({ value: s.value, error: messageOf(error) })) },
+    )
+    void load()
+    const timer = setInterval(() => { void load() }, delay)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [read, delay, asked])
+  return { ...state, refresh: () => setAsked((n) => n + 1) }
+}
+
 // The message of anything thrown.
 export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -235,10 +268,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 // A call whose answer is read through its schema.
-async function call<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.output<S>> {
+export async function call<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.output<S>> {
   const parsed = schema.safeParse(await send(method, path, body))
   if (!parsed.success) throw new Error(`The server's answer to ${path} did not fit this app: ${z.prettifyError(parsed.error)}`)
   return parsed.data
+}
+
+// An answer from the API, parsed with the schema in shared/ that defines it.
+async function requestOf<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.infer<S>> {
+  return schema.parse(await request<unknown>(method, path, body))
 }
 
 export const api = {
@@ -284,8 +322,8 @@ export const api = {
   removeItem: (agentId: string, kind: 'skills' | 'plugins' | 'routines', name: string) =>
     request('POST', `/v1/agents/${agentId}/${kind}/${encodeURIComponent(name)}/delete`, {}),
   saveTemplate: (agentId: string, name: string) => request<{ slug: string; version: number }>('POST', `/v1/agents/${agentId}/templates`, { name }),
-  createRoom: (name: string, people: string[], agents: string[]) =>
-    request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents }),
+  createRoom: (name: string, people: string[], agents: string[], projectId?: string) =>
+    request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents, projectId }),
   startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),
   editDraft: (taskId: string, edit: z.input<typeof DraftEdit>) => request('POST', `/v1/tasks/${taskId}/edit`, edit),
   startDraft: (taskId: string) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', `/v1/tasks/${taskId}/start`, {}),
@@ -302,6 +340,14 @@ export const api = {
   unblock: async (taskId: string, blockerId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/blockers/${blockerId}/remove`, {})),
   hold: async (taskId: string, ask: HoldAsk) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/hold`, ask)),
   unhold: async (taskId: string) => Outcome.parse(await request<unknown>('POST', `/v1/tasks/${taskId}/unhold`, {})),
+  github: () => requestOf(GithubStatus, 'GET', '/v1/github'),
+  githubSignIn: () => requestOf(GithubStatus, 'POST', '/v1/github/sign-in', {}),
+  githubSignOut: () => requestOf(GithubStatus, 'POST', '/v1/github/sign-out', {}),
+  githubStopgap: (owner: string, token: string) => requestOf(GithubStatus, 'POST', '/v1/github/token', { owner, token }),
+  repos: () => requestOf(ReposOverview, 'GET', '/v1/repos'),
+  createProject: (body: NewProjectBody) => requestOf(NewProjectResult, 'POST', '/v1/projects', body),
+  addRepo: (projectId: string, body: AddRepoBody) => requestOf(AddRepoResult, 'POST', `/v1/projects/${projectId}/repos`, body),
+  retryRepo: (requestId: RepoRequestId) => request('POST', `/v1/repo-requests/${requestId}/retry`, {}),
   messageSession: (sessionId: string, text: string) => request('POST', `/v1/sessions/${sessionId}/messages`, { text }),
   addComment: (artifactId: string, body: z.input<typeof NewComment>) =>
     request<{ commentId: string }>('POST', `/v1/artifacts/${artifactId}/comments`, body),

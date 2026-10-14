@@ -1,6 +1,6 @@
-// Run on the server host. Adds teams, people, instances and agents, and puts a
-// repo under the coding framework with a policy and its owner. A team's first
-// login is its admin, who can then invite everyone else from the app.
+// Run on the server host. Adds teams, people, instances and agents, puts a repo
+// under the coding framework with a policy and its owner, and connects GitHub. A
+// team's first login is its admin, who can then invite everyone else from the app.
 //   node --env-file=.env server/admin.ts add-team <team> <first login>
 //   node --env-file=.env server/admin.ts add-person <team> <login>
 //   node --env-file=.env server/admin.ts set-role <team> <login> <admin|member>
@@ -9,15 +9,22 @@
 //   node --env-file=.env server/admin.ts forge-login <login> <forge user>
 //   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
 //   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
+//   pbpaste | node --env-file=.env server/admin.ts github-token <team> <organization or account>
+// github-token sets a team's stopgap, a fine-grained personal access token, for
+// the team before anyone signs in with GitHub. It reads the token from standard
+// input, so it never shows in the process list or the shell history, and keeps
+// it in AGENTS_GITHUB_DIR.
 
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { text } from 'node:stream/consumers'
 import { maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
 import { STATUS } from '../shared/framework.ts'
 import { POLICY } from '../shared/policy.ts'
+import { setStopgap } from './github-auth.ts'
 
 // Records a new version of the policy, points the repo at it with its owner,
 // and protects the repo's default branch on the forge to match.
@@ -53,6 +60,8 @@ async function addPerson(team: string, login: string, role: 'admin' | 'member') 
   if (!rowCount) throw new Error(`no team ${team}`)
 }
 
+const readStdin = async (): Promise<string> => (await text(process.stdin)).trim()
+
 const USAGE = [
   'add-team <team> <login>',
   'add-person <team> <login>',
@@ -62,6 +71,7 @@ const USAGE = [
   'forge-login <login> <forge user>',
   'set-policy <team> <repo clone url> <policy.json> <owner login>',
   'add-lesson <team> <rule> <incident>',
+  'github-token <team> <organization or account> (the stopgap token on standard input)',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
@@ -112,6 +122,10 @@ try {
     const { rowCount } = await pool.query('insert into lessons (team_id, rule, incident) select id, $2, $3 from teams where name = $1', [team, rule, incident])
     if (!rowCount) throw new Error(`no team ${team ?? ''}`)
     console.log(`added a written lesson to ${team}. It becomes enforced once it names what holds it.`)
+  } else if (command === 'github-token' && args.length === 2) {
+    const team = await maybe<{ id: string }>(pool, 'select id from teams where name = $1', [first])
+    if (!team) throw new Error(`no team ${first}`)
+    console.log(JSON.stringify(await setStopgap(team.id, await readStdin(), second)))
   } else {
     console.error(`usage: ${USAGE}`)
     process.exitCode = 2

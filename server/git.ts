@@ -1,18 +1,20 @@
 // Machines clone and push through the API, as themselves. The API checks that the
-// repo is their team's and forwards to the forge with the factory's credentials,
-// so forge tokens never leave the server. On a repo with a policy, a machine
-// may push only to the task branches of its own workspaces. Any other ref is
+// repo is their team's and forwards to the repo's forge, this Mac's Gitea or
+// GitHub, with the server's credentials, so forge tokens never leave the server.
+// Machines never push to a repo's default branch, as the forge names it when the
+// push comes. Changes reach it through pull requests, even on GitHub plans that
+// can't protect a private repo's branches. On a repo with a policy, a machine may
+// also push only to the task branches of its own workspaces. Any other ref is
 // refused here and recorded, so the run whose machine tried it stops, and the
 // forge's branch protection refuses a push to main again. A repo without a
-// policy takes pushes to any branch, as before the framework.
+// policy takes pushes to any branch but the default one.
 
 import { createGunzip } from 'node:zlib'
 import { Readable } from 'node:stream'
-import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { instanceFrom } from './auth.ts'
 import { many, maybe, pool } from './db.ts'
-import { gitUpstream } from './forge.ts'
+import { currentDefaultBranch, fromForge, gitUpstreamFor, type RepoOnForge } from './repos.ts'
 import { HttpError } from './record.ts'
 
 export const GIT_PATH = /^\/v1\/git\/([0-9a-f-]{36})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/
@@ -22,7 +24,8 @@ const DROPPED = ['content-encoding', 'content-length', 'transfer-encoding', 'www
 // them streams through. The lines are a few hundred bytes for each ref.
 const COMMANDS_LIMIT_BYTES = 1024 * 1024
 const FLUSH = '0000'
-const COMMAND = /^(?:[0-9a-f]{40}) (?:[0-9a-f]{40}) (\S+)$/
+// An object id is 40 hex digits, or 64 in a repo that hashes with SHA-256.
+const COMMAND = /^[0-9a-f]{40,64} [0-9a-f]{40,64} (\S+)$/
 
 // The refs a receive-pack request updates: the pkt-lines before the first flush,
 // each "<old> <new> <ref>", the first followed by NUL and the capabilities.
@@ -86,45 +89,72 @@ async function ownBranches(instanceId: string): Promise<Set<string>> {
   return new Set(tasks.flatMap(({ slug }) => [`refs/heads/task/${slug}`, `refs/heads/replay/${slug}`]))
 }
 
+// A request's body, checked to be bytes as it arrives.
+async function* bytesOf(source: Readable): AsyncGenerator<Buffer> {
+  for await (const chunk of source) {
+    if (!Buffer.isBuffer(chunk)) throw new HttpError(400, 'a git request body must be bytes')
+    yield chunk
+  }
+}
+
+// Bytes as the web stream fetch takes for a request body.
+function webStream(chunks: AsyncIterable<Buffer>): ReadableStream<Uint8Array> {
+  const source = chunks[Symbol.asyncIterator]()
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await source.next()
+      if (next.done) controller.close()
+      else controller.enqueue(next.value)
+    },
+  })
+}
+
 export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: URL) {
   const instance = await instanceFrom(req)
   const [, repoId, rest] = GIT_PATH.exec(url.pathname) ?? []
   if (!repoId || !rest) throw new HttpError(404, 'no such git path')
-  const repo = await maybe<{ remote_url: string; policy_id: string | null }>(pool,
-    'select remote_url, policy_id from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
-  if (!repo) throw new HttpError(404, 'no such repo')
+  const row = await maybe<RepoOnForge & { policy_id: string | null; default_branch: string }>(pool,
+    'select forge, remote_url, policy_id, default_branch from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
+  if (!row) throw new HttpError(404, 'no such repo')
+  const repo = { ...row, id: repoId }
   const headers: Record<string, string> = {}
   for (const name of FORWARDED) {
     const value = req.headers[name]
     if (typeof value === 'string') headers[name] = value
   }
   let body: Readable = req
-  if (req.method === 'POST' && rest === 'git-receive-pack' && repo.policy_id !== null) {
+  if (req.method === 'POST' && rest === 'git-receive-pack') {
     // A gzipped push is unzipped here, to read its commands, and sent on plain.
     const plain = plainBody(req, req.headers['content-encoding'])
     delete headers['content-encoding']
     const { refs, stream } = await readCommands(plain)
-    const own = await ownBranches(instance.id)
-    const refused = refs.filter((ref) => !own.has(ref))
-    if (refused.length) {
-      await pool.query('insert into refused_pushes (team_id, instance_id, repo_id, refs) values ($1, $2, $3, $4)',
-        [instance.team_id, instance.id, repoId, refused])
-      throw new HttpError(403, `on a repo with a policy a machine pushes only to its own task branches, so ${refused.join(', ')} was refused. Changes reach main only through a pull request the owner approves.`)
+    if (repo.policy_id !== null) {
+      const own = await ownBranches(instance.id)
+      const refused = refs.filter((ref) => !own.has(ref))
+      if (refused.length) {
+        await pool.query('insert into refused_pushes (team_id, instance_id, repo_id, refs) values ($1, $2, $3, $4)',
+          [instance.team_id, instance.id, repoId, refused])
+        throw new HttpError(403, `on a repo with a policy a machine pushes only to its own task branches, so ${refused.join(', ')} was refused. Changes reach main only through a pull request the owner approves.`)
+      }
+    }
+    // The branch rule asks the forge which branch is the default now.
+    const defaultBranch = await fromForge(() => currentDefaultBranch(repo))
+    if (refs.includes(`refs/heads/${defaultBranch}`)) {
+      throw new HttpError(403, `machines push task branches, never ${defaultBranch}. Changes reach ${defaultBranch} through pull requests.`)
     }
     body = stream
   }
-  const upstream = gitUpstream(repo.remote_url)
+  const upstream = await fromForge(() => gitUpstreamFor(repo))
   headers.authorization = upstream.authorization
-  const response = await fetch(`${upstream.url}/${rest}${url.search}`, {
-    method: req.method,
-    headers,
-    body: req.method === 'GET' ? undefined : (Readable.toWeb(body) as ReadableStream),
-    duplex: 'half',
-  } as RequestInit)
+  // Node's fetch needs `duplex` to send a streamed body, and the DOM's RequestInit type has no field for it.
+  const init: RequestInit & { duplex: 'half' } = { method: req.method, headers, body: req.method === 'GET' ? undefined : webStream(bytesOf(body)), duplex: 'half' }
+  const response = await fetch(`${upstream.url}/${rest}${url.search}`, init)
   const out: Record<string, string> = {}
   response.headers.forEach((value, key) => { if (!DROPPED.includes(key)) out[key] = value })
   res.writeHead(response.status, out)
-  if (response.body) Readable.fromWeb(response.body as WebReadable).on('error', () => res.end()).pipe(res)
+  // A forge that drops the connection mid-answer leaves the machine a cut-off
+  // response, which git reports as a failed clone or push.
+  if (response.body) Readable.from(response.body, { objectMode: false }).on('error', () => res.end()).pipe(res)
   else res.end()
 }
 

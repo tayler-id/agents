@@ -6,8 +6,11 @@ const LABELS: Record<string, string> = {
   ask: 'Asked', answer: 'Answer', notice: 'Notice', error: 'Error', usage: 'Turn ended',
 }
 
-// Everything one session did, in order, live.
-export function SessionPanel({ sessionId, of, onClose }: { sessionId: string; of: 'conversations' | 'tasks'; onClose: () => void }) {
+// Everything one session did, in order, live. A session on a machine with a
+// screen can open that screen in its place.
+export function SessionPanel({ sessionId, of, onClose, onScreen }: {
+  sessionId: string; of: 'conversations' | 'tasks'; onClose: () => void; onScreen: (instanceId: string, sessionId: string) => void
+}) {
   const { rows: events } = useRows<EventRow>('events', { session: sessionId })
   const { rows: sessions } = useRows<Session>('sessions', { of })
   const { rows: instances } = useSnapshot<Instance>('instances')
@@ -26,10 +29,13 @@ export function SessionPanel({ sessionId, of, onClose }: { sessionId: string; of
             </p>
           )}
         </div>
-        <button type="button" className="ghost" onClick={onClose}>Close</button>
+        <div className="head-actions">
+          {machine && machine.screen_width !== null && <button type="button" className="ghost" onClick={() => onScreen(machine.id, sessionId)}>Screen</button>}
+          <button type="button" className="ghost" onClick={onClose}>Close</button>
+        </div>
       </header>
       <ol className="events" tabIndex={0} aria-label="Events">
-        {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init' || e.body.subtype === 'interrupted').map((e) => (
+        {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init' || e.body.subtype === 'interrupted' || e.body.subtype === 'screen').map((e) => (
           <li key={String(e.id)} className={`event ${e.kind}${e.parent_tool_use_id ? ' sub' : ''}`}>
             <div className="meta">
               <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>

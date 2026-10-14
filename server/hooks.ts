@@ -6,9 +6,10 @@
 import { createHmac } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import { many, maybe, pool, tx } from './db.ts'
-import { forge, forgeConfig, repoPath, verifySignature } from './forge.ts'
+import { forgeConfig, repoPath, verifySignature } from './forge.ts'
 import { loadSource } from './pipelines.ts'
 import { HttpError } from './record.ts'
+import { forgeFor, type RepoOnForge } from './repos.ts'
 import { startRun } from './runner.ts'
 import type { Report } from '../shared/pipeline.ts'
 
@@ -36,8 +37,11 @@ function parse(body: Buffer): Loose {
   return value
 }
 
+// `sender` is who asked for the work on a public forge, by putting a label on the issue.
+export type IssueEvent = { action: string; number: number; labels: string[]; report: Report; sender?: string }
+
 // The parts of Gitea's issues event a run needs, or null if it has none of them.
-function issueEvent(payload: Loose): { action: string; number: number; labels: string[]; report: Report } | null {
+function issueEvent(payload: Loose): IssueEvent | null {
   const issue = payload.issue
   if (!isObject(issue) || typeof issue.number !== 'number' || !str(issue.title)) return null
   const labels = Array.isArray(issue.labels) ? issue.labels.flatMap((l) => (isObject(l) && typeof l.name === 'string' ? [l.name] : [])) : []
@@ -67,33 +71,50 @@ export async function forgeHook(body: Buffer, headers: IncomingHttpHeaders, sync
   const event = header(headers, 'x-gitea-event')
   const payload = parse(body)
   const cloneUrl = isObject(payload.repository) ? str(payload.repository.clone_url) ?? '' : ''
-  const repos = await many<{ id: string; team_id: string; remote_url: string }>(pool,
-    'select id, team_id, remote_url from repos where remote_url = $1', [cloneUrl])
+  const repos = await many<RepoOnForge & { id: string; team_id: string }>(pool,
+    'select id, team_id, forge, remote_url from repos where remote_url = $1', [cloneUrl])
   if (event === 'push') {
     await sync(repos.map((r) => r.id))
     return { runs: [] }
   }
   const issue = event === 'issues' ? issueEvent(payload) : null
   if (!issue || !['opened', 'label_updated'].includes(issue.action)) return { runs: [] }
+  const runs: string[] = []
+  for (const repo of repos) runs.push(...await startIssueRuns(repo, issue))
+  return { runs }
+}
+
+const currentPipelines = (teamId: string) => many<{ id: string; source: string }>(pool,
+  `select p.id, v.source from pipelines p join pipeline_versions v on v.id = p.current_version_id where p.team_id = $1`, [teamId])
+
+// Starts a run of each of the team's pipelines whose forge trigger the issue
+// matches, once per issue and pipeline. This Mac's forge reaches here through
+// its webhook, and GitHub through the poller in server/github-worker.ts.
+export async function startIssueRuns(repo: RepoOnForge & { id: string; team_id: string }, issue: IssueEvent): Promise<string[]> {
   const { labels, report } = issue
   const runs: string[] = []
-  for (const repo of repos) {
-    const pipelines = await many<{ id: string; source: string }>(pool,
-      `select p.id, v.source from pipelines p join pipeline_versions v on v.id = p.current_version_id where p.team_id = $1`, [repo.team_id])
-    for (const row of pipelines) {
-      const { pipeline } = await loadSource(row.source)
-      const wanted = pipeline?.triggers.some((t) => t.kind === 'forge' && (t.label ? labels.includes(t.label) : issue.action === 'opened'))
-      if (!wanted) continue
-      const openIssues = (await forge.openIssues(repoPath(repo.remote_url)))
-        .filter((i) => i.number !== issue.number).map((i) => ({ number: i.number, title: i.title }))
-      const runId = await start({
-        pipelineId: row.id, trigger: 'forge', report, repoId: repo.id, openIssues,
-        once: `issue:${row.id}:${repo.id}:${issue.number}`,
-      })
-      if (runId) runs.push(runId)
-    }
+  for (const row of await currentPipelines(repo.team_id)) {
+    const { pipeline } = await loadSource(row.source)
+    const wanted = pipeline?.triggers.some((t) => t.kind === 'forge' && (t.label ? labels.includes(t.label) : issue.action === 'opened'))
+    if (!wanted) continue
+    const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url)))
+      .filter((i) => i.number !== issue.number).map((i) => ({ number: i.number, title: i.title }))
+    const runId = await start({
+      pipelineId: row.id, trigger: 'forge', report, repoId: repo.id, openIssues, sender: issue.sender,
+      once: `issue:${row.id}:${repo.id}:${issue.number}`,
+    })
+    if (runId) runs.push(runId)
   }
-  return { runs }
+  return runs
+}
+
+// Whether any of the team's pipelines starts from forge issues, so the GitHub
+// worker asks GitHub only for the teams that need it.
+export async function wantsIssues(teamId: string): Promise<boolean> {
+  for (const row of await currentPipelines(teamId)) {
+    if ((await loadSource(row.source)).pipeline?.triggers.some((t) => t.kind === 'forge')) return true
+  }
+  return false
 }
 
 // A pipeline's own webhook: {title, body, repo, id?}. repo is the forge path, such
@@ -106,11 +127,11 @@ export async function pipelineHook(pipelineId: string, body: Buffer, headers: In
   const title = str(payload.title)
   if (!title) throw new HttpError(400, 'title is required')
   const id = str(payload.id) ?? (typeof payload.id === 'number' ? String(payload.id) : undefined)
-  const repo = await maybe<{ id: string; remote_url: string }>(pool,
-    `select r.id, r.remote_url from repos r join pipelines p on p.team_id = r.team_id
+  const repo = await maybe<RepoOnForge & { id: string }>(pool,
+    `select r.id, r.forge, r.remote_url from repos r join pipelines p on p.team_id = r.team_id
      where p.id = $1 and r.remote_url like '%/' || $2 || '.git'`, [pipelineId, str(payload.repo) ?? ''])
   if (!repo) throw new HttpError(404, 'repo must name one of the team\'s repos, such as team/shop')
-  const openIssues = (await forge.openIssues(repoPath(repo.remote_url))).map((i) => ({ number: i.number, title: i.title }))
+  const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url))).map((i) => ({ number: i.number, title: i.title }))
   const runId = await start({
     pipelineId, trigger: 'webhook', repoId: repo.id, openIssues,
     report: { title, body: str(payload.body) ?? '', url: str(payload.url) },

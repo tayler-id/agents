@@ -12,8 +12,8 @@ import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { instanceFrom, personFrom } from './auth.ts'
-import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
+import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -27,7 +27,12 @@ import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecor
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
-import { forge, repoPath } from './forge.ts'
+import { repoPath } from './forge.ts'
+import { forgeFor, refreshDefaultBranches, refreshTaskDefaultBranches, reposOverview, type TeamRepo } from './repos.ts'
+import { githubStatus, setStopgap, signOut, startSignIn } from './github-auth.ts'
+import { startGithubWorker } from './github-worker.ts'
+import { addRepoToProject, askGithub, createProject, retryRepoRequest } from './projects.ts'
+import { AddRepoBody, NewProjectBody, ProjectId, RepoRequestId, StopgapBody } from '../shared/projects.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
@@ -47,6 +52,10 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
+import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { InstanceId } from '../shared/onboarding.ts'
+import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
+import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
   EndedMessages, EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
@@ -59,6 +68,14 @@ const PERSON_KINDS: EventKind[] = ['user', 'answer']
 function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value)
   if (!result.success) throw new HttpError(400, z.prettifyError(result.error))
+  return result.data
+}
+
+// A project a room is started in. Leaving it out starts one outside any project.
+function optionalProject(value: unknown): ProjectId | undefined {
+  if (value === undefined || value === null) return undefined
+  const result = ProjectId.safeParse(value)
+  if (!result.success) throw new HttpError(400, 'projectId must be an id')
   return result.data
 }
 
@@ -178,9 +195,16 @@ const routes: Route[] = [
 
   ['machines', 'POST', /^\/v1\/instance\/heartbeat$/, async (req) => {
     const instance = await instanceFrom(req)
-    const body = await readJson(req)
-    const status = body.status === 'offline' ? 'offline' : 'online'
-    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, status])
+    const body = Heartbeat.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, body.data.status])
+    // A machine with a desktop reports its screen's size, and one without reports null.
+    // Daemons from before screens, and a daemon going offline, leave it as it was.
+    const { screen } = body.data
+    if (screen !== undefined) {
+      await pool.query('update instances set screen_width = $2, screen_height = $3 where id = $1',
+        [instance.id, screen ? screen.width : null, screen ? screen.height : null])
+    }
     return { ok: true }
   }],
 
@@ -245,16 +269,13 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // Files an agent wrote in its task's folder become document versions.
+  // Files an agent wrote in its task's folder become document versions: text,
+  // or images such as the screenshots it saved.
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/documents$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
-    const body = await readJson(req)
-    if (!Array.isArray(body.documents)) throw new HttpError(400, 'documents must be a list')
-    const documents = body.documents.map((d: unknown, i) => {
-      const content = fieldOf(d, 'content')
-      return { path: text(fieldOf(d, 'path'), `documents.${i}.path`), content: typeof content === 'string' ? content : '' }
-    })
-    return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, documents)) }
+    const body = DocumentUploads.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    return { versions: await tx((client) => saveDocuments(client, instance.id, sessionId, body.data.documents)) }
   }],
 
   // Whether one of the asking machine's workspaces is still being set up: not yet
@@ -301,6 +322,11 @@ const routes: Route[] = [
     })
     // A finished turn may be what a pipeline run is waiting on.
     if (batch.events.some((e) => e.kind === 'usage')) void wakeRunner()
+    // A session that starts may be work some of the box's viewers can't see. A
+    // failed recheck waits for the screen sweep, which runs it again within seconds.
+    if (batch.status !== undefined) {
+      recheckViewers(InstanceId.parse(instance.id)).catch((error: unknown) => { console.error(`screen recheck: ${messageOf(error)}`) })
+    }
     return { seqs }
   }],
 
@@ -309,7 +335,8 @@ const routes: Route[] = [
     const body = await readJson(req)
     if (body.kind === 'room') {
       const list = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
-      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents))) }
+      const projectId = optionalProject(body.projectId)
+      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)) }
     }
     if (body.kind !== 'dm') throw new HttpError(400, 'kind must be dm or room')
     const agent = text(body.agent, 'agent')
@@ -360,7 +387,10 @@ const routes: Route[] = [
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
     const { repoId, ...task } = parsed(NewTask, await readJson(req))
-    return tx((client) => startTask(client, person, { ...task, repoIds: repoId ? [repoId, ...task.repoIds] : task.repoIds }))
+    const repoIds = repoId ? [repoId, ...task.repoIds] : task.repoIds
+    // The workspace is cloned from each repo's default branch, which its owner can rename on the forge.
+    if (!task.draft) await refreshDefaultBranches(person.team_id, repoIds)
+    return tx((client) => startTask(client, person, { ...task, repoIds }))
   }],
 
   // The order of work. Each command answers whether there was anything to change.
@@ -424,6 +454,7 @@ const routes: Route[] = [
     const action = parsed(TaskAction.extract(['edit', 'start', 'discard']), verb)
     switch (action) {
       case 'start':
+        await refreshTaskDefaultBranches(person.team_id, taskId)
         return tx((client) => startDraft(client, person, taskId))
       case 'discard':
         await tx((client) => discardDraft(client, person, taskId))
@@ -434,6 +465,51 @@ const routes: Route[] = [
         return { ok: true }
       }
     }
+  }],
+
+  // Projects and their repos. docs/design/projects.md has the whole design.
+  ['people', 'POST', /^\/v1\/projects$/, async (req) => {
+    const person = await personFrom(req)
+    return createProject(person, await parseBody(req, NewProjectBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/projects/${UUID}/repos$`), async (req, [projectId]) => {
+    const person = await personFrom(req)
+    return addRepoToProject(person, pathId(ProjectId, projectId), await parseBody(req, AddRepoBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/repo-requests/${UUID}/retry$`), async (req, [requestId]) => {
+    const person = await personFrom(req)
+    await retryRepoRequest(person, pathId(RepoRequestId, requestId))
+    return { ok: true }
+  }],
+
+  // Every repo of the team, with what its forge says is open on it.
+  ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview(await personFrom(req))],
+
+  // Whether GitHub is set up, and the person's own sign-in. Never a token.
+  ['people', 'GET', /^\/v1\/github$/, async (req) => githubStatus(await personFrom(req))],
+
+  // Signs the person in with GitHub's device flow. The answer has the code they enter on GitHub.
+  ['people', 'POST', /^\/v1\/github\/sign-in$/, async (req) => {
+    const person = await personFrom(req)
+    await askGithub(() => startSignIn(person.id))
+    return githubStatus(person)
+  }],
+
+  ['people', 'POST', /^\/v1\/github\/sign-out$/, async (req) => {
+    const person = await personFrom(req)
+    signOut(person.id)
+    return githubStatus(person)
+  }],
+
+  // The stopgap until people sign in: an admin's fine-grained personal access token for their whole team.
+  ['people', 'POST', /^\/v1\/github\/token$/, async (req) => {
+    const person = await adminFrom(req)
+    const body = await parseBody(req, StopgapBody)
+    // setStopgap's refusals are written for the admin to act on.
+    await setStopgap(person.team_id, body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
+    return githubStatus(person)
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
@@ -495,12 +571,12 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/pipelines/${UUID}/runs$`), async (req, [pipelineId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    const repo = await maybe<{ remote_url: string }>(pool,
-      'select remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
+    const repo = await maybe<TeamRepo>(pool,
+      'select id, forge, remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
     if (!repo) throw new HttpError(404, 'no such repo')
     const pipeline = await maybe(pool, 'select 1 from pipelines where id = $1 and team_id = $2', [pipelineId, person.team_id])
     if (!pipeline) throw new HttpError(404, 'no such pipeline')
-    const openIssues = (await forge.openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
+    const openIssues = (await forgeFor(repo).openIssues(repoPath(repo.remote_url)).catch(() => [])).map((i) => ({ number: i.number, title: i.title }))
     const runId = await tx((client) => startRun(client, {
       pipelineId, trigger: 'manual', repoId: body.repoId as string, openIssues, startedBy: person.id,
       report: { title: text(body.title, 'title'), body: typeof body.body === 'string' ? body.body : '', author: person.login },
@@ -555,6 +631,17 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
+  // A person takes over a box's screen, or hands it back to the agents. The body
+  // names the session they were looking at, for the notice in its record.
+  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}/(take|hand-back)$`), async (req, [instanceId, action]) => {
+    const person = await personFrom(req)
+    const body = ScreenMove.safeParse(await readJson(req))
+    if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
+    const move = action === 'take' ? takeScreen : handBackScreen
+    const moved: ScreenMoved = { control: await move(person, instanceId, body.data.sessionId) }
+    return moved
+  }],
+
   // A person keeps a box for themselves, or lets it go back to the pool. A
   // person's own box is never in the pool.
   ['people', 'POST', new RegExp(`^/v1/instances/${UUID}/(claim|release)$`), async (req, [instanceId, action]) => {
@@ -599,6 +686,25 @@ async function serveApp(res: ServerResponse, pathname: string) {
   res.writeHead(200, { 'content-type': TYPES['.html'] }).end(index)
 }
 const STREAM = new RegExp(`^/v1/streams/sessions/${UUID}$`)
+const IMAGE = new RegExp(`^/v1/artifacts/${UUID}/versions/([1-9][0-9]{0,8})/image$`)
+
+// An image document's bytes, for someone who can see its task. A version never
+// changes, so the browser may keep it. The type is the one sniffed when it was
+// saved, and the browser is told not to guess another.
+async function serveImage(req: IncomingMessage, res: ServerResponse, artifactId: string, version: number) {
+  const person = await personFrom(req)
+  const artifact = await maybe<{ task_id: string }>(pool, 'select task_id from artifacts where id = $1 and team_id = $2', [artifactId, person.team_id])
+  if (!artifact || !(await canSeeTask(person, artifact.task_id))) throw new HttpError(404, 'no such image')
+  const row = await maybe(pool,
+    `select b.media_type, b.data from artifact_versions v join blobs b on b.id = v.blob_id where v.artifact_id = $1 and v.version = $2`,
+    [artifactId, version])
+  if (!row) throw new HttpError(404, 'no such image')
+  const image = z.object({ media_type: ImageMediaType, data: z.instanceof(Buffer) }).parse(row)
+  res.writeHead(200, {
+    'content-type': image.media_type, 'content-length': image.data.length, 'cache-control': 'private, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'",
+  }).end(image.data)
+}
 const PIPELINE_HOOK = new RegExp(`^/v1/hooks/pipelines/${UUID}$`)
 let runner: ReturnType<typeof startRunner> | null = null
 const syncNow = async (repoIds: string[]) => { await (runner ? runner.sync(repoIds) : syncPipelines(repoIds)) }
@@ -620,9 +726,7 @@ const JSON_TYPE = /^application\/json\s*(;|$)/i
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
-    if (audience === 'machines' && req.headers['tailscale-user-login']) {
-      throw new HttpError(400, 'people connect through Tailscale, not the machine port')
-    }
+    checkAudience(audience, req)
     if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
@@ -637,6 +741,8 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
     }
     if (audience === 'people' && req.method === 'GET' && !url.pathname.startsWith('/v1/')) return await serveApp(res, url.pathname)
+    const image = audience === 'people' && req.method === 'GET' ? IMAGE.exec(url.pathname) : null
+    if (image?.[1] && image[2]) return await serveImage(req, res, image[1], Number(image[2]))
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)
@@ -672,6 +778,13 @@ const STOP_GRACE_MS = 5000
 // port on 127.0.0.1, but never to a socket file. So the one listener that trusts
 // Tailscale-User-Login is a socket, which only tailscale serve is pointed at.
 const PeopleSocket = z.string().startsWith('/')
+
+// The origins the app's pages are served from, such as
+// http://agents-server.<tailnet>.ts.net, separated by commas. Only pages from
+// these may open a screen's WebSocket, which carries a person's identity.
+const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin) => origin.trim()))
+  // Zod runs a refinement even when z.url() has failed, so this one must not throw.
+  .pipe(z.array(z.url().refine((url) => URL.canParse(url) && new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
 
 const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
 
@@ -718,22 +831,33 @@ async function listenForPeople(server: Server, path: string) {
 if (import.meta.main) {
   const people = PeopleSocket.safeParse(process.env.AGENTS_PEOPLE_SOCKET)
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
+  const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
+  if (!origins.success) throw new Error(`AGENTS_PEOPLE_ORIGINS must list the origins the app is served from, such as http://agents-server.<tailnet>.ts.net: ${z.prettifyError(origins.error)}`)
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
-  await listenForPeople(createServer(serve('people')), people.data)
+  await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
+  const stopSweep = startScreenSweep()
+  let githubWorker: ReturnType<typeof startGithubWorker> | null = null
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
+  // The GitHub worker finishes the round it is in and starts no other.
   const stop = () => {
-    setTimeout(() => { console.error('the stream server did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
-    streams.stop().then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the stream server: ${messageOf(error)}`); process.exit(1) })
+    stopSweep()
+    setTimeout(() => { console.error('the API did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
+    Promise.all([githubWorker?.stop(), streams.stop()])
+      .then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the API: ${messageOf(error)}`); process.exit(1) })
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
-  if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
+  createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
+    .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
+  if (process.env.AGENTS_RUNNER !== 'off') {
+    runner = startRunner()
+    githubWorker = startGithubWorker()
+  }
 }

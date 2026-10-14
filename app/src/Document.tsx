@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject, type SyntheticEvent } from 'react'
 import {
-  act, api, byNumber, clock, messageOf, useSnapshot, type Artifact, type ArtifactVersion, type Comment, type Person,
+  act, api, byNumber, clock, imageUrl, messageOf, useSnapshot, type Artifact, type ArtifactVersion, type Comment, type Person,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 import { CodeView, DiffView, Tabs } from './Code.tsx'
@@ -55,18 +55,21 @@ export function DocumentPanel({ artifactId, taskId, onClose }: { artifactId: str
         </div>
       )}
       <div className="document" tabIndex={0}>
-        {!shown ? <p className="muted small">Loading…</p> : (
-          <Tabs label="View" tabs={[['file', 'File'], ['diff', 'Diff']]} value={tab} onChange={setTab}>
-            {tab === 'diff' ? <VersionDiff artifactId={artifactId} version={shown.version} path={artifact?.path ?? ''} />
-              : (
-                <div ref={body} className="document-body">
-                  {artifact?.path?.endsWith('.md') ? <Markdown text={shown.content} /> : <CodeView path={artifact?.path ?? ''} text={shown.content} />}
-                </div>
-              )}
-          </Tabs>
-        )}
+        {!shown ? <p className="muted small">Loading…</p>
+          : shown.blob_id ? <img className="document-image" src={imageUrl(shown)} alt={`${artifact?.title ?? 'Image'}, version ${shown.version}`} />
+            : (
+              <Tabs label="View" tabs={[['file', 'File'], ['diff', 'Diff']]} value={tab} onChange={setTab}>
+                {tab === 'diff' ? <VersionDiff artifactId={artifactId} version={shown.version} path={artifact?.path ?? ''} />
+                  : (
+                    <div ref={body} className="document-body">
+                      {artifact?.path?.endsWith('.md') ? <Markdown text={shown.content} /> : <CodeView path={artifact?.path ?? ''} text={shown.content} />}
+                    </div>
+                  )}
+              </Tabs>
+            )}
         {shown && (
-          <Comments artifactId={artifactId} version={shown.version} canSend={Boolean(artifact?.made_by_session)} body={tab === 'file' ? body : null}
+          // An image has no lines for a comment to be pinned to.
+          <Comments artifactId={artifactId} version={shown.version} canSend={Boolean(artifact?.made_by_session)} body={tab === 'file' && !shown.blob_id ? body : null}
             showVersion={(version) => { setTab('file'); setPicked(version) }} />
         )}
       </div>

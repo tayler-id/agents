@@ -414,6 +414,10 @@ try {
     }))
     check(judgeSessions.length >= 2 && toldJudges.every((t) => t.status === 409 && t.text.includes("A judge's session takes no messages")) && (await judgeCommands()) === commandsBefore,
       `a person's message to the reviewer's or the verifier's session is refused, and no command reaches either: ${toldJudges.map((t) => t.status).join(', ')}`)
+    // The report's title is data from outside the team, so every agent's prompt shows it quoted, a judge's too.
+    const judgePrompts = await all(`select distinct on (session_id) text from events where session_id = any($1) and kind = 'user' order by session_id, seq`, [judgeSessions])
+    check(judgePrompts.length === judgeSessions.length && judgePrompts.length >= 2 && judgePrompts.every((p: any) => p.text.includes(': "HAPPY add the tidy part"\n')),
+      `the reviewer's and the verifier's prompts quote the report's title as data: ${judgePrompts.map((p: any) => /The request[^\n]*/.exec(String(p.text))?.[0] ?? 'no request line').join(' | ')}`)
 
     const pr = must(happyStages.find((s: any) => s.stage === 'open_pr')?.data.pullRequest, 'the pull request')
     const prBody = (await forgeCall('GET', `/repos/${org}/${APP}/pulls/${pr}`)).json.body

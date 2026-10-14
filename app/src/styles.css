@@ -121,6 +121,9 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* A row's status never wraps; the name gives way to it. */
 .row > span + span { flex-shrink: 0; white-space: nowrap; }
+/* A row whose details run long, such as a project's task and its repos, puts them on a line of their own. */
+.row.stacked { flex-direction: column; align-items: stretch; gap: 2px; }
+.row.stacked > span + span { white-space: normal; overflow-wrap: anywhere; }
 .row.selected { background: var(--raised); font-weight: 600; }
 .row.static { cursor: default; }
 .empty { padding: 4px 8px; }
@@ -207,6 +210,7 @@ a { color: inherit; text-underline-offset: 2px; }
 .source pre { margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 480px; overflow: auto; }
 .versions-pick { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 .document { padding: 12px 16px 20px; overflow-y: auto; }
+.document-image { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
 .document:focus-visible { background: var(--surface); }
 .markdown { display: grid; gap: 8px; }
 .markdown p, .markdown li { white-space: pre-wrap; word-break: break-word; }
@@ -308,6 +312,14 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 .sign-in { display: grid; gap: 8px; max-width: 620px; }
 .note-line .glyph { margin-right: 6px; }
 
+/* A box's screen beside the work, with the wider share of the page. Who holds it
+   reads in the status line's weight, never in a colored edge. */
+.shell.with-screen { grid-template-columns: 260px minmax(300px, 1fr) minmax(0, 1.5fr); }
+.screen-status { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 10px 16px; }
+.screen-status.holding { font-weight: 600; }
+.screen-error { padding: 0 16px 8px; }
+.screen { flex: 1; min-height: 0; margin: 0 16px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); overflow: hidden; }
+
 /* Phone width: the sidebar opens over the conversation, the panel replaces it. */
 @media (max-width: 760px) {
   .shell, .shell.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -406,3 +418,15 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; backgro
   .shell.with-panel.wide { grid-template-columns: minmax(0, 1fr); }
   dialog.palette { margin-top: 8vh; }
 }
+
+/* Projects and repos. Repos are hairline-divided rows, and the sign-in code sits on a raised neutral surface. */
+.list.nested { padding-left: 14px; }
+.repo-list { list-style: none; margin: 0; padding: 0; }
+.repo-list > li { display: grid; gap: 3px; padding: 9px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.repo-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.repo-name, .repo-names, .repo-list p, .request { overflow-wrap: anywhere; }
+.github-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.device { display: grid; gap: 6px; justify-items: start; }
+.device-code { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; background: var(--raised); border-radius: 8px; padding: 8px 14px; }
+.task-place { margin-top: 2px; }
+.form input[type="password"] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }

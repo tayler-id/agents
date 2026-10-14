@@ -116,7 +116,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 ### The git proxy (`server/git.ts`)
 
 - **Solves now.** Machines clone and push through the API with their own instance tokens. The API checks the repo is their team's and adds the factory's credentials, so forge tokens never leave the server Mac. A box holds only its instance token.
-- **Helps later.** Branch rules for agents go in one place. On a repo with a policy it now takes a machine's push only to the task branches of that machine's own workspaces, records any other, and reads only a push's command lines before streaming the pack on. A repo without a policy takes pushes to any branch.
+- **Helps later.** Branch rules for agents go in one place. On a repo with a policy it now takes a machine's push only to the task branches of that machine's own workspaces, records any other, and reads only a push's command lines before streaming the pack on. A repo without a policy takes pushes to any branch but its default one, by the branch rule below.
 
 ### Workspaces (`daemon/workspace.ts`)
 
@@ -330,6 +330,89 @@ The design is `docs/design/durability.md`.
 ### A restart for a new setup (`startSession` in `daemon/agentsd.ts`)
 
 - **Solves now.** When an agent's new setup can't start, such as a plugin's missing secret, its session shows failed with the reason, and the old process's exit no longer sets it idle. `test/step18f.ts`.
+
+## Agent computers
+
+The design is `docs/design/computers.md`.
+
+### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
+
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until the desktop is up, and stops so the box starts again when it can't come up. The sessions on a box share its one computer. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
+- **Helps later.** Each person's own box, which onboarding added, and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
+
+### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`, `daemon/page-secrets.ts`)
+
+- **Solves now.** Every session in a box except a judge's gets a `computer` MCP server. Its `computer` tool takes Claude's computer-use actions (click, type, key, scroll, drag, screenshot) on the box's screen, `save_screenshot` saves proof into the task folder, and Playwright's browser tools drive the box's Chromium. The daemon's screen service runs every session's actions one at a time over its own VNC connection and encodes screenshots as PNG, so the image needs no xdotool or ImageMagick. Acting on the box's own screen runs without a prompt, while file uploads, page scripts and full network bodies ask a person first. No screenshot is saved while a page in the box's browser shows a secret the box holds, since a saved image is never scrubbed.
+- **Helps later.** The Mac helper in the design can serve the same tools through the same socket.
+
+### Watching and taking over a screen (`server/screens.ts`, `server/rfb-filter.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
+
+- **Solves now.** A person on the team watches a box's screen live through the people socket, as their Tailscale login, from the app's own pages only, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer, pinging both and dropping either once it stops answering. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` records it. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, the agent's browser call under way returns with the refusal, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work, and someone already watching when such work starts is cut off.
+- **Helps later.** A Mac with the computer-use helper in the design can serve the same Screen view through the same tunnel.
+
+### The Screen view (`app/src/Screen.tsx`)
+
+- **Solves now.** A task or session running in a box has a Screen button. It opens the box's screen beside the work, live, through noVNC, with who holds it and one action: Take over or Hand back. While a person holds it, their keys and clicks go to the box, and everyone else watching sees who has it. A refusal, such as private work on the box, shows its reason, and a stopped box says it is not connected and offers Reconnect. The view loads only when someone opens a screen, so the rest of the app stays light.
+- **Helps later.** Runs and conversations can link to the same view once their pages show which box a stage ran on.
+
+### Images as documents (`shared/documents.ts`, `server/record.ts`, `app/src/Document.tsx`)
+
+- **Solves now.** Images an agent writes in its task's folder, such as the screenshots it saves to show what it checked, become documents with versions and comments, beside the text ones. A file is an image when its bytes say so: PNG, JPEG, WebP or GIF, up to 5 MB. The bytes live in Postgres in `blobs`, a table sync never reads, and the app fetches them through the people socket for anyone who can see the task.
+- **Helps later.** A run's report or pull request can show the screenshots its agents saved, from the same table.
+
+### Checking their own work (`daemon/computer-guide.ts`)
+
+- **Solves now.** A session on a machine with a screen, except a judge's, is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
+- **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
+
+## Projects and GitHub
+
+The design is in `docs/design/projects.md`.
+
+### Projects (`server/projects.ts`, `shared/projects.ts`, `0006_projects.sql`)
+
+- **Solves now.** A project groups a team's work on one thing: its repos, its room, and the tasks, runs, documents and rooms made in it. Making one makes its GitHub repo, with a README as the first commit, and its room with the chosen teammates and agents. A task started in a project works only in its repos, and a task or run on a project's repo joins that project. Every shape the server and the app share is a zod schema in `shared/projects.ts`, with branded ids.
+- **Helps later.** Anything that belongs to one piece of work, such as a spending cap or which pipelines run where, hangs off one row.
+
+### Repo requests (`repo_requests` table)
+
+- **Solves now.** The app writes down each repo it will ask GitHub for before it asks, so a crash or a refusal never leaves a repo nobody knows about. A try claims the request in a transaction of its own, asks GitHub with none open, and records the answer in another, so a slow GitHub never holds a database connection or a lock. A failed request keeps GitHub's reason, and trying again adopts a repo an earlier try made. A repo that exists already joins only if whoever asked for it can push to it.
+- **Helps later.** Anything else the app makes outside Postgres can follow the same steps: write the intent, act, record the result.
+
+### GitHub as a forge (`server/github.ts`, `server/repos.ts`)
+
+- **Solves now.** The runner, the hooks and the app reach GitHub with the same calls as this Mac's Gitea, so pipelines work on either. Each repo records its forge in `repos.forge`, every answer from GitHub is parsed before anything reads it, and every call gives up after 15 seconds. A repo's calls are made for one team's row of it, so two teams with the same GitHub repo never act with each other's sign-ins. Issue titles are cleaned and cut at the client, so no prompt gets one raw.
+- **Helps later.** Another forge is one more client behind the same calls.
+
+### Signing in to GitHub (`server/github-auth.ts`)
+
+- **Solves now.** Each person connects their own GitHub account by typing a code on GitHub's device page, with nothing to register. Their token stays in a mode 600 file on the server, renewed before it expires, and never reaches Postgres, a log, a machine or a browser. A repo's calls use the sign-in of whoever brought it into its team's project. An admin's fine-grained personal access token is their team's stopgap until people sign in, and no other team ever uses it.
+- **Helps later.** A team's own GitHub App, for agents with their own identity, plugs in as one more kind of identity where the server picks a token, and nothing that calls GitHub changes.
+
+### The GitHub worker (`server/github-worker.ts`)
+
+- **Solves now.** GitHub can't reach this server, so the worker asks it every minute. It reads the `agent:` labels that people with write, maintain or admin access put on issues and starts runs from them, checking each person's access with GitHub, and the runner checks it again before a pull request opens. Triage access can label issues but starts nothing, and so does a label taken off or an issue closed before the worker reads it. A poll that fails partway reads the same labels again next time. It also marks pull requests merged or closed on GitHub, and tries again repo requests that a restart left half done. A list that hasn't changed comes back 304 and costs nothing against GitHub's limit.
+- **Helps later.** Webhooks through a small public receiver can feed the same functions, and the worker then only catches up after downtime.
+
+### Text crossing to and from GitHub (`server/public-text.ts`)
+
+- **Solves now.** An issue's text reaches an agent as a quoted report. micromark, a CommonMark parser, reads the whole body in a thread of its own before what a reader sees of it is cut at 20,000 characters. A body it takes over 2 seconds to read is left out with a line that says so, so a hostile issue can't hold the API. Code spans and fenced code stay as written, and only what parses as an HTML tag goes. The parts a reader can't see go too: invisible characters, link definitions, link destinations and titles, fence info strings, images with their alt text, fences GitHub draws such as mermaid, and raw HTML's tags, comments, hidden elements, and style and script elements, read as a browser reads them. Every prompt quotes the run's title and the other open issues' titles, each on one line and cut at 120 characters, whatever started the run. Everything sent to GitHub's API loses addresses on this tailnet, private addresses, email addresses and secrets first. Commits that machines push are not filtered.
+- **Helps later.** An agent that reviews public pull requests posts through the same filter.
+
+### The branch rule (`server/git.ts`)
+
+- **Solves now.** Machines never push to a repo's default branch through the git proxy, so changes reach main through pull requests, even on GitHub plans that can't protect a private repo's branches. The proxy asks the forge for the default branch on each push, and refuses a whole push that names it, including one that deletes it. Tasks and runs ask the forge too before their workspace is cloned, so after a repo's owner renames the default branch, a new workspace starts from the new name and a new run's pull request goes to it.
+- **Helps later.** Other rules about what machines may push go in the same place.
+
+### Projects and repos in the app (`app/src/Projects.tsx`, `app/src/App.tsx`, `app/src/Work.tsx`)
+
+- **Solves now.** The sidebar lists projects with their rooms, tasks and runs under them, and a Repos entry with the team's count. The Repos page says in one line what it shows, lists every repo with where it lives, its project, its open pull requests and task branches, and connects GitHub. New project makes a project and its repo. A project's page shows its repos, people, tasks, runs, documents and rooms, and starts tasks, rooms and runs in the project. A task's page names its project and its repos.
+- **Helps later.** The redesign starts from one view per thing a person looks for.
+
+### The step 13 checks (`test/step13.ts`, `test/step13b.ts`, `test/step13c.ts`, `test/fake-github.ts`)
+
+- **Solves now.** A fake GitHub that speaks GitHub's REST calls, its device-flow sign-in and real git stands in for GitHub. `test/step13.ts` covers projects, repo requests, sign-in and the stopgap, the git proxy and its branch rule, the label and access rules, the text filters, ETags, a pipeline run from a GitHub issue to a merged pull request, and every token's absence from Postgres, logs and answers. `test/step13b.ts` drives the new pages in three browsers at desktop and phone width. `test/step13c.ts` checks the text filters with no services, each hostile text in a child process that is stopped if it runs past its time.
+- **Helps later.** Checks for later GitHub features start from the same fake.
 
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 

@@ -2,19 +2,20 @@ import { useMemo, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import {
-  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Person, type Session, type Task,
+  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Instance, type Person, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 import { Changes, PullRequests } from './Changes.tsx'
 import { DraftView } from './Draft.tsx'
+import { InProject, TaskPlace } from './Projects.tsx'
 import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { taskState } from '../../shared/work.ts'
 import { Interrupted } from './Conversation.tsx'
 import { inFlight, isWorking } from '../../shared/lifecycle.ts'
 
-// A group conversation with teammates and agents.
-export function NewRoom({ me }: { me: { person: { id: string } } }) {
+// A group conversation with teammates and agents, inside a project when one is given.
+export function NewRoom({ me, projectId = null }: { me: { person: { id: string } }; projectId?: string | null }) {
   const { rows: people } = useSnapshot<Person>('people', {}, 15000)
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
   const [name, setName] = useState('')
@@ -25,7 +26,7 @@ export function NewRoom({ me }: { me: { person: { id: string } } }) {
     event.preventDefault()
     try {
       const { conversationId } = await api.createRoom(name.trim(),
-        people.filter((p) => who.has(`p:${p.id}`)).map((p) => p.login), agents.filter((a) => who.has(`a:${a.id}`)).map((a) => a.name))
+        people.filter((p) => who.has(`p:${p.id}`)).map((p) => p.login), agents.filter((a) => who.has(`a:${a.id}`)).map((a) => a.name), projectId ?? undefined)
       go({ conversation: conversationId })
     } catch (e) {
       setError((e as Error).message)
@@ -33,7 +34,7 @@ export function NewRoom({ me }: { me: { person: { id: string } } }) {
   }
   return (
     <section className="page" aria-label="New room">
-      <header className="page-head"><div><p className="kicker">New</p><h1>A room</h1><p className="muted small">Teammates and agents talk together. Each agent takes a turn after a post, or only the ones a post mentions with @name.</p></div></header>
+      <header className="page-head"><div><p className="kicker">New</p><h1>A room</h1><p className="muted small">Teammates and agents talk together. Each agent takes a turn after a post, or only the ones a post mentions with @name.</p>{projectId && <InProject projectId={projectId} />}</div></header>
       <div className="page-body">
         <form className="form" onSubmit={act(submit)} aria-label="New room">
           <label htmlFor="room-name">Name</label>
@@ -62,7 +63,8 @@ export function NewRoom({ me }: { me: { person: { id: string } } }) {
 
 // Work for an agent outside any pipeline: it gets a workspace, with a clone of
 // each repo you pick. Saved as a draft, it waits for someone to start it.
-export function NewTask() {
+// Inside a project it offers only the project's repos.
+export function NewTask({ projectId = null }: { projectId?: string | null }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
@@ -75,7 +77,7 @@ export function NewTask() {
     try {
       const agentId = agent || agents[0]?.id
       if (!agentId) throw new Error('Pick an agent first.')
-      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoIds, draft })
+      const { taskId } = await api.startTask({ title: title.trim(), instructions: instructions.trim(), agentId, repoIds, draft, projectId: projectId ?? undefined })
       go({ task: taskId })
     } catch (e) {
       setError((e as Error).message)
@@ -88,7 +90,7 @@ export function NewTask() {
   }
   return (
     <section className="page" aria-label="New task">
-      <header className="page-head"><div><p className="kicker">New</p><h1>A task</h1></div></header>
+      <header className="page-head"><div><p className="kicker">New</p><h1>A task</h1>{projectId && <InProject projectId={projectId} />}</div></header>
       <div className="page-body">
         <form className="form" onSubmit={act(submit)} aria-label="New task">
           <label htmlFor="task-title">What needs doing?</label>
@@ -99,7 +101,7 @@ export function NewTask() {
           <select id="task-agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-          <RepoPicker value={repoIds} onChange={setRepoIds} />
+          <RepoPicker value={repoIds} onChange={setRepoIds} projectId={projectId} />
           <div className="actions">
             <button className="primary" type="submit" disabled={busy || !title.trim() || !agents.length}>Start task</button>
             <button type="button" disabled={busy || !title.trim() || !agents.length} onClick={act(() => create(true))}>Save draft</button>
@@ -112,14 +114,19 @@ export function NewTask() {
 }
 
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
-export function TaskView({ taskId, openSession, openFile }: { taskId: string; openSession: string | null; openFile: string | null }) {
+// A task whose session runs on a machine with a screen can open that screen beside it.
+export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }: {
+  taskId: string; openSession: string | null; openFile: string | null; screenOpen: boolean; onScreen: (instanceId: string, sessionId: string) => void
+}) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
   const { rows: sessions } = useRows<Session>('sessions', { of: 'tasks' })
   const { rows: asks } = useRows<Ask>('asks')
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
   const { rows: artifacts } = useSnapshot<Artifact>('artifacts', { task: taskId }, 4000)
+  const { rows: instances } = useSnapshot<Instance>('instances')
   const task = tasks.find((t) => t.id === taskId)
   const session = sessions.filter((s) => s.task_id === taskId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+  const screen = instances.find((i) => i.id === session?.instance_id && i.screen_width !== null)
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   if (!task) return <section className="page"><p className="muted">Loading the task…</p></section>
@@ -144,8 +151,12 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
           <p className="kicker">Task</p>
           <h1>{task.title}</h1>
           <p className="muted small">{agent?.name ?? 'agent'}{session ? ` · ${session.status.replace('_', ' ')}` : ''}{state === 'done' ? ' · done' : ''}</p>
+          <TaskPlace task={task} />
         </div>
         <div className="head-actions">
+          {session && screen && (screenOpen
+            ? <button type="button" className="ghost" onClick={() => go({ task: taskId })}>Hide screen</button>
+            : <button type="button" className="ghost" onClick={() => onScreen(screen.id, session.id)}>Screen</button>)}
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
           {session && inFlight(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>

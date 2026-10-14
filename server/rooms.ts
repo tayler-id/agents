@@ -10,12 +10,18 @@ import { agentKit, appendEvents, conversationSession, HttpError, type Person } f
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import type { MessagePayload } from '../shared/types.ts'
 import { PersonId, type ConversationId, type Login } from '../shared/onboarding.ts'
+import type { ProjectId } from '../shared/projects.ts'
 
 const TURN_SECONDS = Number(process.env.AGENTS_TURN_SECONDS ?? 180)
 export const PASS = 'PASS'
 
-export async function createRoom(client: pg.PoolClient, person: Person, name: string, logins: string[], agentNames: string[]): Promise<string> {
+export async function createRoom(
+  client: pg.PoolClient, person: Person, name: string, logins: string[], agentNames: string[], projectId?: ProjectId,
+): Promise<string> {
   if (!name.trim() || name.length > 80) throw new HttpError(400, 'a room needs a name')
+  if (projectId && !(await maybe(client, 'select 1 from projects where id = $1 and team_id = $2 and archived_at is null', [projectId, person.team_id]))) {
+    throw new HttpError(404, 'no such project')
+  }
   const { rows: people } = await client.query<{ id: string }>(
     'select id from people where team_id = $1 and (id = $2 or login = any($3))', [person.team_id, person.id, logins])
   const { rows: found } = await client.query<{ id: string; name: string }>(
@@ -23,8 +29,9 @@ export async function createRoom(client: pg.PoolClient, person: Person, name: st
   if (found.length !== new Set(agentNames).size) throw new HttpError(404, 'every agent must be on your team')
   // Agents take turns in the order they were named.
   const agents = [...new Set(agentNames)].flatMap((name) => found.filter((a) => a.name === name))
+  // A room outside any project has a null project_id.
   const room = await one<{ id: string }>(client, 'the new room',
-    `insert into conversations (team_id, kind, name) values ($1, 'room', $2) returning id`, [person.team_id, name.trim()])
+    `insert into conversations (team_id, kind, name, project_id) values ($1, 'room', $2, $3) returning id`, [person.team_id, name.trim(), projectId ?? null])
   for (const p of people) {
     await client.query('insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3)', [person.team_id, room.id, p.id])
   }

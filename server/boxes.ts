@@ -35,6 +35,17 @@ const IDLE_MIN = Number(process.env.AGENTS_BOX_IDLE_MIN ?? 30)
 const API_FROM_BOX = process.env.AGENTS_BOX_API ?? `http://host.docker.internal:${process.env.AGENTS_API_PORT ?? 7700}`
 // A Claude token from `claude setup-token`, so agents in boxes run on the team's subscription.
 const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '.agents-app', 'box-claude-token')
+// Browsers keep their rendering buffers in /dev/shm. Docker's default of 64 MB
+// crashes tabs on real pages, and Playwright's own Docker guide raises it.
+const BOX_SHM_SIZE = '512m'
+// A box's ceiling, so a runaway browser or agent can't take the host. In step 15,
+// with a stand-in in place of Claude Code, a box running Chromium, Firefox and
+// WebKit beside its own browser used 1.2 GB and 2.5 CPUs at most before these
+// limits. Swap equal to memory means no swap.
+const BOX_MEMORY = '4g'
+const BOX_CPUS = '2'
+// Docker counts every thread against this, not only each process.
+const BOX_PIDS = '4096'
 
 export const containerName = (instanceId: string) => `agents-box-${instanceId}`
 const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
@@ -63,7 +74,8 @@ async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string)
   const env = ['-e', `AGENTS_API=${API_FROM_BOX}`, '-e', `AGENTS_TOKEN=${token}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app']
   if (!personal && existsSync(CLAUDE_TOKEN_FILE)) env.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()}`)
   const extra = JSON.parse(process.env.AGENTS_BOX_DOCKER_ARGS ?? '[]') as string[]
-  await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped',
+  await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped', '--shm-size', BOX_SHM_SIZE,
+    '--memory', BOX_MEMORY, '--memory-swap', BOX_MEMORY, '--cpus', BOX_CPUS, '--pids-limit', BOX_PIDS,
     '--label', `agents.instance=${instanceId}`, '-v', `${containerName(instanceId)}-home:/home/agent`, ...env, ...extra, IMAGE)
 }
 
