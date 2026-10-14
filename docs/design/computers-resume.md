@@ -52,6 +52,7 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 
 ## Before this lands
 
+- One call waits on Tayler. A page that can't say what it shows within 5 s, such as one an alert holds, refuses every screenshot, so an agent can't save proof of a dialog, which it could before the refusal.
 - Every API now needs `AGENTS_PEOPLE_ORIGINS` to start, a comma-separated list of the origins the app's pages come from. The live API needs `http://agents-server.<tailnet>.ts.net` in main's `.env` before it restarts on this code. Main's checks start their APIs with what `.env` and `.env.test` hold, and none of them opens a screen, so any one origin in `.env.test` lets them run, such as `AGENTS_PEOPLE_ORIGINS=http://127.0.0.1`. Steps 15 and 15b set their own.
 - Two commits trade something away, and Tayler accepted both on 2026-10-14. The box limits slow a box that needs more than 2 CPUs and hold every box to 4 GB. A box whose desktop can't come up now restarts and takes no work, where before it worked without a computer. Tayler also approved the packages this branch adds, `ws`, `@types/ws` and `@novnc/novnc`.
 

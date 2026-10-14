@@ -348,6 +348,7 @@ Tayler went with the coordinator's picks on all of these.
   - A box whose desktop can't come up takes no work, where before it worked without its computer. Accepted too.
   - `ws`, `@types/ws` and `@novnc/novnc` are approved for the Screen view.
   - The daemon refuses to save a screenshot while a page in the box's browser shows a known secret value. It can't cover a secret shown outside the page.
+- **Waiting on Tayler.** The refusal also saves nothing while a page can't say what it shows, so a page an alert holds refuses every screenshot, and an agent can't save proof of a dialog, which it could before. That takes something away.
 
 ### The cloud half moves to AWS
 

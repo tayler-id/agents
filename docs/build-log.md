@@ -459,7 +459,7 @@ Tayler asked on 2026-10-13 for every agent to have its own computer, with comput
   - A viewer that stopped answering pings, and a viewer of a paused box, were still open over a minute later. The API now pings viewers and tunnels every 15 seconds. The first closes with 1006 and the second with 4502.
   - A session that reached a box before its desktop started without the standing instructions for its computer. Now it has them.
   - A box whose browser profile folder was read-only stayed up without a screen. Now the daemon stops, Docker starts the box again, and it comes back once the folder is writable.
-  - A browser call under way when alice took over returned 10,458 ms later as if nothing happened. Now it ends within 200 ms of her taking over, naming her.
+  - A browser call under way when alice took over returned 10,458 ms later as if nothing happened. Now the agent's call returns, naming her, once the computer server's next poll sees her. The poll runs every 250 ms, and the call returned 189 and 199 ms after she took over in two runs on 2026-10-14.
   - Boxes had no limits. Docker now reports 4 GiB of memory with no swap, 2 CPUs and 4,096 processes.
   - Step 15 feeds the API's input filter bytes directly. It passed on the old code, which already dropped a non-holder's input, and failed with the pointer test taken out of `server/rfb-filter.ts`, letting 1 of the 2 through.
   - The line that the box can't reach the people side now first checks that the port listens on this Mac. `listensHere` read true with a listener on a port, and false once it closed.
