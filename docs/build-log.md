@@ -292,4 +292,5 @@ Built on `worktree-agent-ae6bff17618001d52`, for the first goal in `AGENTS.md`: 
   - A `.env` link to a file that is gone would have stopped a folder's sessions, since reading it threw on every read.
   - The interrupt route would have sent the Mac a command for a terminal session, which the daemon only reads.
   - step21 searched every team for the stray sessions' words, so a red run's kept team turned later runs red. It searches its own team now, with words unique to the run.
-- **Not tried.** The live system: the real daemon under launchd, the real server and a teammate's Mac. No check drives an interactive session. One was typed through `expect` by hand, in the prototype and through the real API and daemon.
+- **By hand.** An interactive session typed through `expect`, in a newly connected folder, through the real API and daemon on step21's code: both prompts as the owner's, the Read call and its result, both replies and both turn ends were in the record, and the first turn landed while the session was still open.
+- **Not tried.** The live system: the real daemon under launchd, the real server and a teammate's Mac. No check drives an interactive session.

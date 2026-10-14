@@ -144,7 +144,9 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 - Who sees what: the teammate, the owner and someone on another team, through the sessions and events shapes and `search_record`, and in Chromium on a plain-HTTP name, at desktop and phone width, with an accessibility scan.
 - What the API refuses: a session that started beside the folder, an ask in a terminal session, an interrupt from the app, and events after the disconnect.
 
-It runs headless sessions only. macOS `script` can't drive Claude Code's terminal interface from a pipe, and the checks are TypeScript, so an interactive session was driven through `expect` by hand.
+It runs headless sessions only. macOS `script` can't drive Claude Code's terminal interface from a pipe, and the checks are TypeScript, so an interactive session was typed through `expect` by hand, through the real API and daemon. Its two prompts, the Read call and its result, both replies and both turn ends landed, the first turn while the session was still open.
+
+Every one of the 50 lines went red under a break of what it guards, with each file put back byte for byte after. The build log has the rounds.
 
 ## Calls for Tayler
 
