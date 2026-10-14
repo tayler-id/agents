@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { go } from './App.tsx'
 import {
-  api, conversationLabel, messageOf, useParsedSnapshot, useSnapshot,
+  api, conversationLabel, messageOf, useSnapshotOf, useSnapshot,
   type Agent, type Conversation, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
 } from './data.ts'
 import { shortRunLabel } from './Run.tsx'
@@ -82,7 +82,7 @@ function useItems(me: Me): Item[] {
   const { rows: sessions } = useSnapshot<Session>('sessions', { of: 'tasks' })
   const { rows: runs } = useSnapshot<Run>('runs')
   const { rows: pipelines } = useSnapshot<Pipeline>('pipelines')
-  const { rows: documents } = useParsedSnapshot(DocumentRow, 'documents', {})
+  const { rows: documents } = useSnapshotOf(DocumentRow, 'documents', {})
   return useMemo(() => {
     const runOf = new Map(runs.map((r) => [r.task_id, r]))
     const titleOf = new Map(tasks.map((t) => [t.id, t.title]))

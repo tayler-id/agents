@@ -5,13 +5,13 @@
 import { useState, type SyntheticEvent } from 'react'
 import type { z } from 'zod'
 import { go } from './App.tsx'
-import { act, api, messageOf, useParsedSnapshot, useSnapshot, type Agent, type Person, type Task } from './data.ts'
+import { act, api, messageOf, useSnapshotOf, useSnapshot, type Agent, type Person, type Task } from './data.ts'
 import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { TaskRepoRow, type DraftEdit, type TaskState } from '../../shared/work.ts'
 
 export function DraftView({ task, state }: { task: Task; state: TaskState }) {
-  const { rows: repos, loaded, error } = useParsedSnapshot(TaskRepoRow, 'task_repos', { task: task.id }, 15000)
+  const { rows: repos, loaded, error } = useSnapshotOf(TaskRepoRow, 'task_repos', { task: task.id }, 15000)
   const { rows: people } = useSnapshot<Person>('people', {}, 30000)
   const author = people.find((p) => p.id === task.owner_id)?.login
   return (

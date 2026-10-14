@@ -2,7 +2,7 @@
 // branch, and the task's pull requests. Each file opens beside the task.
 
 import { useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
-import { act, api, messageOf, repoName, useParsedSnapshot, useSnapshot, type Artifact, type Repo, type Task } from './data.ts'
+import { act, api, messageOf, repoName, useSnapshotOf, useSnapshot, type Artifact, type Repo, type Task } from './data.ts'
 import { CHANGE_LIMITS, FileChangeRow, PushRow, UnlistedChangeRow } from '../../shared/work.ts'
 
 const STATUS_WORDS = { added: 'added', modified: 'changed', deleted: 'deleted' } as const
@@ -16,8 +16,8 @@ export function Changes({ taskId, openId, onOpen, children }: {
   // What goes with the list, such as the task's pull requests, which stay when nothing differs any more.
   children?: (changed: boolean) => ReactNode
 }) {
-  const { rows: files, error } = useParsedSnapshot(FileChangeRow, 'file_changes', { task: taskId }, 3000)
-  const { rows: unlisted, error: unreadList } = useParsedSnapshot(UnlistedChangeRow, 'unlisted_changes', { task: taskId }, 3000)
+  const { rows: files, error } = useSnapshotOf(FileChangeRow, 'file_changes', { task: taskId }, 3000)
+  const { rows: unlisted, error: unreadList } = useSnapshotOf(UnlistedChangeRow, 'unlisted_changes', { task: taskId }, 3000)
   const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   const groups = useMemo(() => {
     const repoIds = new Set([...files.map((f) => f.repo_id), ...unlisted.map((u) => u.repo_id)])
@@ -77,7 +77,7 @@ export function Changes({ taskId, openId, onOpen, children }: {
 // commits past its base. Asking again pushes the new work to the same ones, whose
 // title and description stay as they were, so the form only offers them for a new one.
 export function PullRequests({ task, working, links, changed }: { task: Task; working: boolean; links: Artifact[]; changed: boolean }) {
-  const { rows: pushes, error: unread } = useParsedSnapshot(PushRow, 'pushes', { task: task.id }, 2000)
+  const { rows: pushes, error: unread } = useSnapshotOf(PushRow, 'pushes', { task: task.id }, 2000)
   const latest = [...pushes].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const [title, setTitle] = useState(task.title)
   const [body, setBody] = useState('')

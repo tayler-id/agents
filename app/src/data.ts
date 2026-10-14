@@ -176,29 +176,18 @@ export function useSnapshot<T extends Row>(name: string, args: Record<string, st
   return { rows: url && state.url === url ? state.rows : [], loaded: url !== null && state.url === url }
 }
 
-// A snapshot's rows through their schema, the boundary where rows from the
-// server become typed values. Rows that do not fit are reported, never shown.
-export function useParsedSnapshot<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null, everyMs = 5000): {
+// A snapshot whose rows are read through their schema. Rows that do not fit
+// are not shown, and `error` says why.
+export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null = {}, everyMs = 5000): {
   rows: z.output<S>[]; error: string | null; loaded: boolean
 } {
   const { rows, loaded } = useSnapshot<Row>(name, args, everyMs)
   return useMemo(() => {
     const parsed = z.array(schema).safeParse(rows)
-    return parsed.success ? { rows: parsed.data, error: null, loaded }
-      : { rows: [], error: `The ${name} from the server did not read: ${z.prettifyError(parsed.error)}`, loaded }
-  }, [rows, schema, name, loaded])
-}
-
-// A snapshot whose rows are read through their schema. Rows that do not fit
-// are not shown, and `error` says why.
-export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null = {}, everyMs = 5000) {
-  const { rows } = useSnapshot<Row>(name, args, everyMs)
-  return useMemo(() => {
-    const parsed = z.array(schema).safeParse(rows)
     return parsed.success
-      ? { rows: parsed.data, error: null }
-      : { rows: [], error: `The ${name} the server sent did not fit this page: ${z.prettifyError(parsed.error)}` }
-  }, [schema, rows, name])
+      ? { rows: parsed.data, error: null, loaded }
+      : { rows: [], error: `The ${name} the server sent did not fit this page: ${z.prettifyError(parsed.error)}`, loaded }
+  }, [schema, rows, name, loaded])
 }
 
 // How lists name a conversation: a room by its name, a DM by its agent and its

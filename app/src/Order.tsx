@@ -4,7 +4,7 @@
 
 import { useEffect, useState, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
-import { act, api, messageOf, useParsedSnapshot, useSnapshot, type Task } from './data.ts'
+import { act, api, messageOf, useSnapshotOf, useSnapshot, type Task } from './data.ts'
 import {
   DEFAULT_PRIORITY, HOLD_KINDS, HoldKind, PRIORITIES, TaskBlockRow, TaskHoldRow, type Outcome, type ReadyAnswer, type TaskState,
 } from '../../shared/work.ts'
@@ -91,9 +91,9 @@ const said = (outcome: Outcome) => (outcome.already ? 'Nothing to change.' : 'Sa
 // A task's place in the order of work.
 export function TaskOrder({ task, state }: { task: Task; state: TaskState }) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
-  const { rows: waitsOn, error: unreadWaits } = useParsedSnapshot(TaskBlockRow, 'task_blocks', { task: task.id }, 2000)
-  const { rows: blocks, error: unreadBlocks } = useParsedSnapshot(TaskBlockRow, 'task_blocks', { blocker: task.id }, 2000)
-  const { rows: holds, error: unreadHold } = useParsedSnapshot(TaskHoldRow, 'task_holds', { task: task.id }, 2000)
+  const { rows: waitsOn, error: unreadWaits } = useSnapshotOf(TaskBlockRow, 'task_blocks', { task: task.id }, 2000)
+  const { rows: blocks, error: unreadBlocks } = useSnapshotOf(TaskBlockRow, 'task_blocks', { blocker: task.id }, 2000)
+  const { rows: holds, error: unreadHold } = useSnapshotOf(TaskHoldRow, 'task_holds', { task: task.id }, 2000)
   const { answer, reload } = useReady()
   const [blocker, setBlocker] = useState('')
   const [why, setWhy] = useState('')

@@ -2,7 +2,7 @@
 // markdown, and its diff against the base branch.
 
 import { useState } from 'react'
-import { repoName, useParsedSnapshot, useSnapshot, type Repo } from './data.ts'
+import { repoName, useSnapshotOf, useSnapshot, type Repo } from './data.ts'
 import { CodeView, DiffView, Tabs } from './Code.tsx'
 import { Markdown } from './Markdown.tsx'
 import { FileChangeDetail, FileChangeRow } from '../../shared/work.ts'
@@ -13,9 +13,9 @@ const NOT_SHOWN = {
 } as const
 
 export function FilePanel({ changeId, taskId, onClose }: { changeId: string; taskId: string; onClose: () => void }) {
-  const { rows, error } = useParsedSnapshot(FileChangeDetail, 'file_change', { id: changeId }, 3000)
+  const { rows, error } = useSnapshotOf(FileChangeDetail, 'file_change', { id: changeId }, 3000)
   // The task's list says when the file stops differing, since its own row is then gone.
-  const { rows: listed, error: unlisted } = useParsedSnapshot(FileChangeRow, 'file_changes', { task: taskId }, 3000)
+  const { rows: listed, error: unlisted } = useSnapshotOf(FileChangeRow, 'file_changes', { task: taskId }, 3000)
   const { rows: repos } = useSnapshot<Repo>('repos', {}, 30000)
   const [tab, setTab] = useState<'file' | 'diff'>('file')
   const file = rows[0]
