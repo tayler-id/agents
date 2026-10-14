@@ -8,7 +8,7 @@ import type pg from 'pg'
 import { maybe, one, pool, tx } from './db.ts'
 import { ForgeError, repoPath } from './forge.ts'
 import { explainGithub, githubAs, githubRemoteUrl, type GithubRepo } from './github.ts'
-import { defaultOwner } from './github-auth.ts'
+import { defaultOwner, GITHUB_TIMEOUT_MS } from './github-auth.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { createRoom } from './rooms.ts'
 import type { PersonId, TeamId } from '../shared/onboarding.ts'
@@ -90,9 +90,15 @@ export async function createProject(person: Person, body: NewProjectBody) {
 // Who takes a try at a repo request: the person who just made or moved it, or
 // the GitHub worker, which takes over a request whose last try stopped holding it.
 type Taker = 'maker' | 'worker'
-// How long a try holds a request. GitHub answers within GITHUB_TIMEOUT_MS, so a
-// request still creating after this was left by a crash or a restart.
-export const CLAIM_SEC = 30
+// The most calls to GitHub one try makes, one after another. It looks the repo
+// up and may make it, and each of the three token lookups those take may renew
+// the person's sign-in first.
+const TRY_CALLS = 5
+// How long a try holds a request: all its calls, each given up after
+// GITHUB_TIMEOUT_MS, and one call's time more for the Postgres and file work
+// around them. A request still creating after that was left by a crash or a
+// restart, so the worker never takes over a try that is still asking GitHub.
+export const CLAIM_SEC = ((TRY_CALLS + 1) * GITHUB_TIMEOUT_MS) / 1000
 
 type Claimed = {
   team_id: TeamId; project_id: ProjectId; owner: string; name: RepoName; description: string; requested_by: PersonId | null

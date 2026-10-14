@@ -374,14 +374,27 @@ try {
     && settled.requested_by === (await one('select id from people where login = $1', [member]))?.id && github.created.get(`${org}/proj-refused-${id}`) === 1,
   'trying a failed request again asks as the person who tried, here through the stopgap token, and settles the request')
 
-  // A request a restart left half done: GitHub made the repo, and the server never recorded it.
+  // A request a restart left half done an hour ago: GitHub made the repo, and the
+  // server never recorded it. Before it, a request whose try could still be
+  // asking GitHub. A try makes at most five calls of up to 15 seconds each: the
+  // lookup, the create, and a renewal of the sign-in before each of its three
+  // token lookups.
+  const TRY_LONGEST_SEC = 5 * 15
+  const young = await one(`insert into repo_requests (team_id, project_id, owner, name, requested_by, updated_at)
+    values ($1, $2, $3, $4, $5, now() - make_interval(secs => $6)) returning id, updated_at::text as at`,
+  [teamId, refused.json?.projectId, org, `proj-young-${id}`, adminId, TRY_LONGEST_SEC - 5])
   await fetch(`${github.url}/orgs/${org}/repos`, { method: 'POST', headers: { authorization: `Bearer ${stopgapToken}` }, body: JSON.stringify({ name: `proj-stuck-${id}`, auto_init: true }) })
-  const stuck = await one(`insert into repo_requests (team_id, project_id, owner, name, requested_by, updated_at) values ($1, $2, $3, $4, $5, now() - interval '1 minute') returning id`,
+  const stuck = await one(`insert into repo_requests (team_id, project_id, owner, name, requested_by, updated_at) values ($1, $2, $3, $4, $5, now() - interval '1 hour') returning id`,
     [teamId, refused.json?.projectId, org, `proj-stuck-${id}`, adminId])
   const adopted = await within(30, async () => (await one('select status from repo_requests where id = $1', [stuck?.id]))?.status === 'done')
   check(adopted && github.created.get(`${org}/proj-stuck-${id}`) === 1
     && (await one('select project_id from repos where remote_url = $1', [`${github.url}/${org}/proj-stuck-${id}.git`]))?.project_id === refused.json?.projectId,
   'a request a restart left half done is tried again, and adopts the repo the first try made instead of making a second')
+  // The worker's round that adopted it read the young request too.
+  const youngNow = await one('select status, updated_at::text as at from repo_requests where id = $1', [young?.id])
+  check(adopted && youngNow?.status === 'creating' && youngNow.at === young?.at && !github.seen.some((s) => s.path === `/repos/${org}/proj-young-${id}`),
+    `the GitHub worker leaves alone a request whose try could still be asking GitHub (${youngNow?.status ?? 'gone'})`)
+  await db.query('delete from repo_requests where id = $1', [young?.id])
 
   // A GitHub that never answers. While it is asked, no transaction holds the
   // request, and after a while the request fails and says why.

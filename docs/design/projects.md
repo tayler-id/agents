@@ -35,7 +35,7 @@ A task belongs to the project it was started in, and works only in that project'
 
 A repo request is `creating`, `done` or `failed`.
 
-- **creating.** The app is asking GitHub. Each try holds the request for 30 seconds, longer than GitHub may take to answer, so one still `creating` after that, for instance after an API restart in the middle of one, is tried again on the GitHub worker's next round.
+- **creating.** The app is asking GitHub. Each try holds the request for 90 seconds, `CLAIM_SEC` in `server/projects.ts`. That covers the most calls a try makes, five, each given up after 15 seconds, and 15 seconds more for the Postgres and file work around them, so the GitHub worker never takes over a try that is still asking GitHub. A request still `creating` after that, for instance after an API restart in the middle of a try, is tried again on the worker's next round.
 - **done.** The repo is on GitHub and in the team's `repos`, and the request points at it.
 - **failed.** GitHub said no, did not answer within 15 seconds, or could not be reached, or the repo exists and the person who asked for it can't push to it. The request keeps GitHub's reason, such as a sign-in that may not create repos, and Try again on the project page sets it back to `creating`, now asked as the person who tried.
 
