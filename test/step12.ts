@@ -200,6 +200,14 @@ try {
     && request.person_id === ghMe.json.person.id && (await row('select 1 from instances where owner_id = $1 and personal', [ghMe.json.person.id])),
   'one click adds them with their own box, and their next request lets them in')
   check((await asPerson(PEOPLE, owner, 'POST', '/v1/team/people', { login: github, name: null })).status === 409, 'adding a login already on a team is refused')
+  // Adding someone who has an open invite gives them the invite's role.
+  const invitedAdmin = `boss2-12-${id}@mail.test`
+  const adminInvite = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: invitedAdmin, role: 'admin' })
+  const addedInvited = await asPerson(PEOPLE, owner, 'POST', '/v1/team/people', { login: invitedAdmin, name: null })
+  const asInvited = await row('select role from people where login = $1', [invitedAdmin])
+  const usedInvite = await row('select status from invites where email = $1', [invitedAdmin])
+  check(adminInvite.status === 200 && addedInvited.status === 200 && asInvited?.role === 'admin' && usedInvite?.status === 'joined',
+    `adding someone with an open invite gives them the invite's role and uses the invite up (${asInvited?.role}, ${usedInvite?.status})`)
 
   // People's own boxes stay out of the pool that runs take boxes from, even one
   // whose owner has gone and no longer holds it.

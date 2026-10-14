@@ -126,10 +126,11 @@ export async function addToTeam(admin: Person, login: string, name: string | nul
     const asked = await maybe(client, `select ${JOIN_REQUEST} from join_requests where login = $1`, [login])
     // The name Tailscale gave when they asked, unless the admin's list had one.
     const named = name ?? (asked ? JoinRequestRow.parse(asked).name : null)
-    const joined = await join(client, { teamId: admin.team_id, login, name: named, role: 'member', addedBy: admin.id })
-    // An open invite for this login on this team is used up by joining.
-    const invite = await maybe(client, `select ${INVITE} from invites where team_id = $1 and email = lower($2) and status = 'open' for update`, [admin.team_id, login])
-    if (invite) await moveInvite(client, InviteRow.parse(invite).id, admin.team_id, 'joined', joined.id)
+    // An open invite for this login on this team gives its role, and joining uses it up.
+    const found = await maybe(client, `select ${INVITE} from invites where team_id = $1 and email = lower($2) and status = 'open' for update`, [admin.team_id, login])
+    const invite = found ? InviteRow.parse(found) : null
+    const joined = await join(client, { teamId: admin.team_id, login, name: named, role: invite?.role ?? 'member', addedBy: admin.id })
+    if (invite) await moveInvite(client, invite.id, admin.team_id, 'joined', joined.id)
     return joined
   })
   void wakeRunner()
