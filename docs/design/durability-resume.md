@@ -20,11 +20,11 @@ A daemon built before this branch breaks against its API, and a new daemon break
 
 ## Proven
 
-The branch runs are on the code of `783e04b`, rebased onto main at `7197f4b`, on 2026-10-14. The main runs are on `360c16e`, before the work layer merge. The break tests ran on the branch before its last change, which closes a turn's asks only when a batch finishes its messages, apart from the two that guard that change and recovery's limit to the cut-off turn's asks, which ran on it.
+The branch runs are on the code of `7835b8f`, rebased onto main at `7197f4b`, on 2026-10-14. Commits after it change docs only. The main runs are on `360c16e`, before the work layer merge. The break tests ran on the branch before its last change, which closes a turn's asks only when a batch finishes its messages, apart from the two that guard that change and recovery's limit to the cut-off turn's asks, which ran on it. The break test for the pull request guard ran on `783e04b`, and nothing it guards has changed since. The break test for step18l's new check ran on `7835b8f`, in two forms. With the parse in `claimAndHandle` removed, the check saw a TypeError on `workspaceWrites`. With the daemon from before the parse, it saw the raw ZodError. Each time only that check failed, and with the file restored byte for byte, all 11 passed.
 
 | Check | On the branch | On main | Break test, red then green |
 |---|---|---|---|
-| step18a, real Claude killed mid-reply | passes, a 28-line poem after a kill 246 characters in | times out waiting for the resumed turn | the daemon skips resuming |
+| step18a, real Claude killed mid-reply | passes, a 24-line poem after a kill 379 characters in | times out waiting for the resumed turn | the daemon skips resuming |
 | step18b, a tool acts before its result is saved, only the daemon dies, an interrupt during an outage, SIGTERM mid-turn | passes, 33 assertions | times out waiting for the resumed turn | the continuation drops in-flight calls; recovery ignores a waiting interrupt; shutdown stops a busy session |
 | step18c, an approval waits through a restart | passes, 18 | times out waiting for the resumed turn | a new request can't take over an ended ask |
 | step18d, a box replaced on the same volume | passes, 14 | never shows the session lost | the daemon skips resuming |
@@ -35,11 +35,13 @@ The branch runs are on the code of `783e04b`, rebased onto main at `7197f4b`, on
 | step18i, the one writer, an exit batch sent again, a dropped transaction, the watchdog threshold | passes, 13 | can't load, with no `shared/lifecycle.ts` | the status filter removed; the all-or-nothing count removed; asks close on any exit batch; the connection listener removed, and the process dies; the threshold's minimum lowered |
 | step18j, approvals across two restarts | passes, 8 | no resumed session | an answer counts as delivered only while its command is claimed or done; a denial offered as allowed |
 | step18k, an answer during recovery | passes, 4 | Postgres aborts the answer with "deadlock detected" | the session lock removed |
-| step18l, a turn that stops its machine every time | passes, 10 | no resumed session | the cap out of reach |
+| step18l, a turn that stops its machine every time, and a message with no permissions | passes, 11 | no resumed session | the cap out of reach; the claim's payload parse removed; the daemon from before the parse |
 
 step18d failed once in 5 runs after the rebase onto `360c16e`, on its last assertion: the replaced box still showed `stale` right after the resumed turn ended, and its new container's heartbeat never reached the record in that run. The cause is not found. The check now waits up to 20 seconds, one heartbeat and a margin, for the box to show online, and passed in the break test's green run.
 
 Before the work layer merge, main's checks passed on the branch rebased onto `94cd4b1`: step1, step2, step3, step4a, step4b, step4c, step4d, step5, step6, step6b, step7, step8, step9, step9b, step10, step10b, step12, step12b and step19. step9b failed once with its people port 7981 taken by another process, and passed when run again. step12c passed as a copy that builds `agents-box:dur-12c`, since it builds a fixed `agents-box:onboard-check` tag that another workstream uses. step2b checks the live server's ports and was not run.
+
+The claim now reads every message's payload, so step9 (17), step10 (28) and step14 (74), which cover agents with skills, plugins and memory and a pipeline's stages, also passed on `7835b8f`. step10 failed once at its start with its people port 7961 taken at that moment, and passed when run again.
 
 Main's daemon at `360c16e`, run against this branch's API with the fake Claude, looped on the requeue route while its machine showed online, and, already running when the API restarted onto this branch, failed its message with the 400. This branch's daemon looped on recover against main's API.
 
