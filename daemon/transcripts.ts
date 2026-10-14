@@ -92,9 +92,10 @@ type Start = z.infer<typeof Start>
 const parseJson = (raw: string): unknown => {
   try {
     return JSON.parse(raw)
-  } catch {
-    // Not JSON, so not a line Claude Code finished writing. It makes nothing.
-    return undefined
+  } catch (error) {
+    // Not JSON, so not a line Claude Code finished writing. It makes nothing, and the log counts it.
+    if (error instanceof SyntaxError) return undefined
+    throw error
   }
 }
 
@@ -356,9 +357,15 @@ export async function followTerminalSessions(options: {
     } catch (error) {
       // The API refused it for good: it started outside the folder, or its session
       // id is another folder's session, as the API sees it.
-      if (error instanceof ApiError && (error.status === 400 || error.status === 409)) passed.add(file)
-      // Anything else, such as the API restarting, is tried again on the next read.
-      else console.error(`terminal session in ${start.cwd}:`, messageOf(error))
+      if (error instanceof ApiError && (error.status === 400 || error.status === 409)) {
+        passed.add(file)
+        return undefined
+      }
+      // The API restarting or failing, or out of reach, is tried again on the next
+      // read. fetch fails with a TypeError when it can't reach the API. Anything else
+      // is a failure of this read, which counts toward parking the transcript.
+      if (!(error instanceof ApiError) && !(error instanceof TypeError)) throw error
+      console.error(`terminal session in ${start.cwd}:`, messageOf(error))
       return undefined
     }
   }

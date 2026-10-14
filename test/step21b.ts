@@ -8,6 +8,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -44,6 +45,8 @@ const started = Date.now()
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL, query_timeout: QUERY_TIMEOUT_MS })
 const children: ChildProcess[] = []
+// Servers the check holds open, such as one that keeps a socket's file in a folder.
+const servers: Server[] = []
 const failures: string[] = []
 const logs: string[] = []
 
@@ -458,6 +461,23 @@ try {
     logs.join('').includes(`${locked.path}: EACCES`) && logs.join('').includes('It is parked until the daemon starts again'))
   check(lockedParked && await settle(), "a transcript the daemon can't read is reported and parked, and the other folders' sessions land")
 
+  // A read that fails with something other than the API's answer is a failed read like any other, parked after 3.
+  // Here the folder holds a socket named like a .env file, whose values the daemon can't read.
+  const jam = join(root, 'jam')
+  mkdirSync(jam)
+  const socket = createServer()
+  servers.push(socket)
+  await new Promise<void>((resolve, reject) => {
+    socket.once('error', reject)
+    socket.listen(join(jam, '.env.s'), () => { resolve() })
+  })
+  check(folders(token, root, ['connect', jam]).code === 0, 'a folder that holds a socket named like a .env file connects')
+  const jammed = transcript(claudeDir, jam, new Date(await connectedAt(jam)))
+  jammed.turn({ prompt: 'In the jammed folder.', reply: 'Jammed.' })
+  check(await until('the daemon to park the transcript whose read fails', LANDS_SEC, async () =>
+    daemonSaid(jammed.path, 'It failed 3 reads in a row', 'It is parked until the daemon starts again')) && await settle(),
+  "a transcript whose read fails with something other than the API's answer is parked after 3 reads, and the other folders' sessions land")
+
   // A transcript whose lines name another session can't write into it.
   const firstEventsBefore = await count('select count(*) from events where session_id = $1', [String(firstRow?.id)])
   const impostor = transcript(claudeDir, journal, new Date(await connectedAt(journal)), randomUUID())
@@ -582,6 +602,7 @@ try {
 } finally {
   const stopped = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null
   for (const child of children) child.kill('SIGTERM')
+  for (const server of servers) server.close()
   if (!await until('the API and daemon to stop', STOP_SEC, async () => children.every(stopped))) for (const child of children) child.kill('SIGKILL')
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team])
