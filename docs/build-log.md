@@ -469,3 +469,53 @@ Main now holds durability (5556f3b), evidence (9ee5b17) and the stage budget fix
   - A branch synced after it was submitted can't be pushed again, since `submit` never forces.
   - A SIGKILL leaves the run lock, as it does for `mkdir` by hand.
   - None of it has run on the real repo, against GitHub, or with the Mac's Docker. The root pair refs are not set there.
+
+### agents-git: fixes from the review of 78bbce4 (not merged)
+
+- **What changed.** Ten findings and three suggestions from a review of `78bbce4`, one commit each. `docs/design/agents-git.md` says what each command does now.
+  - `done` and `prune` no longer delete ignored files with no copy. `done --yes` refuses until `--backup <path>` names each ignored path, except `node_modules` and `app/dist`, and copies them to `~/.agents-app/backups/agents-git/<name>-<time>/` before it removes the worktree. The preview lists each path with its size. `prune` skips a worktree that holds one. The design doc's `done` row is fixed.
+  - `submit` scans the pull request's message, regression line and reviews, and `land` scans the merge message, for secrets, this Mac's home folder, the configured email and old names. A finding names its kind and place, never the value. `submit` scans every commit the push publishes, which is everything after `refs/mirror/local-pushed`, and `land` scans the same before it mirrors main.
+  - The added-line scan reads each hunk by the counts in its header. A line that reads `++ /dev/null` no longer hides the rest of its file.
+  - A name can't be `main` or `HEAD`.
+  - A signal sends SIGTERM to the running program's process group and SIGKILL 5 seconds later, then ends the command through its own cleanup. `land` removes its scratch worktree, then the lock goes, and the command exits with 128 plus the signal's number. `npm ci` in `land` and `start` runs under the same handle. `daemon/agents-git/group.ts` is new and holds this.
+  - Once a branch is submitted, `sync` merges main in instead of rebasing, and `land`'s hint on a conflict says so. A merge commit is scanned for the lines none of its parents had.
+  - `check` reads the commit and the uncommitted files again once it holds the run lock, and the commit again after each step.
+  - A step, `npm ci`, the name guard and `gh` no longer inherit `DATABASE_URL`, `PG*` or `AGENTS_*`, so the env files decide.
+  - The ledger keeps each protected-path approval with the blob it covered, and the gates count it only while the branch holds that blob. The design doc now says the plan, playbook and pushes gates always pass here.
+  - Suggestions. `sync` writes `refs/agents-git/<name>/pre-sync-<time>` first. The mirror pair moves in one `update-ref --stdin` transaction. `repo.ts` holds one timestamp helper.
+  - Found while proving the signal work. `killGroup` threw on EPERM, which macOS answers for a process group whose members have exited and wait to be reaped. 2 of 6 step22 runs under load failed on it.
+- **Decisions I made.**
+  - `done` takes every ignored path or none. Removing the worktree deletes all of them, so a flag naming some would promise a keep it can't make. The preview lists them with their sizes and the flags, so a person sees what is there before choosing. `--backup` may leave off the trailing slash git prints.
+  - A backup folder is mode 0700, since an ignored path can hold an `.env` file. Links stay links. Node's recursive copy leaves out sockets and pipes without a word, and they hold no data, so `done` counts them and says how many it left out. Nothing deletes a backup.
+  - `.DS_Store` is ignored by `.gitignore`, so a worktree opened in Finder lists it and needs `--backup .DS_Store`. I excluded only the two paths the review named. **Revisit** if that is more friction than it is worth.
+  - The text scan and the commit scan are one function, `publicProblems`, so they cannot drift. It runs main's name guard on a text by writing the text to the file the guard already reads a commit's message from.
+  - `submit` and `mirrorMain` scan from `refs/mirror/local-pushed`, or from the root pair before any push. Until the pushed pair is set on the real repo, the first `submit` scans every commit since the root. The design doc's setup section says to set it.
+  - A signal ends the command by throwing `Stopped` at the next program it would start, so the commands' own `finally` blocks do the cleanup and none is copied into a signal handler. A second signal while one is handled changes nothing. The cost is that a signal during a git call or a ledger write waits for that call, then stops the command at its next program.
+  - `start` runs `npm ci` under the same handle, since a program in its own process group no longer gets the terminal's Ctrl-C. A stopped `start` leaves its entry as `starting`, as before.
+  - `check` reads the uncommitted files only before its first step. A step may leave files of its own, so reading them after would refuse a good result.
+  - `sync` merges with `--no-gpg-sign`, because `submit` refuses a commit with a signature header. A merge commit's added lines are the ones that appear in its diff against every parent.
+  - The ledger's `approved` field changes from a list of paths to a list of path and blob. agents-git has not been run on the real repo, so no ledger has the old shape, and I wrote no migration.
+  - The fakes' variables began with `AGENTS_`, so they are renamed `STEP22_FAKE_*`. `childEnv` and `killGroup` moved to `group.ts` so `worktrees.ts` and `checks.ts` need not import each other.
+- **Seen failing.** 52 breaks on the final tree, each in its own copy, with the anchor asserted to match once and the file put back identical by sha256. 51 turned lines red, and each of the 72 new or reworded lines went red under at least one.
+  - Names, 2 lines. A `Name` that allows `main` turned both red.
+  - Added-line scan, 3 lines. Reading a `+++` row inside a hunk as a header turned the `++ ` and `++ /dev/null` lines red. Not skipping the `\ No newline` row turned the no-newline line red.
+  - Text scan, 9 lines. Seven breaks each turned their own lines red: no text passed to the scan, no secret patterns, no home folder, no email, no name guard for text, a finding that prints its match, and no scan in `land`.
+  - Scan range, 5 lines. Scanning `main..tip` turned the submit lines red. Removing the mirror scan let GitHub's main take the secret and turned the `land` lines red.
+  - Mirror pair, 2 lines. Two transactions moved `local-pushed` alone and every later push was refused with "rebuilding refs/mirror/local-pushed gives X, not Y".
+  - Environment, 4 lines. Leaving `DATABASE_URL`, `PG*` or `AGENTS_*` out of the filter, one at a time, and passing everything, each turned the matching lines red.
+  - Ignored files, 14 lines. Twelve breaks: no refusal, no copy, a failed copy that goes on, `node_modules` listed, `app/dist` listed, a silent preview, prune taking the worktree, a world-readable backup, links resolved to the original, flags that must match git's slash, a silent pipe note, and prune and done both open. Only the last turned "prune --yes leaves it for done" red, since `done` refuses the same worktree on its own.
+  - Signals, 13 lines. Eight breaks: SIGKILL at once, no SIGKILL after the grace, a signal that is not an error, a lost exit code, a scratch worktree left, an `npm ci` in `land` that no handle holds, one in `start`, and no prune after a stopped build.
+  - Drift, 5 lines. Four breaks: no read after the lock, none after the step, none of the files, and no comparison of the commit.
+  - Sync, 11 lines. Six breaks: always rebasing, the old hint, a merge read against its first parent only, a merge not read at all, no pre-sync ref, and no advice on a refused push.
+  - Approvals, 4 lines. Four breaks: counting by path, keeping the old approval, storing no blob, and saying nothing about an earlier version. The first version of the blob lookup asked `rev-parse` for a type after the path, which git reads as part of the path, and the new lines went red on it before I fixed it.
+  - The EPERM fix has no line, since the race needs a loaded machine. A C program that killed the last member of a process group and signalled the group at once got EPERM 534,468 times and ESRCH 8 times in 3,000 rounds. The two captured step22 failures read "kill EPERM".
+- **Verified.** At `15a6694`, the last change before this entry, `npm run typecheck`, `npm run lint`, `node test/names.ts` and `node test/style.ts` pass on 239 files. step22 passes 194 lines, up from 123, in 113 seconds, with no ports and no database, and it confirms the real ledger was not touched. Six runs at once of the committed tree each passed all 194 lines, with typecheck and lint clean. Before the EPERM change 2 of 6 such runs failed, and after it 12 of 12 passed.
+- **Not covered.**
+  - `done` compares the copy's files, folders, links and bytes with the original's before it removes anything. No line fails without that comparison, since no command can make a copy fall short. Node's copy fails loudly on a bad file, so it is a second layer.
+  - A signal is acted on at the command's next program, a second signal does nothing, and the fast-forward and mirror at the end of `land` run after the run lock is released, outside the handling.
+  - `done` copies under the ledger's lock, which other commands wait on for up to five minutes. I did not time a copy of the 1.3 GB folder.
+  - The first `submit` on the real repo scans every commit since the root until `refs/mirror/local-pushed` and `refs/mirror/github-pushed` are set. The design doc says to set them.
+  - `sync`'s rebase is still not passed `--no-gpg-sign`, so a global signing setting would make `submit` refuse a rebased branch.
+  - The plan, playbook and pushes gates always pass here, so the plan lint, the playbook scope and the push gate judge nothing for a branch agents-git runs.
+  - The branch is about 3,300 lines against main, over the framework's 400-line cap, so `submit` would refuse it on its own size gate.
+  - None of it has run on the real repo, against GitHub, or with the Mac's Docker.
