@@ -199,6 +199,49 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 - **Solves now.** A person comments on a version of a document, quoting the part they mean. Sent to the agent, the comment reaches the session that wrote the document, which revises it into a new version.
 
+## Onboarding
+
+The design, with what is not done, is in `docs/design/onboarding.md`. Nobody should be invited until the live steps in `docs/design/people-port.md` are done. Until the live API serves people only on its socket and the tailnet policy is in place, a tailnet device can send its own login header, and joining by invite trusts that header.
+
+### Admins (`people.role`, `server/admin.ts`)
+
+- **Solves now.** A person on a team is an admin or a member. Only admins invite, add people who ask to join, and use the Tailscale page, and the API answers members 403 there. `admin.ts add-team` makes the team's first login its admin, and `admin.ts set-role` changes a role. Migration 0005 made the earliest person of each team with no admin an admin.
+- **Helps later.** Anything else only some people should do checks the same role.
+
+### Invites and joining (`server/onboarding.ts`, `app/src/Team.tsx`)
+
+- **Solves now.** An admin types an email on the Team page. With Tailscale connected, the invite goes through Tailscale's API, which emails the person, and the admin sees the link to send it themselves. The person is on the team from their first visit, with nothing to do. The app reads `/v1/me`, which writes nothing, then asks to join with a JSON post. A login nobody invited sees a waiting screen naming it, admins see it under Wants to join with a count in the sidebar, and one click adds it. The waiting screen opens the app by itself once they are added. Invites can be resent and cancelled.
+- **Helps later.** Growing the team takes no terminal on the server, and the tailnet and the team stay in step.
+- **Not done.** Removing someone from the team. Checked only against a stand-in Tailscale.
+
+### The Tailscale key and page (`server/tailscale.ts`, `app/src/Tailscale.tsx`)
+
+- **Solves now.** An admin pastes a Tailscale API access token in the app. The server checks it with Tailscale and keeps it in a file of its own, mode 600. It never reaches Postgres, a log or a browser, which sees only its last four characters and when it expires. The Tailscale page lists the tailnet's users, devices and invites, read from Tailscale each time. From it an admin approves, suspends, restores or removes a user, changes their role, adds them to the team, authorizes or removes a device, and resends or cancels an invite. From 14 days before the key expires, the sidebar, the Team page and the Tailscale page say how to make a new one.
+- **Helps later.** Tayler manages the tailnet without leaving the app.
+- **Not done.** The real Tailscale API has not been called. The checks use `test/fake-tailscale.ts`, built from Tailscale's published API spec. Without `AGENTS_TAILSCALE_API` and `AGENTS_TAILSCALE_KEY_FILE` in `.env`, Tailscale is off.
+
+### A box for each person (`server/boxes.ts`, `app/src/Box.tsx`)
+
+- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never stops for being idle. It never gets the team's Claude token. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
+- **Helps later.** Each person's agents run on their own computer and their own Claude account, so one person's work doesn't slow or bill another's.
+- **Not done.** Personal boxes run all the time. Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them.
+
+### The Claude sign-in relay (`server/claudelogin.ts`, `server/box-routes.ts`, `daemon/claude-login.ts`)
+
+- **Solves now.** A person signs in to their own Claude account from the app, without a terminal. Their box runs `claude setup-token` under `script`, which gives it a terminal, and posts the sign-in link, which reaches only its owner's page. The code they paste goes to their box once and is gone from the server after that, or after ten minutes. The box saves the token in its home volume, mode 600, and starts its Claude sessions with it. The token stays on the box, where its agents and the tools their plugins run can read it. Teammates can message those agents and add them to rooms, and those turns use the owner's account. A box that restarts during a sign-in fails it and says so.
+- **Helps later.** The same relay can sign a box in to anything else that needs a browser once.
+- **Not done.** No full sign-in has run against the real CLI. The checks use `test/fake-claude-login.ts`. The real CLI was run in a box only to read its link and its answer to a bad code. The token lasts a year and nothing renews it.
+
+### Adding someone to a room (`server/rooms.ts`, `app/src/Conversation.tsx`)
+
+- **Solves now.** A room's People button lists who is in it, and someone in the room, or an admin, adds a teammate from there. A private room takes no one from outside it, admins included. The room's agents then name that teammate among the room's people on their turns, with what they remember about them.
+- **Helps later.** Rooms can be built around a piece of work and filled as people join it.
+
+### The onboarding checks (`test/step12.ts`, `test/step12b.ts`, `test/step12c.ts`)
+
+- **Solves now.** step12 drives all of it through the API against the stand-in Tailscale, including the sign-in relay with the check acting as the box. step12b drives the Team page, the waiting screen, the Tailscale page, a box that could not start and a room's People list in Chromium, Firefox and WebKit at desktop and phone width. step12c starts real box containers from a test-tagged image, and a newcomer watches their box start, signs in through it with the stand-in Claude, and gets an answer from an agent running on their token.
+- **Helps later.** Every later change to joining, boxes or sign-ins runs against the same three.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

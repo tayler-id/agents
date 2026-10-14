@@ -57,7 +57,21 @@ People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which on
 
 The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. That includes tailscaled's own proxy on 1055, through which a peer would reach serve as this Mac and be taken for its owner, so a person's identity also rests on the policy. `docs/design/people-port.md` gives the rule, and `test/live-tailnet.ts` checks the filter the server enforces. It runs on its own, not in `npm run check`.
 
-A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
+A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people`. An admin invites them from the app, as below, or runs `admin.ts add-person`.
+
+### Inviting teammates from the app
+
+Don't invite anyone until the live steps in `docs/design/people-port.md` are done. Until the live API serves people only on its socket and the tailnet policy is in place, a tailnet device can send its own login header, and joining by invite trusts that header.
+
+A team's first login is its admin, and `admin.ts set-role <team> <login> <admin|member>` changes a role. An admin invites people from the app's Team page. A person joins on their first visit, gets a box of their own, and signs in to their own Claude account from the Your box page. A login nobody invited waits until an admin adds it from the Team page.
+
+For invites to go through Tailscale, add both settings to `.env`, restart the API, and save a user-owned API access token (`tskey-api-...`) on the app's Tailscale page:
+
+```sh
+printf 'AGENTS_TAILSCALE_API=https://api.tailscale.com/api/v2\nAGENTS_TAILSCALE_KEY_FILE=%s/.agents-app/tailscale-api.json\n' "$HOME" >> .env
+```
+
+Without them, invites are made in the app only and nobody is emailed. With only one, the API refuses to start. People's boxes run the daemon from the box image, so rebuild it with `server/boxes.ts build` after updating.
 
 ## Run a daemon
 
@@ -81,7 +95,7 @@ Boxes are Docker containers that run the daemon for unattended work, built from 
 node --env-file=.env server/boxes.ts build
 ```
 
-A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`).
+A run of a pipeline with `runsOn: 'box'` claims one, up to `AGENTS_MAX_BOXES` per team. For agents in boxes to run Claude on your subscription, run `claude setup-token` once and save the token in `~/.agents-app/box-claude-token` (mode 600), then recreate the boxes (`server/boxes.ts recreate <team> <box>`). A person's own box never gets that token. Its agents run on the account its owner signs in with.
 
 ## Checks
 

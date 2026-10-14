@@ -4,7 +4,9 @@
 
 import { basename } from 'node:path'
 import type pg from 'pg'
+import { z } from 'zod'
 import { maybe, one } from './db.ts'
+import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import type { AgentPlugin, AgentSkill, AnswerPayload, Command, EventBatch, MessagePayload, NewEvent } from '../shared/types.ts'
 import { memoryBlock } from './agents.ts'
@@ -28,7 +30,9 @@ export class HttpError extends Error {
   }
 }
 
-export type Person = { id: string; team_id: string; login: string }
+// A person on a team, as the people port knows them.
+export const Person = z.object({ id: PersonId, team_id: TeamId, login: z.string(), role: TeamRole })
+export type Person = z.infer<typeof Person>
 type Session = {
   id: string; team_id: string; instance_id: string; conversation_id: string | null; agent_id: string; last_seq: string
 }

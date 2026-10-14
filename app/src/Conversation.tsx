@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent, type KeyboardEvent } from 'react'
 import { go } from './App.tsx'
 import {
-  act, messageOf, api, byNumber, clock, newId, useRows, useSnapshot, type Agent, type Ask, type Conversation, type EventRow, type Me, type Message, type Person, type Session,
+  act, messageOf, api, byNumber, clock, newId, useRows, useSnapshot, type Agent, type Ask, type Conversation, type EventRow, type Me, type Member, type Message, type Person,
+  type Session,
 } from './data.ts'
 import { useLiveText } from './live.ts'
 import { AskCard } from './Asks.tsx'
 import { Markdown } from './Markdown.tsx'
 
 const WORKING = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
+// How often an open People panel looks again for who is in the room.
+const MEMBERS_POLL_MS = 3000
 
 type Pending = { clientId: string; text: string }
 
@@ -19,6 +22,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
   const { rows: agents } = useSnapshot<Agent>('agents')
   const { rows: people } = useSnapshot<Person>('people')
   const [pending, setPending] = useState<Pending[]>([])
+  const [peopleOpen, setPeopleOpen] = useState(false)
 
   const conversation = conversations.find((c) => c.id === conversationId)
   const agent = agents.find((a) => a.id === conversation?.agent_id)
@@ -65,10 +69,16 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
           </p>
         </div>
         <div className="head-actions">
+          {room && (
+            <button type="button" className="ghost" aria-expanded={peopleOpen} aria-controls="room-people" onClick={() => setPeopleOpen((open) => !open)}>
+              People
+            </button>
+          )}
           {agent && conversation?.kind === 'dm' && <button type="button" className="ghost" onClick={() => go({ agent: agent.id })}>Agent setup</button>}
           {session && working && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>
       </header>
+      {room && peopleOpen && <RoomPeople me={me} conversationId={conversationId} people={people} agents={agents} />}
 
       <ol className="messages" aria-live="polite" aria-label="Messages" tabIndex={0}>
         {sorted.map((m) => (
@@ -100,6 +110,69 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
       {openAsks.map((ask) => <AskCard key={ask.id} ask={ask} />)}
       <div ref={end} />
       <Composer onSend={send} disabled={!canPost} placeholder={room ? 'Post to the room. @name asks one agent.' : 'Message the agent'} />
+    </section>
+  )
+}
+
+const byLogin = (a: Person, b: Person) => a.login.localeCompare(b.login)
+
+// Who is in a room, and adding a teammate to it, which admins and people in the room may do.
+function RoomPeople({ me, conversationId, people, agents }: { me: Me; conversationId: string; people: Person[]; agents: Agent[] }) {
+  const { rows: members } = useSnapshot<Member>('conversation_members', {}, MEMBERS_POLL_MS)
+  // People added from here, shown in the room before the next look at its members.
+  const [added, setAdded] = useState<string[]>([])
+  const [login, setLogin] = useState('')
+  const [said, setSaid] = useState('')
+  const [problem, setProblem] = useState('')
+  const [busy, setBusy] = useState(false)
+  const inRoom = members.filter((m) => m.conversation_id === conversationId)
+  const personIds = new Set([...inRoom.flatMap((m) => (m.person_id ? [m.person_id] : [])), ...added])
+  const agentIds = new Set(inRoom.flatMap((m) => (m.agent_id ? [m.agent_id] : [])))
+  // You first, then everyone else by login.
+  const here = people.filter((p) => personIds.has(p.id)).sort((a, b) => Number(b.id === me.person.id) - Number(a.id === me.person.id) || byLogin(a, b))
+  const others = people.filter((p) => !personIds.has(p.id)).sort(byLogin)
+  const canAdd = me.person.role === 'admin' || personIds.has(me.person.id)
+  const chosen = others.find((p) => p.login === login) ?? others[0]
+  const add = async (event: SyntheticEvent) => {
+    event.preventDefault()
+    if (!chosen) return
+    setBusy(true)
+    setSaid('')
+    setProblem('')
+    try {
+      const { personId } = await api.addRoomMember(conversationId, chosen.login)
+      setAdded((ids) => [...ids, personId])
+      setSaid(`Added ${chosen.name ?? chosen.login} to the room.`)
+    } catch (e) {
+      setProblem(messageOf(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="room-people" id="room-people" aria-label="People in the room">
+      <div className="in-room">
+        <h2 className="kicker">In the room</h2>
+        <ul className="names" aria-label="In the room">
+          {here.map((p) => <li key={p.id}>{p.id === me.person.id ? 'You' : p.name ?? p.login}</li>)}
+          {agents.filter((a) => agentIds.has(a.id)).map((a) => <li key={a.id} className="muted">{a.name}, an agent</li>)}
+        </ul>
+      </div>
+      {canAdd && chosen && (
+        <form className="form fitted" onSubmit={act(add)} aria-label="Add a teammate">
+          <label htmlFor="room-add">Teammate</label>
+          <div className="add-line">
+            <select id="room-add" value={chosen.login} onChange={(e) => setLogin(e.target.value)}>
+              {others.map((p) => <option key={p.id} value={p.login}>{p.name ? `${p.name}, ${p.login}` : p.login}</option>)}
+            </select>
+            <button type="submit" className="primary" disabled={busy}>Add</button>
+          </div>
+        </form>
+      )}
+      {canAdd && !chosen && <p className="muted small">Everyone on the team is in the room.</p>}
+      {!canAdd && <p className="muted small">People in the room, and admins, can add a teammate.</p>}
+      {said && <p className="small" role="status">{said}</p>}
+      {problem && <p className="error small" role="alert">{problem}</p>}
     </section>
   )
 }

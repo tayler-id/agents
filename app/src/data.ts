@@ -2,18 +2,25 @@
 // proxy; writes are plain calls to the API. Who you are comes from the
 // connection (Tailscale), so no request carries an identity of its own.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
+import { z } from 'zod'
+import {
+  BoxMade, Done, InviteLink, InviteMade, InviteResent, JoinAnswer, LoginStarted, MeView, PersonAdded, TailnetDevices, TailnetInvites, TailnetUsers, TailscaleView,
+  type DeviceAction, type MemberView, type TailnetInviteAction, type TailscaleRole, type TeamRole, type UserAction,
+} from '../../shared/onboarding.ts'
 
-export type Me = { person: { id: string; login: string }; team: { id: string; name: string } }
+export type Me = MemberView
 
-export type Person = Row & { id: string; login: string; name: string | null }
+export type Person = Row & { id: string; login: string; name: string | null; role: TeamRole }
 export type Agent = Row & {
   id: string; name: string; title: string | null; role: string | null; model: string | null; home_instance_id: string | null; instructions: string
 }
 export type Instance = Row & {
   id: string; name: string; kind: string; status: 'online' | 'stale' | 'offline'; last_seen_at: string | null
   claimed_by: string | null; claimed_by_run: string | null
+  // A person's own box belongs to its owner for good. start_error says why its container did not start.
+  owner_id: string | null; personal: boolean; start_error: string | null
 }
 export type Conversation = Row & { id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string }
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
@@ -163,6 +170,18 @@ export function useSnapshot<T extends Row>(name: string, args: Record<string, st
   return { rows: url && state.url === url ? state.rows : [] }
 }
 
+// A snapshot whose rows are read through their schema. Rows that do not fit
+// are not shown, and `error` says why.
+export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args: Record<string, string> | null = {}, everyMs = 5000) {
+  const { rows } = useSnapshot<Row>(name, args, everyMs)
+  return useMemo(() => {
+    const parsed = z.array(schema).safeParse(rows)
+    return parsed.success
+      ? { rows: parsed.data, error: null }
+      : { rows: [], error: `The ${name} the server sent did not fit this page: ${z.prettifyError(parsed.error)}` }
+  }, [schema, rows, name])
+}
+
 // The message of anything thrown.
 export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -176,7 +195,7 @@ export function act<A extends unknown[]>(action: (...args: A) => Promise<unknown
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function send(method: string, path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(path, {
     method,
     // The API refuses a person's change that isn't declared JSON, so every change says so.
@@ -188,12 +207,45 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     const error = typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' ? json.error : null
     throw new Error(error ?? `request failed with ${res.status}`)
   }
+  return json
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   // The API's answers are this repo's own types.
-  return json as T
+  return await send(method, path, body) as T
+}
+
+// A call whose answer is read through its schema.
+async function call<S extends z.ZodType>(schema: S, method: string, path: string, body?: unknown): Promise<z.output<S>> {
+  const parsed = schema.safeParse(await send(method, path, body))
+  if (!parsed.success) throw new Error(`The server's answer to ${path} did not fit this app: ${z.prettifyError(parsed.error)}`)
+  return parsed.data
 }
 
 export const api = {
-  me: () => request<Me>('GET', '/v1/me'),
+  me: () => call(MeView, 'GET', '/v1/me'),
+  join: () => call(JoinAnswer, 'POST', '/v1/me/join', {}),
+  invite: (email: string, role: TeamRole) => call(InviteMade, 'POST', '/v1/invites', { email, role }),
+  resendInvite: (inviteId: string) => call(InviteResent, 'POST', `/v1/invites/${inviteId}/resend`, {}),
+  cancelInvite: (inviteId: string) => call(Done, 'POST', `/v1/invites/${inviteId}/cancel`, {}),
+  inviteLink: (inviteId: string) => call(InviteLink, 'GET', `/v1/invites/${inviteId}/link`),
+  addToTeam: (login: string, name: string | null) => call(PersonAdded, 'POST', '/v1/team/people', { login, name }),
+  tailscale: () => call(TailscaleView, 'GET', '/v1/tailscale'),
+  saveTailscaleKey: (key: string, expires: string | null) => call(TailscaleView, 'POST', '/v1/tailscale/key', { key, expires }),
+  removeTailscaleKey: () => call(TailscaleView, 'POST', '/v1/tailscale/key/delete', {}),
+  tailnetUsers: () => call(TailnetUsers, 'GET', '/v1/tailscale/users'),
+  tailnetUser: (userId: string, action: UserAction) => call(Done, 'POST', `/v1/tailscale/users/${encodeURIComponent(userId)}/${action}`, {}),
+  tailnetRole: (userId: string, role: TailscaleRole) => call(Done, 'POST', `/v1/tailscale/users/${encodeURIComponent(userId)}/role`, { role }),
+  tailnetDevices: () => call(TailnetDevices, 'GET', '/v1/tailscale/devices'),
+  tailnetDevice: (deviceId: string, action: DeviceAction) => call(Done, 'POST', `/v1/tailscale/devices/${encodeURIComponent(deviceId)}/${action}`, {}),
+  tailnetInvites: () => call(TailnetInvites, 'GET', '/v1/tailscale/invites'),
+  tailnetInvite: (inviteId: string, action: TailnetInviteAction) =>
+    call(Done, 'POST', `/v1/tailscale/invites/${encodeURIComponent(inviteId)}/${action}`, {}),
+  makeBox: () => call(BoxMade, 'POST', '/v1/me/box', {}),
+  startClaudeLogin: () => call(LoginStarted, 'POST', '/v1/me/claude-login', {}),
+  sendClaudeCode: (loginId: string, code: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/code`, { code }),
+  cancelClaudeLogin: (loginId: string) => call(Done, 'POST', `/v1/claude-logins/${loginId}/cancel`, {}),
+  addRoomMember: (conversationId: string, login: string) => call(PersonAdded, 'POST', `/v1/conversations/${conversationId}/members`, { login }),
   openDm: (agent: string) => request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'dm', agent }),
   send: (conversationId: string, text: string, clientId: string) =>
     request('POST', `/v1/conversations/${conversationId}/messages`, { text, clientId }),
@@ -248,4 +300,8 @@ export function parseTime(text: string | null): Date | null {
 
 export function clock(text: string | null): string {
   return parseTime(text)?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? ''
+}
+
+export function day(text: string | null): string {
+  return parseTime(text)?.toLocaleDateString([], { month: 'short', day: 'numeric' }) ?? ''
 }

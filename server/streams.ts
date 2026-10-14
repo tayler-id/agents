@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { DurableStreamTestServer } from '@durable-streams/server'
 import { instanceFrom, personFrom } from './auth.ts'
 import { pool } from './db.ts'
-import type { Audience } from './api.ts'
+import type { Audience } from './http.ts'
 import { HttpError } from './record.ts'
 import { canSeeSession } from './access.ts'
 

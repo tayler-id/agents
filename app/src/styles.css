@@ -95,7 +95,8 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .sidebar { border-right: 1px solid var(--line); padding: 14px 10px; overflow-y: auto; background: var(--bg); }
 .team { display: grid; padding: 4px 8px 12px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .sidebar .kicker { margin: 14px 8px 4px; }
-.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+/* One column no wider than the sidebar, so a long name gives way to its row's status. */
+.list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
 .row {
   width: 100%;
   display: flex;
@@ -222,12 +223,14 @@ a { color: inherit; text-underline-offset: 2px; }
 .form label { font-size: 12.5px; color: var(--muted); }
 .form label.check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; }
 .form fieldset { border: 0; margin: 4px 0; padding: 0; display: grid; gap: 4px; }
-.form input:not([type]), .form input[type="text"], .form textarea, .form select {
+.form input:not([type]), .form input[type="text"], .form input[type="email"], .form input[type="password"], .form input[type="date"], .form textarea, .form select {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
 }
 .form input:focus, .form textarea:focus, .form select:focus { outline: none; border-color: var(--text); }
 .items, .memories { list-style: none; margin: 0; padding: 0; }
 .items li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+/* A name or login with no spaces wraps inside its row rather than push a phone screen wide. */
+.items li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .memories li { padding: 8px 0; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
 .add summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
 .add .form { margin: 6px 0 10px; }
@@ -239,6 +242,53 @@ a { color: inherit; text-underline-offset: 2px; }
 .composer.inline { padding: 10px 0 0; border-top: 0; background: transparent; }
 .messages.task-messages { padding: 4px 0; overflow: visible; }
 
+/* The team: inviting people, those waiting to join, and who is on it. The page
+   you are on is heavier type in the sidebar, never an outline. */
+button.link.current { font-weight: 700; text-decoration: none; }
+/* One column no wider than the page, so a long value never pushes a form past a phone's screen. */
+.form.fitted { grid-template-columns: minmax(0, 1fr); }
+.form.fitted input, .form.fitted select { min-width: 0; }
+.result { display: grid; gap: 4px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.link-field { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; min-width: 0; }
+.link-field:focus { outline: none; border-color: var(--text); }
+.items.invites li, .items.tailnet li { flex-wrap: wrap; }
+.items .actions { gap: 4px 14px; flex-shrink: 0; align-items: baseline; }
+.invite-link { flex-basis: 100%; display: grid; gap: 4px; }
+
+/* The tailnet, and the Tailscale key's warning. A warning stands out by its
+   kicker and weight on a raised surface, never by a colored fill or border. */
+.notice { display: grid; gap: 4px; max-width: 720px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.confirm { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+/* A tailnet row's actions wrap within the screen rather than run past it. */
+.items.tailnet .actions { flex-shrink: 1; min-width: 0; }
+select.compact { font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+select.compact:focus { outline: none; border-color: var(--text); }
+.sidebar-note { padding: 6px 8px 0; font-weight: 600; }
+
+/* A room's people, under its head. The open People button is a brighter surface. */
+button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600; }
+.room-people { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 20px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.in-room { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.in-room .kicker { margin: 0; }
+.names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; min-width: 0; }
+.names li { overflow-wrap: anywhere; min-width: 0; }
+.add-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; max-width: 520px; }
+
+/* A person's own box, their Claude sign-in, and a newcomer's first steps. A step
+   done shows a check glyph and heavier type, never a colour. */
+.getting-started { margin: auto; max-width: 520px; padding: 0 16px; display: grid; gap: 10px; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.steps li { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.steps li > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.steps li.done { font-weight: 600; }
+.steps .glyph { width: 1.2em; flex-shrink: 0; text-align: center; color: var(--muted); }
+.steps li.done .glyph { color: var(--text); }
+.box-state { display: flex; align-items: baseline; }
+/* Docker's words can hold a long image name with no spaces, which a phone would scroll sideways for. */
+.box-reason { overflow-wrap: anywhere; }
+.sign-in { display: grid; gap: 8px; max-width: 620px; }
+.note-line .glyph { margin-right: 6px; }
+
 /* Phone width: the sidebar opens over the conversation, the panel replaces it. */
 @media (max-width: 760px) {
   .shell, .shell.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -248,7 +298,7 @@ a { color: inherit; text-underline-offset: 2px; }
   .menu-open .sidebar { display: block; position: fixed; inset: 49px 0 0 0; z-index: 2; border-right: 0; }
   .shell.with-panel .main { display: none; }
   .panel { border-left: 0; }
-  .messages, .conversation-head { padding-left: 16px; padding-right: 16px; }
+  .messages, .conversation-head, .room-people { padding-left: 16px; padding-right: 16px; }
   .composer { padding: 10px 16px 14px; }
   .ask-card { margin: 0 16px 12px; }
   .page-head, .page-body { padding-left: 16px; padding-right: 16px; }

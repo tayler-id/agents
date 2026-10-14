@@ -1,6 +1,8 @@
-// Run on the server host. Adds teams, people, instances and agents.
+// Run on the server host. Adds teams, people, instances and agents. A team's
+// first login is its admin, who can then invite everyone else from the app.
 //   node --env-file=.env server/admin.ts add-team <team> <first login>
 //   node --env-file=.env server/admin.ts add-person <team> <login>
+//   node --env-file=.env server/admin.ts set-role <team> <login> <admin|member>
 //   node --env-file=.env server/admin.ts add-instance <team> <name> <mac|box> <owner login>
 //   node --env-file=.env server/admin.ts add-agent <team> <name> <home instance> [model] [instructions]
 
@@ -8,29 +10,35 @@ import { randomBytes } from 'node:crypto'
 import { maybe, pool } from './db.ts'
 import { sha256 } from './auth.ts'
 
-async function addPerson(team: string, login: string) {
+async function addPerson(team: string, login: string, role: 'admin' | 'member') {
   const { rowCount } = await pool.query(
-    'insert into people (team_id, login) select id, $2 from teams where name = $1', [team, login])
+    'insert into people (team_id, login, role) select id, $2, $3 from teams where name = $1', [team, login, role])
   if (!rowCount) throw new Error(`no team ${team}`)
 }
 
 const USAGE = [
   'add-team <team> <login>',
   'add-person <team> <login>',
+  'set-role <team> <login> <admin|member>',
   'add-instance <team> <name> <mac|box> <owner login>',
   'add-agent <team> <name> <home instance> [model] [instructions]',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
-const [first = '', second = ''] = args
+const [first = '', second = '', third = ''] = args
 try {
   if (command === 'add-team' && args.length === 2) {
     await pool.query('insert into teams (name) values ($1)', [first])
-    await addPerson(first, second)
-    console.log(`team ${first} with ${second}`)
+    await addPerson(first, second, 'admin')
+    console.log(`team ${first} with ${second} as its admin`)
   } else if (command === 'add-person' && args.length === 2) {
-    await addPerson(first, second)
+    await addPerson(first, second, 'member')
     console.log(`${second} joined ${first}`)
+  } else if (command === 'set-role' && args.length === 3 && (third === 'admin' || third === 'member')) {
+    const { rowCount } = await pool.query(
+      'update people set role = $3 where login = $2 and team_id = (select id from teams where name = $1)', [first, second, third])
+    if (!rowCount) throw new Error(`no person ${second} in ${first}`)
+    console.log(`${second} is now ${third === 'admin' ? 'an admin' : 'a member'} of ${first}`)
   } else if (command === 'add-instance' && args.length === 4) {
     const [team, name, kind, owner] = args
     const token = `machine_${randomBytes(24).toString('base64url')}`

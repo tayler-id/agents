@@ -10,14 +10,17 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { isChangeMessage, ShapeStream } from '@electric-sql/client'
+import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
+import { z } from 'zod'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { messageOf } from '../shared/errors.ts'
+import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
 import type { Command, EventBatch, MessagePayload, StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
-import { claude } from './claude.ts'
+import { claude, CLAUDE_BIN } from './claude.ts'
+import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
 import type { HarnessSession } from './harness.ts'
 
 const HEARTBEAT_MS = 15_000
@@ -47,12 +50,31 @@ function loadConfig(): { api: string; token: string } {
 }
 
 const config = loadConfig()
-// Secrets this machine holds: its environment's, and the plugins' in secrets.json.
-// Read again for each new session, so a secret added later is scrubbed too.
-const knownSecrets = (): [string, string][] => [
-  ...envSecrets(process.env),
-  ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
-].sort((a, b) => b[1].length - a[1].length)
+
+// The Claude token this box's owner signed in with from the app, if any.
+// Damaged, it is reported and left out, so the daemon stays up and its owner
+// can sign in again.
+function ownToken(): string | null {
+  try {
+    return ownClaudeToken(HOME)
+  } catch (error) {
+    console.error(`the saved Claude sign-in: ${messageOf(error)}`)
+    return null
+  }
+}
+
+// Secrets this machine holds: its environment's, the plugins' in secrets.json,
+// and its owner's Claude token. Read again for each new session, so a secret
+// added later is scrubbed too.
+const knownSecrets = (): [string, string][] => {
+  const own = ownToken()
+  const signedIn: [string, string][] = own === null ? [] : [['CLAUDE_CODE_OAUTH_TOKEN', own]]
+  return [
+    ...envSecrets(process.env),
+    ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
+    ...signedIn,
+  ].sort((a, b) => b[1].length - a[1].length)
+}
 let secrets = knownSecrets()
 let scrub = makeScrub(secrets)
 // Live text is held back long enough to catch a secret split across chunks.
@@ -161,6 +183,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
     allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
     maxBudgetUsd: stage?.maxBudgetUsd,
+    oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)
   setups.set(command.sessionId, setupOf(payload))
@@ -279,11 +302,119 @@ async function claimAndHandle(commandId: string) {
   }
 }
 
+// Claude sign-ins asked of this box while they are open, and the ones whose end
+// was already reported, so a late copy of a row does not report it twice.
+const OpenSignIn = z.object({ id: ClaudeLoginId, status: z.enum(OPEN_CLAUDE_LOGIN) })
+const signIns = new Map<ClaudeLoginId, SignIn>()
+const codeAsked = new Set<ClaudeLoginId>()
+const finished = new Set<ClaudeLoginId>()
+// The API may be restarting. A report is tried this many times before it is given up.
+const REPORT_TRIES = 6
+
+async function reportSignIn(loginId: ClaudeLoginId, what: 'link' | 'done' | 'failed', body: unknown) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await api('POST', `/v1/instance/claude-logins/${loginId}/${what}`, body)
+      return
+    } catch (error) {
+      const status = error instanceof ApiError ? error.status : 0
+      // The API refused the report itself, such as for a sign-in the person cancelled meanwhile.
+      if ((status >= 400 && status < 500) || attempt + 1 >= REPORT_TRIES) {
+        console.error(`sign-in ${loginId} ${what}:`, messageOf(error))
+        return
+      }
+      await sleep(Math.min(15_000, 500 * 2 ** attempt))
+    }
+  }
+}
+
+function beginSignIn(loginId: ClaudeLoginId) {
+  let running: SignIn
+  try {
+    running = signIn(CLAUDE_BIN, HOME)
+  } catch (error) {
+    finished.add(loginId)
+    void reportSignIn(loginId, 'failed', { reason: messageOf(error) })
+    return
+  }
+  signIns.set(loginId, running)
+  // A link that never comes rejects `done` too, which reports why.
+  running.link.then((url) => reportSignIn(loginId, 'link', { url }), () => undefined)
+  running.done.then(async ({ token, validDays }) => {
+    saveClaudeToken(HOME, token)
+    secrets = knownSecrets()
+    scrub = makeScrub(secrets)
+    // A session keeps the login it started with, so idle ones stop and their next message starts with this one.
+    for (const session of sessions.values()) if (!session.busy) session.stop()
+    await reportSignIn(loginId, 'done', { validDays })
+  }, async (error: unknown) => {
+    await reportSignIn(loginId, 'failed', { reason: scrub(messageOf(error)) })
+  }).finally(() => {
+    finished.add(loginId)
+    signIns.delete(loginId)
+    codeAsked.delete(loginId)
+  }).catch((error: unknown) => { console.error(`sign-in ${loginId}:`, messageOf(error)) })
+}
+
+// The person sent their code. The API hands it over once.
+async function passCode(loginId: ClaudeLoginId, running: SignIn) {
+  try {
+    running.enterCode(LoginCodeReply.parse(await api('POST', `/v1/instance/claude-logins/${loginId}/code`, {})).code)
+  } catch (error) {
+    // 410: the API restarted and lost the code, and asked the person to paste it again.
+    if (error instanceof ApiError && error.status === 410) {
+      codeAsked.delete(loginId)
+      return
+    }
+    running.stop()
+    await reportSignIn(loginId, 'failed', { reason: messageOf(error) })
+  }
+}
+
+// Brings this box's sign-ins in line with the open ones the API has for it.
+function settleSignIns(rows: unknown[]) {
+  const open = rows.map((row) => OpenSignIn.parse(row)).filter((row) => !finished.has(row.id))
+  for (const { id, status } of open) {
+    const running = signIns.get(id)
+    if (!running && status === 'starting') beginSignIn(id)
+    else if (!running) {
+      // Its CLI was in a process that is gone.
+      finished.add(id)
+      void reportSignIn(id, 'failed', { reason: 'The box restarted during the sign-in. Start it again.' })
+    } else if (status === 'waiting_for_code') codeAsked.delete(id)
+    else if (status === 'checking' && !codeAsked.has(id)) {
+      codeAsked.add(id)
+      void passCode(id, running)
+    }
+  }
+  // Cancelled by the person, or started again.
+  for (const [id, running] of signIns) {
+    if (!open.some((row) => row.id === id)) {
+      running.stop()
+      signIns.delete(id)
+    }
+  }
+}
+
+function followSignIns(signal: AbortSignal) {
+  const stream = new ShapeStream<Row>({
+    url: `${config.api}/v1/shape/claude_logins`,
+    headers: { authorization: `Bearer ${config.token}` },
+    signal,
+    onError: (error) => {
+      if (!stopping) console.error('sign-in sync:', error.message)
+      return stopping ? undefined : {}
+    },
+  })
+  new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
+}
+
 async function shutdown() {
   if (stopping) return
   stopping = true
   abort.abort()
   for (const session of sessions.values()) session.stop()
+  for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)
   await api('POST', '/v1/instance/heartbeat', { status: 'offline' }).catch(() => {})
@@ -296,3 +427,4 @@ process.on('SIGTERM', () => { void shutdown() })
 console.log(`agentsd connected to ${config.api}`)
 void heartbeat()
 void listen(abort.signal)
+followSignIns(abort.signal)

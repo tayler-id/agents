@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import {
-  act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task, useSnapshot,
+  act, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Run, type Session, type Task,
+  useSnapshot, useSnapshotOf,
 } from './data.ts'
+import { TeamPage, Waiting } from './Team.tsx'
+import { keyWarning, TailscalePage, useTailscaleView } from './Tailscale.tsx'
+import { BoxPage, GettingStarted } from './Box.tsx'
 import { ConversationView } from './Conversation.tsx'
 import { SessionPanel } from './Session.tsx'
 import { RunView, shortRunLabel } from './Run.tsx'
@@ -10,13 +15,17 @@ import { DocumentPanel } from './Document.tsx'
 import { AgentPage, NewAgent } from './AgentPage.tsx'
 import { NewRoom, NewTask, TaskView } from './Work.tsx'
 
-// Where the app is: a conversation, run, task, pipeline, agent or new-thing form
-// in the middle, and maybe a session or a document beside it.
+// Pages with no id of their own, such as the team.
+const PAGES = ['team', 'tailscale', 'box'] as const
+type Page = (typeof PAGES)[number]
+
+// Where the app is: a conversation, run, task, pipeline, agent, page or
+// new-thing form in the middle, and maybe a session or a document beside it.
 type Route = {
   conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
-  create: 'agent' | 'room' | 'task' | null; session: string | null; document: string | null
+  create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null
 }
-const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, session: null, document: null }
+const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null }
 const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
 
 function readRoute(): Route {
@@ -24,6 +33,8 @@ function readRoute(): Route {
   const route = { ...EMPTY }
   if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
   if (kind === 'n' && (id === 'agent' || id === 'room' || id === 'task')) route.create = id
+  // Null when the hash names no page.
+  route.page = PAGES.find((page) => page === kind) ?? null
   if (sub === 's') route.session = subId || null
   if (sub === 'd') route.document = subId || null
   return route
@@ -33,7 +44,7 @@ export function go(to: Partial<Route>) {
   const r = { ...EMPTY, ...to }
   const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
-  window.location.hash = r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
+  window.location.hash = r.page ? `#/${r.page}` : r.create ? `#/n/${r.create}` : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
 
 function useRoute(): Route {
@@ -47,20 +58,25 @@ function useRoute(): Route {
 }
 
 export function App() {
-  const [me, setMe] = useState<Me | null>(null)
+  const [me, setMe] = useState<JoinAnswer | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => { api.me().then(setMe, (e: unknown) => { setError(messageOf(e)) }) }, [])
+  // Reading who you are changes nothing. A login on no team then asks to join,
+  // which joins it through an invite or puts it under "Wants to join".
+  useEffect(() => {
+    api.me().then((seen) => (seen.kind === 'member' ? seen : api.join())).then(setMe, (e: unknown) => { setError(messageOf(e)) })
+  }, [])
 
   if (error) {
     return (
       <main className="blocked">
         <h1>Can't open the app</h1>
         <p>{error}</p>
-        <p className="muted">Ask a teammate to add your Tailscale login to the team.</p>
+        <p className="muted">The app knows people by their Tailscale login. Open it from a device on the tailnet.</p>
       </main>
     )
   }
   if (!me) return <main className="blocked" aria-busy="true"><p className="muted">Connecting…</p></main>
+  if (me.kind === 'waiting') return <Waiting me={me} onJoined={setMe} />
   return <Workspace me={me} />
 }
 
@@ -81,16 +97,20 @@ function Workspace({ me }: { me: Me }) {
         <span className="topbar-title">{me.team.name}</span>
       </header>
       <Sidebar me={me} route={route} runs={runs} />
-      <main className="main" aria-label={route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
-        {route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
+      <main className="main" aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
+        : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
+        {route.page === 'team' ? <TeamPage me={me} />
+          : route.page === 'tailscale' ? <TailscalePage me={me} />
+          : route.page === 'box' ? <BoxPage me={me} />
+          : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} />
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
-                  : route.create === 'agent' ? <NewAgent />
+                  : route.create === 'agent' ? <NewAgent me={me} />
                     : route.create === 'room' ? <NewRoom me={me} />
                       : route.create === 'task' ? <NewTask />
-                        : <Welcome />}
+                        : <Welcome me={me} />}
       </main>
       {route.session && (route.conversation || route.run || route.task) && (
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} />
@@ -103,12 +123,15 @@ function Workspace({ me }: { me: Me }) {
   )
 }
 
-function Welcome() {
+// A newcomer sees their first steps here until their box is ready and they are signed in to Claude.
+function Welcome({ me }: { me: Me }) {
   return (
-    <section className="welcome">
-      <h1>Pick an agent to talk to</h1>
-      <p className="muted">Every conversation, every pipeline run and everything their agents do is shared with your team as it happens.</p>
-    </section>
+    <GettingStarted me={me}>
+      <section className="welcome">
+        <h1>Pick an agent to talk to</h1>
+        <p className="muted">Every conversation, every pipeline run and everything their agents do is shared with your team as it happens.</p>
+      </section>
+    </GettingStarted>
   )
 }
 
@@ -126,6 +149,10 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
   const { rows: conversationSessions } = useSnapshot<Session>('sessions', { of: 'conversations' }, 3000)
   const { rows: taskSessions } = useSnapshot<Session>('sessions', { of: 'tasks' }, 3000)
   const sessions = [...conversationSessions, ...taskSessions]
+  // Logins waiting for an admin, and the Tailscale key's expiry, which only admins can read.
+  const admin = me.person.role === 'admin'
+  const { rows: waitingToJoin } = useSnapshotOf(JoinRequestRow, 'join_requests', admin ? {} : null, 10000)
+  const keyAlert = keyWarning(useTailscaleView(admin))
   const [opening, setOpening] = useState('')
   const [boxError, setBoxError] = useState('')
 
@@ -159,6 +186,25 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
     }
   }
 
+  // A person's own box, in a word or two: yours, or whose. It has no owner once they leave the team.
+  const ownerOf = (ownerId: string | null) => {
+    if (ownerId === null) return 'no owner'
+    if (ownerId === me.person.id) return 'yours'
+    const owner = people.find((p) => p.id === ownerId)
+    return owner ? owner.name ?? owner.login.split('@')[0] : 'someone'
+  }
+
+  // Who holds a machine, and what you can do with it.
+  const machineState = (i: Instance) => {
+    // A person's own box is never claimed or released.
+    if (i.personal) return <span className="muted small">{ownerOf(i.owner_id)}</span>
+    if (i.kind !== 'box') return <span className="muted small">{i.status}</span>
+    if (i.claimed_by_run) return <span className="muted small">on a run</span>
+    if (i.claimed_by === me.person.id) return <button type="button" className="link small" onClick={act(() => box(i, 'release'))}>Release</button>
+    if (i.claimed_by) return <span className="muted small">{login.get(i.claimed_by) ?? 'taken'}</span>
+    return <button type="button" className="link small" onClick={act(() => box(i, 'claim'))}>Claim</button>
+  }
+
   const running = sessions.filter((s) => LIVE.has(s.status))
   // Replays score proposals. They show on their proposal's run, not here.
   const recentRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8)
@@ -173,6 +219,18 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         <strong>{me.team.name}</strong>
         <span className="muted small">{me.person.login}</span>
       </div>
+      <div className="new-links">
+        <button type="button" className={`link small${route.page === 'team' ? ' current' : ''}`} onClick={() => go({ page: 'team' })}>
+          Team{waitingToJoin.length ? ` · ${waitingToJoin.length} ${waitingToJoin.length === 1 ? 'wants' : 'want'} to join` : ''}
+        </button>
+        <button type="button" className={`link small${route.page === 'box' ? ' current' : ''}`} onClick={() => go({ page: 'box' })}>Your box</button>
+        {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
+      </div>
+      {keyAlert && (
+        <p className="sidebar-note small">
+          <button type="button" className="link" onClick={() => go({ page: 'tailscale' })}>{keyAlert.short}</button>
+        </p>
+      )}
       <div className="new-links">
         <button type="button" className="link small" onClick={() => go({ create: 'task' })}>New task</button>
         <button type="button" className="link small" onClick={() => go({ create: 'room' })}>New room</button>
@@ -265,15 +323,7 @@ function Sidebar({ me, route, runs }: { me: Me; route: Route; runs: Run[] }) {
         {instances.map((i) => (
           <li key={i.id} className="row static">
             <span><span className={`dot ${i.status}`} aria-hidden="true" />{i.name}{i.kind === 'box' ? ' (box)' : ''}</span>
-            {i.kind === 'box'
-              ? i.claimed_by_run
-                ? <span className="muted small">on a run</span>
-                : i.claimed_by
-                  ? i.claimed_by === me.person.id
-                    ? <button type="button" className="link small" onClick={act(() => box(i, 'release'))}>Release</button>
-                    : <span className="muted small">{login.get(i.claimed_by) ?? 'taken'}</span>
-                  : <button type="button" className="link small" onClick={act(() => box(i, 'claim'))}>Claim</button>
-              : <span className="muted small">{i.status}</span>}
+            {machineState(i)}
           </li>
         ))}
       </ul>

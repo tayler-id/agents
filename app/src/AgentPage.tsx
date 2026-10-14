@@ -1,7 +1,7 @@
 import { useState, type SyntheticEvent, type ReactNode } from 'react'
 import { go } from './App.tsx'
 import {
-  act, api, clock, useSnapshot, type Agent, type Instance, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
+  act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 
@@ -226,8 +226,10 @@ function RoutineForm({ agentId }: { agentId: string }) {
   )
 }
 
-// A new agent, blank or from one of the team's templates.
-export function NewAgent() {
+// A new agent, blank or from one of the team's templates. Its machine starts as
+// the person's own box, and a teammate's own box is not offered, since agents
+// there run on that teammate's Claude account.
+export function NewAgent({ me }: { me: Me }) {
   const { rows: instances } = useSnapshot<Instance>('instances', {}, 15000)
   const { rows: templates } = useSnapshot<Template>('templates', {}, 15000)
   const [name, setName] = useState('')
@@ -235,10 +237,11 @@ export function NewAgent() {
   const [template, setTemplate] = useState('')
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
-  const machines = instances.filter((i) => i.kind === 'mac' || i.claimed_by)
+  const machines = instances.filter((i) => (i.kind === 'mac' || i.claimed_by) && (!i.personal || i.owner_id === me.person.id))
+  const chosen = home || (machines.find((i) => i.personal) ?? machines[0])?.id
   const { submit, error, busy } = useSubmit(async () => {
     const { agentId } = await api.createAgent({
-      name, homeInstanceId: home || machines[0]?.id, title, instructions, templateSlug: template || undefined,
+      name, homeInstanceId: chosen, title, instructions, templateSlug: template || undefined,
     })
     go({ agent: agentId })
   }, () => {})
@@ -250,7 +253,7 @@ export function NewAgent() {
           <label htmlFor="new-agent-name">Name</label>
           <input id="new-agent-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="reviewer" />
           <label htmlFor="new-agent-home">Its machine</label>
-          <select id="new-agent-home" value={home} onChange={(e) => setHome(e.target.value)}>
+          <select id="new-agent-home" value={chosen ?? ''} onChange={(e) => setHome(e.target.value)}>
             {machines.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
           <label htmlFor="new-agent-template">Start from</label>

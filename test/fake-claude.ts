@@ -9,11 +9,15 @@
 // appears in the message decides the reply and any files written. Otherwise it
 // answers "fake reply".
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { fakeSetupToken } from './fake-claude-login.ts'
+
+// `claude setup-token`, for the checks of a box's own Claude sign-in.
+if (process.argv[2] === 'setup-token') process.exit(await fakeSetupToken())
 
 type Step = {
   outcome?: string
@@ -40,8 +44,11 @@ const cwd = process.cwd()
 const state = join(cwd, '.fake')
 mkdirSync(state, { recursive: true })
 const sessionId = flag('--resume') ?? randomUUID()
-// Each start, so a check can see what a process was started with.
-appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '' }) + '\n')
+// Each start, so a check can see what a process was started with. The Claude
+// token it was given is kept only as a fingerprint.
+const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
+const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
+appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha }) + '\n')
 type Rule = { match: string; reply?: string; write?: Record<string, string> }
 const scenario: Record<string, Record<string, Step[]>> & { turns?: Rule[] } = process.env.AGENTS_FAKE_SCENARIO
   ? JSON.parse(readFileSync(process.env.AGENTS_FAKE_SCENARIO, 'utf8')) : {}

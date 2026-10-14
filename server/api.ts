@@ -12,6 +12,7 @@ import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { instanceFrom, personFrom } from './auth.ts'
+import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -31,50 +32,15 @@ import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTempla
 import { createRoom } from './rooms.ts'
 import { addComment, messageTaskSession, resolveComment, startTask } from './tasks.ts'
 import { sendRoutine } from './routines.ts'
+import { onboardingRoutes } from './onboarding-routes.ts'
+import { boxRoutes } from './box-routes.ts'
 import {
   EVENT_KINDS, SESSION_STATUSES,
   type EventBatch, type EventKind, type NewEvent, type RawLine, type SessionStatus,
 } from '../shared/types.ts'
 
-const MAX_BODY_BYTES = 20 * 1024 * 1024
 // Kinds only a person can write. One from an instance would be handed back to it.
 const PERSON_KINDS: EventKind[] = ['user', 'answer']
-
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'body too large')
-    chunks.push(chunk)
-  }
-  return Buffer.concat(chunks)
-}
-
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const body = await readBody(req)
-  let value: unknown
-  try {
-    value = JSON.parse(body.toString('utf8') || '{}')
-  } catch {
-    throw new HttpError(400, 'body must be JSON')
-  }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, 'body must be a JSON object')
-  return value as Record<string, unknown>
-}
-
-// A property of a value from outside, which may be anything at all.
-const fieldOf = (value: unknown, key: string): unknown =>
-  typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined
-
-function text(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value) throw new HttpError(400, `${field} must be a non-empty string`)
-  return value
-}
-
-function optionalText(value: unknown, field: string): string | undefined {
-  return value === undefined || value === null ? undefined : text(value, field)
-}
 
 function parseBatch(raw: Record<string, unknown>): EventBatch {
   if (!Array.isArray(raw.events)) throw new HttpError(400, 'events must be an array')
@@ -108,21 +74,11 @@ function parseBatch(raw: Record<string, unknown>): EventBatch {
   }
 }
 
-// The parts of the path a route's pattern captures, in order. Every group in a
-// route's pattern is required, so a match always fills the ones it has.
-type Params = readonly [string, string, string]
-type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown>
-
 function paramsOf(path: RegExp, pathname: string): Params {
   const groups = path.exec(pathname)?.slice(1) ?? []
   if (groups.length > 3) throw new Error(`a route captures ${groups.length} parts, and at most 3 are handled`)
   return [groups[0] ?? '', groups[1] ?? '', groups[2] ?? '']
 }
-
-// People reach the API only through tailscale serve, on a Unix socket. Machines,
-// boxes included, reach it on a loopback port with their tokens. Containers and
-// tailnet peers can reach that port, so it never accepts a person's identity.
-export type Audience = 'people' | 'machines'
 
 // An agent reads the record from inside one of its sessions, which must be
 // running on the calling machine. That session decides what it may see.
@@ -140,13 +96,7 @@ const bounded = (value: string | null, fallback: number, max: number) =>
   Math.min(max, Math.max(1, Number(value) || fallback))
 const UUID = '([0-9a-f-]{36})'
 
-const routes: [Audience, string, RegExp, Handler][] = [
-  ['people', 'GET', /^\/v1\/me$/, async (req) => {
-    const person = await personFrom(req)
-    const team = await maybe<{ id: string; name: string }>(pool, 'select id, name from teams where id = $1', [person.team_id])
-    return { person: { id: person.id, login: person.login }, team }
-  }],
-
+const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/search$/, async (req, _params, url) => {
     const { teamId, sessionId } = await agentScope(req, url)
     return { hits: await searchRecord(teamId, sessionId, url.searchParams.get('q') ?? '', bounded(url.searchParams.get('limit'), 10, 50)) }
@@ -417,17 +367,18 @@ const routes: [Audience, string, RegExp, Handler][] = [
     return { ok: true }
   }],
 
-  // A person keeps a box for themselves, or lets it go back to the pool.
+  // A person keeps a box for themselves, or lets it go back to the pool. A
+  // person's own box is never in the pool.
   ['people', 'POST', new RegExp(`^/v1/instances/${UUID}/(claim|release)$`), async (req, [instanceId, action]) => {
     const person = await personFrom(req)
     const { rowCount } = await pool.query(
       action === 'claim'
         ? `update instances set claimed_by = $3, claimed_at = now(), idle_since = null
-           where id = $1 and team_id = $2 and kind = 'box' and claimed_by is null and claimed_by_run is null`
+           where id = $1 and team_id = $2 and kind = 'box' and not personal and claimed_by is null and claimed_by_run is null`
         : `update instances set claimed_by = null, claimed_at = null, idle_since = now()
-           where id = $1 and team_id = $2 and kind = 'box' and claimed_by = $3`,
+           where id = $1 and team_id = $2 and kind = 'box' and not personal and claimed_by = $3`,
       [instanceId, person.team_id, person.id])
-    if (!rowCount) throw new HttpError(409, action === 'claim' ? 'that box is taken or is not a box' : 'you do not hold that box')
+    if (!rowCount) throw new HttpError(409, action === 'claim' ? 'that box is taken or is not a box' : 'you do not hold that box, or it is your own box, which stays yours')
     return { ok: true }
   }],
 
@@ -437,6 +388,9 @@ const routes: [Audience, string, RegExp, Handler][] = [
     const clientId = optionalText(body.clientId, 'clientId') ?? randomUUID()
     return tx((client) => sendPersonMessage(client, person, conversationId, text(body.text, 'text'), clientId))
   }],
+
+  ...onboardingRoutes,
+  ...boxRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
