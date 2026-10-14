@@ -10,7 +10,7 @@ Everything here is ready to run, and nothing has run against AWS yet, since ther
 ## The shape
 
 - **Postgres** on RDS, PostgreSQL 17 on `db.t4g.small`, in private subnets. A parameter group turns on logical replication for Electric. RDS keeps 7 days of automated backups.
-- **The server**, a `t4g.large` named `agents-server` on the tailnet. It runs the API, Electric and the forge, through Compose and systemd. `tailscale serve` publishes the people port, as on this Mac.
+- **The server**, a `t4g.large` named `agents-server` on the tailnet. It runs the API, Electric and the forge, through Compose and systemd. `tailscale serve` publishes the API's people socket on port 80, as on this Mac.
 - **The box host**, an `m7g.xlarge` named `agents-boxes` on the tailnet. Boxes run there as Docker containers. The server reaches its Docker over Tailscale SSH.
 - **A backup bucket** in S3 for nightly dumps, kept 35 days.
 - **Alarms** by email for the instances, the disks, the API, the backups and the database.
@@ -154,7 +154,7 @@ The data is small. The forge's volume is about 5 MB and all of Postgres about 10
 
 **Rolling back to this Mac.**
 
-- **If nobody has written anything on AWS yet,** this Mac's data is as it was at step 2. Move the names back (step 6 in reverse, `tailscale serve --bg --http=80 http://127.0.0.1:7710` again on this Mac), run `docker compose start forge`, set `daemon.json` back, and start `com.agents.api` and `com.agents.daemon` with `launchctl bootstrap`.
+- **If nobody has written anything on AWS yet,** this Mac's data is as it was at step 2. Move the names back (step 6 in reverse, and on this Mac `sudo /opt/homebrew/opt/tailscale/bin/tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"`, which needs `sudo` since it serves a socket), run `docker compose start forge`, set `daemon.json` back, and start `com.agents.api` and `com.agents.daemon` with `launchctl bootstrap`.
 - **If people have worked on AWS,** first take their work with you. Run `sudo systemctl start agents-backup` on the server. On this Mac, with the API stopped, run `docker compose stop electric forge`, then `node --env-file=.env ops/aws/restore.ts s3://<bucket>/backups/<time>/`, and `docker compose start electric forge`. Then do the steps above. Bringing back what boxes changed in their homes on AWS is not done. The backup leaves box homes out, so those changes stay on the box host.
 
 ## Day to day

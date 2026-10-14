@@ -15,8 +15,9 @@ export const SERVER_ADDRESS = '10.40.0.10'
 export const BOX_HOST_ADDRESS = '10.40.0.20'
 export const VPC_RESOLVER = '10.40.0.2'
 export const MACHINE_PORT = 7700
-export const PEOPLE_PORT = 7710
 export const POSTGRES_PORT = 5432
+// A TCP port, as a setting.
+export const Port = z.coerce.number().int().min(1).max(65535)
 
 // A box is an agent's computer, so it reaches the public internet over any
 // protocol, as boxes on this Mac do, and nothing private except the server's
@@ -44,6 +45,10 @@ export const SERVICE_USER = 'agents'
 export const HOME = `/home/${SERVICE_USER}`
 export const REPO = `${HOME}/agents`
 export const APP_HOME = `${HOME}/.agents-app`
+// The socket in the app's home where the API serves people. tailscale serve
+// proxies port 80 to it, and no tailnet peer can reach a socket file, as
+// docs/design/people-port.md says.
+export const PEOPLE_SOCKET_FILE = 'people.sock'
 export const NODE_DIR = '/opt/node'
 export const RDS_CA_FILE = `${APP_HOME}/rds-ca.pem`
 
@@ -120,7 +125,6 @@ export const HostConfig = z.object({
   boxHostAddress: z.ipv4(),
   resolver: z.ipv4(),
   machinePort: z.number().int(),
-  peoplePort: z.number().int(),
 })
 export type HostConfig = z.infer<typeof HostConfig>
 

@@ -18,7 +18,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { SSMClient } from '@aws-sdk/client-ssm'
 import { z } from 'zod'
 import { hostConfig, readParameter } from './aws.ts'
-import { DatabaseSecret, SECRET_PARAMETERS, SERVICE_USER, TAILNET, settingsFrom } from './config.ts'
+import { DatabaseSecret, PEOPLE_SOCKET_FILE, SECRET_PARAMETERS, SERVICE_USER, TAILNET, settingsFrom } from './config.ts'
 import { isDryRun, perform } from './steps.ts'
 
 const Settings = z.object({ AGENTS_HOME: z.string().min(1).default(join(homedir(), '.agents-app')) })
@@ -29,6 +29,7 @@ if (!envFile) throw new Error('usage: node ops/aws/fetch-secrets.ts --to <path t
 const caFile = join(settings.AGENTS_HOME, 'rds-ca.pem')
 const forgeFile = join(settings.AGENTS_HOME, 'forge.json')
 const tokenFile = join(settings.AGENTS_HOME, 'box-claude-token')
+const peopleSocket = join(settings.AGENTS_HOME, PEOPLE_SOCKET_FILE)
 // The values this script keeps from the .env it wrote last time.
 const Kept = z.object({ ELECTRIC_SECRET: z.string().min(1).optional(), AGENTS_HOOK_SECRET: z.string().min(1).optional() })
 const newSecret = () => randomBytes(32).toString('hex')
@@ -71,7 +72,7 @@ await perform([{
       ELECTRIC_SECRET: kept.ELECTRIC_SECRET ?? newSecret(),
       AGENTS_HOOK_SECRET: hookSecret ?? kept.AGENTS_HOOK_SECRET ?? newSecret(),
       AGENTS_API_PORT: String(config.machinePort),
-      AGENTS_PEOPLE_PORT: String(config.peoplePort),
+      AGENTS_PEOPLE_SOCKET: peopleSocket,
       AGENTS_MACHINE_HOST: '0.0.0.0',
       AGENTS_BOX_DOCKER_HOST: `ssh://${SERVICE_USER}@${TAILNET.boxes}`,
       AGENTS_BOX_API: `http://${config.serverAddress}:${config.machinePort}`,

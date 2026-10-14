@@ -16,7 +16,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions'
 import * as ssm from 'aws-cdk-lib/aws-ssm'
 import type { Construct } from 'constructs'
 import {
-  BOX_HOST_ADDRESS, CODE_PARAMETER, CONFIG_PARAMETER, MACHINE_PORT, METRICS_NAMESPACE, NODE, NODE_DIR, PEOPLE_PORT,
+  BOX_HOST_ADDRESS, CODE_PARAMETER, CONFIG_PARAMETER, MACHINE_PORT, METRICS_NAMESPACE, NODE, NODE_DIR,
   POSTGRES_PORT, REPO, SECRET_PARAMETERS, SERVER_ADDRESS, SERVICE_USER, TAG, VPC_CIDR, VPC_RESOLVER,
   type DeploySettings, type HostConfig, type Role, type SecretName,
 } from './config.ts'
@@ -150,7 +150,7 @@ export class AgentsStack extends Stack {
     const hostConfig: HostConfig = {
       region: this.region, bucket: bucket.bucketName, databaseSecretArn: databaseSecret.secretArn,
       serverAddress: SERVER_ADDRESS, boxHostAddress: BOX_HOST_ADDRESS, resolver: VPC_RESOLVER,
-      machinePort: MACHINE_PORT, peoplePort: PEOPLE_PORT,
+      machinePort: MACHINE_PORT,
     }
     const configParameter = new ssm.StringParameter(this, 'HostConfig', {
       parameterName: CONFIG_PARAMETER, stringValue: this.toJsonString(hostConfig), description: 'agents: what the hosts need at boot, no secrets',

@@ -12,12 +12,13 @@
 // session fails instead, because its workspace is gone.
 //
 // The box reaches the API on port 7701, the one port besides the live API's that
-// colima's box firewall leaves open, so this check holds the checks' shared lock.
+// colima's box firewall leaves open. Whoever runs this check holds the shared lock
+// for that port first, as AGENTS.md says.
 //   node --env-file=.env --env-file=.env.test test/step11f.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -25,26 +26,27 @@ import pg from 'pg'
 import { z } from 'zod'
 import { startFakeAws } from './fake-aws.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
-// This check owns ports 7903 to 7905. The machine port is 7701, for the box firewall.
+// This check owns ports 7903 to 7906. The machine port is 7701, for the box firewall.
 const MACHINES = 7701
+// Where the check's stand-in for tailscale serve takes people to the API's socket.
 const PEOPLE = 7903
 const STREAMS = 7904
 const AWS_PORT = 7905
+// Nothing listens here, for an export that must find the machine port closed.
+const CLOSED = 7906
+// An address in IPv6's discard prefix (RFC 6666). A connection to it fails, and never with a refusal.
+const SILENT = '100::1'
 const BUCKET = 'agents-test-bucket'
 // Lima writes this SSH config for colima's VM. `ssh -F` with it reaches the VM as `colima`.
 const COLIMA_SSH_CONFIG = join(homedir(), '.colima', 'ssh_config')
-// The shared lock for checks on port 7701, and how long to wait for another holder.
-// A caller that runs several checks in a row may hold it for all of them, and
-// says so with AGENTS_CHECK_LOCK_HELD=1.
-const LOCK = join(homedir(), '.agents-app', 'checks', 'run.lock')
-const LOCK_WAIT_MS = 30 * 60_000
-const LOCK_POLL_MS = 10_000
-const LOCK_HELD = process.env.AGENTS_CHECK_LOCK_HELD === '1'
 // How long a box may take to come online, and a turn to finish.
 const ONLINE_MS = 120_000
 const TURN_MS = 120_000
+// How long a stopped check waits for its API to close before removing what it made.
+const STOP_MS = 10_000
 
 const id = randomBytes(4).toString('hex')
 const team = `aws-${id}`
@@ -53,6 +55,7 @@ const image = `agents-box:aws-step11f-${id}`
 // Box mounts come from colima's VM, which sees only the home folder.
 const work = join(homedir(), '.agents-app', 'checks', `aws-step11f-${id}`)
 const appHome = join(work, 'app-home')
+const peopleSocket = join(work, 'people', 'people.sock')
 // The restore reaches the box host's Docker over SSH, as on AWS, with colima's VM
 // as the box host. The Docker CLI runs `ssh` from the PATH, so a wrapper first on
 // it adds Lima's config and notes each call.
@@ -102,27 +105,12 @@ async function within(ms: number, test: () => Promise<unknown>): Promise<boolean
   return false
 }
 
-// mkdir succeeds for one holder at a time, which is how the checks share port 7701.
-async function takeLock() {
-  mkdirSync(join(LOCK, '..'), { recursive: true })
-  const deadline = Date.now() + LOCK_WAIT_MS
-  for (;;) {
-    try {
-      mkdirSync(LOCK)
-      return
-    } catch (error) {
-      if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST')) throw error
-      if (Date.now() > deadline) throw new Error(`${LOCK} has been held for ${LOCK_WAIT_MS / 60_000} minutes`)
-      await sleep(LOCK_POLL_MS)
-    }
-  }
-}
-
 const apiEnv: Record<string, string> = {
-  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_PORT: String(PEOPLE), AGENTS_STREAMS_PORT: String(STREAMS),
+  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_SOCKET: peopleSocket, AGENTS_STREAMS_PORT: String(STREAMS),
   AGENTS_STREAMS_DIR: join(work, 'streams'), AGENTS_BOX_IMAGE: image, AGENTS_BOX_API: `http://host.docker.internal:${MACHINES}`,
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
-    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
+    '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(ROOT, 'test/fake-claude-login.ts')}:/opt/fake/fake-claude-login.ts:ro`,
+    '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
     '-e', 'AGENTS_CLAUDE_BIN=/opt/fake/fake-claude.ts', '-e', 'AGENTS_FAKE_SCENARIO=/opt/fake/scenario.json',
   ]),
 }
@@ -167,9 +155,8 @@ const fingerprint = (volume: string) => docker('run', '--rm', '-v', `${volume}:/
   .split('\n').sort().join('\n')
 
 let boxId = ''
-let locked = false
 let connected = false
-// The Docker things this check made go whatever happened, and the lock is released.
+// The Docker things this check made go whatever happened.
 function removeOwn() {
   if (boxId) {
     tryDocker('rm', '-f', `agents-box-${boxId}`)
@@ -178,23 +165,21 @@ function removeOwn() {
   tryDocker('rm', '-f', forgeContainer, holder)
   for (const volume of [forgeVolume, forge2, electricVolume]) tryDocker('volume', 'rm', volume)
   tryDocker('image', 'rm', image)
-  if (locked) rmdirSync(LOCK)
-  locked = false
 }
-// Stopped from outside, the check kills the API first, so its runner cannot start the box again.
+// Stopped from outside, the check stops the API first, so its runner cannot start
+// the box again, and lets it close its stream store, which holds semaphores.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
-    for (const child of children) child.kill('SIGKILL')
-    removeOwn()
-    process.exit(1)
+    for (const child of children) child.kill('SIGTERM')
+    void Promise.race([api?.exited, sleep(STOP_MS)]).then(() => {
+      removeOwn()
+      process.exit(1)
+    })
   })
 }
 const fake = await startFakeAws(AWS_PORT, BUCKET)
 try {
-  if (!LOCK_HELD) {
-    await takeLock()
-    locked = true
-  }
+  await servePeople(PEOPLE, peopleSocket)
   await db.connect()
   connected = true
   mkdirSync(appHome, { recursive: true })
@@ -227,15 +212,22 @@ try {
   // The cutover: the export refuses while the API or the box runs, then takes the box's home.
   fake.parameters.set('/agents/config', {
     type: 'String', tags: {},
-    value: JSON.stringify({ region: 'us-east-1', bucket: BUCKET, databaseSecretArn: 'arn:aws:secretsmanager:us-east-1:111111111111:secret:rehearsal', serverAddress: '10.40.0.10', boxHostAddress: '10.40.0.20', resolver: '10.40.0.2', machinePort: 7700, peoplePort: 7710 }),
+    value: JSON.stringify({ region: 'us-east-1', bucket: BUCKET, databaseSecretArn: 'arn:aws:secretsmanager:us-east-1:111111111111:secret:rehearsal', serverAddress: '10.40.0.10', boxHostAddress: '10.40.0.20', resolver: '10.40.0.2', machinePort: 7700 }),
   })
   const exportEnv = {
-    DATABASE_URL: testUrl.toString(), AGENTS_HOOK_SECRET: 'rehearsal', AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_PORT: String(PEOPLE),
+    DATABASE_URL: testUrl.toString(), AGENTS_HOOK_SECRET: 'rehearsal', AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_SOCKET: peopleSocket,
     AGENTS_HOME: appHome, AGENTS_FORGE_CONTAINER: forgeContainer, AGENTS_FORGE_VOLUME: forgeVolume, AGENTS_RUNNER_TEAMS: team,
   }
-  const apiUp = await fake.script(['ops/aws/export.ts'], exportEnv)
-  check(apiUp.status !== 0 && apiUp.out.includes('the API on this Mac is still running'), 'the export refuses while the API runs')
+  // The API answers on the machine port and on its people socket. Each alone is enough to refuse.
+  const machineUp = await fake.script(['ops/aws/export.ts'], { ...exportEnv, AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock') })
+  check(machineUp.status !== 0 && machineUp.out.includes('the API on this Mac is still running'), "the export refuses while the API's machine port answers")
+  const peopleUp = await fake.script(['ops/aws/export.ts'], { ...exportEnv, AGENTS_API_PORT: String(CLOSED) })
+  check(peopleUp.status !== 0 && peopleUp.out.includes('the API on this Mac is still running'), 'and while its people socket answers')
   await stopApi()
+  // A machine port that cannot be reached leaves it unknown whether the API runs. Only a refusal means stopped.
+  const silent = await fake.script(['ops/aws/export.ts'], { ...exportEnv, AGENTS_MACHINE_HOST: SILENT, AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock') })
+  check(silent.status !== 0 && silent.out.includes(SILENT) && !silent.out.includes('still running'),
+    'it refuses when the machine port cannot be reached at all, since whether the API runs is then unknown')
   const boxUp = await fake.script(['ops/aws/export.ts'], exportEnv)
   check(boxUp.status !== 0 && boxUp.out.includes(`still running: agents-box-${boxId}.`) && fake.objects.size === 0
     && docker('inspect', '-f', '{{.State.Running}}', forgeContainer) === 'true',

@@ -1,9 +1,9 @@
 // AWS step 11: the API and boxes, ready for the cloud. An API whose machine port
 // listens on a non-loopback address answers machines there, refuses Tailscale
-// identity headers there, and keeps its people port on loopback. Unset, the
+// identity headers there, and still serves people only on its socket. Unset, the
 // machine port listens only on loopback, and an address that is not an IP stops
 // the API. A box whose Docker host cannot be reached keeps its token, a box whose
-// `docker run` fails never writes a token to the log, and an API whose boxes run
+// `docker run` fails records why without writing a token to the log, and an API whose boxes run
 // on a remote Docker host refuses to start without AGENTS_BOX_API.
 //   node --env-file=.env --env-file=.env.test test/step11.ts
 
@@ -17,10 +17,12 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { z } from 'zod'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // This check owns ports 7900 to 7902 and 7908. Its APIs run one at a time, so they share three.
 const MACHINES = 7900
+// Where the check's stand-in for tailscale serve takes people to the API's socket.
 const PEOPLE = 7901
 const STREAMS = 7902
 // Nothing listens here, so an ssh:// Docker host on it fails at once.
@@ -39,6 +41,8 @@ const id = randomBytes(4).toString('hex')
 const team = `aws-${id}`
 const login = `aws-${id}@local`
 const work = mkdtempSync(join(tmpdir(), 'agents-step11-'))
+// One socket for the APIs, which run one at a time. Each replaces the one the last left.
+const peopleSocket = join(work, 'people', 'people.sock')
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const failures: string[] = []
 const children: ChildProcess[] = []
@@ -80,7 +84,7 @@ type Api = { child: ChildProcess; output: () => string; exited: Promise<number |
 // database. Docker and box settings from the shell never leak in.
 function startApi(settings: Record<string, string>): Api {
   const env: NodeJS.ProcessEnv = {
-    ...process.env, AGENTS_RUNNER: 'off', AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_PORT: String(PEOPLE),
+    ...process.env, AGENTS_RUNNER: 'off', AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_SOCKET: peopleSocket,
     AGENTS_STREAMS_PORT: String(STREAMS), AGENTS_STREAMS_DIR: mkdtempSync(join(work, 'streams-')),
   }
   for (const name of ['AGENTS_MACHINE_HOST', 'DOCKER_HOST', 'AGENTS_BOX_DOCKER_HOST', 'AGENTS_BOX_API', 'AGENTS_BOX_IMAGE',
@@ -124,6 +128,8 @@ async function within(ms: number, test: () => boolean | Promise<boolean>): Promi
 }
 
 const count = (text: string, pattern: RegExp) => text.match(new RegExp(pattern.source, 'g'))?.length ?? 0
+const startErrorOf = async (boxId: string) =>
+  must((await db.query<{ start_error: string | null }>('select start_error from instances where id = $1', [boxId])).rows[0], 'the box').start_error
 const tokenOf = async (boxId: string) =>
   must((await db.query<{ token_sha256: string }>('select token_sha256 from instances where id = $1', [boxId])).rows[0], 'the box').token_sha256
 
@@ -143,6 +149,7 @@ process.on('SIGTERM', () => {
 })
 
 try {
+  await servePeople(PEOPLE, peopleSocket)
   await db.connect()
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, login)
@@ -167,7 +174,7 @@ try {
   const me = z.object({ person: z.object({ login: z.string() }) })
     .safeParse(await fetch(`http://127.0.0.1:${PEOPLE}/v1/me`, { headers: { 'tailscale-user-login': login } }).then((r) => r.json(), () => null))
   check(peopleThere === 'ECONNREFUSED' && me.data?.person.login === login,
-    `the people port stays on loopback: ${lan}:${PEOPLE} refuses connections (${peopleThere}) and 127.0.0.1:${PEOPLE} knows the person`)
+    `people still arrive only on the API's socket: ${lan}:${PEOPLE} refuses connections (${peopleThere}), and through the socket the person is known`)
   await stop(wide)
 
   // Unset, the machine port listens only on loopback, as on the Mac today.
@@ -199,8 +206,8 @@ try {
     `after ${BOX_ERRORS} runner passes against an unreachable box host the box keeps its token, so its running container still works`)
   await stop(cut)
 
-  // A box whose container cannot start. The error is logged, but never the box's
-  // token or the Claude token, both of which `docker run` is given.
+  // A box whose container cannot start. Why is recorded for its owner and logged,
+  // but never the box's token or the Claude token, both of which `docker run` is given.
   const failing = await heldBox(`box-${id}-b`)
   const claudeToken = `sk-ant-oat01-${randomBytes(24).toString('base64url')}`
   const tokenFile = join(work, 'box-claude-token')
@@ -210,7 +217,8 @@ try {
     AGENTS_BOX_IMAGE: NO_IMAGE, AGENTS_BOX_DOCKER_ARGS: JSON.stringify(['--pull', 'never']),
   })
   check(await listening(broken), 'an API whose box image is missing starts')
-  check(await within(BOX_ERRORS_MS, () => count(broken.output(), /starting box/) >= BOX_ERRORS), 'the runner logs that the box container could not start')
+  check(await within(BOX_ERRORS_MS, async () => count(broken.output(), /starting box/) >= 1 && await startErrorOf(failing.boxId) !== null),
+    'the runner records and logs why the box container could not start')
   const log = broken.output()
   check(!log.includes(claudeToken) && !/machine_[A-Za-z0-9_-]{8}/.test(log),
     'the log of a failed docker run holds neither the Claude token nor the box token')

@@ -416,7 +416,7 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 
 ### The machine port's address (`server/api.ts`)
 
-- **Solves now.** `AGENTS_MACHINE_HOST` lists the IP addresses the machine port listens on, checked when the API starts, so the server on AWS can answer boxes on its VPC address and teammates' daemons on the tailnet. The people port stays on loopback. The machine port refuses any Tailscale identity header, not only the login.
+- **Solves now.** `AGENTS_MACHINE_HOST` lists the IP addresses the machine port listens on, checked when the API starts, so the server on AWS can answer boxes on its VPC address and teammates' daemons on the tailnet. People still arrive only on the API's socket. The machine port refuses any Tailscale identity header, not only the login.
 - **Helps later.** Teammates' own computers can run daemons against the server.
 
 ### Boxes on a box host (`server/boxes.ts`)

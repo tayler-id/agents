@@ -21,13 +21,15 @@ import { z } from 'zod'
 import { BOX_DNS } from '../ops/aws/config.ts'
 import { startFakeAws } from './fake-aws.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
-// This check owns ports 7913 to 7918: the fake AWS, a test API's three, and two
-// that nothing listens on, for export.ts to find the API stopped.
+// This check owns ports 7913 to 7917: the fake AWS, a test API's machine and stream
+// ports, the stand-in for serve that takes people to its socket, and one that
+// nothing listens on, for export.ts to find the API stopped.
 const AWS_PORT = 7913
 const API_PORTS = { machines: 7914, people: 7915, streams: 7916 } as const
-const UNUSED_PORTS = [7917, 7918] as const
+const UNUSED_PORT = 7917
 const START_MS = 20_000
 const BUCKET = 'agents-test-bucket'
 const REGION = 'us-east-1'
@@ -94,7 +96,7 @@ try {
 
   // ---- fetch-secrets.ts ----
   const dbPassword = 'pa ss+word&more'
-  const config = { region: REGION, bucket: BUCKET, databaseSecretArn: SECRET_ARN, serverAddress: '10.40.0.10', boxHostAddress: '10.40.0.20', resolver: '10.40.0.2', machinePort: 7700, peoplePort: 7710 }
+  const config = { region: REGION, bucket: BUCKET, databaseSecretArn: SECRET_ARN, serverAddress: '10.40.0.10', boxHostAddress: '10.40.0.20', resolver: '10.40.0.2', machinePort: 7700 }
   parameters.set('/agents/config', { value: JSON.stringify(config), type: 'String', tags: {} })
   parameters.set('/agents/server/hook-secret', { value: 'hook-secret-from-the-mac', type: 'SecureString', tags: {} })
   parameters.set('/agents/server/box-claude-token', { value: 'sk-ant-oat01-boxes', type: 'SecureString', tags: {} })
@@ -109,8 +111,9 @@ try {
     && databaseUrl.searchParams.get('sslmode') === 'verify-full' && databaseUrl.searchParams.get('sslrootcert') === join(appHome, 'rds-ca.pem'),
   "fetch-secrets.ts writes .env with mode 600, and a DATABASE_URL that checks RDS's certificate and keeps the password whole")
   check(env.AGENTS_HOOK_SECRET === 'hook-secret-from-the-mac' && /^[0-9a-f]{64}$/.test(env.ELECTRIC_SECRET ?? '') && env.AGENTS_MACHINE_HOST === '0.0.0.0'
-    && env.AGENTS_BOX_DOCKER_HOST === 'ssh://agents@agents-boxes' && env.AGENTS_BOX_API === 'http://10.40.0.10:7700' && env.AGENTS_BACKUP_BUCKET === BUCKET,
-  "it sets the machine port's address, the box host, where boxes reach the server, and the bucket")
+    && env.AGENTS_BOX_DOCKER_HOST === 'ssh://agents@agents-boxes' && env.AGENTS_BOX_API === 'http://10.40.0.10:7700' && env.AGENTS_BACKUP_BUCKET === BUCKET
+    && env.AGENTS_PEOPLE_SOCKET === join(appHome, 'people.sock') && env.AGENTS_PEOPLE_PORT === undefined,
+  "it sets the machine port's address, the people socket in the app's home, the box host, where boxes reach the server, and the bucket")
   check(mode(join(appHome, 'forge.json')) === 0o600 && readFileSync(join(appHome, 'box-claude-token'), 'utf8') === 'sk-ant-oat01-boxes\n'
     && mode(join(appHome, 'box-claude-token')) === 0o600, "the forge's config and the Claude token for boxes land in files with mode 600")
   check(![dbPassword, 'hook-secret-from-the-mac', 'sk-ant-oat01-boxes', 'forge-token'].some((value) => first.out.includes(value)), 'fetch-secrets.ts prints no secret')
@@ -169,9 +172,11 @@ try {
   "it brings the forge's volume back, empties Electric's, and prints no password")
 
   // ---- health.ts ----
+  const peopleSocket = join(work, 'people', 'people.sock')
+  await servePeople(API_PORTS.people, peopleSocket)
   const api = spawn(process.execPath, ['server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'],
-    env: { ...process.env, AGENTS_RUNNER: 'off', AGENTS_API_PORT: String(API_PORTS.machines), AGENTS_PEOPLE_PORT: String(API_PORTS.people),
+    env: { ...process.env, AGENTS_RUNNER: 'off', AGENTS_API_PORT: String(API_PORTS.machines), AGENTS_PEOPLE_SOCKET: peopleSocket,
       AGENTS_STREAMS_PORT: String(API_PORTS.streams), AGENTS_STREAMS_DIR: join(work, 'streams') },
   })
   children.push(api)
@@ -179,7 +184,7 @@ try {
   const apiExited = new Promise((resolve) => { api.once('exit', resolve) })
   const deadline = Date.now() + START_MS
   while (Date.now() < deadline && !(await fetch(`http://127.0.0.1:${API_PORTS.people}/v1/me`).then(() => true, () => false))) await sleep(250)
-  const healthEnv = { AGENTS_API_PORT: String(API_PORTS.machines), AGENTS_PEOPLE_PORT: String(API_PORTS.people), AGENTS_HOME: appHome }
+  const healthEnv = { AGENTS_API_PORT: String(API_PORTS.machines), AGENTS_PEOPLE_SOCKET: peopleSocket, AGENTS_HOME: appHome }
   const sent = (host: string) => Object.fromEntries(metrics.filter((m) => m.host === host && m.namespace === 'Agents').map((m) => [m.name, m.value]))
   const healthDry = await script(['ops/aws/health.ts', 'server', '--dry-run'], healthEnv)
   check(healthDry.status === 0 && metrics.length === 0 && healthDry.out.includes('ApiUp=1'), "health.ts's dry run measures and prints, and sends nothing")
@@ -189,6 +194,9 @@ try {
     'health.ts reports the API, Electric and the forge up, with Host=server, in the Agents namespace')
   check([server.DiskUsedPercent, server.MemoryUsedPercent].every((value) => value !== undefined && value > 0 && value <= 100)
     && server.BackupAgeHours !== undefined && server.BackupAgeHours < 1, 'it reports disk and memory use, and an hour-old-at-most backup')
+  metrics.length = 0
+  const noPeople = await script(['ops/aws/health.ts', 'server'], { ...healthEnv, AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock') })
+  check(noPeople.status === 0 && sent('server').ApiUp === 0, 'with the machine port up and nothing on the people socket it reports ApiUp=0')
   api.kill('SIGTERM')
   await apiExited
   metrics.length = 0
@@ -206,7 +214,7 @@ try {
     // Everything export.ts could touch is the check's own, so even a dry run that acted would harm nothing.
     ['export.ts', ['ops/aws/export.ts', '--dry-run'], {
       DATABASE_URL: urlFor(scratch), AGENTS_HOOK_SECRET: 'unused', AGENTS_FORGE_CONTAINER: forgeContainer, AGENTS_FORGE_VOLUME: forgeVolume,
-      AGENTS_HOME: appHome, AGENTS_API_PORT: String(UNUSED_PORTS[0]), AGENTS_PEOPLE_PORT: String(UNUSED_PORTS[1]),
+      AGENTS_HOME: appHome, AGENTS_API_PORT: String(UNUSED_PORT), AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock'),
     }],
     ['update.ts on the server', ['ops/aws/update.ts', 'server', '--dry-run'], {}],
     ['update.ts on the box host', ['ops/aws/update.ts', 'boxes', '--dry-run'], {}],
@@ -227,7 +235,9 @@ try {
     && serverUnits.out.includes('Environment=AWS_REGION=us-east-1') && serverUnits.out.includes('OnCalendar=*-*-* 03:30:00 UTC')
     && serverUnits.out.includes('compose.server.yaml up -d --wait electric forge') && serverUnits.out.includes('Before=agents-compose.service agents-api.service'),
   'install-systemd.ts plans the API, Compose without Postgres, the secrets before them, and the nightly backup')
-  const boxUnits = await script(['ops/install-systemd.ts', 'boxes', '--aws', '--dry-run'], { AGENTS_API_ADDRESS: '10.40.0.10' })
+  check(serverUnits.out.includes('would run tailscale serve --bg --http=80 unix:/home/agents/.agents-app/people.sock\n'),
+    "it points tailscale serve at the API's people socket in the service user's app home")
+  const boxUnits =await script(['ops/install-systemd.ts', 'boxes', '--aws', '--dry-run'], { AGENTS_API_ADDRESS: '10.40.0.10' })
   const firewallUnit = boxUnits.out.slice(boxUnits.out.indexOf('agents-box-firewall.service:'), boxUnits.out.indexOf('agents-health.service:'))
   check(boxUnits.status === 0 && firewallUnit.includes('Before=docker.service') && firewallUnit.includes('RequiredBy=docker.service')
     && boxUnits.out.includes('AGENTS_API_ADDRESS=10.40.0.10\nAGENTS_API_PORT=7700\n'),

@@ -6,7 +6,7 @@
 //
 // server: Electric and the forge through Compose (with Postgres too, except on
 //   AWS where it is RDS), the API, this host's daemon when its daemon.json
-//   exists, and tailscale serve for the people port when Tailscale is installed.
+//   exists, and tailscale serve for the people socket when Tailscale is installed.
 // boxes: the box firewall (ops/aws/box-firewall.ts), which Docker requires, so
 //   no box runs without it.
 // --aws adds the secrets written at boot, the nightly backup and the sudo rules
@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import { MACHINE_PORT, PEOPLE_PORT, Role, settingsFrom } from './aws/config.ts'
+import { MACHINE_PORT, PEOPLE_SOCKET_FILE, Role, settingsFrom } from './aws/config.ts'
 import { isDryRun, run } from './aws/steps.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
@@ -28,7 +28,6 @@ const SUDOERS = '/etc/sudoers.d/agents'
 const port = z.coerce.number().int().min(1).max(65535)
 const Settings = z.object({
   AGENTS_USER: z.string().regex(/^[a-z_][a-z0-9_-]*$/).default('agents'),
-  AGENTS_PEOPLE_PORT: port.default(PEOPLE_PORT),
 })
 const AwsSettings = z.object({ AWS_REGION: z.string().regex(/^[a-z]{2}-[a-z]+-\d$/) })
 const BoxSettings = z.object({
@@ -54,6 +53,8 @@ const dryRun = isDryRun()
 const settings = settingsFrom(Settings, 'the install settings')
 const user = settings.AGENTS_USER
 const home = `/home/${user}`
+// Where the API serves people. The service user's .env names the same path, as fetch-secrets.ts writes it.
+const peopleSocket = join(home, '.agents-app', PEOPLE_SOCKET_FILE)
 const path = `${dirname(NODE)}:/usr/local/bin:/usr/bin:/bin`
 const region: Directive[] = aws ? [['Environment', `AWS_REGION=${settingsFrom(AwsSettings, 'the AWS settings').AWS_REGION}`]] : []
 const asUser: Directive[] = [['User', user], ['WorkingDirectory', ROOT], ['Environment', `PATH=${path}`], ...region]
@@ -206,8 +207,8 @@ function installed(program: string): boolean {
     throw error
   }
 }
-// tailscale serve keeps this setting itself, across restarts.
+// tailscale serve keeps this setting itself, across restarts. Serving a socket needs root, which this has.
 if (role === 'server' && (dryRun || installed('tailscale'))) {
-  command('tailscale', ['serve', '--bg', '--http=80', `http://127.0.0.1:${settings.AGENTS_PEOPLE_PORT}`])
+  command('tailscale', ['serve', '--bg', '--http=80', `unix:${peopleSocket}`])
 }
 console.log(dryRun ? 'dry run: nothing changed' : `installed ${planned.length} units for the ${role}`)

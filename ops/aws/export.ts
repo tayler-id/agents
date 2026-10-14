@@ -19,17 +19,20 @@ import { SSMClient } from '@aws-sdk/client-ssm'
 import pg from 'pg'
 import { z } from 'zod'
 import { boxContainer, boxHomeVolume } from '../../shared/boxes.ts'
+import { hasCode } from '../../shared/errors.ts'
+import { accepts } from '../../shared/socket.ts'
+import { MachineHosts } from '../../shared/listen.ts'
 import { archiveVolume, dumpDatabase, runningBoxes, volumeNames } from './archive.ts'
 import { hostConfig, putSecret, upload } from './aws.ts'
-import { NODE_DIR, REPO, SERVICE_USER, settingsFrom } from './config.ts'
+import { MACHINE_PORT, NODE_DIR, Port, REPO, SERVICE_USER, settingsFrom } from './config.ts'
 import { isDryRun, perform, run } from './steps.ts'
 
-const port = z.coerce.number().int().min(1).max(65535)
 const Settings = z.object({
   DATABASE_URL: z.url(),
   AGENTS_HOOK_SECRET: z.string().min(1),
-  AGENTS_API_PORT: port.default(7700),
-  AGENTS_PEOPLE_PORT: port.default(7710),
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
+  AGENTS_MACHINE_HOST: MachineHosts,
+  AGENTS_PEOPLE_SOCKET: z.string().startsWith('/'),
   AGENTS_HOME: z.string().min(1).default(join(homedir(), '.agents-app')),
   AGENTS_FORGE_CONTAINER: z.string().min(1).default('agents-forge-1'),
   AGENTS_FORGE_VOLUME: z.string().min(1).default('agents_forgedata'),
@@ -39,7 +42,8 @@ const Settings = z.object({
     return names.length ? names : null
   }),
 })
-// How long to wait for the API to answer before deciding it is stopped.
+// How long the machine port may take to answer. One that has not answered by
+// then leaves it unknown whether the API runs.
 const CONNECT_MS = 1000
 
 const settings = settingsFrom(Settings, 'the export settings')
@@ -58,13 +62,22 @@ let bucket = ''
 let boxes: string[] = []
 const archived: string[] = []
 
-// Whether something accepts connections on a loopback port.
-const listening = (at: number) => new Promise<boolean>((resolve) => {
-  const socket = connect({ host: '127.0.0.1', port: at, timeout: CONNECT_MS })
+// Whether the machine port accepts connections at an address it listens on. Only
+// a refusal means stopped. Silence or any other failure leaves it unknown, so the
+// export stops rather than copy a database the API may still write to.
+const machinePortOpen = (host: string, at: number) => new Promise<boolean>((resolve, reject) => {
+  const socket = connect({ host, port: at, timeout: CONNECT_MS })
   socket.once('connect', () => { socket.destroy(); resolve(true) })
-  socket.once('timeout', () => { socket.destroy(); resolve(false) })
-  socket.once('error', () => { resolve(false) })
+  socket.once('timeout', () => {
+    socket.destroy()
+    reject(new Error(`${host} port ${String(at)} did not answer in ${String(CONNECT_MS)} ms, so whether the API runs is unknown`))
+  })
+  socket.once('error', (error) => { if (hasCode(error, 'ECONNREFUSED')) resolve(false); else reject(error) })
 })
+
+// Whether the API serves people on its socket. With no socket file it never has
+// on this Mac. A file a stopped API left behind refuses connections.
+const peopleSocketOpen = async (path: string) => existsSync(path) && await accepts(path)
 
 // The box instances in the database, of the teams named if any.
 async function boxesIn(): Promise<string[]> {
@@ -83,9 +96,10 @@ async function boxesIn(): Promise<string[]> {
 try {
   await perform([
     {
-      say: `check that the API on this Mac is stopped (ports ${settings.AGENTS_API_PORT} and ${settings.AGENTS_PEOPLE_PORT})`,
+      say: `check that the API on this Mac is stopped (port ${String(settings.AGENTS_API_PORT)} on ${settings.AGENTS_MACHINE_HOST.join(', ')}, and ${settings.AGENTS_PEOPLE_SOCKET})`,
       act: async () => {
-        if (await listening(settings.AGENTS_API_PORT) || await listening(settings.AGENTS_PEOPLE_PORT)) {
+        const machinePort = await Promise.all(settings.AGENTS_MACHINE_HOST.map((host) => machinePortOpen(host, settings.AGENTS_API_PORT)))
+        if (machinePort.includes(true) || await peopleSocketOpen(settings.AGENTS_PEOPLE_SOCKET)) {
           throw new Error('the API on this Mac is still running. Stop it first: launchctl bootout gui/$(id -u)/com.agents.api')
         }
       },

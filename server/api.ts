@@ -9,7 +9,7 @@ import { BUILD } from './build.ts'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
-import { connect, type Server } from 'node:net'
+import type { Server } from 'node:net'
 import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -18,7 +18,9 @@ import { instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
-import { messageOf } from '../shared/errors.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
+import { accepts } from '../shared/socket.ts'
+import { MachineHosts } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
@@ -679,17 +681,6 @@ const STOP_GRACE_MS = 5000
 // Tailscale-User-Login is a socket, which only tailscale serve is pointed at.
 const PeopleSocket = z.string().startsWith('/')
 
-const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
-
-// Whether something accepts connections on the socket at this path.
-function accepts(path: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const probe = connect(path)
-    probe.once('connect', () => { probe.destroy(); resolve(true) })
-    probe.once('error', (error) => { if (hasCode(error, 'ECONNREFUSED')) resolve(false); else reject(error) })
-  })
-}
-
 // An API that stops without closing its socket leaves the file behind, and it
 // refuses connections. A socket that accepts them belongs to a running API, and
 // taking it over would send people to this one instead, so that stops this one.
@@ -721,12 +712,9 @@ async function listenForPeople(server: Server, path: string) {
   await chmod(path, 0o600)
 }
 
-// Where machines reach the API: the machine port, on each address in
-// AGENTS_MACHINE_HOST, a comma-separated list of IP addresses.
+// Where machines reach the API: the machine port, on each address in AGENTS_MACHINE_HOST.
 const Listen = z.object({
-  AGENTS_MACHINE_HOST: z.string().default('127.0.0.1')
-    .transform((value) => value.split(',').map((host) => host.trim()))
-    .pipe(z.array(z.union([z.ipv4(), z.ipv6()])).min(1)),
+  AGENTS_MACHINE_HOST: MachineHosts,
   AGENTS_API_PORT: z.coerce.number().int().min(1).max(65535).default(7700),
 })
 const address = (host: string, at: number) => (host.includes(':') ? `[${host}]:${at}` : `${host}:${at}`)

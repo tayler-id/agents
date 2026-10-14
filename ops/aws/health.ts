@@ -6,17 +6,18 @@
 // A dry run measures and prints what it would send, and sends nothing.
 
 import { existsSync, readFileSync, statfsSync } from 'node:fs'
+import { request } from 'node:http'
 import { freemem, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { CloudWatchClient, PutMetricDataCommand, type MetricDatum, type StandardUnit } from '@aws-sdk/client-cloudwatch'
 import { z } from 'zod'
-import { BACKUP_STATE, BackupState, METRICS_NAMESPACE, Role, settingsFrom } from './config.ts'
+import { BACKUP_STATE, BackupState, MACHINE_PORT, METRICS_NAMESPACE, Port, Role, settingsFrom } from './config.ts'
 import { isDryRun } from './steps.ts'
 
-const port = z.coerce.number().int().min(1).max(65535)
-const Settings = z.object({
-  AGENTS_API_PORT: port.default(7700),
-  AGENTS_PEOPLE_PORT: port.default(7710),
+// What the server's report reads, from its .env. The box host reports disk and memory only, and reads none of it.
+const ServerSettings = z.object({
+  AGENTS_API_PORT: Port.default(MACHINE_PORT),
+  AGENTS_PEOPLE_SOCKET: z.string().startsWith('/'),
   ELECTRIC_URL: z.url().default('http://127.0.0.1:3000'),
   AGENTS_FORGE_URL: z.url().default('http://127.0.0.1:3001'),
   AGENTS_HOME: z.string().min(1).default(join(homedir(), '.agents-app')),
@@ -40,23 +41,38 @@ async function answers(url: string, expected: number, init: RequestInit = {}): P
   }
 }
 
+// Whether a GET on the people socket gets the status a healthy API gives. As with
+// answers(), no connection or no answer in time is a no.
+function answersOnSocket(socketPath: string, path: string, expected: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = request({ socketPath, path, method: 'GET', timeout: PROBE_MS }, (res) => {
+      res.resume()
+      resolve(res.statusCode === expected)
+    })
+    req.once('timeout', () => { req.destroy() })
+    req.once('error', () => { resolve(false) })
+    req.end()
+  })
+}
+
 function diskUsedPercent(): number {
   const disk = statfsSync('/')
   const used = disk.blocks - disk.bfree
   return (100 * used) / (used + disk.bavail)
 }
 
-async function measure(role: Role, settings: z.infer<typeof Settings>): Promise<[string, number, StandardUnit][]> {
+async function measure(role: Role): Promise<[string, number, StandardUnit][]> {
   const shared: [string, number, StandardUnit][] = [
     ['DiskUsedPercent', diskUsedPercent(), 'Percent'],
     ['MemoryUsedPercent', 100 * (1 - freemem() / totalmem()), 'Percent'],
   ]
   if (role === 'boxes') return shared
+  const settings = settingsFrom(ServerSettings, 'the health settings')
   const machine = answers(`http://127.0.0.1:${settings.AGENTS_API_PORT}/v1/instance/heartbeat`, 401, {
     method: 'POST', headers: { authorization: `Bearer ${PROBE_TOKEN}`, 'content-type': 'application/json' }, body: '{}',
   })
-  // Without a Tailscale login the people port answers 401, which shows it is listening.
-  const people = answers(`http://127.0.0.1:${settings.AGENTS_PEOPLE_PORT}/v1/me`, 401)
+  // Without a Tailscale login the people socket answers 401, which shows the API serves people there.
+  const people = answersOnSocket(settings.AGENTS_PEOPLE_SOCKET, '/v1/me', 401)
   const [machineUp, peopleUp, electricUp, forgeUp] = await Promise.all([
     machine, people, answers(new URL('/v1/health', settings.ELECTRIC_URL).toString(), 200), answers(new URL('/api/healthz', settings.AGENTS_FORGE_URL).toString(), 200),
   ])
@@ -76,8 +92,7 @@ async function measure(role: Role, settings: z.infer<typeof Settings>): Promise<
 }
 
 const role = Role.parse(process.argv[2])
-const settings = settingsFrom(Settings, 'the health settings')
-const metrics = await measure(role, settings)
+const metrics = await measure(role)
 const data: MetricDatum[] = metrics.map(([name, value, unit]) => ({ MetricName: name, Value: value, Unit: unit, Dimensions: [{ Name: 'Host', Value: role }] }))
 const summary = metrics.map(([name, value]) => `${name}=${Math.round(value * 10) / 10}`).join(' ')
 if (isDryRun()) {

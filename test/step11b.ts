@@ -17,9 +17,9 @@ import { z } from 'zod'
 import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
-// This check owns ports 7909 to 7911.
+// This check owns ports 7909 and 7911. It sends no requests as a person, so its API's
+// people socket needs no stand-in for serve.
 const MACHINES = 7909
-const PEOPLE = 7910
 const STREAMS = 7911
 // Lima writes this SSH config for colima's VM. `ssh -F` with it reaches the VM as `colima`.
 const COLIMA_SSH_CONFIG = join(homedir(), '.colima', 'ssh_config')
@@ -63,7 +63,7 @@ const serverEnv: NodeJS.ProcessEnv = {
   ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}`,
   DOCKER_HOST: `unix://${join(work, 'no-docker.sock')}`, AGENTS_BOX_DOCKER_HOST: 'ssh://colima',
   AGENTS_BOX_API: BOX_API, AGENTS_BOX_IMAGE: image, AGENTS_BOX_TOKEN_FILE: claudeTokenFile,
-  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_PORT: String(PEOPLE),
+  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(MACHINES), AGENTS_PEOPLE_SOCKET: join(work, 'people', 'people.sock'),
   AGENTS_STREAMS_PORT: String(STREAMS), AGENTS_STREAMS_DIR: join(work, 'streams'),
 }
 delete serverEnv.AGENTS_BOX_DOCKER_ARGS
