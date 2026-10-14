@@ -240,6 +240,8 @@ try {
   // New events, and the busy task, which has gone quiet.
   await tx((client) => sendPersonMessage(client, alice, aliceDm.conversation, 'For release notes, put the newest change first.', randomUUID()))
   await tx((client) => sendPersonMessage(client, bob, bobDm.conversation, 'Release notes go newest first, always.', randomUUID()))
+  // The agent repeats Bob's words. The words are Bob's, but this step is the agent's.
+  await agentSays(bobDm.session, 'Got it. Release notes go newest first, always, from now on.')
   await pool.query(`update sessions set last_active_at = now() - interval '2 hours' where id = any($1)`, [[aliceDm.session, bobDm.session, busy.sessionId]])
   const second = await pickSessions(pool, teamId, fixer)
   const secondPicked = new Map(second.picked.map((p) => [String(p.sessionId), p]))
@@ -254,22 +256,23 @@ try {
   const report2 = {
     findings: [
       { kind: 'gap', session: aliceDm.session, step: aliceStep, quote: 'British English: colour, not color', correction: 'Write in British English.', candidate: britA.id, fix: 'text' },
-      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first'), quote: 'Release notes go newest first', correction: 'Newest first.', candidate: othersCandidate, fix: 'text' },
+      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first, always.'), quote: 'Release notes go newest first', correction: 'Newest first.', candidate: othersCandidate, fix: 'text' },
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'Keep it to one line'), quote: 'Keep it to one line, please.', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: aliceDm.session, step: await stepOf(aliceDm.session, 'newest change first'), quote: 'put the newest change first', correction: 'List the newest change first in release notes.', same: 'newest', fix: 'text', when: 'writing release notes' },
-      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first'), quote: 'Release notes go newest first', correction: 'Newest first.', same: 'newest', fix: 'text', when: 'writing release notes' },
-      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first'), quote: 'Release notes go newest first', correction: 'Newest first.', candidate: randomUUID(), fix: 'text' },
+      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first, always.'), quote: 'Release notes go newest first', correction: 'Newest first.', same: 'newest', fix: 'text', when: 'writing release notes' },
+      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'newest first, always.'), quote: 'Release notes go newest first', correction: 'Newest first.', candidate: randomUUID(), fix: 'text' },
       // The agent's own words and a tool's result, read as corrections, and the agent's thinking, which the reader never saw.
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'From now on every summary'), quote: 'From now on every summary fits on one line.', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'STYLE.md: every summary'), quote: 'every summary fits on one line, always', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
       { kind: 'gap', session: busy.sessionId, step: await stepOf(busy.sessionId, 'She wants every summary'), quote: 'She wants every summary on one line', correction: 'Answer in one line.', candidate: oneLine.id, fix: 'text' },
+      { kind: 'gap', session: bobDm.session, step: await stepOf(bobDm.session, 'Got it. Release notes'), quote: 'Release notes go newest first, always', correction: 'Newest first.', same: 'echo', fix: 'text' },
     ],
     merges: [[britA.id, britB.id], [britA.id, randomUUID()]],
   }
   const recorded2 = await tx((client) => recordFindings(client, { teamId, runId, agentId: fixer, picked: second.picked, report: report2 }))
   const reasons2 = recorded2.dropped.map((d) => d.reason)
-  check(reasons2.filter((r) => r.includes("not a person's words")).length === 2,
-    `a gap quoting the agent's own words or a tool's result is dropped, since a correction is a person's words: ${reasons2.join(' | ')}`)
+  check(reasons2.filter((r) => r.includes("not a person's words")).length === 3,
+    `a gap quoting the agent's own words, even repeating a person's, or a tool's result is dropped, since a correction is a person's words: ${reasons2.join(' | ')}`)
   check(reasons2.some((r) => r.includes('not one the reader was shown')), 'a finding citing a step the reader was never shown is dropped')
   check(recorded2.dropped.filter((d) => d.reason.includes('names no open candidate')).length === 2,
     "a gap naming a candidate that does not exist, or another agent's, is dropped")

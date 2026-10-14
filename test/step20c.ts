@@ -168,6 +168,13 @@ try {
   check(proposal.status === 'open' && gate?.kind === 'gate' && gate.payload.question.includes('It rests on: Kept 2 findings')
     && pr?.body.includes('The evidence, checked in code') && pr.body.includes(NUDGE) && !pr.body.includes(INVENTED) && !gate.payload.question.includes(INVENTED),
   'the pull request and the gate give only the reasons code found in the runs')
+  // The change was scored whole, so one of its hunks is never decided alone.
+  const alone = await fetch(`${PEOPLE}/v1/hunks/${must(hunks[0], 'the hunk').id}/decision`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': login }, body: JSON.stringify({ decision: 'accept' }),
+  })
+  await alone.body?.cancel()
+  check(alone.status === 409 && (await one<{ decision: string | null }>('select decision from proposal_hunks where id = $1', [must(hunks[0], 'the hunk').id]))?.decision === null,
+    `one hunk of a pipeline change cannot be decided alone: ${alone.status}`)
 
   // The shepherd turns it down, with a reason.
   if (gate) await post(`/v1/asks/${gate.id}/answer`, { decision: 'reject', message: 'Not this wording.' })

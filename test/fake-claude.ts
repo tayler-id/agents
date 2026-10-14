@@ -71,7 +71,9 @@ const sessionId = flag('--resume') ?? randomUUID()
 // token it was given is kept only as a fingerprint.
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
-appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid }) + '\n')
+appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({
+  sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid, maxBudgetUsd: flag('--max-budget-usd') ?? null,
+}) + '\n')
 type Append = {
   // The call's tool_use id. Random when unset.
   id?: string

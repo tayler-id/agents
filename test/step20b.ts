@@ -11,11 +11,12 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
+import { z } from 'zod'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
 import { servePeople } from './people.ts'
@@ -27,6 +28,8 @@ const PEOPLE = `http://127.0.0.1:${PORT + 1}`
 const id = randomBytes(4).toString('hex')
 const team = `evd-b-${id}`
 const [aliceLogin, bobLogin, carolLogin] = [`alice-${id}@local`, `bob-${id}@local`, `carol-${id}@local`]
+// Someone on another team, who must never decide this team's hunks.
+const [otherTeam, outsiderLogin] = [`evd-b-${id}-other`, `dave-${id}@local`]
 const org = forgeConfig().org
 const PIPES = `pipes20b-${id}`
 const INSTRUCTIONS = 'You fix bugs in small JavaScript projects.\n\n- Keep replies short.\n- Ask before deleting files.'
@@ -218,8 +221,36 @@ try {
   const ask = await one<{ status: string; answer: any }>(`select status, answer from asks where session_id = $1`, [replay.session_id])
   check(asked.status === 200 && ask?.status === 'answered' && ask.answer.decision === 'deny', `a replay's request for a tool is denied, not put to a person: ${JSON.stringify(ask)}`)
 
-  // The shepherd turns the hunk down, with a reason, and approves nothing else.
+  // A stage's budget is in its stage, where daemons before this release read it,
+  // and in the message. Every session the run started had a budget: its stage's,
+  // or $0.50 for each replay.
+  const budget = await one<{ stage: string | null; message: string | null }>(`select c.payload->'stage'->>'maxBudgetUsd' as stage, c.payload->>'maxBudgetUsd' as message
+    from commands c join run_stages s on s.session_id = c.session_id where s.run_id = $1 and s.stage = 'read' and c.kind = 'message' order by c.created_at limit 1`, [first])
+  check(budget?.stage !== null && budget?.stage === budget?.message && Number(budget?.message) > 0,
+    `a stage's budget is in the stage, for daemons before this release, and in the message: ${JSON.stringify(budget)}`)
+  const Start = z.object({ sessionId: z.string(), maxBudgetUsd: z.string().nullable() })
+  const startedWith = new Map(readdirSync(home, { recursive: true, encoding: 'utf8' }).filter((p) => p.endsWith('starts.jsonl'))
+    .flatMap((p) => readFileSync(join(home, p), 'utf8').trim().split('\n'))
+    .map((l) => Start.parse(JSON.parse(l))).map((s) => [s.sessionId, s.maxBudgetUsd]))
+  const runSessions = await all<{ harness: string; kind: string }>(
+    `select s.harness_session_id as harness, 'replay' as kind from session_replays r join sessions s on s.id = r.session_id where r.proposal_id = $1
+     union all select s.harness_session_id, 'stage' from run_stages rs join sessions s on s.id = rs.session_id where rs.run_id = $2`, [proposal.id, first])
+  check(runSessions.length > 6 && runSessions.every((s) => (s.kind === 'replay' ? startedWith.get(s.harness) === '0.50' : Number(startedWith.get(s.harness)) > 0)),
+    `every session of the run started with a budget, $0.50 for each replay: ${runSessions.map((s) => `${s.kind} ${String(startedWith.get(s.harness))}`).join(', ')}`)
+
+  // Only the hunk's team, and only people who can see its run, decide it.
+  node('server/admin.ts', 'add-team', otherTeam, outsiderLogin)
   const hunkId = must(hunks[0], 'the hunk').id
+  const outsider = await call(outsiderLogin, `/v1/hunks/${hunkId}/decision`, { decision: 'accept' })
+  check(outsider.status === 404, `a person on another team cannot decide the hunk: ${outsider.status}`)
+  const runTask = must(await one<{ task_id: string }>('select task_id from runs where id = $1', [first]), 'the run task').task_id
+  await db.query(`update tasks set visibility = 'private', owner_id = (select id from people where login = $2) where id = $1`, [runTask, aliceLogin])
+  const unseen = await call(carolLogin, `/v1/hunks/${hunkId}/decision`, { decision: 'accept' })
+  await db.query(`update tasks set visibility = 'team' where id = $1`, [runTask])
+  const untouched = await one<{ decision: string | null }>('select decision from proposal_hunks where id = $1', [hunkId])
+  check(unseen.status === 404 && untouched?.decision === null, `a teammate who cannot see the run cannot decide its hunk: ${unseen.status}`)
+
+  // The shepherd turns the hunk down, with a reason, and approves nothing else.
   check((await call(aliceLogin, `/v1/hunks/${hunkId}/decision`, { decision: 'reject' })).status === 400, 'turning a hunk down needs a reason')
   await post(aliceLogin, `/v1/hunks/${hunkId}/decision`, { decision: 'reject', reason: 'We write American English.' })
   await post(carolLogin, `/v1/asks/${must(gate, 'the gate').id}/answer`, { decision: 'approve' })
@@ -284,7 +315,7 @@ try {
   for (const child of children) child.kill('SIGTERM')
   await sleep(1000)
   if (!failures.length) {
-    await db.query('delete from teams where name = $1', [team]).catch(() => {})
+    await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => {})
     await forgeAdmin.call('DELETE', `/repos/${org}/${PIPES}`).catch(() => {})
   }
   await db.end().catch(() => {})
