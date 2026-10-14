@@ -30,7 +30,27 @@ function lines(text: string, line: number, kind: Segment['kind']): Segment[] {
   return text.split('\n').map((part, i) => ({ line: line + i, text: part, kind }))
 }
 
-const lineOf = (file: ts.SourceFile, pos: number) => file.getLineAndCharacterOfPosition(pos).line + 1
+// The line a position is on, counting LF alone, as git does. TypeScript also
+// ends a line at a lone CR, U+2028 and U+2029, so its own numbers drift from
+// the diff's on a file holding one, and a finding would miss its added line.
+const lineStarts = new WeakMap<ts.SourceFile, number[]>()
+export function lineOf(file: ts.SourceFile, pos: number): number {
+  let starts = lineStarts.get(file)
+  if (!starts) {
+    const text = file.getFullText()
+    starts = [0]
+    for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1)
+    lineStarts.set(file, starts)
+  }
+  let low = 0
+  let high = starts.length - 1
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if ((starts[mid] ?? 0) <= pos) low = mid
+    else high = mid - 1
+  }
+  return low + 1
+}
 
 // Every comment in a script, once each. Tokens are visited too, since a
 // comment can sit before a closing brace that is no node of its own.

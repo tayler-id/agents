@@ -7,7 +7,7 @@
 
 import type pg from 'pg'
 import { z } from 'zod'
-import { many, maybe } from './db.ts'
+import { many, maybe, one } from './db.ts'
 import { forge, repoPath } from './forge.ts'
 import { HttpError, type Person } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -70,6 +70,7 @@ export async function deliverOutcomes(client: pg.PoolClient, teamIds: string[] |
        (select a.url from artifacts a where a.task_id = r.task_id and a.kind = 'link' order by a.created_at desc limit 1) as pr
      from obligations o join runs r on r.id = o.run_id join repos rp on rp.id = o.repo_id
      where o.status = 'open' and o.channel = 'forge_issue' and r.status in ('done', 'failed', 'cancelled')
+       and (o.retry_at is null or o.retry_at <= now())
        and ($1::uuid[] is null or o.team_id = any($1)) order by o.due_at`, [teamIds])
   // Each promise is delivered on its own, inside a savepoint, so one that
   // cannot be, such as one on an issue the forge no longer has, stays open,
@@ -89,7 +90,12 @@ export async function deliverOutcomes(client: pg.PoolClient, teamIds: string[] |
       await client.query('release savepoint delivery')
     } catch (error) {
       await client.query('rollback to savepoint delivery')
-      console.error(`obligation ${o.id} stays open: ${messageOf(error)}`)
+      // Each failed try doubles the wait before the next, up to an hour, so a
+      // promise that cannot be kept is not asked of the forge on every tick.
+      const { attempts } = await one<{ attempts: number }>(client, `obligation ${o.id}`,
+        `update obligations set attempts = attempts + 1, retry_at = now() + make_interval(mins => least(60, power(2, attempts)::int))
+         where id = $1 returning attempts`, [o.id])
+      console.error(`obligation ${o.id} stays open after ${attempts} tries: ${messageOf(error)}`)
     }
   }
 }

@@ -17,12 +17,12 @@ import {
   stageOf, stageSession, tail, taskOf, workspaceOf, type AgentRow, type Row, type Run, type Workspace,
 } from './runner.ts'
 import {
-  DECISION_INPUT, DEPLOY_DONE, DEPLOY_WAIT_LIMIT_MIN, EVIDENCE_BUILD, fenced, INPUTS, resultProblems, ruleOf, STATUS, meets, nonEmpty, PLAYBOOK_NAMES, passingVerdict, POLICY_ID, REVIEW_DATA, REVIEW_OUTCOMES, SHA,
+  DECISION_INPUT, DEPLOY_DONE, DEPLOY_RUN_LIMIT_MIN, DEPLOY_WAIT_LIMIT_MIN, DEPLOY_WORKING, EVIDENCE_BUILD, fenced, INPUTS, resultProblems, ruleOf, STATUS, meets, nonEmpty, PLAYBOOK_NAMES, passingVerdict, POLICY_ID, REVIEW_DATA, REVIEW_OUTCOMES, SHA,
   SUITE_PAYLOAD, SUITE_RESULT, VERIFIER_DATA, VERIFY_PAYLOAD, VERIFY_RESULT,
   type CommandResult, type EvidenceBuild, type Finding, type GateResult, type Inputs, type MapOnMain, type PassingVerdict, type PolicyId, type Readiness,
   type ReviewFinding, type SeenFailing, type SuitePayload, type ToolBuild, type VerdictProof, type VerifyPayload,
 } from '../shared/framework.ts'
-import { ATTESTATION_STATUS, statusText, withAttestation, type Attestation } from '../shared/attestation.ts'
+import { ADVISORY, ATTESTATION_STATUS, statusText, withAttestation, type Attestation } from '../shared/attestation.ts'
 import { findingKey } from '../shared/findings.ts'
 import { FEATURE_MAP, VERDICT, VERDICTS, type Verdict } from '../shared/verification.ts'
 import { checksOnly, staticGates, type FileChange } from '../shared/gates/diff.ts'
@@ -935,7 +935,7 @@ async function attest(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows:
     `select distinct on (gate) gate, status, created_at, build from evidence where run_id = $1 and commit = $2 order by gate, created_at desc`, [run.id, judged.head])
   const steps: Attestation['steps'] = []
   for (const e of evidence.filter((row) => !row.gate.endsWith(':first-run'))) {
-    if (e.status === 'pass') steps.push({ gate: e.gate, result: 'pass' })
+    if (e.status === 'pass') steps.push({ gate: e.gate, result: ADVISORY(e.gate) ? 'advisory' : 'pass' })
     else if (e.status === 'needs_owner' && await ownerApproval(client, pipeline, rows, governed, 'protected', e.created_at)) steps.push({ gate: e.gate, result: 'approved' })
     else return `${e.gate} is ${e.status}`
   }
@@ -1064,14 +1064,22 @@ export async function startDeploy(client: pg.PoolClient, run: Run, pipeline: Pip
   return true
 }
 
+// Fails a deploy no deployer started within the wait limit, or one a deployer
+// started and did not finish within the run limit, so a run never waits on a
+// deployer that is not running or that stopped partway.
+export async function expireDeploy(client: pg.ClientBase, deploy: string) {
+  await client.query(
+    `update deploys set status = 'failed', ended_at = now(), note = case when status = 'requested' then $2 else $3 end
+     where id = $1 and ((status = 'requested' and created_at < now() - make_interval(mins => $4))
+       or (status = any($5) and started_at < now() - make_interval(mins => $6)))`,
+    [deploy, `No deployer started it within ${DEPLOY_WAIT_LIMIT_MIN} minutes, so it never went out. Approve a new deploy.`,
+      `A deployer started it and did not finish within ${DEPLOY_RUN_LIMIT_MIN} minutes. A person must check which release the server runs.`,
+      DEPLOY_WAIT_LIMIT_MIN, [...DEPLOY_WORKING], DEPLOY_RUN_LIMIT_MIN])
+}
+
 export async function pollDeploy(client: pg.PoolClient, row: Row): Promise<boolean> {
   const { deploy } = DEPLOY_STATE.parse(row.data)
-  // A deploy no deployer started in time fails here too, so the run never
-  // waits on a deployer that is not running.
-  await client.query(
-    `update deploys set status = 'failed', note = $2, ended_at = now()
-     where id = $1 and status = 'requested' and created_at < now() - make_interval(mins => $3)`,
-    [deploy, `No deployer started it within ${DEPLOY_WAIT_LIMIT_MIN} minutes, so it never went out. Approve a new deploy.`, DEPLOY_WAIT_LIMIT_MIN])
+  await expireDeploy(client, deploy)
   const found = await one<{ status: string; commit: string; note: string | null; log: string }>(client, `deploy ${deploy}`,
     'select status, commit, note, log from deploys where id = $1', [deploy])
   const status = DEPLOY_DONE.find((s) => s === found.status)
@@ -1163,28 +1171,30 @@ export async function pullRequestBody(client: pg.PoolClient, run: Run, pipeline:
     'select verdict, model, summary, patch_id from verdicts where run_id = $1 and voided_at is null order by created_at', [run.id])
   const decisions = await many<{ stage: string | null; who: string; what: string; why: string }>(client,
     'select stage, who, what, why from decisions where task_id = $1 order by created_at', [run.task_id])
+  // What agents and people wrote, scrubbed, in a fence the text cannot end.
+  const quoted = (text: string) => fenced(scrub(text), 'text')
   const owned = evidence.filter((e) => e.status === 'needs_owner')
   const added = files.reduce((n, f) => n + f.added, 0)
   const deleted = files.reduce((n, f) => n + f.deleted, 0)
   return [
     '## The author\'s summary',
-    'The agent that wrote the change wrote this. The runner wrote everything after it.',
+    'The agent that wrote the change wrote this. The runner wrote the rest, and fences what agents and people wrote: the risks, what was sent back, the verdict, the review findings and the decisions.',
     fenced(scrub(agentText.trim()) || '(none)', 'text'),
     '## What changed',
     `${files.length} files, ${added} lines added and ${deleted} removed, from main at ${short(judged.base)} to ${short(head)}:\n`
       + files.map((f) => `- \`${f.path}\` ${f.status}${f.from ? ` from \`${f.from}\`` : ''}, ${f.binary ? 'binary' : `+${f.added} -${f.deleted}`}`).join('\n'),
     '## What was checked',
-    `The runner collected all of this under the policy ${policy.name} version ${policy.version}, on patch-id ${short(judged.patchId)}, with its build ${BUILD.commit ? short(BUILD.commit) : 'with no commit'} (source ${short(BUILD.files)}). No agent reported any of it.`,
+    `The runner collected all of this under the policy ${policy.name} version ${policy.version}, on patch-id ${short(judged.patchId)}, with its build ${BUILD.commit ? short(BUILD.commit) : 'with no commit'} (source ${short(BUILD.files)}). It ran every gate itself, but the review and the verdict pass on the judges' reports, which are advisory until the judges run on their own machine.`,
     '| Gate | Result | What the runner saw |\n|---|---|---|\n'
-      + evidence.map((e) => `| ${e.gate} | ${e.status} | ${e.summary.replace(/\|/g, '/').replace(/\n/g, ' ')} |`).join('\n'),
+      + evidence.map((e) => `| ${e.gate} | ${e.status}${ADVISORY(e.gate) ? ' (advisory)' : ''} | ${e.summary.replace(/\|/g, '/').replace(/\n/g, ' ')} |`).join('\n'),
     '## Risks',
-    risks ?? 'The run left no understanding.md with a "What could break" section, so nobody named the risks before the code was written.',
+    risks === null ? 'The run left no understanding.md with a "What could break" section, so nobody named the risks before the code was written.' : quoted(risks),
     '## What the pipeline had to fix',
-    fixes.length ? fixes.join('\n') : 'Nothing. Every gate, the review and the verdict passed the first time.',
+    fixes.length ? quoted(fixes.join('\n')) : 'Nothing. Every gate, the review and the verdict passed the first time.',
     ...(owned.length ? ['## Needs the owner', ...owned.flatMap((e) => (e.detail.findings ?? []).map((f) => `### ${f.path ?? e.gate}\n\n${fenced(f.text, 'diff')}`))] : []),
-    ...(verdicts.length ? ['## Verdict', verdicts.map((v) => `- ${v.verdict} by ${v.model}. ${v.summary}`).join('\n')] : []),
-    ...(findings.length ? ['## Review findings', findings.map((f) => `- Round ${f.round}, ${f.model}, ${f.blocking ? 'blocking' : 'note'}, ${f.status}${f.login ? ` by ${f.login}` : ''}: ${f.path ?? ''}${f.line ? `:${f.line}` : ''} breaks "${f.rule}". ${f.body}`).join('\n')] : []),
-    ...(decisions.length ? ['## Decisions', decisions.map((d) => `- ${d.who === 'person' ? 'A person' : 'An agent'} at ${d.stage ?? 'the task'}: ${d.what}. ${d.why}`).join('\n')] : []),
+    ...(verdicts.length ? ['## Verdict', 'Advisory until the judges run on their own machine. The verifier wrote each summary.', quoted(verdicts.map((v) => `- ${v.verdict} by ${v.model}. ${v.summary}`).join('\n'))] : []),
+    ...(findings.length ? ['## Review findings', 'Advisory until the judges run on their own machine. The reviewers wrote each finding.', quoted(findings.map((f) => `- Round ${f.round}, ${f.model}, ${f.blocking ? 'blocking' : 'note'}, ${f.status}${f.login ? ` by ${f.login}` : ''}: ${f.path ?? ''}${f.line ? `:${f.line}` : ''} breaks "${f.rule}". ${f.body}`).join('\n'))] : []),
+    ...(decisions.length ? ['## Decisions', 'Each in the words of the person or agent who made it.', quoted(decisions.map((d) => `- ${d.who === 'person' ? 'A person' : 'An agent'} at ${d.stage ?? 'the task'}: ${d.what}. ${d.why}`).join('\n'))] : []),
   ].join('\n\n')
 }
 

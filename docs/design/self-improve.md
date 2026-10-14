@@ -18,17 +18,17 @@ Product data, not this repo's files, holds the policy, so any repo the team adds
 
 ## How a change moves
 
-The `app-change` playbook (`pipelines/app-change.ts`). Every stage that judges the change is run by the runner from the policy. Nothing below takes an agent's word for a result.
+The `app-change` playbook (`pipelines/app-change.ts`). Every stage that judges the change is run by the runner from the policy. Nothing below takes the coding agent's word for a result. The review and the verdict rest on the judges' reports, so both are advisory until the judges run on their own machine.
 
 1. **route.** An agent picks the playbook for the request from the ones the policy allows. The choice is a decision in the log. The runner later checks the diff fits the playbook's scope.
 2. **understand.** An agent with read-only tools writes `understanding.md`: what the code does now, what this change touches, what could break. The runner checks the document has those sections. Like plan and implement, it can report ask instead, which hands the run to a person.
 3. **plan.** An agent writes `plan.md` with the sections Concern, Done means, Keep, Files and Size. Each Done means item names the check that will show it. Each Keep item names a feature from the repo's feature map.
 4. **approve_plan.** A person approves the plan before any code is written. Rejecting sends the notes back to the plan.
 5. **implement.** An agent changes the code in a box, on the task branch. It never commits or pushes.
-6. **verify.** The runner pushes the branch, reads the diff from its own copy of the repo, and runs the static gates. Then the box runs the policy's commands on a clean checkout of the pushed commit, with the check configuration taken from main, and runs every changed check against main and against the change. Failing sends the findings back to implement. A refused push to main stops the run.
-7. **review.** One or more reviewers, each on a model other than the author's, review the diff against main's copy of the coding standards and the approved plan, without the author's session. Each blocking finding cites the rule it breaks. Blocking findings go back to implement. After the round limit, only the repo's owner can overrule them, by name, or stop the run.
-8. **confirm.** A fresh agent on another model, not the author, checks each Done means and Keep item using main's copy of the repo's verification skill, and gives a verdict from a fixed ladder. The runner judges the verdict by the commands the record shows it ran. Its findings work like a reviewer's.
-9. **open_pr.** The runner opens the pull request with a description written for a reviewer who was not there: what changed, what was checked, the risks the understanding named, and what the pipeline had to send back, then the verdict, the findings and the decisions. Commit statuses on the forge say which gates passed.
+6. **verify.** The runner pushes the branch, reads the diff from its own copy of the repo, and runs the static gates. Then the box runs the policy's commands on a clean checkout of the pushed commit, with the check configuration taken from the merge base, main's commit the change started from, and runs every changed check against main and against the change. Failing sends the findings back to implement. A refused push to main stops the run.
+7. **review.** One or more reviewers, each on a model other than the author's, review the diff against main's copy of the coding standards and the approved plan, without the author's session. The review is advisory until the reviewers run on their own machine. Each blocking finding cites the rule it breaks. Blocking findings go back to implement. After the round limit, only the repo's owner can overrule them, by name, or stop the run.
+8. **confirm.** A fresh agent on another model, not the author, checks each Done means and Keep item using main's copy of the repo's verification skill, and gives a verdict from a fixed ladder. The runner judges the verdict by the commands the record shows it ran. That record comes from the author's box, so the verdict is advisory until the verifier runs on its own machine. Its findings work like a reviewer's.
+9. **open_pr.** The runner opens the pull request with a description written for a reviewer who was not there: what changed, what was checked, the risks the understanding named, and what the pipeline had to send back, then the verdict, the findings and the decisions, each in a fence, since agents and people wrote them. It marks the review and the verdict advisory. Commit statuses on the forge say which gates passed.
 10. **protected.** If the change touches a protected path or a dependency, the run stops at a gate only the owner can pass. The pull request names each protected file and shows its diff. Otherwise this gate passes by itself and says why.
 11. **approve_suite.** A person approves running the full check suite. The suite runs agent-written code with the test database, so it never runs unreviewed.
 12. **suite.** The check host merges the branch into the current main, runs the full suite on the result, and runs every changed check against main and against the merge. For a UI change it reads the screenshot manifest `agentsctl` writes, which the runner does not check yet. When the suite passes, the runner writes its attestation into the description and puts its digest on the head commit.
@@ -41,11 +41,11 @@ The `app-change` playbook (`pipelines/app-change.ts`). Every stage that judges t
 
 ### Hard gates
 
-A change cannot merge while any of these fail. Hard gates have no overrule.
+A change cannot merge while any of these fail. Hard gates have no overrule. The one exception is the verdict, where the owner may accept a weaker one than the policy asks, by name, and the merge records the acceptance as its proof.
 
 | # | Rule | Enforced by | Status |
 |---|---|---|---|
-| 1a | Typecheck and type-aware lint pass | Box gate: `tsc` and `eslint` on a clean checkout, with `eslint.config.js` and `tsconfig*.json` from main | Built |
+| 1a | Typecheck and type-aware lint pass | Box gate: `tsc` and `eslint` on a clean checkout, with `eslint.config.js` and `tsconfig*.json` from the merge base | Built |
 | 1b | CSS lint: no accent color in a border, outline, box-shadow or SVG stroke, no gradients, every color from the design tokens | Static gate on the changed lines (`shared/gates/css.ts`), and `test/style.ts` over the whole repo | Built |
 | 1c | Prose lint: no em dash, no banned word, no title-case heading, in docs, comments and UI strings | Static gate on the changed lines (`shared/gates/prose.ts`), and `test/style.ts` over the whole repo | Built |
 | 1d | The name guard | `test/names.ts`, run by the box on the whole checkout. No static gate reads changed lines for names | Built |
@@ -57,8 +57,8 @@ A change cannot merge while any of these fail. Hard gates have no overrule.
 | 7 | The diff passes a secret scan with the `shared/scrub.ts` patterns, and adds no `.env` file | Static gate | Built |
 | 8 | A dependency change uses exact versions, says why in the build log, and goes to a person | Static gate, then the owner's gate | Built |
 | 9 | No new eslint-disable, inline eslint config, ts-ignore, ts-expect-error, skipped or only tests, or loosened assertions | Static gate on the changed lines | Built for the markers, inline config and removed assertions. Subtler loosening is judged by the reviewers. Turning inline config off for good, with `noInlineConfig` in the protected `eslint.config.js`, is for Tayler |
-| 10 | One concern per pull request, at most 400 changed lines without lockfiles | Static gate for the size, which charges a file the gates cannot read at 80 bytes a line. The plan names one concern, and the reviewers judge it | Size built. Stacked pull requests designed |
-| 10b | No changed script, document, stylesheet, SQL, JSON, YAML or HTML file the gates cannot read, because git calls it binary or it is over 2 MiB | Static gate `opaque`. One NUL byte in a comment used to hide a whole script from every other gate | Built |
+| 10 | One concern per pull request, at most 400 changed lines without lockfiles | Static gate for the size, which charges a binary file that is no image at 80 bytes a line. The plan names one concern, and the reviewers judge it | Size built. Stacked pull requests designed |
+| 10b | No changed file the gates cannot read, because git calls it binary or it is over 2 MiB, except lockfiles and images whose first bytes show PNG, JPEG, GIF, WebP or ICO. No path git quotes, and no diff whose hunks add another number of lines than git counts | Static gate `opaque`, on a diff the runner reads one file at a time through a literal pathspec, each hunk by its counts. Findings sit on git's lines, counted by LF alone, though TypeScript also ends a line at a lone CR, U+2028 and U+2029. One NUL byte in a comment used to hide a whole script from every other gate | Built |
 | 11 | No new file in a language other than TypeScript, outside an allowlist | Static gate | Built |
 | 12 | No new type assertion except `as const` | Static gate on the changed lines, from the TypeScript syntax tree | Built for new lines. The whole-repo lint rule is for the standards retrofit |
 | 13 | No new TODO, FIXME or XXX comment | Static gate on the changed lines | Built for new lines. `no-warning-comments` for the whole repo is for the retrofit |
@@ -67,7 +67,7 @@ A change cannot merge while any of these fail. Hard gates have no overrule.
 | 16 | The diff fits the playbook the router picked | Static gate | Built for the docs and dependency playbooks. Only the docs playbook has a check |
 | 17 | Every Done means item names a check the change adds or edits, and every Keep item names a feature in the map | Static gate on the approved plan, and the plan lint before anyone reads the plan. A feature map the policy names and main lacks fails both | Built |
 | 18 | An edit to an existing check never rides along with product code. A change to checks alone, new or edited, goes to the owner, since seen failing cannot judge it, and an edited one needs its reason in the build log | Static gate `check_edits` | Built |
-| 19 | A verifier that did not write the change gives a verdict at least as strong as the policy's floor for the kind of change | The confirm stage, judged by the commands the record shows the verifier ran, and readiness | Built |
+| 19 | A verifier that did not write the change gives a verdict at least as strong as the policy's floor for the kind of change, or the owner accepts a weaker one by name | **Advisory.** The confirm stage, judged by the commands the record shows the verifier ran, and readiness. The verifier runs on the author's box, so its report is not proof | Built, advisory |
 | 20 | The change merges into the current main without conflicts | Readiness runs `git merge-tree` on the mirror before the merge | Built. No check makes a conflicting change yet |
 
 Rules 11 to 14 are four of the five checks the coding standards name for the standards retrofit. The fifth, regenerating database row types from the schema and failing when they are stale, is not built here. Until it is, each new table's row type is declared once in `shared/framework.ts`.
@@ -80,7 +80,7 @@ the list in `protectedPaths` of `ops/policies/agents.json`, which `AGENTS.md` sh
 
 These are the instructions agents read, the lint and compiler configuration, the guards and their checks, the gate code, the runner that calls it, the pipeline, the sandbox and the deploy scripts. The forge holds the same list as protected file patterns on main, so a pull request touching one cannot merge without the owner.
 
-Agents can never weaken their own constraints for three more reasons. The static gates run inside the API, which is the code from the last deploy, so a change cannot alter the gates that judge it. The box runs its commands with the check configuration copied from main. And the pipeline file lives in the pipelines repo, which agents working on the app never touch, and the API never loads a pipeline from a repo that has a policy.
+Agents can never weaken their own constraints for three more reasons. The static gates run inside the API, which is the code from the last deploy, so a change cannot alter the gates that judge it. The box runs its commands with the check configuration copied from the merge base. And the pipeline file lives in the pipelines repo, which agents working on the app never touch, and the API never loads a pipeline from a repo that has a policy.
 
 ### Independent review
 
@@ -128,7 +128,7 @@ Tayler set eight principles for the framework itself. Each row names what holds 
 |---|---|---|---|
 | a | One gate, one meaning. A policy may add checks and tighten the core, never remove, reorder or weaken it. A person may skip a step for one run, by name. No standing rule can. | `POLICY` in `shared/policy.ts` refuses a size cap above 400 or a verdict floor below the core's, and `test/step16b.ts` shows both refused. The static gates, seen failing, review, the verdict, the suite and the owner's merge are not settings. The merge asks for each of them whatever stages the pipeline has, including a review and, for code, an approved plan. A person's skip is an overrule, recorded with their name | Built |
 | b | A gate that cannot run completely refuses loudly and says what to fix. It never runs a weaker check in silence. A failed shortcut falls back to the slow, correct path. | A feature map the policy names and main lacks fails the plan lint and the plan gate. A missing verification skill or map fails confirm, and a missing rubric stops review. A judge that cannot be shown independent fails its stage. A verdict claiming live UI verification is recorded as blocked until screenshots reach the record. A failed suite runs once more before it counts, and the same failure twice is real | Built. The missing skill, the missing rubric and the suite's rerun have no check yet |
-| c | Never lose work. Every history rewrite is anchored to what the run observed, and fails closed. | Each push carries the commit the runner last saw pushed to the branch. The daemon pushes a fast-forward as is, rewrites only with a lease on that commit, and otherwise pushes nothing and fails the stage. The merge names the head the gates judged, and the forge refuses it if the branch moved. LEASE in `test/step16.ts` shows a person's commit on the task branch kept, and `test/step16e.ts` checks each case of the lease against a bare repo on disk | Built |
+| c | Never lose work. Every history rewrite is anchored to what the run observed, and fails closed. | The daemon's push, main's lease in `daemon/workspace.ts`, fetches the forge's copy of the task branch and pushes with a lease on that commit, only when this workspace pushed it last or HEAD already holds it. Otherwise it pushes nothing and fails the stage with "someone added commits on the forge, ask the agent to merge them". The merge names the head the gates judged, and the forge refuses it if the branch moved. LEASE in `test/step16.ts` shows a person's commit on the task branch kept, with that refusal, and main's `test/step14.ts` checks the lease | Built |
 | d | A person's decision at a gate becomes a fact of the run. Later stages receive it, respect it, and park the run when they cannot. | Each answer is a row in `decisions`, and every later agent gets the run's decisions with its instructions. A finding the owner overruled stays overruled when a later round raises it. Understand, plan and implement can report ask, which hands the run to a person. DECIDED in `test/step16.ts` shows the first two | Built |
 | e | Weigh forward-only against sending the change back, pick one, and write the decision down. | "Send back or forward only", below | Decided |
 | f | Every verdict records the exact build and configuration that produced it. The pull request is written for a reviewer who was not there. | Evidence rows and verdicts carry the runner's build, the box's or check host's build, and the hash of each input read from main. The description holds What changed, What was checked, Risks and What the pipeline had to fix | Built. The Claude Code version a judge ran is not recorded |
@@ -155,7 +155,7 @@ A policy is a versioned row in `policies`. A repo points at one version, and eve
 - `protectedPaths`, `maxChangedLines`, `lockfiles`, `sourceDirs` and `allowedFiles`, the allowlist of files that may be in a language other than TypeScript.
 - `docs` names the data model, parts and build log documents, and the migrations folder.
 - `checks` gives the pattern for check files, the marker for ones a box can run, and the command that runs one.
-- `box` lists the files copied from main before the box runs, and its commands as argument lists.
+- `box` lists the files copied from the merge base before the box runs, and its commands as argument lists.
 - `suite` is the check host's command.
 - `ui` lists the paths that count as UI, and the engines and widths a UI check must cover.
 - `lint` holds the CSS token file and neutral tokens, the banned words, and the names the name guard refuses.
@@ -182,7 +182,7 @@ Lint rules only fail on lines the change adds, so a change is never blocked by a
 
 ## Box gates
 
-The daemon runs the box's part as the command `verify`, from its own code in the box image, never from the workspace. It makes a clean checkout of the pushed commit beside the agent's, copies the policy's check configuration from main over it, links the workspace's `node_modules`, and runs each command as an argument list with a time limit. Then, for each changed check that carries `// runs-in: box`, it runs the check on a checkout of main with only that check file copied in, where it must fail, and on the change, where it must pass. The checkouts are removed after.
+The daemon runs the box's part as the command `verify`, from its own code in the box image, never from the workspace. It makes a clean checkout of the pushed commit beside the agent's, copies the policy's check configuration from the merge base over it, links the workspace's `node_modules`, and runs each command as an argument list with a time limit. Then, for each changed check that carries `// runs-in: box`, it runs the check on a checkout of main with only that check file copied in, where it must fail, and on the change, where it must pass. The checkouts are removed after.
 
 ## Seen failing, and what it cannot prove
 
@@ -301,7 +301,7 @@ A verdict is one word from a fixed ladder, strongest first, defined in `shared/v
 - `verifier-blocked`, the verifier could not judge.
 - `verifier-failed`, an item does not hold.
 
-The policy sets the weakest passing verdict for code, for documents and for UI, and the core sets a floor no policy goes below. The runner does not take the verifier's word. A passing verdict from a verifier the record shows running nothing becomes `verifier-blocked`, and so does `live-ui-verified` until screenshots reach the record. A verdict is kept by pull request and head commit with the change's patch-id. A new head voids it unless the patch-id is the same, so a rebase that changes nothing keeps it. A verifier from the author's model family is allowed, and its verdict says it is a weaker check. A verdict below the floor goes to the owner, who accepts it by name, sends the change back, or stops the run.
+The policy sets the weakest passing verdict for code, for documents and for UI, and the core sets a floor no policy goes below. The runner checks the verifier's word against the record. A passing verdict from a verifier the record shows running nothing becomes `verifier-blocked`, and so does `live-ui-verified` until screenshots reach the record. The record of what the verifier ran comes from the author's box, so the verdict stays advisory until the judges run on their own machine. A verdict is kept by pull request and head commit with the change's patch-id. A new head voids it unless the patch-id is the same, so a rebase that changes nothing keeps it. A verifier from the author's model family is allowed, and its verdict says it is a weaker check. A verdict below the floor goes to the owner, who accepts it by name, sends the change back, or stops the run.
 
 ## Attestation
 
@@ -391,9 +391,21 @@ Each guard below was broken with a scripted edit whose anchor matched once, its 
 | A duplicate event changes nothing | The duplicate check never matched | `test/step16d.ts` stopped with "is already done" where it expected a no-op |
 | A kept promise takes no new delivery | Only a waived promise refused one | `test/step16d.ts` "a new delivery to a kept promise fails closed" |
 | A closed promise cannot be waived again | The waiver ignored the status | `test/step16d.ts` "a closed promise cannot be waived again" |
-| A push never replaces a commit the runner did not see | The daemon force-pushed over any branch | `test/step16e.ts` "a push that would replace a commit the runner never saw fails" |
-| A rewrite goes through over the commit the runner saw | The lease never matched | `test/step16e.ts` stopped with "Nothing was pushed" on the rewrite |
 | A changed file the gates cannot read fails | The opaque gate read only files git could not call binary | `test/step16b.ts` "a script with a NUL byte, which git calls binary, fails" |
+| A push over commits someone added on the forge stops, and the commit stays | Main's lease let the push replace the forge's tip | `test/step16.ts`, DECIDED, "a push over a commit someone added on the forge stops with main's refusal" |
+| Every scenario's replace text is in the repo | The view change anchored on the import line main changed | `test/step16.ts` stopped before it started, with "STOPVIEW replaces text found 0 times in app/src/App.tsx" |
+| An added line that reads `+++ b/ok.ts` stays its file's line | A `+++ ` line ended the hunk | `test/step16b.ts` "an added line that reads +++ b/ok.ts stays an added line of its own file ()" |
+| A path git quotes fails closed | The quote check never matched | `test/step16b.ts` "a path git quotes fails closed (pass)" |
+| A diff whose hunks and counts disagree fails closed | The count check never fired | `test/step16b.ts` "a file whose hunks add another number of lines than git counts fails closed" |
+| A comment after a lone CR is judged on git's line | Comments took TypeScript's line numbers | `test/step16b.ts` "a suppression after a lone CR is judged on git's line (pass)" |
+| A binary file fails whatever its name, unless its first bytes show an image | Only scripts failed, as the old extension list had it | `test/step16b.ts` "a file git calls binary fails whatever its name, a Dockerfile here (pass)" |
+| Each protected path under `**/` is also named at the root | The policy lacked `AGENTS.md` at the root | `test/step16b.ts` "each protected path under **/ is also named at the root" |
+| A gzipped push whose request fails fails its reader | The request's error never reached the unzipping | `test/step16f.ts` "a gzipped push whose request fails partway fails its reader: still waiting" |
+| A promise that fails waits before its next try | Every tick tried it again | `test/step16d.ts` "a promise that fails waits before its next try: 5 tries so far" |
+| A deployer that starts fails deploys left part done | It never looked for them | `test/step16c.ts` "a deploy left checking by a deployer that stopped fails when the next deployer starts: checking" |
+| The runner fails a deploy whose deployer never finished | Its cap was a thousand times longer | `test/step16c.ts` "the runner fails a deploy whose deployer started it and never finished: switching" |
+| The pull request fences the review findings and the decisions | The decisions were plain text | `test/step16.ts`, HAPPY, "the review findings and the decisions sit in fences" |
+| The pull request and the attestation mark review and verdict advisory | No gate counted as a judge's | `test/step16.ts`, HAPPY, "the pull request marks the review and the verdict advisory" |
 | An unreadable file counts toward the size cap by its bytes | The cap charged it nothing | `test/step16b.ts` "counts toward the cap by its bytes" |
 | A rules file in any folder is protected | The policy protected only the root `AGENTS.md` | `test/step16b.ts` "a rules file in a folder needs the owner" |
 | An edit to a test helper counts as an edit to a check | The policy's `checks.related` was empty | `test/step16b.ts` "editing a test helper together with product code fails" |

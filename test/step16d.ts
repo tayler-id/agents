@@ -164,6 +164,11 @@ try {
     'the runner posted the outcome on the issue and closed the promise with that comment as proof')
   check((await one('select status from obligations where target = $1', [`${issue.html_url}#lost`]))?.status === 'open',
     'a promise that cannot be delivered, due before the others, stays open and holds none of them up')
+  // A promise that fails waits before its next try, so the forge is not asked
+  // again on every tick of the runner.
+  await new Promise((resolve) => { setTimeout(resolve, 6000) })
+  const lostPromise = await one('select attempts, retry_at > now() as waiting from obligations where target = $1', [`${issue.html_url}#lost`])
+  check(lostPromise?.attempts === 1 && lostPromise.waiting === true, `a promise that fails waits before its next try: ${lostPromise?.attempts ?? 'no'} tries so far`)
   const again = await tx((client) => deliver(client, OBLIGATION_ID.parse(obligation.id), { id: `run:${runId}:outcome`, generation: 1, target: obligation.target, delivery: closed.delivery }))
   check(again === 'duplicate' && (await comments()).filter((c: any) => c.body.includes(`agents run ${runId} -->`)).length === 1,
     'delivering the same event again is a no-op, and the outcome was posted once')

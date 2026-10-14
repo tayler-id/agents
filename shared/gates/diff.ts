@@ -31,6 +31,10 @@ export type FileChange = {
   bytes: number | null
   // The file's unified diff, shown for a protected file.
   diff: string
+  // Why the gates cannot trust which lines the change added, or null.
+  untrusted: string | null
+  // The image format a binary file starts as, or null.
+  image: ImageFormat | null
 }
 
 export type StaticContext = {
@@ -56,11 +60,25 @@ const FINDINGS_LIMIT = 40
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const
 const SCRIPT_OR_SHELL = (path: string) => isScript(path) || extensionOf(path) === '.sh'
-// The kinds of file the gates read: scripts, documents, stylesheets, SQL and
-// JSON, and the config the other gates also read.
-const JUDGED = /\.(ts|tsx|js|cjs|mjs|jsx|sh|md|css|sql|json|ya?ml|html)$/i
 // A file the gates cannot read counts toward the size cap at this many bytes a line.
 const BYTES_PER_LINE = 80
+// The images a change may add unread, known by the bytes each format starts
+// with, never by the file's name.
+const IMAGE_FORMATS = ['png', 'jpeg', 'gif', 'webp', 'ico'] as const
+export type ImageFormat = (typeof IMAGE_FORMATS)[number]
+const IMAGE_SIGNATURES: Record<ImageFormat, readonly (readonly [number, readonly number[]])[]> = {
+  png: [[0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]]],
+  jpeg: [[0, [0xff, 0xd8, 0xff]]],
+  gif: [[0, [0x47, 0x49, 0x46, 0x38]]],
+  webp: [[0, [0x52, 0x49, 0x46, 0x46]], [8, [0x57, 0x45, 0x42, 0x50]]],
+  ico: [[0, [0x00, 0x00, 0x01, 0x00]]],
+}
+// The most bytes any signature reads.
+export const IMAGE_HEAD_BYTES = 12
+
+export function imageFormat(bytes: Uint8Array): ImageFormat | null {
+  return IMAGE_FORMATS.find((format) => IMAGE_SIGNATURES[format].every(([start, signature]) => signature.every((b, i) => bytes[start + i] === b))) ?? null
+}
 const TYPESCRIPT = new Set(['.ts', '.tsx'])
 // The checks and what they rely on. An edit to any of them is an edit to a check.
 const checkFiles = (policy: Policy) => matcher([policy.checks.pattern, ...policy.checks.related, '**/*.test.ts', '**/*.test.js'])
@@ -210,24 +228,33 @@ function suppressions({ policy, files }: StaticContext): GateResult {
   return result('suppressions', findings, 'No new suppression, skipped test or removed assertion.', 'The change suppresses or loosens a check.')
 }
 
-// A kind of file the gates judge that they could not read, because git calls
-// it binary or it is over the read limit, as a lockfile never is.
-const unread = (policy: Policy, f: FileChange) => f.status !== 'deleted' && JUDGED.test(f.path) && !matcher(policy.lockfiles)(f.path) && (f.binary || f.after === null)
+// Why no gate can read what a change did to a file, or null when every gate
+// can. A lockfile is the dependency gate's to judge, and an image is known by
+// its first bytes. Anything else git calls binary, or too big to read, is
+// hidden whatever its name.
+function hidden(policy: Policy, f: FileChange): string | null {
+  if (f.untrusted !== null) return f.untrusted
+  if (f.status === 'deleted' || matcher(policy.lockfiles)(f.path)) return null
+  if (f.binary) return f.image === null ? `git reads it as binary (${f.bytes ?? 0} bytes), and it starts as no image the gates allow, so no gate can read it` : null
+  return f.after === null ? `${f.bytes ?? 0} bytes, over what the gates read` : null
+}
 
 // No rule could see inside such a file, so a script with one NUL byte in a
 // comment would pass them all. It fails here instead.
 function opaque({ policy, files }: StaticContext): GateResult {
-  const findings = files.filter((f) => unread(policy, f)).map((f) => ({
-    path: f.path, line: null,
-    text: f.binary ? `git reads it as binary (${f.bytes ?? 0} bytes), so no gate can read it` : `${f.bytes ?? 0} bytes, over what the gates read`,
-  }))
-  return result('opaque', findings, 'Every changed script, document, stylesheet, SQL and JSON file is text the gates read.', 'A changed file is hidden from the gates.')
+  const findings = files.flatMap((f) => {
+    const why = hidden(policy, f)
+    return why === null ? [] : [{ path: f.path, line: null, text: why }]
+  })
+  return result('opaque', findings, 'The gates read every changed file but lockfiles and images.', 'A changed file is hidden from the gates.')
 }
 
 function size({ policy, files }: StaticContext): GateResult {
   const isLock = matcher(policy.lockfiles)
   const read = files.filter((f) => !isLock(f.path) && !f.binary).reduce((n, f) => n + f.added + f.deleted, 0)
-  const total = read + files.filter((f) => unread(policy, f)).reduce((n, f) => n + Math.ceil((f.bytes ?? 0) / BYTES_PER_LINE), 0)
+  // A binary file that is no image counts by its bytes.
+  const unseen = files.filter((f) => f.status !== 'deleted' && !isLock(f.path) && f.binary && f.image === null)
+  const total = read + unseen.reduce((n, f) => n + Math.ceil((f.bytes ?? 0) / BYTES_PER_LINE), 0)
   const findings = total > policy.maxChangedLines
     ? [{ path: null, line: null, text: `${total} changed lines, over the limit of ${policy.maxChangedLines}. Split the work into stacked pull requests.` }]
     : []

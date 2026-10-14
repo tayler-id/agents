@@ -19,7 +19,7 @@ import { maybe, one, pool } from '../server/db.ts'
 import { mirror } from '../server/mirror.ts'
 import { runProgram } from '../daemon/workspace.ts'
 import { messageOf } from '../shared/errors.ts'
-import { DEPLOY_NEXT, DEPLOY_WAIT_LIMIT_MIN, type DeployStatus } from '../shared/framework.ts'
+import { DEPLOY_NEXT, DEPLOY_WAIT_LIMIT_MIN, DEPLOY_WORKING, type DeployStatus } from '../shared/framework.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 
 const run = promisify(execFile)
@@ -181,6 +181,17 @@ async function expireWaiting() {
   for (const { id } of rows) console.log(`deploy ${id}: failed, it waited past ${DEPLOY_WAIT_LIMIT_MIN} minutes`)
 }
 
+// Fails each deploy of the repo that a deployer left part done, stopped while
+// preparing, switching, checking or going back. One deployer runs for a repo,
+// so when one starts, any such deploy is an earlier one's.
+async function failStuck() {
+  const { rows } = await pool.query<{ id: string }>(
+    `update deploys set status = 'failed', ended_at = now(),
+       note = 'The deployer stopped while this deploy was ' || status || '. A person must check which release the server runs.'
+     where repo_id = $1 and status = any($2) returning id`, [target.repoId, [...DEPLOY_WORKING]])
+  for (const { id } of rows) console.log(`deploy ${id}: failed, a deployer stopped partway through it`)
+}
+
 // Takes the oldest waiting deploy of the repo. Only one deployer gets each.
 async function claim(): Promise<Deploy | null> {
   const row = await maybe<{ id: string; commit: string }>(pool,
@@ -195,6 +206,7 @@ process.on('SIGINT', () => { stopping = true })
 // A signal sets the flag between awaits, so it is read through a function.
 const stopped = (): boolean => stopping
 try {
+  await failStuck()
   while (!stopped()) {
     await expireWaiting()
     const deploy = await claim()

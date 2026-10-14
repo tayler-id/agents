@@ -51,7 +51,7 @@ Agents don't have their own ports, test database or packages yet. Until they do:
 
 ## The coding framework
 
-Agents runs a coding agent's change to any repo with a policy through its coding framework. The runner, not the agent, runs every gate, records what it saw as evidence, and never takes an agent's word for a result. The Agents codebase's policy is `ops/policies/agents.json`.
+Agents runs a coding agent's change to any repo with a policy through its coding framework. The runner, not the agent, runs every gate and records what it saw as evidence, and it takes no coding agent's word for a result. The judges are the exception. The review and the verdict are their reports, which is why both are advisory below. The Agents codebase's policy is `ops/policies/agents.json`.
 
 **The framework does not hold changes to this repo yet.** The repo has no remote, so it is not registered in Agents with its policy, and agents working in worktrees land through the coordinator's gates under "How changes land". Don't register it before the judges below run on their own machine. The tables say what the framework enforces for a change made through Agents' `app-change` pipeline on a repo with this policy, and what it does not enforce even there.
 
@@ -65,11 +65,11 @@ Inside an Agents pipeline:
 
 ### Hard gates
 
-A change cannot merge through the runner while any of these fail, and the runner offers no way to overrule them. Tayler, as the forge's admin, can still merge by hand.
+A change cannot merge through the runner while any of these fail, and the runner offers no way to overrule them. The one exception is the verdict, where Tayler may accept a weaker one than the policy asks, by name, and the merge records that acceptance as the verdict's proof. Tayler, as the forge's admin, can still merge by hand.
 
 | Rule | Enforced by, for a change made through Agents |
 |---|---|
-| Typecheck and type-aware lint pass | The box runs `tsc` and `eslint` on a fresh checkout of the pushed commit, with the lint and compiler config from main and the workspace's installed packages linked in |
+| Typecheck and type-aware lint pass | The box runs `tsc` and `eslint` on a fresh checkout of the pushed commit, with the lint and compiler config from the merge base, main's commit the change started from, and the workspace's installed packages linked in |
 | No accent color in a border, outline, box-shadow or SVG stroke, no gradients, every color from the design tokens | CSS lint on changed lines, and `test/style.ts` |
 | No em dash, no banned word, no title-case heading in docs, comments or UI strings | Prose lint on changed lines, and `test/style.ts` |
 | The name guard passes | `test/names.ts`, run by the box on the whole checkout. No static gate reads changed lines for names |
@@ -85,25 +85,25 @@ A change cannot merge through the runner while any of these fail, and the runner
 | No new type assertion except `as const`, no new `exec` or `shell: true`, no new TODO, FIXME or XXX | Static gate on changed lines |
 | Your diff fits the playbook the router picked, and your plan's Done means and Keep items name checks and features | Static gate, and the plan lint before anyone reads the plan |
 | An edit to an existing check, or to anything under `test/`, never rides along with product code | Static gate. A change to checks alone goes to Tayler |
-| An agent that did not write the change gives a verdict at least as strong as the policy asks | The confirm stage, which judges the verdict by the commands the record shows the verifier ran |
+| An agent that did not write the change gives a verdict at least as strong as the policy asks, or Tayler accepts a weaker one by name | **Advisory.** The confirm stage judges the verdict by the commands the record shows the verifier ran, and the verifier runs on the author's box |
 | The change merges cleanly into the current main | The merge runs `git merge-tree` first |
 | One concern per pull request | **Not enforced** beyond the 400-line cap and the plan's one concern. Reviewers judge it |
 
 ### Protected paths
 
 A change touching any of these stops at a gate only Tayler can pass, and the pull request shows each one's diff. The list is `protectedPaths` in `ops/policies/agents.json`:
-- the rules agents read: `**/AGENTS.md`, `**/CLAUDE.md`, `.claude/**`
-- the lint, compiler and package config: `eslint.config.js`, `**/tsconfig*.json`, `package.json`
+- the rules agents read: `AGENTS.md`, `CLAUDE.md`, `**/AGENTS.md`, `**/CLAUDE.md`, `.claude/**`
+- the lint, compiler and package config: `eslint.config.js`, `tsconfig*.json`, `**/tsconfig*.json`, `package.json`
 - the checks that guard the rules: `test/all.ts`, `test/names.ts`, `test/step0.ts`, `test/style.ts`, `test/step16*.ts`, `test/types-framework.ts`, `test/fake-claude.ts`
 - the framework's own code: `shared/gates/**`, `shared/policy.ts`, `shared/framework.ts`, `shared/pipeline.ts`, `shared/scrub.ts`, `shared/attestation.ts`, `shared/build.ts`, `shared/verification.ts`, `shared/findings.ts`, `server/framework.ts`, `server/mirror.ts`, `server/runner.ts`, `server/pipelines.ts`, `server/git.ts`, `server/obligations.ts`, `server/build.ts`, `server/forge.ts`, `server/admin.ts`, `server/tasks.ts`, `daemon/gates.ts`, `daemon/workspace.ts`, `daemon/agentsd.ts`, `pipelines/app-change.ts`
 - the schema: `server/migrations/**`
 - the sandbox and deploy: `ops/**`, `box/**`, `compose.yaml`
 
-Once `set-policy` registers the repo, the forge holds the same list, so such a pull request cannot merge without Tayler.
+Once `set-policy` registers the repo, the forge holds the same list, so such a pull request cannot merge without Tayler. The forge reads `**/` as at least one folder, so the list also names each of those files at the root.
 
 ### Review and people
 
-- Before any person sees your change, a reviewer on a different model reviews the diff against main's copy of the coding standards and the approved plan, without your session. Fix each blocking finding. Only Tayler can overrule one, by name, and the same finding raised again stays overruled for the rest of the run.
+- Before any person sees your change, a reviewer on a different model reviews the diff against main's copy of the coding standards and the approved plan, without your session. The review is advisory until judges run on their own machine. Fix each blocking finding. Only Tayler can overrule one, by name, and the same finding raised again stays overruled for the rest of the run.
 - A finding the reviewer tags as about security, auth, billing, data, migrations or concurrency goes to Tayler. One it does not tag does not.
 - A fresh agent on another model checks your plan's Done means and Keep items with main's copy of the verification skill.
 - **Review and verdict are advisory until judges run on their own machine.** Today the reviewer and the verifier run on the author's box. Any process holding that box's token could post a judge's report or fake its commands, and they start in the author's folder, which loads the branch's own `CLAUDE.md` and `AGENTS.md`.
@@ -130,7 +130,7 @@ You work on a branch and never merge. The coordinator lands each branch with a m
 - the full suite on the merged result
 - a review by an agent on a different model
 
-Changes to the protected paths listed under "Protected paths" need Tayler's approval.
+Changes to these need Tayler's approval: `AGENTS.md`, `CLAUDE.md`, `.claude/`, `eslint.config.js`, `tsconfig*.json`, `test/names.ts`, `test/step0.ts`, `test/all.ts`, `pipelines/app-change.ts` and `ops/`.
 
 ## Writing
 

@@ -101,7 +101,7 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
   let body: Readable = req
   if (req.method === 'POST' && rest === 'git-receive-pack' && repo.policy_id !== null) {
     // A gzipped push is unzipped here, to read its commands, and sent on plain.
-    const plain = req.headers['content-encoding'] === 'gzip' ? req.pipe(createGunzip()) : req
+    const plain = plainBody(req, req.headers['content-encoding'])
     delete headers['content-encoding']
     const { refs, stream } = await readCommands(plain)
     const own = await ownBranches(instance.id)
@@ -126,4 +126,14 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
   res.writeHead(response.status, out)
   if (response.body) Readable.fromWeb(response.body as WebReadable).on('error', () => res.end()).pipe(res)
   else res.end()
+}
+
+// A push's body as git sent it, unzipped when it came gzipped. An error on the
+// request reaches the unzipping too, or its reader would wait for bytes that
+// never come.
+export function plainBody(req: Readable, encoding: string | undefined): Readable {
+  if (encoding !== 'gzip') return req
+  const gunzip = createGunzip()
+  req.on('error', (error) => { gunzip.destroy(error) })
+  return req.pipe(gunzip)
 }

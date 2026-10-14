@@ -3,10 +3,13 @@
   "maxRunMinutes": 180,
   "maxSpendUsd": 25,
   "protectedPaths": [
+    "AGENTS.md",
+    "CLAUDE.md",
     "**/AGENTS.md",
     "**/CLAUDE.md",
     ".claude/**",
     "eslint.config.js",
+    "tsconfig*.json",
     "**/tsconfig*.json",
     "package.json",
     "test/all.ts",

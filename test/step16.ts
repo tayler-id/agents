@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
-import { ATTESTATION_STATUS, checkAttestation } from '../shared/attestation.ts'
+import { ADVISORY, ATTESTATION_STATUS, checkAttestation } from '../shared/attestation.ts'
 import { must } from './must.ts'
 import { servePeople } from './people.ts'
 
@@ -167,6 +167,8 @@ const SCENARIOS: Record<string, object> = {
     },
     replace: { 'APP/docs/what-each-part-does.md': ['# What each part does\n', '# What each part does\n\n### Sums (`shared/sums.ts`, `test/step93.ts`)\n\n- **Solves now.** Adds two numbers.\n'], 'APP/docs/build-log.md': ['# Build log\n', '# Build log\n\nAdded the sums part, with step 93.\n'] } }]),
 }
+// The view change edits App.tsx's first line, whatever main's imports are.
+const APP_FIRST_LINE = readFileSync(join(ROOT, 'app/src/App.tsx'), 'utf8').split('\n')[0] ?? ''
 // A rule each of these runs breaks, on top of a change that is right otherwise.
 const STOPS: { name: string; n: number; gate: string; finding: string; extra: (p: ReturnType<typeof part>) => object }[] = [
   { name: 'ledger', n: 94, gate: 'migrations', finding: 'already on main',
@@ -182,7 +184,7 @@ const STOPS: { name: string; n: number; gate: string; finding: string; extra: (p
   { name: 'quiet', n: 99, gate: 'suppressions', finding: 'eslint-disable',
     extra: (p) => ({ write: { ...p.files, 'APP/server/quiet.ts': '// eslint-disable-next-line no-console\nexport const quiet = 1\n' }, replace: p.docs(undefined, ', `server/quiet.ts`') }) },
   { name: 'view', n: 89, gate: 'ui', finding: 'no Playwright check',
-    extra: (p) => ({ write: p.files, replace: { ...p.docs(), 'APP/app/src/App.tsx': ['import { useEffect, useMemo, useState } from \'react\'', '// The app\'s shell: sidebar, conversation and panel.\nimport { useEffect, useMemo, useState } from \'react\''] } }) },
+    extra: (p) => ({ write: p.files, replace: { ...p.docs(), 'APP/app/src/App.tsx': [APP_FIRST_LINE, `// The app's shell: sidebar, conversation and panel.\n${APP_FIRST_LINE}`] } }) },
   // A check that fails on the change and prints a token. Its output reaches the evidence scrubbed.
   { name: 'leak', n: 82, gate: 'seen_failing:test/step82.ts', finding: '[secret:anthropic]',
     extra: (p) => ({ write: { ...p.files, 'APP/test/step82.ts': "// runs-in: box\n// The leak part answers, then prints a line shaped like a token, which no evidence may keep.\n//   node test/step82.ts\n\nimport { leak } from '../shared/leak.ts'\n\nconsole.log('token sk-' + 'ant-' + 'b'.repeat(30) + ' ' + leak())\nprocess.exit(1)\n" }, replace: p.docs() }) },
@@ -228,7 +230,7 @@ SCENARIOS.DECIDED = scenario(settled.check, [
   ],
 })
 // A person adds a commit to the task branch while the run waits on the owner.
-// The runner's next push would replace it, so the push stops instead.
+// The next push would replace it, so main's lease in the daemon stops it.
 const leased = part(85, 'leased')
 SCENARIOS.LEASE = scenario(leased.check, [{ outcome: 'done', summary: 'Adds the leased part.', write: leased.files, replace: leased.docs() }], {
   [KEYS.review]: [{ outcome: 'blocking', data: { findings: [{ rule: 'No magic values', path: 'shared/leased.ts', line: 3, body: 'Who may read this?', blocking: true, topic: 'security' }] } }],
@@ -244,6 +246,26 @@ SCENARIOS.ACCEPT = scenario('test/step83.ts', [{ outcome: 'done', summary: 'Adds
     'APP/docs/build-log.md': ['# Build log\n', '# Build log\n\nAdded the shown part, with step 83.\n'],
   },
 }], { [KEYS.confirm]: [{ outcome: 'live-ui-verified', run: ['node APP/test/step83.ts'], data: { findings: [] } }] })
+
+// Every text a scenario's step replaces, in the repo's file as it stands. The
+// stand-in's replace does nothing when its text is missing, so a scenario
+// whose anchor main changed would run without the edit it is about.
+const replacesOf = (step: unknown): [string, string][] => {
+  if (typeof step !== 'object' || step === null || !('replace' in step) || typeof step.replace !== 'object' || step.replace === null) return []
+  return Object.entries(step.replace).flatMap(([path, pair]): [string, string][] => (Array.isArray(pair) && typeof pair[0] === 'string' ? [[path, pair[0]]] : []))
+}
+for (const [name, stages] of Object.entries(SCENARIOS)) {
+  for (const steps of Object.values(stages)) {
+    for (const step of Array.isArray(steps) ? steps : []) {
+      for (const [path, from] of replacesOf(step)) {
+        if (!path.startsWith('APP/')) continue
+        const text = readFileSync(join(ROOT, path.slice('APP/'.length)), 'utf8')
+        const count = text.split(from).length - 1
+        if (count !== 1) throw new Error(`${name} replaces text found ${count} times in ${path.slice('APP/'.length)}: ${JSON.stringify(from.slice(0, 80))}`)
+      }
+    }
+  }
+}
 
 // The repo's files as they stand, to copy into the test repo.
 function repoFiles(): Record<string, string> {
@@ -383,9 +405,16 @@ try {
     const pr = must(happyStages.find((s: any) => s.stage === 'open_pr')?.data.pullRequest, 'the pull request')
     const prBody = (await forgeCall('GET', `/repos/${org}/${APP}/pulls/${pr}`)).json.body
     check(prBody.includes('## What changed') && prBody.includes('`shared/tidy.ts` added') && prBody.includes('## What was checked') && prBody.includes(`seen_failing:${tidy.check}`)
-      && prBody.includes('## Risks\n\nNothing else imports it.') && prBody.includes('## What the pipeline had to fix\n\n- review, try 1')
+      && prBody.includes('## Risks\n\n```text\nNothing else imports it.\n```') && prBody.includes('## What the pipeline had to fix\n\n```text\n- review, try 1')
       && prBody.includes('## Verdict') && prBody.includes('## Review findings') && prBody.includes('## Decisions') && prBody.includes('Put the tidy part in shared/'),
     'the pull request is written for a reviewer who was not there: what changed, what was checked, the risks, what the pipeline sent back, the verdict, the findings and the decisions')
+    // A section of the body, without the attestation block written after it.
+    const sectionOfBody = (title: string) => ((String(prBody).split(`## ${title}\n\n`)[1] ?? '').split('\n## ')[0] ?? '').replace(/\n*<!-- agents-attestation:v1 [A-Za-z0-9_-]+ -->\s*$/, '').trimEnd()
+    const fencedSection = (title: string, holds: string) => /^[^\n]*\n\n(`{3,})text\n[\s\S]*\n\1$/.test(sectionOfBody(title)) && sectionOfBody(title).includes(holds)
+    check(fencedSection('Review findings', '- Round 1') && fencedSection('Decisions', 'Put the tidy part in shared/'),
+      'the review findings and the decisions sit in fences, since agents wrote them')
+    check(/\| review:[^|]+ \| pass \(advisory\) \|/.test(prBody) && prBody.includes('| verdict | pass (advisory) |') && prBody.includes('advisory until the judges run on their own machine'),
+      'the pull request marks the review and the verdict advisory')
     const builds = await all('select gate, build from evidence where run_id = $1 and commit = $2', [happy, head])
     const hex = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
     check(builds.length > 0 && builds.every((b: any) => hex(b.build.runner.files))
@@ -400,7 +429,7 @@ try {
     'the decision log holds the router\'s pick, the agent\'s logged decision and each person\'s answer')
     const planDecision = await one(`select why from decisions where run_id = $1 and who = 'person' and stage = 'approve_plan'`, [happy])
     check(planDecision?.why.includes('[secret:anthropic]') && !planDecision.why.includes('sk-ant-'), 'a token in a person\'s answer is scrubbed from the decision log')
-    check(/## The author's summary\n\nThe agent that wrote the change wrote this\. The runner wrote everything after it\.\n\n```text\n/.test(prBody),
+    check(prBody.includes('## The author\'s summary\n\nThe agent that wrote the change wrote this. The runner wrote the rest, and fences what agents and people wrote: the risks, what was sent back, the verdict, the review findings and the decisions.\n\n```text\n'),
       'the agent\'s own text sits in a fence of its own, so it cannot pass for the runner\'s sections')
 
     const suiteByMate = await answer(happy, 'approve_suite', mate, 'approve')
@@ -415,6 +444,9 @@ try {
       'the forge has a passing status from the runner for each kind of gate')
     const attestedBody = (await forgeCall('GET', `/repos/${org}/${APP}/pulls/${pr}`)).json.body
     const attestation = checkAttestation(attestedBody, statuses.find((s: any) => s.context === ATTESTATION_STATUS)?.description ?? null, head)
+    check(attestation.ok && attestation.attestation.steps.filter((s) => ADVISORY(s.gate)).length >= 2
+      && attestation.attestation.steps.filter((s) => ADVISORY(s.gate)).every((s) => s.result === 'advisory'),
+    'the attestation marks the review and the verdict advisory')
     check(attestation.ok && attestation.attestation.steps.some((s) => s.gate === 'suite:names') && attestation.attestation.build.checkHost !== null
       && attestation.attestation.build.box !== null && attestation.attestation.pullRequest === pr,
     `once the suite passed, the description carries the attestation and the head commit its digest, which a CI job can check: ${attestation.ok ? 'ok' : attestation.reason}`)
@@ -490,8 +522,8 @@ try {
 
   if (runs('DECIDED')) {
     // A person's decision holds for the rest of the run, a push never replaces
-    // work the runner did not see, and a silent machine leaves the run waiting
-    // on a person instead of looking busy.
+    // commits someone added on the forge, and a silent machine leaves the run
+    // waiting on a person instead of looking busy.
     const decided = await start('DECIDED add the settled part')
     const leasing = await start('LEASE add the leased part')
     for (const runId of [decided, leasing]) {
@@ -507,8 +539,8 @@ try {
     check((await answer(leasing, 'review', owner, 'overrule')).ok, 'the owner overrules the security finding while a person has added to the branch')
     const leasePr = await waitRow(leasing, 'open_pr', (r) => r.status === 'done', 300)
     const leaseTip = (await forgeCall('GET', `/repos/${org}/${APP}/branches/${leaseBranch}`)).json?.commit?.id
-    check(leasePr.outcome === 'failed' && leasePr.summary.includes('Nothing was pushed') && leaseTip === handCommit,
-      `a push that would replace a commit the runner never saw stops, and the commit stays: ${leasePr.summary.split('\n')[0]}`)
+    check(leasePr.outcome === 'failed' && leasePr.summary.includes(`In ${APP}, someone added commits on the forge, ask the agent to merge them.`) && leaseTip === handCommit,
+      `a push over a commit someone added on the forge stops with main's refusal, and the commit stays: ${leasePr.summary.split('\n')[0]}`)
     check(await within(30, async () => (await runOf(leasing))?.status === 'waiting'), 'the run then waits on a person')
 
     await waitAsk(decided, 'review', 400)

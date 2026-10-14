@@ -5,9 +5,9 @@
 //   node --env-file=.env --env-file=.env.test test/step16f.ts
 
 import { randomBytes } from 'node:crypto'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import { createGunzip, gzipSync } from 'node:zlib'
-import { readCommands } from '../server/git.ts'
+import { plainBody, readCommands } from '../server/git.ts'
 
 const failures: string[] = []
 
@@ -41,6 +41,14 @@ try {
   check((await refusal(Readable.from([Buffer.from('zzzz not a push')])))?.includes('not a git push'), 'a body that is not a push is refused')
   const endless = Readable.from(Array.from({ length: 2048 }, () => Buffer.from(pkt(`${sha('0')} ${sha('1')} refs/heads/task/${'x'.repeat(900)}`), 'latin1')))
   check((await refusal(endless))?.includes('more command lines'), 'command lines that never end are refused before they fill memory')
+  // A request that fails partway through its gzipped body fails the reader,
+  // instead of leaving it waiting for bytes that never come.
+  const cut = new PassThrough()
+  cut.on('error', (error) => { console.log(`the request failed: ${error.message}`) })
+  cut.write(gzipSync(whole).subarray(0, 12))
+  setTimeout(() => { cut.destroy(new Error('the client went away')) }, 50)
+  const failed = await Promise.race([refusal(plainBody(cut, 'gzip')), new Promise<string>((resolve) => { setTimeout(() => { resolve('still waiting') }, 5000) })])
+  check(failed !== null && failed !== 'still waiting', `a gzipped push whose request fails partway fails its reader: ${failed ?? 'it read a push'}`)
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)

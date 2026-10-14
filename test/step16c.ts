@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
+import { expireDeploy } from '../server/framework.ts'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
 import { servePeople } from './people.ts'
@@ -251,6 +252,21 @@ try {
   await once('stale', {})
   const staleRow = await spareRow(staleId)
   check(staleRow.status === 'failed' && String(staleRow.note).includes('never went out'), `a deploy that waited past its limit fails, and never goes out: ${staleRow.status} ${staleRow.note ?? ''}`)
+  // A deployer that stopped partway left its deploy checking. The next
+  // deployer to start fails it, so no run waits on it.
+  const { id: stuckId } = must(await one(`insert into deploys (team_id, repo_id, commit, approved_by, status, started_at) values ($1, $2, $3, $4, 'checking', now() - interval '2 hours') returning id`,
+    [teamId, spareId, spareHead, ownerId]), 'a stuck deploy')
+  await once('stuck', {})
+  const stuckRow = await spareRow(stuckId)
+  check(stuckRow.status === 'failed' && String(stuckRow.note).includes('stopped while this deploy was checking'),
+    `a deploy left checking by a deployer that stopped fails when the next deployer starts: ${stuckRow.status} ${stuckRow.note ?? ''}`)
+  // The runner fails a deploy a deployer started and never finished.
+  const { id: lostId } = must(await one(`insert into deploys (team_id, repo_id, commit, approved_by, status, started_at) values ($1, $2, $3, $4, 'switching', now() - interval '2 hours') returning id`,
+    [teamId, spareId, spareHead, ownerId]), 'a deploy its deployer lost')
+  await expireDeploy(db, lostId)
+  const lostRow = await spareRow(lostId)
+  check(lostRow.status === 'failed' && String(lostRow.note).includes('did not finish within'),
+    `the runner fails a deploy whose deployer started it and never finished: ${lostRow.status} ${lostRow.note ?? ''}`)
   garbage.close()
   silent.close()
 

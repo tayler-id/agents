@@ -201,6 +201,9 @@ create table obligations (
   generation int not null default 1,
   delivery jsonb,
   delivery_event text unique,
+  -- Failed tries at delivering, and the earliest time of the next.
+  attempts int not null default 0,
+  retry_at timestamptz,
   waived_by uuid references people on delete set null,
   waive_reason text,
   closed_at timestamptz,

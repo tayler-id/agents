@@ -4,7 +4,7 @@
 
 import ts from 'typescript'
 import type { Finding } from '../framework.ts'
-import { isScript, parseScript } from './source.ts'
+import { isScript, lineOf as gitLine, parseScript } from './source.ts'
 
 export type CssRules = {
   // Custom properties the token stylesheet defines in its :root blocks.
@@ -112,7 +112,7 @@ export function componentFindings(path: string, source: string, rules: CssRules)
   if (!isScript(path)) return []
   const file = parseScript(path, source)
   const out: Finding[] = []
-  const lineOf = (node: ts.Node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1
+  const lineOf = (node: ts.Node) => gitLine(file, node.getStart(file))
   const visit = (node: ts.Node) => {
     if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name)) {
       const name = node.name.text

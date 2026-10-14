@@ -10,7 +10,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { gitUpstream } from './forge.ts'
-import type { FileChange } from '../shared/gates/diff.ts'
+import { IMAGE_HEAD_BYTES, imageFormat, type FileChange } from '../shared/gates/diff.ts'
 
 const run = promisify(execFile)
 const MIRRORS = join(process.env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'mirrors')
@@ -125,7 +125,9 @@ export async function changes(m: Mirror, base: string, head: string): Promise<Fi
   const counts = new Map<string, { added: number; deleted: number; binary: boolean }>()
   const numbers = (await git(m, ['diff', '--numstat', '-z', '-M', base, head])).split('\0')
   for (let i = 0; i < numbers.length; i++) {
-    const [added = '', deleted = '', path = ''] = (numbers[i] ?? '').split('\t')
+    // A path may hold a tab, so only the first two tabs split the entry.
+    const [added = '', deleted = '', ...rest] = (numbers[i] ?? '').split('\t')
+    const path = rest.join('\t')
     if (!added) continue
     const binary = added === '-'
     let target = path
@@ -135,12 +137,15 @@ export async function changes(m: Mirror, base: string, head: string): Promise<Fi
     }
     counts.set(target, { added: binary ? 0 : Number(added), deleted: binary ? 0 : Number(deleted), binary })
   }
-  const lines = addedLineNumbers(await git(m, ['diff', '--no-color', '-U0', '-M', base, head]))
-  const full = splitDiff(await diffText(m, base, head))
   const out: FileChange[] = []
   for (const entry of entries) {
     const count = counts.get(entry.path)
     if (!count) throw new Error(`git listed ${entry.path} as changed and gave no line counts for it`)
+    // Each file's diff is read alone, through a literal pathspec, so no line
+    // of one file's diff can pass for another file's header.
+    const paths = entry.from === null ? [entry.path] : [entry.from, entry.path]
+    const diff = await git(m, ['-c', 'diff.suppressBlankEmpty=false', 'diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M', base, head, '--', ...paths.map((p) => `:(literal)${p}`)])
+    const addedLines = hunkAdds(diff)
     const sizeAt = async (commit: string, path: string) => Number((await git(m, ['cat-file', '-s', `${commit}:${path}`])).trim())
     const readable = async (commit: string, path: string | null) => {
       if (path === null || count.binary) return null
@@ -148,44 +153,80 @@ export async function changes(m: Mirror, base: string, head: string): Promise<Fi
     }
     out.push({
       ...entry, ...count,
-      addedLines: lines.get(entry.path) ?? new Set(),
+      addedLines,
+      untrusted: untrusted(paths, addedLines, count.added),
+      image: count.binary && entry.status !== 'deleted' ? imageFormat(await firstBytes(m, head, entry.path, IMAGE_HEAD_BYTES)) : null,
       before: entry.status === 'added' ? null : await readable(base, entry.from ?? entry.path),
       after: entry.status === 'deleted' ? null : await readable(head, entry.path),
       bytes: entry.status === 'deleted' ? null : await sizeAt(head, entry.path),
-      diff: full.get(entry.path) ?? '',
+      diff,
     })
   }
   return out
 }
 
-// The line numbers each file's hunks add, from a diff with no context lines.
-function addedLineNumbers(diff: string): Map<string, Set<number>> {
-  const out = new Map<string, Set<number>>()
-  let current: Set<number> | null = null
-  let next = 0
-  for (const line of diff.split('\n')) {
-    const file = /^\+\+\+ (?:b\/(.*)|\/dev\/null)$/.exec(line)
-    if (file) {
-      current = file[1] === undefined ? null : new Set()
-      if (file[1] !== undefined && current) out.set(file[1], current)
-      continue
+// git quotes a path holding a double quote, a backslash or a control
+// character, even with core.quotePath off.
+const quotedByGit = (path: string) => {
+  for (let i = 0; i < path.length; i++) {
+    const code = path.charCodeAt(i)
+    if (code < 0x20 || code === 0x7f || code === 0x22 || code === 0x5c) return true
+  }
+  return false
+}
+
+// Why the gates cannot trust a file's diff, or null when they can. git quotes
+// a path holding a quote, a backslash or a control character, and a diff
+// whose hunks add another number of lines than git counts was misread.
+export function untrusted(paths: readonly string[], added: ReadonlySet<number>, counted: number): string | null {
+  const quoted = paths.find(quotedByGit)
+  if (quoted !== undefined) return `git quotes the path ${JSON.stringify(quoted)}, which holds a quote, a backslash or a control character, so the gates cannot match it to its diff. Rename the file.`
+  if (added.size !== counted) return `git counts ${counted} added lines and the diff's hunks add ${added.size}, so no gate can trust which lines are new.`
+  return null
+}
+
+// The numbers of the lines one file's diff adds. Each hunk is read by the
+// counts in its header, so no line inside a hunk is taken for a header, and a
+// hunk that breaks its counts throws.
+export function hunkAdds(diff: string): Set<number> {
+  const out = new Set<number>()
+  const lines = diff.split('\n')
+  for (let i = 0; i < lines.length;) {
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[i++] ?? '')
+    if (!hunk) continue
+    let old = Number(hunk[1] ?? 1)
+    let added = Number(hunk[3] ?? 1)
+    let next = Number(hunk[2])
+    while (old > 0 || added > 0) {
+      const line = lines[i++]
+      if (line === undefined) throw new Error('a hunk ended before its counts did')
+      if (line.startsWith('\\')) continue
+      if (line.startsWith('-') && old > 0) old--
+      else if (line.startsWith('+') && added > 0) {
+        out.add(next++)
+        added--
+      } else if (line.startsWith(' ') && old > 0 && added > 0) {
+        old--
+        added--
+        next++
+      } else throw new Error(`a hunk holds a line its counts do not allow: ${JSON.stringify(line.slice(0, 40))}`)
     }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
-    if (hunk) {
-      next = Number(hunk[1])
-      continue
-    }
-    if (current && line.startsWith('+')) current.add(next++)
   }
   return out
 }
 
-// A whole diff, split into each file's part, keyed by the file's new path.
-function splitDiff(diff: string): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const part of diff.split(/^(?=diff --git )/m).filter(Boolean)) {
-    const path = /^\+\+\+ b\/(.*)$/m.exec(part)?.[1] ?? /^--- a\/(.*)$/m.exec(part)?.[1]
-    if (path !== undefined) out.set(path, part)
-  }
-  return out
+// The first bytes of a file at a commit, read without the rest of it.
+function firstBytes(m: Mirror, commit: string, path: string, n: number): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['cat-file', 'blob', `${commit}:${path}`], { cwd: m.dir, env: m.env })
+    const chunks: Buffer[] = []
+    let size = 0
+    child.stdout.on('data', (chunk: Buffer) => {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size >= n) child.kill()
+    })
+    child.on('error', reject)
+    child.on('close', () => { resolve(Buffer.concat(chunks).subarray(0, n)) })
+  })
 }

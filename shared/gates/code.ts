@@ -4,7 +4,7 @@
 
 import ts from 'typescript'
 import type { Finding } from '../framework.ts'
-import { isScript, parseScript, scriptComments } from './source.ts'
+import { isScript, lineOf as gitLine, parseScript, scriptComments } from './source.ts'
 
 export type CodeFindings = { assertions: Finding[]; shell: Finding[]; warnings: Finding[]; suppressions: Finding[] }
 
@@ -24,7 +24,7 @@ export function codeFindings(path: string, text: string, added: ReadonlySet<numb
   const out: CodeFindings = { assertions: [], shell: [], warnings: [], suppressions: [] }
   if (!isScript(path)) return out
   const file = parseScript(path, text)
-  const lineOf = (node: ts.Node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1
+  const lineOf = (node: ts.Node) => gitLine(file, node.getStart(file))
   const at = (list: Finding[], node: ts.Node, what: string) => {
     const line = lineOf(node)
     if (added.has(line)) list.push({ path, line, text: what })

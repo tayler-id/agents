@@ -267,6 +267,11 @@ export const DEPLOY_NEXT: Record<DeployStatus, readonly DeployStatus[]> = {
   failed: [],
 }
 export const DEPLOY_DONE: readonly DeployStatus[] = ['healthy', 'rolled_back', 'failed']
+// The statuses of a deploy a deployer is working on.
+export const DEPLOY_WORKING: readonly DeployStatus[] = ['preparing', 'switching', 'checking', 'rolling_back']
+// A deploy a deployer started and did not finish within this long fails, since
+// its deployer stopped partway.
+export const DEPLOY_RUN_LIMIT_MIN = 60
 // A deploy nobody started within this long fails, rather than going out long
 // after the owner approved it.
 export const DEPLOY_WAIT_LIMIT_MIN = 30

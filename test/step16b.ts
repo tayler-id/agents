@@ -4,13 +4,16 @@
 // and pass without it. Needs no database, forge or Docker.
 //   node test/step16b.ts
 
-import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { changes, untrusted } from '../server/mirror.ts'
 import { checkAttestation, statusText, withAttestation, type Attestation } from '../shared/attestation.ts'
 import { findingKey } from '../shared/findings.ts'
 import { fenced, resultProblems } from '../shared/framework.ts'
 import type { GateResult, GateStatus, MapOnMain } from '../shared/framework.ts'
-import { staticGates, type FileChange, type StaticContext } from '../shared/gates/diff.ts'
+import { imageFormat, staticGates, type FileChange, type ImageFormat, type StaticContext } from '../shared/gates/diff.ts'
 import { cssFindings, tokensOf } from '../shared/gates/css.ts'
 import { proseFindings, titleCase } from '../shared/gates/prose.ts'
 import { globRegExp } from '../shared/gates/glob.ts'
@@ -32,7 +35,7 @@ const range = (n: number) => new Set(Array.from({ length: n }, (_, i) => i + 1))
 // A file the change adds, every line of it new.
 function added(path: string, after: string): FileChange {
   const lines = after.split('\n').length
-  return { path, status: 'added', from: null, added: lines, deleted: 0, addedLines: range(lines), before: null, after, binary: false, bytes: Buffer.byteLength(after), diff: `+${after}` }
+  return { path, status: 'added', from: null, added: lines, deleted: 0, addedLines: range(lines), before: null, after, binary: false, bytes: Buffer.byteLength(after), diff: `+${after}`, untrusted: null, image: null }
 }
 
 // A file the change edits by appending lines to it.
@@ -40,12 +43,12 @@ function appended(path: string, before: string, extra: string): FileChange {
   const start = before.split('\n').length
   const count = extra.split('\n').length
   const lines = new Set(Array.from({ length: count }, (_, i) => start + i + 1))
-  return { path, status: 'modified', from: null, added: count, deleted: 0, addedLines: lines, before, after: `${before}\n${extra}`, binary: false, bytes: Buffer.byteLength(`${before}\n${extra}`), diff: `+${extra}` }
+  return { path, status: 'modified', from: null, added: count, deleted: 0, addedLines: lines, before, after: `${before}\n${extra}`, binary: false, bytes: Buffer.byteLength(`${before}\n${extra}`), diff: `+${extra}`, untrusted: null, image: null }
 }
 
 // A file the gates cannot read: git calls it binary, or it is over the read limit.
-function unread(path: string, bytes: number, binary: boolean): FileChange {
-  return { path, status: 'added', from: null, added: 0, deleted: 0, addedLines: new Set(), before: null, after: null, binary, bytes, diff: '' }
+function unread(path: string, bytes: number, binary: boolean, image: ImageFormat | null = null): FileChange {
+  return { path, status: 'added', from: null, added: 0, deleted: 0, addedLines: new Set(), before: null, after: null, binary, bytes, diff: '', untrusted: null, image }
 }
 
 const BUILD_LOG = appended('docs/build-log.md', '# Build log', 'Added the thing.')
@@ -79,6 +82,11 @@ check(parses({ maxChangedLines: 200 }) && parses({ verdict: { ...raw.verdict, do
 check(!parses({ maxChangedLines: 1000 }), 'policy: a policy cannot raise the size limit past the core')
 check(!parses({ verdict: { ...raw.verdict, code: 'type-check-only' } }) && !parses({ verdict: { ...raw.verdict, ui: 'unit-test-verified' } }),
   'policy: a policy cannot lower the verdict a change needs')
+
+// The forge's glob reads **/ as at least one folder, so each protected path
+// written with it is also written at the root, where the forge matches it.
+check(policy.protectedPaths.filter((p) => p.startsWith('**/')).every((p) => policy.protectedPaths.includes(p.slice(3))),
+  'policy: each protected path under **/ is also named at the root, for the forge')
 
 // Protected paths.
 const lint = expect('protected', [appended('eslint.config.js', 'export default []', '// looser')], 'needs_owner', 'a change to the lint config needs the owner')
@@ -118,6 +126,10 @@ expect('suppressions', [added('server/a.ts', '// eslint-disable-next-line no-con
 expect('suppressions', [added('server/b.ts', '// @ts-expect-error the type is wrong\nconst n: number = "x"')], 'fail', 'a new ts-expect-error fails')
 expect('suppressions', [added('server/g.ts', '/* eslint no-console: "off" */\nconsole.log(1)')], 'fail', 'inline eslint config turning a rule off fails')
 expect('suppressions', [added('server/h.ts', '/* global window */\nexport const w = 1')], 'fail', 'an inline globals comment fails')
+// TypeScript ends a line at a lone CR, U+2028 and U+2029, and git does not, so
+// a comment after one is judged on git's line.
+expect('suppressions', [appended('server/cr.ts', 'export const a = 1', '// note\r// eslint-disable-next-line no-console')], 'fail', "a suppression after a lone CR is judged on git's line")
+expect('suppressions', [appended('server/ls.ts', 'export const a = 1', '// note // eslint-disable-next-line no-console')], 'fail', "a suppression after a U+2028 is judged on git's line")
 expect('suppressions', [added('server/i.ts', '/* An eslint rule keeps this file tidy. */\nexport const t = 1')], 'pass', 'a comment that only mentions eslint passes')
 expect('suppressions', [added('test/x.test.ts', "import test from 'node:test'\ntest.skip('later', () => {})")], 'fail', 'a skipped test fails')
 const twoChecks = "check(a === 1, 'one')\ncheck(b === 2, 'two')"
@@ -149,9 +161,41 @@ expect('opaque', [unread('docs/huge.md', 3 * 1024 * 1024, false)], 'fail', 'a do
 expect('opaque', [unread('server/migrations/0010_x.sql', 64, true)], 'fail', 'binary SQL fails')
 expect('opaque', [unread('ops/policies/x.json', 64, true)], 'fail', 'binary JSON fails')
 expect('opaque', [unread('app/src/x.css', 64, true)], 'fail', 'a binary stylesheet fails')
-expect('opaque', [unread('docs/evidence/shot.png', 90_000, true)], 'pass', 'an image the gates never read passes')
+expect('opaque', [unread('docs/evidence/shot.png', 90_000, true, 'png')], 'pass', 'an image whose first bytes show it is one passes')
 expect('opaque', [unread('package-lock.json', 3 * 1024 * 1024, false)], 'pass', 'a lockfile over the read limit passes')
 expect('opaque', [{ ...unread('server/old.ts', 0, true), status: 'deleted', bytes: null }], 'pass', 'deleting a binary script passes')
+
+// What git says a change added, read the way the runner reads a change: one
+// file at a time, through a literal pathspec, each hunk by its counts.
+const gitRepo = mkdtempSync(join(tmpdir(), 'agents-step16b-'))
+const inRepo = (...args: string[]) => execFileSync('git', ['-c', 'user.name=step16b', '-c', 'user.email=step16b@local', '-c', 'commit.gpgsign=false', ...args], { cwd: gitRepo, encoding: 'utf8' }).trim()
+inRepo('init', '--quiet')
+mkdirSync(join(gitRepo, 'server'))
+writeFileSync(join(gitRepo, 'server/forged.ts'), 'export const a = 1\n')
+inRepo('add', '-A')
+inRepo('commit', '--quiet', '-m', 'base')
+const baseCommit = inRepo('rev-parse', 'HEAD')
+writeFileSync(join(gitRepo, 'server/forged.ts'), 'export const a = 1\n++ b/ok.ts\n// eslint-disable-next-line no-console\nconsole.log(a)\n')
+writeFileSync(join(gitRepo, 'server/we"ird.ts'), `export const key = 'sk-ant-${'a'.repeat(30)}'\n`)
+inRepo('add', '-A')
+inRepo('commit', '--quiet', '-m', 'head')
+const realFiles = await changes({ dir: gitRepo, env: process.env }, baseCommit, inRepo('rev-parse', 'HEAD'))
+rmSync(gitRepo, { recursive: true, force: true })
+const forgedFile = realFiles.filter((f) => f.path === 'server/forged.ts')
+const forgedLines = [...(forgedFile[0]?.addedLines ?? [])].join(',')
+check(forgedLines === '2,3,4', `diff: an added line that reads +++ b/ok.ts stays an added line of its own file (${forgedLines})`)
+expect('suppressions', forgedFile, 'fail', 'the suppression after a line that reads +++ b/ok.ts is judged')
+const quotedGate = expect('opaque', realFiles, 'fail', 'a path git quotes fails closed')
+check(quotedGate.findings.some((f) => f.path === 'server/we"ird.ts' && f.text.includes('quotes')), 'opaque: the finding names the path git quotes')
+expect('secrets', realFiles, 'fail', 'the key in a file whose path git quotes is found')
+check(untrusted(['server/ok.ts'], new Set([1, 2]), 2) === null && untrusted(['server/ok.ts'], new Set([1]), 2)?.includes('git counts 2') === true,
+  'diff: a file whose hunks add another number of lines than git counts fails closed')
+expect('opaque', [{ ...appended('server/x.ts', 'a', 'b'), untrusted: 'git counts 2 added lines and the hunks add 1.' }], 'fail', 'a file whose diff the gates cannot trust fails')
+// A binary file fails whatever its name, unless its first bytes show an image.
+expect('opaque', [unread('box/Dockerfile', 120, true)], 'fail', 'a file git calls binary fails whatever its name, a Dockerfile here')
+expect('opaque', [unread('docs/evidence/fake.png', 120, true)], 'fail', 'a file named .png whose bytes are no image fails')
+check(imageFormat(Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])) === 'png' && imageFormat(new TextEncoder().encode('// a script')) === null,
+  'opaque: an image is known by its first bytes')
 
 // UI changes need a Playwright check in every engine at both widths.
 const view = appended('app/src/App.tsx', 'export const a = 1', 'export const b = 2')

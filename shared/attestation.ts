@@ -26,6 +26,10 @@ export const REQUIRED_STEPS = [
   { name: 'suite', matches: (gate: string) => gate.startsWith('suite:') },
 ] as const
 
+// The gates that pass on a judge's report, the review and the verdict. They
+// are advisory while the judges run on the author's box.
+export const ADVISORY = (gate: string) => gate.startsWith('review:') || gate === 'verdict'
+
 export const ATTESTATION = z.object({
   v: z.literal(1),
   tool: z.literal('agents'),
@@ -39,8 +43,9 @@ export const ATTESTATION = z.object({
   policy: z.object({ id: z.uuid(), name: z.string().min(1), version: z.number().int().positive() }),
   build: z.object({ runner: TOOL_BUILD, box: TOOL_BUILD.nullable(), checkHost: TOOL_BUILD.nullable() }),
   // Each gate's latest result on the head. `approved` is a gate that needed
-  // the owner, who approved it.
-  steps: z.array(z.object({ gate: z.string().min(1), result: z.enum(['pass', 'approved']) })),
+  // the owner, who approved it. `advisory` is a review or verdict that passed
+  // on a judge's report, which is not proof while judges run on the author's box.
+  steps: z.array(z.object({ gate: z.string().min(1), result: z.enum(['pass', 'approved', 'advisory']) })),
   at: z.iso.datetime(),
 })
 export type Attestation = z.infer<typeof ATTESTATION>
