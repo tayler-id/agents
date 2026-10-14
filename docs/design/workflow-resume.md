@@ -68,11 +68,14 @@ Done so far, each with its check seen failing first: 2 (4e1539e), 5 (dbf0bce), 4
 
 ## Next steps
 
-1. Item 1's failing run: undo main's aad82a8 and this branch's push error scrub, see the leak checks fail, restore.
-2. Item 8: break the named step14 checks in two runs, record them, and list in the build log which checks were never broken.
-3. Item 9: main's checks, with the lock for step7.
-4. Leave the forge timeout to the forge's owner, since forge.ts is another branch's, and say so.
-5. Move this note out of `docs/`, update the build log, run everything, and report.
+Done since: item 1's failing run (with aad82a8 and the push error scrub undone, both leak checks failed, the token in all three places). Item 8's break groups A, B and C, 19 breaks, each turned its check red (scratchpad break-14.mjs). Main's step3, 4a to 4d, 6 and 6b passed on a frozen copy of the branch. step7 was stopped mid-run when the session hit its usage limit, which left the shared lock held from 18:41; I removed the lock, the run's box container and volume, its team and its two forge repos at 20:3x.
+
+The branch is rebased onto main at 564f5da, where people reach the API only on a Unix socket. step14, step14b and step14c give their API a socket in their own folder and serve it with `servePeople` on their old people port.
+
+1. Run step14 through the socket, then break groups D (a listed repo keeping its unlisted row, one repo's failure failing the scan) and E (no count before staging, another team reading a draft's repos, a new file's diff without its header).
+2. Don't run main's shared checks (step1 to step10b, step19) until the coordinator says so. step7, 9 and 9b are still to run.
+3. Leave the forge timeout to the forge's owner, since forge.ts is another branch's, and say so.
+4. Move this note out of `docs/`, update the build log, run step14b and step14c in three engines, and report.
 
 ## Open questions for Tayler
 
