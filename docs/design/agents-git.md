@@ -15,13 +15,23 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 | `start <name> --note <text>` | Makes branch `<name>` from local `main` and a worktree at `<main checkout>-worktrees/<name>`, runs `npm ci` there, and records it. When `npm ci` fails it takes back the worktree and branch. | A name the ledger has, a name that is `main` or `HEAD`, an existing branch, folder or kept ref, a main checkout with uncommitted files |
 | `list` | Every worktree, tracked or not, with branch, base, head, commits main lacks, uncommitted files, created time and note. Flags where the ledger and git disagree, and a `node_modules` that links elsewhere. | |
 | `adopt <path>` | Tracks a worktree that exists, without changing it. | The main checkout, a folder git has no worktree at, one already tracked, a name that is `main` or `HEAD` |
-| `done <name> [--yes]` | Previews, or saves the head as `refs/agents-git/<name>/done`, removes the worktree, deletes the branch once main has it, and marks the entry done. | Uncommitted files the newest save doesn't hold, commits main lacks, a locked worktree, one on another branch, a start still running |
-| `prune [--yes]` | Previews, or runs `done` on each worktree that is merged and clean, or whose folder is gone. Leaves out worktrees with no new commits. | Whatever `done` refuses |
+| `done <name> [--yes] [--backup <path>]...` | Previews, or saves the head as `refs/agents-git/<name>/done`, copies each ignored path that `--backup` names to `~/.agents-app/backups/agents-git/<name>-<time>/`, removes the worktree, deletes the branch once main has it, and marks the entry done. The preview lists every ignored path with its size and the flags that name them. | Uncommitted files the newest save doesn't hold, commits main lacks, a locked worktree, one on another branch, a start still running, an ignored path no `--backup` names |
+| `prune [--yes]` | Previews, or runs `done` on each worktree that is merged and clean, or whose folder is gone. Leaves out worktrees with no new commits, and names the ones it skips for holding ignored paths. | Whatever `done` refuses, and any ignored path, since `prune` names none |
 | `save <name>` | Stores the worktree's uncommitted and untracked files as a commit at `refs/agents-git/<name>/save-<time>`, built in a copy of the index, so the branch, the files and the index stay as they are. | |
 | `sync <name>` | Rebases the branch onto local `main` and records the new base. On a conflict it stops and names the files, and leaves the worktree as git left it. | Uncommitted files, a rebase or merge already part way through |
 | `check <name> <step...>` | Runs each `test/step<step>.ts` under the run lock, as the next section says, and records its counts in the ledger. | Uncommitted files, a linked `node_modules`, a missing step, missing env files |
 | `submit <name>` | Scans every commit the push would publish, which is all that GitHub lacks, not only the branch's own, and the text of the pull request, which is `--message`, `--regression` and each `--review`. Then copies the commits onto GitHub's history, pushes them as branch `<name>` without force, and opens or updates the pull request. | Anything a gate or scan below finds, a protected path Tayler hasn't approved |
 | `land <name>` | Runs every landing gate, merges in a throwaway worktree, runs the full suite there, fast-forwards local `main` and mirrors it to GitHub. Restarts nothing. | A branch never submitted or changed since, no review noted, a gate that fails, a changed check that passes on main, a red suite |
+
+### What done does with ignored files
+
+`git worktree remove` deletes a worktree's ignored files with it and counts none of them as work, so a worktree whose `.scratch/` holds a gigabyte of notes loses them with no warning. This repo's `.gitignore` lists `.scratch/`, `research/`, `docs/evidence/` and `test/ui-shots/`, which hold real work.
+
+- `done` lists every ignored path git reports, a folder whole, except `node_modules` and `app/dist`, which `npm ci` and the build make again. The preview gives each one's size and the `--backup` flags that name them.
+- `done --yes` refuses until `--backup <path>` names every one of them. A trailing slash is optional. It never backs up some and removes the rest, since removing the worktree takes all of them.
+- It copies them under `~/.agents-app/backups/agents-git/<name>-<time>/`, each in its place from the worktree root, in a folder only its owner can read, and keeps a link as a link. Before it removes anything it counts the copy's files, folders, links and bytes against the original's. A copy that fails or falls short is deleted and the worktree is left alone. Node's copy leaves out a socket or a pipe, which holds no data, so the result says how many it left out.
+- `prune` names no path, so it skips a merged, clean worktree that holds one, says which, and leaves it to `done`.
+- Nothing deletes a backup. Tayler removes them.
 
 ### How check runs a step
 
@@ -45,6 +55,7 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 - **Worktrees.** `<main checkout>-worktrees/<name>`, named once in `daemon/agents-git/repo.ts`. For this repo that is `~/Projects/agents-worktrees/<name>`.
 - **The ledger.** `~/.agents-app/worktrees.json`, mode 0600, read and written under `worktrees.json.lock`, parsed with zod on every read and replaced whole through a rename. A lock left by a process that has exited is cleared.
 - **The run lock and logs.** Beside the ledger, in `~/.agents-app/checks/`.
+- **Backups.** `done` copies a worktree's ignored paths to `~/.agents-app/backups/agents-git/<name>-<time>/`, also beside the ledger.
 - **Refs.** Everything kept for a worktree is under `refs/agents-git/<name>/`: `done`, `save-<time>` and `land`. A name is used once.
 - **The one seam.** `AGENTS_GIT_LEDGER` moves the ledger, and with it the run lock and logs. Only `test/step22.ts` sets it. The worktree folder follows the main checkout, so the check's temp repo needs no second seam.
 

@@ -107,6 +107,21 @@ export async function uncommitted(path: string): Promise<number> {
   return count
 }
 
+// The ignored files and folders git lists in a worktree, a folder whole when all of it is
+// ignored, with a slash on the end of a folder's name. Removing a worktree deletes them
+// without a word, since git counts only changed and untracked files as work.
+export async function ignoredPaths(path: string): Promise<string[]> {
+  const fields = (await git(path, ['status', '--porcelain=v2', '-z', '--ignored=matching', '--untracked-files=normal'])).split('\0')
+  const out: string[] = []
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i] ?? ''
+    // A rename or a copy is followed by a field holding the old path.
+    if (field.startsWith('2 ')) i++
+    else if (field.startsWith('! ')) out.push(field.slice('! '.length))
+  }
+  return out
+}
+
 export async function commitOf(cwd: string, ref: string): Promise<Sha | null> {
   const ran = await gitRun(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
   if (ran.code === 1) return null

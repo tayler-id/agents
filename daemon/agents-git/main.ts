@@ -20,7 +20,7 @@ const USAGE = {
   start: 'start <name> --note <text>   a branch from local main and a worktree beside the repo, with its own npm ci',
   list: 'list   every worktree, tracked or not, and where the ledger and git disagree',
   adopt: 'adopt <path> [--name <name>] [--note <text>]   track a worktree that exists, without changing it',
-  done: 'done <name> [--yes]   save its last commit, remove the worktree, and delete its branch once main has it',
+  done: 'done <name> [--yes] [--backup <path>]...   save its last commit, copy the ignored paths named by --backup to ~/.agents-app/backups, remove the worktree, and delete its branch once main has it',
   prune: 'prune [--yes]   done for each tracked worktree that is merged and clean, or whose folder is gone',
   save: 'save <name>   keep its uncommitted work in a ref, and leave the worktree as it is',
   sync: 'sync <name>   rebase its branch onto local main',
@@ -41,7 +41,7 @@ const Command = z.discriminatedUnion('command', [
   z.strictObject({ command: z.literal('start'), args: z.tuple([named('start')]), note: z.string({ error: NOTE }).trim().min(1, NOTE) }),
   z.strictObject({ command: z.literal('list'), args: z.tuple([]) }),
   z.strictObject({ command: z.literal('adopt'), args: z.tuple([z.string({ error: 'adopt needs the path of a worktree' }).min(1)]), name: Name.optional(), note: Text.optional() }),
-  z.strictObject({ command: z.literal('done'), args: z.tuple([named('done')]), yes: z.boolean().default(false) }),
+  z.strictObject({ command: z.literal('done'), args: z.tuple([named('done')]), yes: z.boolean().default(false), backup: Paths }),
   z.strictObject({ command: z.literal('prune'), args: z.tuple([]), yes: z.boolean().default(false) }),
   z.strictObject({ command: z.literal('save'), args: z.tuple([named('save')]) }),
   z.strictObject({ command: z.literal('sync'), args: z.tuple([named('sync')]) }),
@@ -62,7 +62,7 @@ async function main(argv: string[]): Promise<Report> {
       args: argv,
       options: {
         note: { type: 'string' }, name: { type: 'string' }, yes: { type: 'boolean' }, limit: { type: 'string' }, 'build-limit': { type: 'string' },
-        message: { type: 'string' }, review: { type: 'string', multiple: true }, regression: { type: 'string' }, approve: { type: 'string', multiple: true },
+        message: { type: 'string' }, review: { type: 'string', multiple: true }, regression: { type: 'string' }, approve: { type: 'string', multiple: true }, backup: { type: 'string', multiple: true },
       },
       allowPositionals: true,
       strict: true,
@@ -94,7 +94,7 @@ async function main(argv: string[]): Promise<Report> {
     case 'start': return start(ledger, cwd, command.args[0], command.note)
     case 'list': return list(ledger, cwd)
     case 'adopt': return adopt(ledger, cwd, command.args[0], command.name, command.note)
-    case 'done': return done(ledger, cwd, command.args[0], command.yes)
+    case 'done': return done(ledger, cwd, command.args[0], command.yes, command.backup)
     case 'prune': return prune(ledger, cwd, command.yes)
     case 'save': return save(ledger, cwd, command.args[0])
     case 'sync': return sync(ledger, cwd, command.args[0])

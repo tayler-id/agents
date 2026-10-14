@@ -2,17 +2,22 @@
 // acts on from git while it holds the ledger's lock, right before it acts, and
 // refuses rather than guess when it can't prove one.
 
-import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync } from 'node:fs'
+import { constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync } from 'node:fs'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
-import { aheadOf, commitOf, deleteRef, git, isAncestor, latestRef, mergeBase, moveRef, run, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
-import { alive, MAIN_BRANCH, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
-import { doneRef, isLive, mainCommit, MAIN, ok, openRepo, plural, refsOf, refsUnder, refused, replace, savesOf, tracked, worktreeRoot, type Repo, type Report } from './repo.ts'
+import { aheadOf, commitOf, deleteRef, git, ignoredPaths, isAncestor, latestRef, mergeBase, moveRef, run, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
+import { alive, appHome, MAIN_BRANCH, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
+import { doneRef, isLive, mainCommit, MAIN, ok, openRepo, plural, quote, refsOf, refsUnder, refused, replace, savesOf, stampOf, tracked, worktreeRoot, type Repo, type Report } from './repo.ts'
 
 // npm ci downloads Electron's binary when its cache is cold, which can take minutes.
 const NPM_CI_TIMEOUT_MS = 15 * 60_000
 // How much of a failed npm ci's output start repeats.
 const NPM_TAIL_LINES = 20
+// Ignored paths that npm ci or the build make again. done removes these with the worktree
+// and copies nothing. Every other ignored path may hold work that only the worktree has.
+const REGENERATED = ['node_modules', 'app/dist']
+// A backup may hold what a worktree kept out of git, such as an .env file, so only its owner reads it.
+const BACKUP_MODE = 0o700
 
 type Facts = {
   // Git's record of a worktree at the entry's path.
@@ -31,6 +36,9 @@ type Facts = {
   savable: boolean
   // Where node_modules links to, when it is a link instead of the worktree's own.
   linkedModules: string | null
+  // Ignored paths that only this worktree holds, in git's form: a folder ends in a slash.
+  // Empty when git can't reach a worktree to look in.
+  ignored: string[]
 }
 
 export async function inspect(repo: Repo, mainSha: Sha, entry: LiveEntry): Promise<Facts> {
@@ -49,7 +57,62 @@ export async function inspect(repo: Repo, mainSha: Sha, entry: LiveEntry): Promi
     saved,
     savable: saved === null || head === null || saved === head || await isAncestor(repo.main, saved, head),
     linkedModules: existsSync(entry.path) && lstatSync(modules, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(modules) : null,
+    ignored: registered && !registered.prunable ? (await ignoredPaths(entry.path)).filter((path) => !REGENERATED.includes(bare(path))) : [],
   }
+}
+
+// A folder's name without the slash git puts on the end of it.
+const bare = (path: string) => path.replace(/\/+$/, '')
+
+// What a path holds, counted without following a link: files and the bytes in them,
+// folders, links, and anything else, such as a socket.
+type Held = { files: number, folders: number, links: number, other: number, bytes: number }
+
+function measure(path: string): Held {
+  const held: Held = { files: 0, folders: 0, links: 0, other: 0, bytes: 0 }
+  const visit = (at: string) => {
+    const stat = lstatSync(at)
+    if (stat.isDirectory()) {
+      held.folders++
+      for (const child of readdirSync(at)) visit(join(at, child))
+    } else if (stat.isFile()) {
+      held.files++
+      held.bytes += stat.size
+    } else if (stat.isSymbolicLink()) held.links++
+    else held.other++
+  }
+  visit(path)
+  return held
+}
+
+const sizeText = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : bytes >= 1e3 ? `${(bytes / 1e3).toFixed(1)} KB` : `${bytes} B`)
+
+// Copies each path into dest, in its place from the worktree's root, and proves the copy
+// holds as many files, folders, links and bytes as the original. Node's recursive copy
+// leaves a socket or a pipe out without a word, and they hold no data, so they are not
+// counted as missing, only as left out. A copy that fails or falls short is removed, and
+// the worktree is untouched.
+function backUp(root: string, paths: readonly string[], dest: string): { bytes: number, leftOut: number } {
+  mkdirSync(dest, { recursive: true, mode: BACKUP_MODE })
+  const total = { bytes: 0, leftOut: 0 }
+  try {
+    for (const path of paths) {
+      const from = join(root, bare(path))
+      const to = join(dest, bare(path))
+      mkdirSync(dirname(to), { recursive: true })
+      cpSync(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE })
+      const [was, now] = [measure(from), measure(to)]
+      if (was.files !== now.files || was.folders !== now.folders || was.links !== now.links || was.bytes !== now.bytes) {
+        throw new Error(`the copy of ${path} holds ${plural(now.files, 'file')}, ${plural(now.folders, 'folder')}, ${plural(now.links, 'link')} and ${now.bytes} bytes, and the original holds ${plural(was.files, 'file')}, ${plural(was.folders, 'folder')}, ${plural(was.links, 'link')} and ${was.bytes} bytes`)
+      }
+      total.bytes += was.bytes
+      total.leftOut += was.other
+    }
+  } catch (error) {
+    rmSync(dest, { recursive: true, force: true })
+    throw error
+  }
+  return total
 }
 
 // Why done must refuse, if it must.
@@ -214,7 +277,10 @@ export async function adopt(ledgerFile: string, cwd: string, target: string, nam
   })
 }
 
-export async function done(ledgerFile: string, cwd: string, name: Name, yes: boolean): Promise<Report> {
+// Where done copies the ignored paths of a worktree it removes, in a folder for each removal.
+const backupsOf = (ledgerFile: string) => join(appHome(ledgerFile), 'backups', 'agents-git')
+
+export async function done(ledgerFile: string, cwd: string, name: Name, yes: boolean, backup: readonly string[]): Promise<Report> {
   return withLedger(ledgerFile, `done ${name}`, async (ledger, write) => {
     const repo = await openRepo(cwd)
     const entry = ledger.worktrees.find((e) => e.repo === repo.main && e.name === name)
@@ -226,16 +292,34 @@ export async function done(ledgerFile: string, cwd: string, name: Name, yes: boo
     const head = facts.head
     const branch = entry.branch !== null && await commitOf(repo.main, `refs/heads/${entry.branch}`) ? entry.branch : null
     const removal = !facts.git ? `drop ${entry.path}, which git no longer lists` : facts.changed ? `remove ${entry.path} with its ${plural(facts.changed, 'uncommitted file')}, which the newest save holds` : `remove ${entry.path}`
-    const plan = [`save ${short(head)} as ${doneRef(name)}`, removal, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
-    if (!yes) return { code: 0, lines: [`preview: done ${name} would ${plan.join(', ')}`, `next: done ${name} --yes`] }
+    // git deletes ignored files with the worktree and counts none of them as work, so each
+    // is copied first, and only when --backup names it. Removing the worktree takes all of
+    // them, so done wants every one named.
+    const named = new Set(backup.map(bare))
+    const unnamed = facts.ignored.filter((path) => !named.has(bare(path)))
+    const sized = facts.ignored.map((path) => `${path} (${sizeText(measure(join(entry.path, bare(path))).bytes)})`)
+    const flags = facts.ignored.map((path) => ` --backup ${quote(path)}`).join('')
+    const into = join(backupsOf(ledgerFile), `${name}-${stampOf(new Date())}`)
+    const plan = [`save ${short(head)} as ${doneRef(name)}`, ...(facts.ignored.length ? [`copy ${sized.join(', ')} to ${join(backupsOf(ledgerFile), `${name}-<time>`)}`] : []), removal, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
+    if (!yes) return { code: 0, lines: [`preview: done ${name} would ${plan.join(', ')}`, `next: done ${name} --yes${flags}`] }
+    if (unnamed.length) return refused(`done ${name}: it holds ${plural(unnamed.length, 'ignored path')} that no other copy has and --backup does not name, ${unnamed.join(', ')}`, `done ${name} --yes${flags}`)
     if (facts.saved !== head) await moveRef(repo.main, doneRef(name), head, facts.saved)
+    let copied: { bytes: number, leftOut: number } | null = null
+    if (facts.ignored.length) {
+      try {
+        copied = backUp(entry.path, facts.ignored, into)
+      } catch (error) {
+        return { code: 1, lines: [`failed: done ${name}: backing up its ignored paths failed, so the worktree was not touched`, messageOf(error)] }
+      }
+    }
     // git refuses a worktree with uncommitted files unless forced, and the files
     // are forced away only when the newest save holds every one of them.
     if (facts.git) await git(repo.main, ['worktree', 'remove', ...(facts.changed ? ['--force'] : []), entry.path])
     const kept = branch === null ? null : await deleteIfMerged(repo.main, branch)
     write(replace(ledger, { ...tracked(entry), state: 'done', doneAt: new Date().toISOString(), finalHead: head, branchDeleted: branch !== null && kept === null }))
     const left = branch === null ? 'no branch to delete' : kept === null ? `deleted branch ${branch}` : `kept branch ${branch}, since ${kept}`
-    return ok(`ok: ${name} is done. Saved ${short(head)} as ${doneRef(name)}, removed the worktree, ${left}`)
+    const backedUp = copied === null ? '' : `backed up ${plural(facts.ignored.length, 'ignored path')} (${sizeText(copied.bytes)}) to ${into}${copied.leftOut ? `, leaving out ${plural(copied.leftOut, 'socket or pipe file')}, which hold no data` : ''}, `
+    return ok(`ok: ${name} is done. Saved ${short(head)} as ${doneRef(name)}, ${backedUp}removed the worktree, ${left}`)
   })
 }
 
@@ -263,7 +347,9 @@ export async function prune(ledgerFile: string, cwd: string, yes: boolean): Prom
       const facts = await inspect(repo, mainSha, entry)
       // A worktree with no new commits may be one an agent has just started in.
       const why = !facts.folder ? 'its folder is gone' : facts.changed === 0 && facts.ahead === 0 && facts.head !== entry.base ? 'merged and clean' : null
-      if (why) found.push({ name: entry.name, why, reasons: blockers(entry, facts) })
+      // prune names no path to back up, so a worktree with ignored paths is left to done.
+      const ignoredReason = facts.ignored.length ? [`it holds ${plural(facts.ignored.length, 'ignored path')} (${facts.ignored.join(', ')}) that only done can back up, so run done ${entry.name}`] : []
+      if (why) found.push({ name: entry.name, why, reasons: [...blockers(entry, facts), ...ignoredReason] })
     }
     return found
   })
@@ -274,7 +360,7 @@ export async function prune(ledgerFile: string, cwd: string, yes: boolean): Prom
   const lines: string[] = []
   for (const row of ready) {
     // done checks every fact again under the lock, since any of them may have changed.
-    const report = await done(ledgerFile, cwd, row.name, true).catch((error: unknown): Report => ({ code: 1, lines: [`failed: done ${row.name}: ${messageOf(error)}`] }))
+    const report = await done(ledgerFile, cwd, row.name, true, []).catch((error: unknown): Report => ({ code: 1, lines: [`failed: done ${row.name}: ${messageOf(error)}`] }))
     codes.push(report.code)
     lines.push(...report.lines)
   }

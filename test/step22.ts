@@ -16,7 +16,7 @@
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -172,7 +172,7 @@ try {
   execFileSync('npm', ['pack', '--silent', '--pack-destination', main], { cwd: join(tmp, 'tiny'), env })
   writeFileSync(join(main, 'package.json'), `${JSON.stringify({ name: 'step22', private: true, type: 'module', scripts: { check: 'node test/names.ts && node test/all.ts' }, dependencies: { tiny: 'file:tiny-1.0.0.tgz' } }, null, 2)}\n`)
   execFileSync('npm', ['install', '--package-lock-only'], { cwd: main, env })
-  writeFileSync(join(main, '.gitignore'), 'node_modules/\n.env\n.env.test\n')
+  writeFileSync(join(main, '.gitignore'), 'node_modules/\n.env\n.env.test\n.scratch/\nresearch/\ndocs/evidence/\ntest/ui-shots/\napp/dist/\n')
   writeFileSync(join(main, 'README.md'), 'step22\n')
   for (const [file, text] of [['docs/build-log.md', '# Build log\n'], ['docs/what-each-part-does.md', '# What each part does\n'], ['docs/data-model.md', '# Data model\n'], ['server/migrations/0001_start.sql', '-- the first migration\n'], ['test/step1.ts', STEP1], ['test/step2.ts', STEP2], ['test/step3.ts', STEP3]] as const) {
     mkdirSync(join(main, file, '..'), { recursive: true })
@@ -321,8 +321,11 @@ try {
   run = cli(['done', 'alpha', '--yes'])
   check(run.code === 3 && run.first.includes('1 uncommitted file') && nothingChanged(), 'done --yes checks again instead of trusting the preview')
   unlinkSync(join(alpha, 'late.md'))
+  mkdirSync(join(alpha, 'app', 'dist'), { recursive: true })
+  writeFileSync(join(alpha, 'app', 'dist', 'bundle.js'), 'built\n')
   run = cli(['done', 'alpha', '--yes'])
   check(run.code === 0 && run.first.startsWith('ok: alpha is done'), `done --yes finishes a merged, clean worktree (${run.first})`)
+  check(run.code === 0 && !existsSync(join(home, 'backups')) && !run.first.includes('backed up'), 'done copies nothing for node_modules and app/dist, which npm ci and the build make again')
   check(commit('refs/agents-git/alpha/done') === alphaHead, "done saves the worktree's last commit as refs/agents-git/alpha/done")
   check(!existsSync(alpha) && !registered(alpha), 'done removes the worktree folder and git forgets it')
   check(commit('refs/heads/alpha') === null, 'done deletes the branch, since main has it')
@@ -374,6 +377,62 @@ try {
   check(!existsSync(beta) && commit('refs/heads/beta') === null && commit('refs/agents-git/beta/done') === betaHead && entry('beta')?.state === 'done', 'prune finished beta: saved, removed, branch deleted, marked done')
   check(commit('refs/heads/gone') === null && commit('refs/agents-git/gone/done') === goneBranch && entry('gone')?.state === 'done', 'prune finished gone from its branch, since its folder was already gone')
   check(existsSync(zeta) && entry('zeta')?.state === 'active' && existsSync(join(root, 'broken')) && entry('broken')?.state === 'active' && existsSync(hand), 'prune leaves the locked worktree and the ones with no new commits alone')
+  // Removing a worktree deletes its ignored files with no word, so done copies them first.
+  // zeta stays locked until this ends, so the prune runs below leave it alone.
+  cli(['start', 'theta', '--note', 'step22 theta'])
+  const theta = join(root, 'theta')
+  commitFile(theta, 'theta.md', 'theta work\n')
+  git(main, 'merge', '-q', '--no-ff', 'theta', '-m', 'merge theta')
+  const thetaHead = commit('refs/heads/theta')
+  const notes = 'notes only this worktree has\n'
+  const bytes = Buffer.from([0, 1, 2, 255, 254, 253])
+  mkdirSync(join(theta, '.scratch', 'deep'), { recursive: true })
+  writeFileSync(join(theta, '.scratch', 'notes.md'), notes)
+  writeFileSync(join(theta, '.scratch', 'deep', 'data.bin'), bytes)
+  symlinkSync('notes.md', join(theta, '.scratch', 'link'))
+  execFileSync('mkfifo', [join(theta, '.scratch', 'pipe')])
+  mkdirSync(join(theta, 'docs', 'evidence'), { recursive: true })
+  writeFileSync(join(theta, 'docs', 'evidence', 'shot.txt'), 'evidence\n')
+  mkdirSync(join(theta, 'app', 'dist'), { recursive: true })
+  writeFileSync(join(theta, 'app', 'dist', 'bundle.js'), 'built\n')
+  const backups = join(home, 'backups', 'agents-git')
+  const folders = () => (existsSync(backups) ? readdirSync(backups) : [])
+  const backupOf = (worktree: string) => join(backups, folders().find((folder) => folder.startsWith(`${worktree}-`)) ?? `no-backup-of-${worktree}`)
+  // latin1 reads each byte as one character, so equal text is equal bytes.
+  const contents = (path: string) => (existsSync(path) ? readFileSync(path, 'latin1') : null)
+  const thetaUntouched = () => existsSync(join(theta, '.scratch', 'notes.md')) && !commit('refs/agents-git/theta/done') && !existsSync(backups)
+  run = cli(['done', 'theta'])
+  check(run.code === 0 && run.first.startsWith('preview: done theta would') && run.first.includes(`.scratch/ (${String(Buffer.byteLength(notes) + bytes.length)} B)`) && run.first.includes('docs/evidence/ (9 B)'), 'done lists the ignored paths in its preview, each with its size')
+  check(!run.first.includes('node_modules') && !run.first.includes('app/dist') && run.last === 'next: done theta --yes --backup .scratch/ --backup docs/evidence/' && thetaUntouched(), 'and leaves out node_modules and app/dist, says which flags to pass, and changes nothing')
+  run = cli(['done', 'theta', '--yes'])
+  check(run.code === 3 && run.first.includes('.scratch/') && run.first.includes('docs/evidence/') && thetaUntouched(), 'done --yes refuses ignored paths that no flag names, and changes nothing')
+  run = cli(['done', 'theta', '--yes', '--backup', '.scratch/'])
+  check(run.code === 3 && run.first.includes('docs/evidence/') && !run.first.includes('.scratch/') && thetaUntouched(), 'and it refuses while any one of them is not named')
+  run = cli(['done', 'theta', '--yes', '--backup', '.scratch', '--backup', 'docs/evidence/'])
+  const backup = backupOf('theta')
+  check(run.code === 0 && run.first.includes('backed up 2 ignored paths') && run.first.includes(backup) && !existsSync(theta) && commit('refs/agents-git/theta/done') === thetaHead, `done --yes backs the named paths up, then removes the worktree (${run.first})`)
+  check(contents(join(backup, '.scratch', 'notes.md')) === notes && contents(join(backup, '.scratch', 'deep', 'data.bin')) === bytes.toString('latin1') && contents(join(backup, 'docs', 'evidence', 'shot.txt')) === 'evidence\n', 'the backup holds each file, byte for byte, in its place from the worktree root')
+  check(lstatSync(join(backup, '.scratch', 'link'), { throwIfNoEntry: false })?.isSymbolicLink() === true && readlinkSync(join(backup, '.scratch', 'link')) === 'notes.md' && !existsSync(join(backup, 'node_modules')) && !existsSync(join(backup, 'app')), 'it keeps a link as a link, and holds nothing from node_modules or app/dist')
+  check(!existsSync(join(backup, '.scratch', 'pipe')) && run.first.includes('leaving out 1 socket or pipe file'), 'it says it left out a pipe, which holds no data')
+  check(existsSync(backup) && (statSync(backup).mode & 0o777) === 0o700, 'only its owner can read the backup, since it may hold files kept out of git')
+
+  cli(['start', 'iota', '--note', 'step22 iota'])
+  const iota = join(root, 'iota')
+  commitFile(iota, 'iota.md', 'iota work\n')
+  git(main, 'merge', '-q', '--no-ff', 'iota', '-m', 'merge iota')
+  mkdirSync(join(iota, '.scratch'))
+  writeFileSync(join(iota, '.scratch', 'mine.md'), 'mine\n')
+  run = cli(['prune'])
+  check(run.code === 0 && run.out.includes('skipped iota: merged and clean, but it holds 1 ignored path (.scratch/)') && !run.out.includes('  iota  merged and clean'), 'prune skips a merged, clean worktree that holds an ignored path, and names the path')
+  run = cli(['prune', '--yes'])
+  check(existsSync(join(iota, '.scratch', 'mine.md')) && entry('iota').state === 'active' && !commit('refs/agents-git/iota/done'), 'and prune --yes leaves it for done')
+  mkdirSync(backups, { recursive: true })
+  chmodSync(backups, 0o500)
+  run = cli(['done', 'iota', '--yes', '--backup', '.scratch/'])
+  chmodSync(backups, 0o700)
+  check(run.code === 1 && run.first.startsWith('failed: done iota') && run.first.includes('the worktree was not touched') && existsSync(join(iota, '.scratch', 'mine.md')) && entry('iota').state === 'active' && !folders().some((folder) => folder.startsWith('iota-')), 'a backup that cannot be made removes nothing, and leaves no half of one behind')
+  run = cli(['done', 'iota', '--yes', '--backup', '.scratch/'])
+  check(run.code === 0 && !existsSync(iota) && contents(join(backupOf('iota'), '.scratch', 'mine.md')) === 'mine\n', 'once it can be made, done backs up and removes')
   git(main, 'worktree', 'unlock', zeta)
 
   // The ledger's lock
