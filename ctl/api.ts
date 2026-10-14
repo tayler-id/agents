@@ -51,6 +51,55 @@ export async function call(state: ReadyState, options: {
   return { status: res.status, body: parsed.success ? parsed.data : text }
 }
 
+// Electric answers a shape's first read with the snapshot it took when the
+// shape was made, and each later read with the changes after the offset it
+// names. This many reads is far more than an instance's shapes need to catch up.
+const SHAPE_READS = 20
+
+const ShapeMessage = z.object({
+  key: z.string().optional(),
+  value: z.record(z.string(), JSON_VALUE).optional(),
+  headers: z.object({ operation: z.enum(['insert', 'update', 'delete']).optional(), control: z.string().optional() }),
+})
+export type ShapeRead = { ok: true; rows: Record<string, JsonValue>[] } | { ok: false; why: string }
+
+// The rows a shape holds now, as the owner reads it the way the app does: the
+// snapshot, then each next offset, until Electric says the reader is up to date.
+export async function readShape(state: ReadyState, table: string): Promise<ShapeRead> {
+  const rows = new Map<string, Record<string, JsonValue>>()
+  let offset = '-1'
+  let handle: string | null = null
+  for (let read = 0; read < SHAPE_READS; read++) {
+    const query: URLSearchParams = new URLSearchParams({ offset, ...(handle === null ? {} : { handle }) })
+    const res: Response = await fetch(url(state, 'people', `/v1/shape/${table}?${query.toString()}`), {
+      headers: { 'tailscale-user-login': state.seed.owner.login }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    const text = await res.text()
+    // Electric replaced the shape: read the new one from its snapshot.
+    if (res.status === 409) {
+      rows.clear()
+      offset = '-1'
+      handle = res.headers.get('electric-handle')
+      continue
+    }
+    if (res.status !== 200) return { ok: false, why: `the ${table} shape answered ${String(res.status)}: ${text.slice(0, 200)}` }
+    const messages = z.array(ShapeMessage).safeParse(safeJson(text))
+    if (!messages.success) return { ok: false, why: `the ${table} shape is not a list of messages: ${messages.error.message}` }
+    for (const message of messages.data) {
+      const { operation } = message.headers
+      if (operation === undefined || message.key === undefined) continue
+      if (operation === 'delete') rows.delete(message.key)
+      else rows.set(message.key, { ...rows.get(message.key), ...message.value })
+    }
+    if (res.headers.has('electric-up-to-date')) return { ok: true, rows: [...rows.values()] }
+    handle = res.headers.get('electric-handle')
+    const next = res.headers.get('electric-offset')
+    if (handle === null || next === null) return { ok: false, why: `the ${table} shape answered without the handle and offset to read on from` }
+    offset = next
+  }
+  return { ok: false, why: `the ${table} shape was still not up to date after ${String(SHAPE_READS)} reads` }
+}
+
 function safeJson(text: string): unknown {
   try {
     return JSON.parse(text)

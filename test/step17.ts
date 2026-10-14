@@ -22,6 +22,7 @@ import { decode } from '../ctl/png.ts'
 import { isOurs, owned, stop, type Owned } from '../ctl/procs.ts'
 import { InstanceName, InstanceState, ProcessRecord, saveState, stateFile } from '../ctl/state.ts'
 import { childEnv } from '../ctl/config.ts'
+import { DoctorReport } from '../ctl/instance.ts'
 import { MapReport } from '../ctl/map.ts'
 import { CompareResult } from '../ctl/visual.ts'
 import { Found } from '../ctl/protocol.ts'
@@ -281,6 +282,10 @@ try {
     check(agent.out.head === 'ok: seed agent scout -> scout lives on mac' && /^ok: seed box crate -> crate is \S+ and free$/.test(box.out.head)
       && /^ok: seed task "Step 17 checks the task seed" -> the task is at #\/t\/[0-9a-f-]{36}, for fixer$/.test(task.out.head) && !task.out.already && taskAgain.out.already,
     'seed adds an agent, a box and a task, each read back from the record, and the same task again says already: true')
+    // The agents shape was made at up, so its first read holds only the snapshot from then, without scout.
+    const report = DoctorReport.safeParse((await ctl(['doctor'])).out.data)
+    const electric = report.success ? report.data.checks.find((c) => c.name === 'Electric') : undefined
+    check(electric?.ok === true && electric.detail.includes('scout'), 'doctor reads the agents shape up to date, so it lists an agent seeded after up')
     const secret = await ctl(['secret', 'set', 'STEP17_TOKEN', '--value', 'step17-value'])
     const held = await ctl(['machine', 'read', 'secrets.json', '--expect-text', 'STEP17_TOKEN'])
     const unset = await ctl(['secret', 'unset', 'STEP17_TOKEN'])

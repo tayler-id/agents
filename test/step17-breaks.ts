@@ -171,6 +171,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'ctl/map.ts', anchor: "steps.push({ label: step.label, verdict: 'live-ui-verified', reason: '', commands })", replace: "steps.push({ label: step.label, verdict: 'verifier-failed', reason: '', commands })" }] },
   { name: 'loaded-waiting', why: 'goto does not know the page a login on no team waits on', sections: 'map', red: 'map run getting-in verifies every step live',
     edits: [{ file: 'ctl/playwright.ts', anchor: "\n    .or(page.getByRole('main', { name: 'Waiting to join' }))", replace: '' }] },
+  { name: 'shape-snapshot', why: "doctor reads only a shape's snapshot, from when the shape was made", sections: 'seed', red: 'doctor reads the agents shape up to date, so it lists an agent seeded after up',
+    edits: [{ file: 'ctl/api.ts', anchor: "if (res.headers.has('electric-up-to-date')) return { ok: true, rows: [...rows.values()] }", replace: 'return { ok: true, rows: [...rows.values()] }' }] },
   { name: 'join-asks', why: 'the app shows a login on no team the waiting page without asking to join', sections: 'map', red: 'the stranger getting-in drives asks to join, a row of no team that down must remove',
     edits: [{ file: 'app/src/App.tsx', anchor: "api.me().then((seen) => (seen.kind === 'member' ? seen : api.join()))", replace: "api.me().then((seen) => (seen.kind === 'member' ? seen : { kind: 'waiting' as const, login: seen.login, name: seen.name }))" }] },
   { name: 'join-cleanup', why: "down leaves the join request of the instance's stranger", sections: 'map', red: "down removes the join request of the instance's stranger",
