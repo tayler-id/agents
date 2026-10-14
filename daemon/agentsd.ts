@@ -28,6 +28,7 @@ import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
 import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
 import { followTerminalSessions } from './transcripts.ts'
+import { loginShellSecrets } from './secrets.ts'
 
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
@@ -53,9 +54,11 @@ function ownToken(): string | null {
   }
 }
 
+// What the person's login shell exports, learned once, at start.
+let shellSecrets: [string, string][] = []
 // Secrets this machine holds: its environment's, the plugins' in secrets.json,
-// and its owner's Claude token. Read again for each new session, so a secret
-// added later is scrubbed too.
+// its owner's Claude token and its login shell's. Read again for each new
+// session, so a secret added later is scrubbed too.
 const knownSecrets = (): [string, string][] => {
   const own = ownToken()
   const signedIn: [string, string][] = own === null ? [] : [['CLAUDE_CODE_OAUTH_TOKEN', own]]
@@ -63,10 +66,22 @@ const knownSecrets = (): [string, string][] => {
     ...envSecrets(process.env),
     ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
     ...signedIn,
+    ...shellSecrets,
   ].sort((a, b) => b[1].length - a[1].length)
 }
 let secrets = knownSecrets()
 let scrub = makeScrub(secrets)
+// Terminal sessions wait for this, and are not sent at all if the shell can't be
+// read, since its secrets would reach the record unscrubbed.
+const shellRead = loginShellSecrets().then((found) => {
+  shellSecrets = found
+  secrets = knownSecrets()
+  scrub = makeScrub(secrets)
+  return true
+}, (error: unknown) => {
+  console.error(`the login shell's environment: ${messageOf(error)}. Terminal sessions are not sent until the daemon starts again and can read it.`)
+  return false
+})
 // Live text is held back long enough to catch a secret split across chunks.
 const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length + 16))
 // Each session's current process. Only it sets the session's status. A process
@@ -544,5 +559,5 @@ void heartbeat()
 void listen(abort.signal)
 followSignIns(abort.signal)
 // The person's own Claude Code sessions in the folders they connected on this Mac.
-void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, signal: abort.signal })
+void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, ready: shellRead, signal: abort.signal })
   .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })

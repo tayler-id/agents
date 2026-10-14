@@ -9,17 +9,17 @@
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, relative, sep } from 'node:path'
+import { basename, join, sep } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { parseEnv } from 'node:util'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
 import { FolderId, SessionId } from '../shared/ids.ts'
-import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { makeScrub, type Scrub } from '../shared/scrub.ts'
 import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
 import { ApiError, postEvents, type Api, type Config } from './api.ts'
-import { TranscriptLine, transcriptBatch, withoutImages } from './claude.ts'
+import { TranscriptLine, transcriptBatch, withoutFiles } from './claude.ts'
+import { dotenvFinder, dotenvSecrets, type Secrets } from './secrets.ts'
 
 // Where Claude Code keeps transcripts. CLAUDE_CONFIG_DIR moves its whole config folder.
 const PROJECTS = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
@@ -84,17 +84,6 @@ function linesFrom(file: string, offset: number, limit = Infinity): { text: stri
   }
 }
 
-// Secret values in the .env files of a connected folder and of each folder down
-// to where a session started. People keep keys there, and Claude reads them like any file.
-function dotenvSecrets(folder: string, cwd: string): [string, string][] {
-  const parts = relative(folder, cwd).split(sep).filter(Boolean)
-  const dirs = [folder, ...parts.map((_, i) => join(folder, ...parts.slice(0, i + 1)))]
-  // existsSync is false for a link to nothing, which has no values to scrub.
-  return dirs.flatMap((dir) => (existsSync(dir) ? readdirSync(dir) : [])
-    .filter((name) => /^\.env(\..+)?$/.test(name) && existsSync(join(dir, name)) && statSync(join(dir, name)).isFile())
-    .flatMap((name) => envSecrets(parseEnv(readFileSync(join(dir, name), 'utf8')))))
-}
-
 // A transcript's lines in posts of at most LINES_PER_POST lines and about BYTES_PER_POST bytes.
 function inParts<T extends { text: string }>(lines: T[]): T[][] {
   const parts: T[][] = []
@@ -113,11 +102,14 @@ function inParts<T extends { text: string }>(lines: T[]): T[][] {
   return parts
 }
 
-// Follows this Mac's connected folders and sends their terminal sessions until the signal aborts.
+// Follows this Mac's connected folders and sends their terminal sessions until
+// the signal aborts. Nothing is sent before `ready` says the login shell's
+// secrets are known, and nothing at all if they can't be.
 export async function followTerminalSessions(options: {
-  home: string; config: Config; api: Api; secrets: () => [string, string][]; signal: AbortSignal
+  home: string; config: Config; api: Api; secrets: () => Secrets; ready: Promise<boolean>; signal: AbortSignal
 }): Promise<void> {
   const { home, config, api, signal } = options
+  if (!await options.ready) return
   const stateFile = join(home, 'terminal-sessions.json')
   const sent = new Map<string, Tracked>(Object.entries(loadSent(stateFile)))
   let changed = false
@@ -147,14 +139,32 @@ export async function followTerminalSessions(options: {
     }
   })
 
+  // Each connected folder's .env files, found again on every read.
+  const finders = new Map<string, (root: string) => string[]>()
+  // Each folder's scrubber in the current read, so its .env files are read once a read.
+  let scrubs = new Map<string, Scrub>()
+  function scrubFor(folder: FolderRow): Scrub {
+    const made = scrubs.get(folder.id)
+    if (made) return made
+    const find = finders.get(folder.path) ?? dotenvFinder()
+    finders.set(folder.path, find)
+    // A value that is part of the folder's own path is in the record already, as
+    // the folder's path, and scrubbing it would put a session's cwd outside the folder.
+    const scrub = makeScrub([...options.secrets(), ...dotenvSecrets(find(folder.path))]
+      .filter(([, value]) => !folder.path.includes(value))
+      .sort((a, b) => b[1].length - a[1].length))
+    scrubs.set(folder.id, scrub)
+    return scrub
+  }
+
   // Sends what a transcript gained since last time.
   async function send(file: string, tracked: Tracked, folder: FolderRow) {
     const lines = linesFrom(file, tracked.offset)
     if (!lines.length) return
-    const scrub = makeScrub([...options.secrets(), ...dotenvSecrets(folder.path, tracked.cwd)].sort((a, b) => b[1].length - a[1].length))
+    const scrub = scrubFor(folder)
     for (const part of inParts(lines)) {
       const parsed = part.flatMap((line) => {
-        const result = TranscriptLine.safeParse(withoutImages(parseJson(line.text)))
+        const result = TranscriptLine.safeParse(withoutFiles(parseJson(line.text)))
         return result.success ? [result.data] : []
       })
       const batch = transcriptBatch(parsed, tracked.parentToolUseId)
@@ -189,8 +199,10 @@ export async function followTerminalSessions(options: {
       return undefined
     }
     try {
+      // A folder's or a session's name can hold a secret too.
+      const scrub = scrubFor(folder)
       const { sessionId } = TerminalSessionAnswer.parse(await api('POST', '/v1/instance/terminal-sessions',
-        { folderId: folder.id, harnessSessionId: start.sessionId, cwd: start.cwd }))
+        { folderId: folder.id, harnessSessionId: scrub(start.sessionId), cwd: scrub(start.cwd) }))
       const tracked: Tracked = { sessionId, folderId: folder.id, cwd: start.cwd, offset: 0, parentToolUseId: null }
       sent.set(file, tracked)
       changed = true
@@ -220,6 +232,7 @@ export async function followTerminalSessions(options: {
   }
 
   async function readAll() {
+    scrubs = new Map()
     const projects = existsSync(PROJECTS) ? readdirSync(PROJECTS) : []
     for (const folder of folders) {
       for (const dir of projects.filter((name) => name.startsWith(projectName(folder.path)))) {

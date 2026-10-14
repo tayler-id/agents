@@ -109,9 +109,13 @@ Each line that makes an event also goes to `raw_events` under its `uuid`, withou
 ## Secrets
 
 - The daemon scrubs a terminal session with the same scrubber and the same secrets as an app session: its environment's secret values, `secrets.json`, the owner's Claude token and the known key shapes. The API scrubs again.
-- It also scrubs the values in the `.env` files of the connected folder and of each folder down to where the session started, read again for every post. People keep keys there, and Claude reads `.env` like any file. Without this, connecting this repo would send its database password the first time Claude read `.env`.
-- Images never leave the Mac. Every image block becomes `{ "type": "image", "omitted": "Images stay on the Mac." }` before it is parsed, since a screenshot can show a secret no scrubber can read.
-- Not covered: a secret that only the person's shell holds, such as a token exported in `~/.zshrc`, and that matches no known key shape. The daemon runs under launchd and never sees that shell's environment.
+- **The login shell's values.** At start the daemon runs the person's login shell once, `$SHELL -l -i -c`, and reads what it exports. Every value the shell adds to the daemon's environment or changes in it, 8 characters or longer, is scrubbed from everything the daemon sends, app sessions included. The values stay in the daemon's memory and never leave the Mac. The daemon runs under launchd, which never runs `~/.zshrc`, so without this a token exported there would reach the record. If the shell can't be read within 20 s, the daemon says so in its log and sends no terminal session until it starts again.
+- **`.env` files.** It scrubs every value of 8 characters or longer in every `.env` file under the connected folder, whatever the value's name, since a name filter misses `REDIS_URL` with a password in it, `MONGODB_URI` and `SMTP_PASS`. Claude reads `.env` like any file, so without this, connecting this repo would send its database password the first time Claude read `apps/api/.env` from the repo's root. The walk skips `node_modules` and `.git`, lists a folder again only when its mtime changed, and reads the files again on every read, so a value added later is scrubbed too.
+- **What is left alone.** A path that exists on the Mac, or a list of paths such as `PATH`, says where things are, and scrubbing it would hide every path under it. A value that is part of the connected folder's own path, such as a project's name, is in the record already as the folder's path. Scrubbing either would also put a session's `cwd` outside its folder, and the API would refuse the session.
+- **What scrubbing every value costs.** An ordinary word set in a `.env` file or exported by the shell, such as `localhost` or `production`, shows as `[secret:NAME]` wherever it appears.
+- The session's `cwd` and Claude's session id are scrubbed too, by the daemon and again by the API, since a folder's or a file's name can hold a secret.
+- Images and files never leave the Mac. Every image block becomes `{ "type": "image", "omitted": "Images stay on the Mac." }`, and every block with a base64 `source`, such as a PDF Claude read, becomes `{ "type": "document", "omitted": "Files stay on the Mac." }`, before it is parsed. A screenshot can show a secret no scrubber can read, and nothing can scrub base64.
+- Not covered: a secret in a `.env` file inside `node_modules` or `.git`, or in a file with another name, such as `.envrc`. A `.env` file written and read by Claude within the same second, before the daemon's next read finds it, can go out before its values are known.
 
 ## The schema
 
@@ -150,13 +154,22 @@ It runs headless sessions only. macOS `script` can't drive Claude Code's termina
 
 Every one of the 50 lines went red under a break of what it guards, with each file put back byte for byte after. The build log has the rounds.
 
-## Calls for Tayler
+### The fast check
 
-1. **Who sees a connected folder's sessions.** The default is the whole team, since connecting the folder is the opt-in. `connect --private` keeps a folder's sessions to the person who connected it, and agents' search leaves them out. Should private be the default instead?
-2. **Everything a connected session does is sent, including files outside the folder.** If Claude reads `~/.ssh/config` from a session started in a connected repo, the scrubbed contents land in the record. The rule "nothing from outside a connected folder leaves the Mac" is held at the level of sessions. Should the daemon also drop tool results for paths outside the folder?
-3. **Sessions started before connecting stay on the Mac,** and so do the ones started while a folder was disconnected, even when resumed later. Should connecting a folder send its earlier sessions too?
-4. **Images stay on the Mac.** The record says an image was there. Should screenshots be sent once the screen privacy rule for boxes covers them?
-5. **Secrets only the person's shell holds aren't scrubbed** unless they match a known key shape. The daemon could read the login shell's environment once at start. Is that worth doing?
+`test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about 10 s, on ports 8110 to 8112, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
+
+- A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end.
+- Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
+
+## Tayler's calls
+
+Tayler made these on 2026-10-14. `docs/decisions.md` has them.
+
+1. **The team sees a connected folder's sessions by default,** and `connect --private` keeps them to the person who connected it, with agents' search leaving them out. As built.
+2. **Tool results for files outside the connected folder stay on the Mac.** Not built yet.
+3. **Sessions started before a folder was connected stay on the Mac,** and so do the ones started while it was disconnected, even when resumed later. As built.
+4. **Images stay on the Mac,** with a note in the record that one was there. As built, and files sent as base64 stay too.
+5. **The daemon learns the secret values in the person's login shell at start,** and they never leave the Mac. Built, as Secrets says.
 
 ## Not done
 

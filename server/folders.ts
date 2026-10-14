@@ -6,7 +6,7 @@
 
 import type pg from 'pg'
 import { many, maybe, one, pool } from './db.ts'
-import { HttpError } from './record.ts'
+import { HttpError, scrub } from './record.ts'
 import type { Instance } from './auth.ts'
 import { PersonId } from '../shared/ids.ts'
 import { EVENT_KINDS, type EventKind } from '../shared/types.ts'
@@ -66,13 +66,16 @@ export async function terminalSession(client: pg.PoolClient, instance: Instance,
   if (!found) throw new HttpError(404, 'no such folder on this Mac')
   const folder = FolderRow.parse(found)
   if (folder.disconnected_at !== null) throw new HttpError(409, `${folder.path} is disconnected, so its sessions stay on the Mac`)
-  if (!insideFolder(folder.path, ask.cwd)) throw new HttpError(400, `${ask.cwd} is outside ${folder.path}`)
+  // The daemon scrubbed both. The API scrubs them again, as it does every event.
+  const cwd = scrub(ask.cwd)
+  const harnessSessionId = scrub(ask.harnessSessionId)
+  if (!insideFolder(folder.path, cwd)) throw new HttpError(400, `${cwd} is outside ${folder.path}`)
   const session = await one<{ id: string }>(client, 'the terminal session',
     `insert into sessions (team_id, instance_id, folder_id, cwd, harness, harness_session_id, started_by)
      values ($1, $2, $3, $4, 'claude', $5, $6)
      on conflict (instance_id, harness_session_id) where folder_id is not null
        do update set harness_session_id = excluded.harness_session_id
-     returning id`, [folder.team_id, instance.id, folder.id, ask.cwd, ask.harnessSessionId, folder.connected_by])
+     returning id`, [folder.team_id, instance.id, folder.id, cwd, harnessSessionId, folder.connected_by])
   return session.id
 }
 

@@ -21,6 +21,8 @@ The branch's commits, oldest first, by subject:
 8. An interrupt for a terminal session is refused, a `.env` link to nothing is skipped, and step21's stray-words search looks only at its own team.
 9. step21's phone-width line measures the page's own boxes, and the build log's entry.
 10. The interactive session typed through the real daemon, in the build log and the design doc.
+11. `test/step21b.ts`, a fast check that writes transcripts itself, for the review's fixes.
+12. Secrets: every `.env` file under the folder, every value whatever its name, files sent as base64, the cwd and the session id, and the login shell's values, with terminal sessions held when the shell can't be read.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
@@ -34,6 +36,7 @@ Every one of step21's 50 lines was seen red under a break, in four rounds run by
 ## How to work here
 
 - `export PATH="$HOME/.local/node/bin:$PATH"` first.
+- Run the fast check first, `node --env-file=.env --env-file=.env.test test/step21b.ts`. It takes about 10 s and needs no Claude.
 - Run the check with `node --env-file=.env --env-file=.env.test test/step21.ts`. It needs the test Postgres and the test Electric on 3002, builds the app, and runs the real `claude` with `haiku` about ten times, so it spends a little of the subscription. It takes about three minutes.
 - A red run keeps its teams and folders for inspection. `ls/cleanup.ts` in the scratchpad removes the `local-` teams, the `agents-step21-` temp folders and their transcript folders under `~/.claude/projects`.
 - Never touch port 7701 without `mkdir ~/.agents-app/checks/run.lock` first. step21 doesn't use it. Main's step18d does.

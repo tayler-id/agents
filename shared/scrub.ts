@@ -16,7 +16,8 @@ const PATTERNS: [string, RegExp][] = [
 ]
 
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|DATABASE_URL/i
-const MIN_SECRET_LENGTH = 8
+// Shorter values would match ordinary words.
+export const MIN_SECRET_LENGTH = 8
 
 export type Scrub = <T>(value: T) => T
 

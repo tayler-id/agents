@@ -191,12 +191,19 @@ const INTERRUPTED = /^\[Request interrupted by user/
 const CONTINUING = new Set(['tool_use', 'pause_turn'])
 const THINKING = new Set(['thinking', 'redacted_thinking'])
 
-// Images stay on the Mac. A screenshot can show a secret no scrubber can read.
-export function withoutImages(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutImages)
+// A block whose content is sent as base64, such as a PDF Claude read.
+const Base64Source = z.looseObject({ type: z.literal('base64') })
+
+// Images and files stay on the Mac. A screenshot can show a secret no scrubber
+// can read, and nothing can scrub a file sent as base64.
+export function withoutFiles(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutFiles)
   if (typeof value !== 'object' || value === null) return value
   if ('type' in value && value.type === 'image') return { type: 'image', omitted: 'Images stay on the Mac.' }
-  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutImages(inner)]))
+  if ('source' in value && Base64Source.safeParse(value.source).success) {
+    return { type: 'type' in value && typeof value.type === 'string' ? value.type : 'file', omitted: 'Files stay on the Mac.' }
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutFiles(inner)]))
 }
 
 // Where a person's own prompt comes from: typed in the terminal, or given to
