@@ -258,8 +258,8 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - A Ready list shows queued work that is unblocked and not held.
   - A hold has a kind (waiting on a person, external, load, parked or future), a reason and an optional end date.
   - A reply an agent promises on an outside channel is tracked as an obligation. It closes only with proof of delivery, or when a person waives it by name.
-- **Implementation.** Dependencies, Ready and holds are on the workflow agent's branch. Obligations are on the framework agent's branch.
-- **Status.** Being built.
+- **Implementation.** Dependencies, Ready and holds are on main, merged as 7197f4b with migration 0007. Obligations are on the framework agent's branch.
+- **Status.** Dependencies, Ready and holds merged on 2026-10-14, and go live at the next API restart. Obligations are being built.
 
 ### Files, diffs and pull requests in the app
 
@@ -273,8 +273,8 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - Cmd+K jumps anywhere.
   - Comments are pinned to the text they quote.
   - Writes inside a task's own folder no longer ask for approval.
-- **Implementation.** On the workflow agent's branch. Its acceptance check is Tayler's README task.
-- **Status.** Being built.
+- **Implementation.** On main, merged as 7197f4b with migration 0007. Its acceptance check is Tayler's README task.
+- **Status.** Merged on 2026-10-14, and the full suite passed on the merge. It goes live at the next API restart.
 
 ### Inviting the team
 
