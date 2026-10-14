@@ -32,6 +32,7 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 - Each person's agents share that person's own box, and each agent has its own seat in it: a screen, a browser and a workspace. Parallel jobs get boxes of their own. Many agents work at once.
 - Agents hand work to other agents and work together in rooms.
 - A teammate's agent setup can be copied, or started from a template.
+- Agents run on more than one engine. Each agent picks its engine and model, such as Claude, Codex or Gemini, behind `daemon/harness.ts`, and every engine's work lands in the same record.
 
 **Building**
 - People and agents build from the app, with tasks, files, diffs, pull requests, reviews and approvals on the team's repos, both the Mac's forge and GitHub.
