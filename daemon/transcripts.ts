@@ -16,7 +16,7 @@ import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
 import { FolderId, SessionId } from '../shared/ids.ts'
 import { makeScrub, type Scrub } from '../shared/scrub.ts'
-import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
+import { FolderRow, holdsHome, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
 import { MAX_BODY_BYTES, type EventBatch, type NewEvent, type RawLine, type SessionStatus } from '../shared/types.ts'
 import { ApiError, type Api, type Config } from './api.ts'
 import { TranscriptLine, toolTraffic, transcriptBatch, withoutWhatStays } from './claude.ts'
@@ -138,6 +138,11 @@ export async function followTerminalSessions(options: {
   const passed = new Set<string>()
   // Connected folders, deepest first, so a session in a folder inside another belongs to the inner one.
   let folders: FolderRow[] = []
+  // The person's home folder, and any folder above it, is never read. It holds every project they have,
+  // and the API can't tell where a Mac's home is, so a folder there that something with this machine's
+  // token connected would send every session they start under it.
+  const userHome = realpathSync.native(homedir())
+  const refused = new Set<string>()
 
   const stream = new ShapeStream<Row>({
     url: `${config.api}/v1/shape/connected_folders`,
@@ -149,7 +154,14 @@ export async function followTerminalSessions(options: {
     },
   })
   new Shape(stream).subscribe(({ rows }) => {
-    folders = rows.map((row) => FolderRow.parse(row)).sort((a, b) => b.path.length - a.path.length)
+    const connected = rows.map((row) => FolderRow.parse(row))
+    for (const folder of connected) {
+      if (holdsHome(folder.path, userHome) && !refused.has(folder.id)) {
+        refused.add(folder.id)
+        console.error(`terminal sessions, ${folder.path}: it is the home folder or holds it, so the daemon reads no session in it`)
+      }
+    }
+    folders = connected.filter((folder) => !holdsHome(folder.path, userHome)).sort((a, b) => b.path.length - a.path.length)
     // A disconnected folder's sessions stop at once. One connected again starts
     // over, so a session taken under its earlier connection stops too, even when
     // this daemon missed the disconnect, as it does when stopped through it.

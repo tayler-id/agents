@@ -610,6 +610,28 @@ try {
   const fromFile = folders(token, root, [], { AGENTS_HOME: goodHome, AGENTS_API: undefined, AGENTS_TOKEN: undefined })
   check(fromFile.code === 0, `the API's address and the token come from daemon.json when the environment has none: ${fromFile.out.split('\n')[0] ?? ''}`)
 
+  // The home folder, and any folder above it, can't be connected, and the daemon reads none even when something holding
+  // the machine token connected it through the API. The check's home is a folder of its own inside the temp folder.
+  const fakeHome = join(root, 'fake-home')
+  const homeProject = join(fakeHome, 'project')
+  mkdirSync(homeProject, { recursive: true })
+  const refusedHome = folders(token, root, ['connect', fakeHome], { HOME: fakeHome })
+  const refusedAbove = folders(token, root, ['connect', root], { HOME: fakeHome })
+  const takenInside = folders(token, root, ['connect', homeProject], { HOME: fakeHome })
+  check(refusedHome.code === 3 && refusedAbove.code === 3 && refusedHome.out.includes('home folder') && takenInside.code === 0,
+    `connect refuses the home folder and a folder above it, and takes a project inside it (${refusedHome.code}, ${refusedAbove.code}, ${takenInside.code})`)
+  await restart({ ...daemonEnv, HOME: fakeHome })
+  const rogue = await machine(token, 'POST', '/v1/instance/folders', { path: fakeHome })
+  const homeRun = transcript(claudeDir, fakeHome, new Date(await connectedAt(fakeHome)))
+  homeRun.turn({ prompt: 'From the home folder.', reply: 'Home.' })
+  const projectRun = transcript(claudeDir, homeProject, new Date(await connectedAt(homeProject)))
+  projectRun.turn({ prompt: 'From a project in it.', reply: 'Project.' })
+  const projectLanded = await until('the project inside the home folder', LANDS_SEC, async () => (await turnsEnded(projectRun.session)) === 1)
+  check(rogue.status === 200 && projectLanded && await settle() && daemonSaid(fakeHome, 'the home folder or holds it') && !await sessionOf(homeRun.session),
+    'the daemon reads no session in a home folder that something holding its token connected, and still reads a project inside it')
+  folders(token, root, ['disconnect', fakeHome])
+  await restart()
+
   // A Mac clock ahead of the server's can make a session look newer than its folder's reconnect, while the API knows it is older.
   check(folders(token, root, ['connect', skewed]).code === 0, 'a folder for a clock running ahead connects')
   const skewedRun = transcript(claudeDir, skewed, new Date(await connectedAt(skewed) + 60_000))

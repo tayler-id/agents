@@ -22,6 +22,12 @@ export function insideFolder(folder: string, path: string): boolean {
   return path === folder || path.startsWith(`${folder}/`)
 }
 
+// Whether a folder is the home folder or holds it. A person's home holds every
+// project they have, so connecting it would send every session they start under it.
+export function holdsHome(folder: string, home: string): boolean {
+  return insideFolder(folder, home)
+}
+
 // What the Mac asks for when its person connects or disconnects a folder. With no
 // visibility, a folder connected before keeps its own, and a new one is the team's.
 export const ConnectFolder = z.object({ path: FolderPath, visibility: FolderVisibility.optional() })

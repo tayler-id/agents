@@ -13,7 +13,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { messageOf } from '../shared/errors.ts'
-import { ConnectAnswer, FolderAnswer, FolderList, type FolderRow } from '../shared/terminal.ts'
+import { ConnectAnswer, FolderAnswer, FolderList, holdsHome, type FolderRow } from '../shared/terminal.ts'
 import { ApiError, apiClient, loadConfig } from './api.ts'
 import { projectName } from './transcripts.ts'
 
@@ -87,6 +87,9 @@ try {
   }
   if (verb === 'connect') {
     const path = folderPath(folderArg, true)
+    if (holdsHome(path, realpathSync.native(homedir()))) {
+      exit(3, `${path} is your home folder or holds it, so every Claude Code session you start under it would land in the record.\nnext: ${SELF} connect <the folder of one project>`)
+    }
     // With neither flag, the API keeps the folder's own visibility, so a bare connect never widens a private folder.
     const visibility = flags.has('--private') ? 'private' : flags.has('--team') ? 'team' : undefined
     const answer = ConnectAnswer.parse(await api('POST', '/v1/instance/folders', visibility === undefined ? { path } : { path, visibility }))
