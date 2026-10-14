@@ -1,7 +1,9 @@
 // The server's one door. Writes go to Postgres through the record module, and
 // reads go through the sync proxy to Electric. People reach it through tailscale
 // serve, which proxies to a Unix socket and sets Tailscale-User-Login. Machines,
-// boxes included, reach it on a loopback port with a bearer token instead.
+// boxes included, send a bearer token to the machine port, which listens on
+// loopback unless AGENTS_MACHINE_HOST names other addresses, such as a VPC or
+// tailnet address.
 
 import { BUILD } from './build.ts'
 import { randomUUID } from 'node:crypto'
@@ -617,10 +619,14 @@ async function hook(req: IncomingMessage, url: URL): Promise<unknown> {
 // preflight, which this API never grants, so people's changes must declare JSON.
 const JSON_TYPE = /^application\/json\s*(;|$)/i
 
+// tailscale serve adds several identity headers, all starting with this. The
+// machine port refuses every one, so none can be read there by later code.
+const TAILSCALE_HEADER = 'tailscale-'
+
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
-    if (audience === 'machines' && req.headers['tailscale-user-login']) {
+    if (audience === 'machines' && Object.keys(req.headers).some((name) => name.startsWith(TAILSCALE_HEADER))) {
       throw new HttpError(400, 'people connect through Tailscale, not the machine port')
     }
     if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
@@ -715,7 +721,20 @@ async function listenForPeople(server: Server, path: string) {
   await chmod(path, 0o600)
 }
 
+// Where machines reach the API: the machine port, on each address in
+// AGENTS_MACHINE_HOST, a comma-separated list of IP addresses.
+const Listen = z.object({
+  AGENTS_MACHINE_HOST: z.string().default('127.0.0.1')
+    .transform((value) => value.split(',').map((host) => host.trim()))
+    .pipe(z.array(z.union([z.ipv4(), z.ipv6()])).min(1)),
+  AGENTS_API_PORT: z.coerce.number().int().min(1).max(65535).default(7700),
+})
+const address = (host: string, at: number) => (host.includes(':') ? `[${host}]:${at}` : `${host}:${at}`)
+
 if (import.meta.main) {
+  const listen = Listen.safeParse(process.env)
+  if (!listen.success) throw new Error(`the API's listen settings are wrong\n${z.prettifyError(listen.error)}`)
+  const { AGENTS_MACHINE_HOST: machineHosts, AGENTS_API_PORT: machines } = listen.data
   const people = PeopleSocket.safeParse(process.env.AGENTS_PEOPLE_SOCKET)
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const applied = await migrateWhenReady()
@@ -733,7 +752,8 @@ if (import.meta.main) {
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
-  const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
+  for (const host of machineHosts) {
+    createServer(serve('machines')).listen(machines, host, () => { console.log(`machines on ${address(host, machines)}`) })
+  }
   if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
 }
