@@ -133,7 +133,17 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 
 ## The check
 
-`test/step21.ts` runs on ports 8100 to 8119, and prefixes its teams with `local-`. It drives the real `claude` CLI with `haiku` through the real daemon, API and Electric, and checks what lands, what doesn't, and what each person sees in the app. It runs headless sessions, since macOS `script` can't drive Claude Code's terminal interface from a pipe and the checks are TypeScript only. The prototype drove an interactive session through `expect`.
+`test/step21.ts` runs on ports 8100 to 8102, and names its teams `local-<id>`. It drives the real `claude` CLI with `haiku` through the real daemon, API and Electric. Its 49 lines cover:
+
+- The folders command: connect by a path with a link in it, connect again, `--private`, a folder that doesn't exist, a box, the list, disconnect and disconnect again.
+- Two turns in the connected folder, the second reading a PNG, and a third after the daemon restarts. The record must match Claude Code's own transcript: every tool call, every reply, both prompts as the owner's `user` events, nothing else authored, no gap in the numbering, and the session idle after its turns.
+- A session in a folder inside the connected one, whose agent starts a subagent. The subagent's Read must sit under the Agent call, and its orders must not count as the person's prompt.
+- Secrets: the daemon's own, a GitHub-shaped token and a value only the folder's `.env` holds, all in a file Claude reads. None may reach an event or a raw line, and each must show as its `[secret:NAME]`. The picture must arrive only as the note that it stayed on the Mac.
+- What stays on the Mac: a session started before connecting, one in `shop-old` beside `shop`, and one started after disconnecting. The private folder's next session shows the daemon read after the disconnect.
+- Who sees what: the teammate, the owner and someone on another team, through the sessions and events shapes and `search_record`, and in Chromium on a plain-HTTP name, at desktop and phone width, with an accessibility scan.
+- What the API refuses: a session that started beside the folder, an ask in a terminal session, and events after the disconnect.
+
+It runs headless sessions only. macOS `script` can't drive Claude Code's terminal interface from a pipe, and the checks are TypeScript, so an interactive session was driven through `expect` by hand.
 
 ## Calls for Tayler
 
@@ -145,6 +155,7 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 
 ## Not done
 
+- No check sees a terminal session in "Running now". A headless session lands only when it ends, idle by then, and no check drives an interactive one.
 - Sessions started in a connected folder through Codex.
 - Telling a closed terminal from a running session.
 - The cost of a terminal session. Claude Code writes it in `cost-state` lines, which aren't read.
