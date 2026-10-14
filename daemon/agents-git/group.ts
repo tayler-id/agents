@@ -61,8 +61,10 @@ export function killGroup(pid: number, signal: NodeJS.Signals) {
 
 // Runs work with SIGINT, SIGTERM and SIGHUP handled. The first one sends TERM to the
 // program that is running and KILL after the grace, and the next program work starts
-// throws Stopped instead of starting, so work ends through its own finally blocks. A
-// signal that comes while one is being handled changes nothing.
+// throws Stopped instead of starting, so work ends through its own finally blocks. One
+// that comes after work's last program throws Stopped once work ends, so the caller
+// goes no further, as land must not move main. A signal that comes while one is being
+// handled changes nothing.
 export async function stoppable<T>(work: (running: Running) => Promise<T>): Promise<T> {
   const running: Running = { child: null, stopped: null, grace: null }
   const stop = (signal: NodeJS.Signals) => {
@@ -75,7 +77,10 @@ export async function stoppable<T>(work: (running: Running) => Promise<T>): Prom
   }
   for (const signal of SIGNALS) process.on(signal, stop)
   try {
-    return await work(running)
+    const result = await work(running)
+    const late = stoppedBy(running)
+    if (late) throw new Stopped(late)
+    return result
   } finally {
     for (const signal of SIGNALS) process.off(signal, stop)
     if (running.grace) clearTimeout(running.grace)

@@ -158,6 +158,8 @@ if (process.env.STEP22_PROBE_ENV) {
   )
 }
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
+// A step can leave the ledger locked in step22's name, so land is still busy once its last program ends.
+if (process.env.STEP22_HOLD_LEDGER) writeFileSync(process.env.STEP22_HOLD_LEDGER, JSON.stringify({ pid: Number(process.env.STEP22_HOLDER_PID), command: 'step22, holding it', since: new Date().toISOString() }))
 // A step that commits moves the commit it was run on.
 if (process.env.STEP22_COMMIT) execFileSync('git', ['commit', '--allow-empty', '-qm', 'moved by a step'])
 if (process.env.STEP22_HANG) {
@@ -809,6 +811,12 @@ try {
   check(await ended(installStopped) === 143 && await allGone(installPids), 'a land stopped during npm ci stops npm and everything it started')
   check(!existsSync(scratch) && !registered(scratch) && !existsSync(runLock), 'and it removes its scratch worktree and lets go of the run lock')
   rmSync(pids, { force: true })
+  // A signal can come after the suite's last program, here while land waits to record the suite's result.
+  const lateStop = launch(['land', 'tau'], { STEP22_HOLD_LEDGER: lockFile, STEP22_HOLDER_PID: String(process.pid) })
+  await until(() => lateStop.seen.stderr.includes(`waiting for ${lockFile}`) || lateStop.child.exitCode !== null)
+  lateStop.child.kill('SIGTERM')
+  rmSync(lockFile, { force: true })
+  check(await ended(lateStop) === 143 && commit('refs/heads/main') === mainBeforeRed && git(github, 'rev-parse', 'refs/heads/main') === githubBeforeRed && !existsSync(scratch) && !existsSync(runLock), "a signal that comes after the suite ends still stops land with 143, leaves main and GitHub's main alone, and cleans up")
   const startStopped = launch(['start', 'sigma', '--note', 'step22 sigma'], { STEP22_NPM_HANG: '1', STEP22_PIDS: pids })
   await until(() => existsSync(pids))
   const startPids = pidsIn(pids)
