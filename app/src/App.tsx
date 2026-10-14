@@ -18,6 +18,8 @@ import { PipelineView } from './Pipeline.tsx'
 import { DocumentPanel } from './Document.tsx'
 import { AgentPage, NewAgent } from './AgentPage.tsx'
 import { NewRoom, NewTask, TaskView } from './Work.tsx'
+import { TerminalSessionView, terminalOwner, terminalPlace } from './Terminal.tsx'
+import { FolderRow, TerminalSessionRow } from '../../shared/terminal.ts'
 
 // Pages with no id of their own, such as the team.
 const PAGES = ['team', 'tailscale', 'box'] as const
@@ -26,11 +28,14 @@ type Page = (typeof PAGES)[number]
 // Where the app is: a conversation, run, task, pipeline, agent, page or new-thing
 // form in the middle, and maybe a session, a document or a changed file beside it.
 type Route = {
-  conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null
+  conversation: string | null; run: string | null; task: string | null; pipeline: string | null; agent: string | null; terminal: string | null
   create: 'agent' | 'room' | 'task' | null; page: Page | null; session: string | null; document: string | null; file: string | null
 }
-const EMPTY: Route = { conversation: null, run: null, task: null, pipeline: null, agent: null, create: null, page: null, session: null, document: null, file: null }
-const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent' } as const
+const EMPTY: Route = {
+  conversation: null, run: null, task: null, pipeline: null, agent: null, terminal: null, create: null, page: null, session: null, document: null, file: null,
+}
+// l is a terminal session, one a person ran on their own machine.
+const KINDS = { c: 'conversation', r: 'run', t: 'task', p: 'pipeline', a: 'agent', l: 'terminal' } as const
 
 function readRoute(): Route {
   const [, kind = '', id = '', sub, subId] = window.location.hash.split('/')
@@ -111,7 +116,7 @@ function Workspace({ me }: { me: Me }) {
       <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
       {palette && <Palette me={me} onClose={() => setPalette(false)} />}
       <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
-        : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : 'Conversation'}>
+        : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent' : route.terminal ? 'Terminal session' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
@@ -120,6 +125,7 @@ function Workspace({ me }: { me: Me }) {
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
+                  : route.terminal ? <TerminalSessionView key={route.terminal} me={me} sessionId={route.terminal} />
                   : route.create === 'agent' ? <NewAgent me={me} />
                     : route.create === 'room' ? <NewRoom me={me} />
                       : route.create === 'task' ? <NewTask />
@@ -160,6 +166,9 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   const { rows: conversationSessions } = useSnapshot<Session>('sessions', { of: 'conversations' }, 3000)
   const { rows: taskSessions } = useSnapshot<Session>('sessions', { of: 'tasks' }, 3000)
   const sessions = [...conversationSessions, ...taskSessions]
+  // Sessions people ran in their own terminals, in folders they connected.
+  const { rows: terminalSessions } = useSnapshotOf(TerminalSessionRow, 'sessions', { of: 'folders' }, 3000)
+  const { rows: folders } = useSnapshotOf(FolderRow, 'connected_folders', {}, 10000)
   // Logins waiting for an admin, and the Tailscale key's expiry, which only admins can read.
   const admin = me.person.role === 'admin'
   const { rows: waitingToJoin } = useSnapshotOf(JoinRequestRow, 'join_requests', admin ? {} : null, 10000)
@@ -212,6 +221,10 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   }
 
   const running = sessions.filter((s) => isWorking(s.status))
+  const runningInTerminals = terminalSessions.filter((s) => isWorking(s.status))
+  const recentTerminals = [...terminalSessions]
+    .sort((a, b) => (b.last_active_at ?? b.created_at).localeCompare(a.last_active_at ?? a.created_at)).slice(0, 6)
+  const terminalLabel = (s: TerminalSessionRow) => terminalPlace(folders, s.folder_id, s.cwd)
   // Replays score proposals. They show on their proposal's run, not here.
   const recentRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8)
   const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)
@@ -284,6 +297,19 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
         {!myTasks.length && <li className="muted small empty">No tasks yet</li>}
       </ul>
 
+      <h2 className="kicker">From terminals</h2>
+      <ul className="list" aria-label="From terminals">
+        {recentTerminals.map((s) => (
+          <li key={s.id}>
+            <button type="button" className={`row${s.id === route.terminal ? ' selected' : ''}`} onClick={() => go({ terminal: s.id })}>
+              <span>{terminalLabel(s)}</span>
+              <span className="muted small">{terminalOwner(me, people, s.started_by)} terminal</span>
+            </button>
+          </li>
+        ))}
+        {!recentTerminals.length && <li className="muted small empty">None yet</li>}
+      </ul>
+
       <ReadyLists openTask={route.task} />
 
       <h2 className="kicker">Pipelines</h2>
@@ -326,7 +352,15 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
             </button>
           </li>
         ))}
-        {!running.length && <li className="muted small empty">Nothing running</li>}
+        {runningInTerminals.map((s) => (
+          <li key={s.id}>
+            <button type="button" className="row" onClick={() => go({ terminal: s.id })}>
+              <span><span className={`dot ${s.status}`} aria-hidden="true" />{terminalLabel(s)}</span>
+              <span className="muted small">terminal · {s.status.replace('_', ' ')}</span>
+            </button>
+          </li>
+        ))}
+        {!running.length && !runningInTerminals.length && <li className="muted small empty">Nothing running</li>}
       </ul>
 
       <h2 className="kicker">Machines</h2>
