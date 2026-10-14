@@ -6,7 +6,8 @@
 // reason, and the next run's same hunk is held back without asking anyone. A
 // third person's correction lifts it, and approving applies it. A change that
 // loses its replays never reaches the shepherd. A replay reads nothing from the
-// team record, never waits on a person, and never counts as evidence.
+// team record, never waits on a person, takes no message from a teammate, and
+// never counts as evidence.
 //   node --env-file=.env --env-file=.env.test test/step20b.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -220,6 +221,15 @@ try {
   })
   const ask = await one<{ status: string; answer: any }>(`select status, answer from asks where session_id = $1`, [replay.session_id])
   check(asked.status === 200 && ask?.status === 'answered' && ask.answer.decision === 'deny', `a replay's request for a tool is denied, not put to a person: ${JSON.stringify(ask)}`)
+
+  // A teammate can see a replay's task. A message would restart the replay with
+  // workspace permissions, the agent's real plugins and memory, and no budget.
+  const heard = () => one<{ commands: number; said: number }>(`select (select count(*) from commands where session_id = $1 and kind = 'message')::int as commands,
+    (select count(*) from events where session_id = $1 and kind = 'user')::int as said`, [replay.session_id])
+  const heardBefore = await heard()
+  const told = await call(carolLogin, `/v1/sessions/${replay.session_id}/messages`, { text: 'Write a summary of today again.' })
+  check(told.status === 409 && String(told.json.error).includes('replay') && JSON.stringify(await heard()) === JSON.stringify(heardBefore),
+    `a teammate's message to a replay is refused, and the replay hears nothing: ${told.status} ${JSON.stringify(told.json)}, ${JSON.stringify(heardBefore)} before and ${JSON.stringify(await heard())} after`)
 
   // The reader is told the longest quote code keeps.
   const readPrompt = await one<{ text: string }>(`select e.text from events e join run_stages s on s.session_id = e.session_id

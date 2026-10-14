@@ -45,6 +45,10 @@ export async function startTask(client: pg.PoolClient, person: Person, body: Omi
 
 export async function messageTaskSession(client: pg.PoolClient, person: Person, sessionId: string, text: string) {
   if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, 'no such session')
+  // A replay's task is visible to the team, so canSeeSession lets any teammate in.
+  if (await maybe(client, 'select 1 from session_replays where session_id = $1', [sessionId])) {
+    throw new HttpError(409, "a replay scores a proposed change and takes no messages, since a message would restart it with workspace permissions, the agent's plugins and memory, and no budget")
+  }
   await sendToSession(client, person, sessionId, text)
 }
 
