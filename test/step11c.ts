@@ -16,11 +16,12 @@
 // `probe` for the box, so the check needs no other file. It needs the internet.
 
 import { execFileSync } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { createSocket } from 'node:dgram'
 import { connect, createServer, isIP } from 'node:net'
 import { z } from 'zod'
 import { BOX_DNS } from '../ops/aws/config.ts'
+import { ensureLab, LAB } from './netlab.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // How long a probe waits for an answer on the lab's own network. A dropped packet never gets one.
@@ -159,11 +160,6 @@ async function probe(targets: string[]) {
 
 // ---- The check, on this Mac ----
 
-const LAB_DOCKERFILE = `FROM node:24-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends iptables iproute2 && rm -rf /var/lib/apt/lists/*
-`
-// The lab image is named for its Dockerfile, so it is built once and kept.
-const LAB = `agents-aws-netlab:${createHash('sha256').update(LAB_DOCKERFILE).digest('hex').slice(0, 12)}`
 const SERVER = '10.40.0.10'
 const HOST_VPC = '10.40.0.20'
 const RESOLVER = '10.40.0.2'
@@ -242,9 +238,7 @@ async function main() {
   const rawRules = () => docker('exec', name('host'), 'iptables', '-w', '-t', 'raw', '-S')
 
   try {
-    const labImages = docker('image', 'ls', '--quiet', LAB)
-    // On the host's network, so a firewall on Docker's bridge, like the box host's, cannot stop the build's downloads.
-    if (labImages === '') execFileSync('docker', ['build', '--network', 'host', '-t', LAB, '-'], { input: LAB_DOCKERFILE, stdio: ['pipe', 'ignore', 'inherit'] })
+    ensureLab()
     for (const [network, subnet] of Object.entries(NETWORKS)) docker('network', 'create', '--subnet', subnet, name(network))
 
     // The box host: on the box network, the VPC, and the networks of the metadata
