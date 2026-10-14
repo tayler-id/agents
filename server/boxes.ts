@@ -22,9 +22,9 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
-import { HttpError } from './record.ts'
+import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
-import { InstanceId, type PersonId, type TeamId } from '../shared/onboarding.ts'
+import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
 const ROOT = new URL('..', import.meta.url).pathname
@@ -39,14 +39,15 @@ const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '
 export const containerName = (instanceId: string) => `agents-box-${instanceId}`
 const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
 
-// What docker said went wrong. Never the error's message, which repeats the
-// command line and so the box's token.
+// What docker said went wrong, scrubbed and cut short, since its words can repeat
+// any value it was given. Never the error's message, which repeats the command
+// line and so the box's token.
 function dockerProblem(error: unknown): string {
   const stderr = error instanceof Error && 'stderr' in error && typeof error.stderr === 'string' ? error.stderr : ''
   // Docker ends with a usage hint, "Run 'docker run --help' for more information", which says nothing here.
   const said = stderr.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith("Run 'docker")).slice(-2).join(' ')
   // Docker usually says why on stderr. When it says nothing, this is all there is to tell.
-  return said || 'Docker could not start the container and gave no reason.'
+  return scrub(said || 'Docker could not start the container and gave no reason.').slice(0, START_ERROR_MAX)
 }
 
 const BoxKind = z.object({ personal: z.boolean() })

@@ -17,6 +17,7 @@ import { fakeTailscale } from './fake-tailscale.ts'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
+import { START_ERROR_MAX } from '../shared/onboarding.ts'
 
 // 7921 is the people port of main's step6, so this one takes 7936 from the end of the range.
 const PORTS = { machines: 7920, people: 7936, streams: 7922 }
@@ -43,13 +44,16 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const tailscale = fakeTailscale({ key, keyExpiresInDays: 30, domain: 'example.com' })
 const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', ...args], { cwd: ROOT, encoding: 'utf8' })
 const row = async (sql: string, params: unknown[]) => (await db.query(sql, params)).rows[0]
+const tokenInDockerArgs = `machine_${randomBytes(24).toString('base64url')}`
 const apiEnv = {
   AGENTS_RUNNER_TEAMS: team,
   AGENTS_TAILSCALE_API: tailscale.url(TAILSCALE_PORT),
   AGENTS_TAILSCALE_KEY_FILE: keyFile,
   // An image that is never built, so the runner cannot start real containers for the boxes people get here.
   AGENTS_BOX_IMAGE: `agents-box:onboard-absent-${id}`,
-  AGENTS_BOX_DOCKER_ARGS: JSON.stringify(['--pull', 'never']),
+  // A memory limit Docker can't read, which it repeats in its error: a machine token's
+  // shape, then more text than a start error keeps.
+  AGENTS_BOX_DOCKER_ARGS: JSON.stringify(['--pull', 'never', '--memory', `${tokenInDockerArgs}.${'x'.repeat(2000)}`]),
 }
 const api = await startApi(PORTS, apiEnv, join(home, 'streams'))
 const apis = [api]
@@ -172,10 +176,11 @@ try {
 
   // Boxes. This API's box image is never built, so the runner's tries to start them fail.
   const ownBoxId: string = must(boxes[0], 'their box').id
-  const stuck = await within(30, async () => /No such image|Unable to find image/.test((await row('select start_error from instances where id = $1', [ownBoxId]))?.start_error ?? ''))
+  const stuck = await within(30, async () => /invalid argument/.test((await row('select start_error from instances where id = $1', [ownBoxId]))?.start_error ?? ''))
   const startError: string = (await row('select start_error from instances where id = $1', [ownBoxId]))?.start_error ?? ''
-  check(stuck && !/machine_|AGENTS_TOKEN|CLAUDE_CODE_OAUTH_TOKEN/.test(startError) && !/AGENTS_TOKEN=|machine_[A-Za-z0-9_-]{20}/.test(api.text()),
-    `a box that cannot start keeps Docker's reason for its owner, with no token in it or in the log (${startError})`)
+  check(stuck && !/machine_|AGENTS_TOKEN|CLAUDE_CODE_OAUTH_TOKEN/.test(startError) && startError.length <= START_ERROR_MAX
+    && !/AGENTS_TOKEN=|machine_[A-Za-z0-9_-]{20}/.test(api.text()),
+  `a box that cannot start keeps Docker's reason for its owner, scrubbed and at most ${START_ERROR_MAX} characters, with no token in it or in the log (${startError.length}: ${startError.slice(0, 160)})`)
   const boxMade = await asPerson(PEOPLE, member, 'POST', '/v1/me/box')
   const memberBox = await row('select id, personal, owner_id, claimed_by from instances where owner_id = (select id from people where login = $1) and personal', [member])
   check(boxMade.status === 200 && memberBox?.id === boxMade.json?.instanceId && memberBox?.claimed_by === memberBox?.owner_id

@@ -24,6 +24,8 @@ export type ClaudeLoginId = z.infer<typeof ClaudeLoginId>
 // A Tailscale login as tailscale serve passes it. Most identity providers give
 // an email; GitHub gives a name like alice@github.
 export const Login = z.string().trim().min(3).max(320).regex(/@/, 'a Tailscale login has an @ in it')
+// The most of Docker's words a box keeps for why it could not start. Its reason fits in a line or two.
+export const START_ERROR_MAX = 500
 export type Login = z.infer<typeof Login>
 
 export const TeamRole = z.enum(['admin', 'member'])
