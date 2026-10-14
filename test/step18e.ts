@@ -6,7 +6,10 @@
 // holds. After the machine is back, the person answers the same card in the app,
 // the turn ends, the app shows the reply with no card and no interrupted line,
 // and both clients read the record again. Checks 1 to 4 make the same
-// comparison of clients and record when they finish.
+// comparison of clients and record when they finish. A task of the same agent,
+// mid-call when the machine dies, shows the same way on its page: interrupted
+// with the reason and an Interrupt button, then the reply, and never the text
+// the resumed session was sent.
 //   node --env-file=.env --env-file=.env.test test/step18e.ts
 
 import { execFileSync } from 'node:child_process'
@@ -31,6 +34,7 @@ const c = new Check()
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-dur-e-')))
 const say = person(PEOPLE, login)
 let folder = ''
+let taskFolder = ''
 let live: ReturnType<typeof liveClient> | undefined
 let browser: Browser | undefined
 
@@ -45,7 +49,10 @@ try {
   folder = join(home, 'agents', agentId)
   mkdirSync(folder, { recursive: true })
   writeFileSync(join(home, 'scenario.json'), JSON.stringify({
-    turns: [{ match: 'WATCH', append: { file: 'watched.txt', line: 'seen-1', ask: true }, reply: 'Appended seen-1.' }],
+    turns: [
+      { match: 'WATCH', append: { file: 'watched.txt', line: 'seen-1', ask: true }, reply: 'Appended seen-1.' },
+      { match: 'TASKHOLD', append: { id: 'toolu_task', file: 'task.txt', line: 'task-1', hangOnce: true, checkNamed: true }, reply: 'Appended task-1.' },
+    ],
   }))
 
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
@@ -68,10 +75,18 @@ try {
   const openAsk = () => c.row(`select id from asks where session_id = $1 and status = 'open'`, [sessionId])
   await until('the ask', 60, openAsk)
   const ask = await openAsk()
+  const { taskId, sessionId: taskSessionId } = await say('/v1/tasks', { title: 'Hold a task', instructions: 'Do TASKHOLD.', agentId })
+  taskFolder = join(home, 'workspaces', (await c.row('select workspace_id from sessions where id = $1', [taskSessionId])).workspace_id)
+  await until('the task call in the record', 60, async () =>
+    (await c.count(`select count(*) from events where session_id = $1 and kind = 'tool_call' and tool_use_id = 'toolu_task'`, [taskSessionId])) === 1)
   live = liveClient(PEOPLE, login, conversationId, sessionId)
   browser = await chromium.launch()
-  const page = await (await browser.newContext({ baseURL: PEOPLE, extraHTTPHeaders: { 'tailscale-user-login': login } })).newPage()
+  const context = await browser.newContext({ baseURL: PEOPLE, extraHTTPHeaders: { 'tailscale-user-login': login } })
+  const page = await context.newPage()
   await page.goto(`/#/c/${conversationId}`)
+  const taskPage = await context.newPage()
+  await taskPage.goto(`/#/t/${taskId}`)
+  const taskInterrupted = taskPage.getByTestId('interrupted')
   const card = page.locator('section[aria-label="Needs approval"]')
   const interrupted = page.getByTestId('interrupted')
   c.check(await shows(card.waitFor({ timeout: SHOWN_SEC * 1000 })), 'the app shows the card while the ask waits')
@@ -83,6 +98,10 @@ try {
   c.check(await shows(page.getByText('stopped answering').waitFor({ timeout: SHOWN_SEC * 1000 })) && await interrupted.isVisible() && await card.isVisible(),
     'during the outage the app shows the turn as interrupted, with the reason, and the card still open')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, live, when: 'during the outage' })
+  await until('the task session to show as lost', LOST_SEC * 3, async () => (await c.row('select status from sessions where id = $1', [taskSessionId]))?.status === 'lost')
+  c.check(await shows(taskPage.getByText('stopped answering').waitFor({ timeout: SHOWN_SEC * 1000 })) && await taskInterrupted.isVisible()
+    && await taskPage.getByRole('button', { name: 'Interrupt' }).isVisible(),
+  'during the outage the task page shows the turn as interrupted, with the reason and an Interrupt button')
 
   c.start('daemon/agentsd.ts', daemonEnv)
   await until('the resumed session to ask again', 60, async () =>
@@ -99,6 +118,13 @@ try {
     && await shows(interrupted.waitFor({ state: 'detached', timeout: SHOWN_SEC * 1000 })) && await shows(card.waitFor({ state: 'detached', timeout: SHOWN_SEC * 1000 })),
   'the app shows the reply, with no card and no interrupted line')
   await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, live, when: 'after the restart' })
+  await until('the task turn to end', TURN_SECONDS, async () =>
+    (await c.count(`select count(*) from events where session_id = $1 and kind = 'usage'`, [taskSessionId])) >= 1)
+  c.check(await shows(taskPage.locator('li.message.agent', { hasText: 'task.txt already has task-1' }).waitFor({ timeout: SHOWN_SEC * 1000 }))
+    && await shows(taskInterrupted.waitFor({ state: 'detached', timeout: SHOWN_SEC * 1000 })),
+  'after the restart the task page shows the reply, with no interrupted line')
+  c.check(await taskPage.getByText('This session was resumed').count() === 0 && await taskPage.locator('li.message.person').count() === 1,
+    'the task page shows the one request a person made, never the text the resumed session was sent')
 } catch (error) {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
@@ -108,6 +134,7 @@ try {
   await browser?.close()
   for (const child of c.children) child.kill('SIGTERM')
   if (folder) killFakes(folder)
+  if (taskFolder) killFakes(taskFolder)
   if (!c.failures.length) {
     await c.db.query('delete from teams where name = $1', [team]).catch(() => {})
     rmSync(home, { recursive: true, force: true })

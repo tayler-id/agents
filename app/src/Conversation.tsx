@@ -7,8 +7,8 @@ import {
 import { useLiveText } from './live.ts'
 import { AskCard } from './Asks.tsx'
 import { Markdown } from './Markdown.tsx'
+import { isWorking } from '../../shared/lifecycle.ts'
 
-const WORKING = new Set(['starting', 'running', 'needs_approval', 'needs_input'])
 // How often an open People panel looks again for who is in the room.
 const MEMBERS_POLL_MS = 3000
 
@@ -28,7 +28,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
   const agent = agents.find((a) => a.id === conversation?.agent_id)
   // In a room several agents have sessions. The one taking its turn is the one to show.
   const ownSessions = sessions.filter((s) => s.conversation_id === conversationId).sort((a, b) => b.created_at.localeCompare(a.created_at))
-  const session = ownSessions.find((s) => WORKING.has(s.status)) ?? ownSessions[0]
+  const session = ownSessions.find((s) => isWorking(s.status)) ?? ownSessions[0]
   // Each agent's newest session. One that failed says why until the agent runs again.
   const newest = new Map<string, Session>()
   for (const s of ownSessions) if (!newest.has(s.agent_id)) newest.set(s.agent_id, s)
@@ -37,7 +37,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
   const lost = [...newest.values()].filter((s) => s.status === 'lost')
   const room = conversation?.kind === 'room'
   const canPost = Boolean(agent) || (room && conversation.source !== 'pipeline')
-  const working = Boolean(session && WORKING.has(session.status))
+  const working = Boolean(session && isWorking(session.status))
   const openAsks = asks.filter((a) => a.conversation_id === conversationId && a.status === 'open')
   const sorted = useMemo(() => [...messages].sort(byNumber((m: Message) => m.seq)), [messages])
   const synced = new Set(messages.map((m) => m.client_id))
@@ -217,7 +217,7 @@ function Stopped({ session, agentName }: { session: Session; agentName: string }
 // An agent whose turn was cut off when its machine stopped, with what the record
 // says happened. Its machine resumes the turn when it is back, and an interrupt
 // sent meanwhile ends the turn instead.
-function Interrupted({ session, agentName }: { session: Session; agentName: string }) {
+export function Interrupted({ session, agentName }: { session: Session; agentName: string }) {
   const { rows: events } = useSnapshot<EventRow>('events', { session: session.id }, 10000)
   const notice = [...events].sort(byNumber((e: EventRow) => e.seq)).reverse().find((e) => e.kind === 'notice' && e.body.subtype === 'interrupted')
   return (

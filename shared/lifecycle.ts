@@ -6,6 +6,8 @@ import type { SessionStatus } from './types.ts'
 
 // A session whose harness may be working on a turn right now.
 export const WORKING: readonly SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
+// The app reads a session's status as a plain string.
+export const isWorking = (status: string): boolean => WORKING.some((working) => working === status)
 
 // How often a daemon tells the API its machine is up.
 export const HEARTBEAT_SEC = 15
