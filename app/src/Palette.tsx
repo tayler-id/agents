@@ -101,7 +101,8 @@ function useItems(me: Me): Item[] {
         id: `conversation-${c.id}`, group: 'Conversations', label: conversationLabel(c, { me, members, agentName, login }),
         hint: c.kind === 'room' ? 'room' : '', open: () => go({ conversation: c.id }),
       })),
-      ...tasks.filter((t) => !runOf.has(t.id)).map((t): Item => ({
+      // Replays score proposals and take no messages, so the palette leaves them out.
+      ...tasks.filter((t) => !runOf.has(t.id) && t.source !== 'replay').map((t): Item => ({
         id: `task-${t.id}`, group: 'Tasks', label: t.title, hint: drafts.has(t.id) ? 'draft' : '', open: () => go({ task: t.id }),
       })),
       ...runs.filter((r) => !r.replay_of).map((r): Item => ({

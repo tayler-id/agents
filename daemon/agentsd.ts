@@ -266,7 +266,8 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers),
     allowedTools: ['mcp__team-record', ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : [])],
     acceptEdits: payload.permissions.workspaceWrites,
-    maxBudgetUsd: stage?.maxBudgetUsd,
+    // A server before this release sends a stage's budget only in the stage.
+    maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)

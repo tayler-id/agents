@@ -13,7 +13,10 @@ import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
-import { applyProposal, candidateFrom, proposeInstructions, scoreReplays, startReplays } from './refine.ts'
+import {
+  advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, proposePipelineChange, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
+  type ActionResult,
+} from './refine.ts'
 import { expireTurns } from './rooms.ts'
 import { finishPushes } from './pulls.ts'
 import { WORKSPACE_PERMISSIONS } from './permissions.ts'
@@ -23,6 +26,7 @@ import { lastFire } from '../shared/cron.ts'
 import { messageOf } from '../shared/errors.ts'
 import type { Next, Pipeline, Report, RunComment, RunContext, Stage } from '../shared/pipeline.ts'
 import type { ExecResult, MessagePayload, PushPayload, PushResult, SetupWorkspacePayload } from '../shared/types.ts'
+import { ProposalId, RunId, TeamId } from '../shared/ids.ts'
 
 const CHANNEL = 'agents_runner'
 const TICK_MS = 2000
@@ -161,10 +165,12 @@ async function repoOf(client: pg.PoolClient, run: Run): Promise<RepoRef> {
   return repo
 }
 
+// What a run's sessions have cost, its replays of coach's turns among them.
 async function runCost(client: pg.PoolClient, runId: string): Promise<number> {
   const { cost } = await one<{ cost: string }>(client, 'the run cost',
     `select coalesce(sum(cost_usd), 0) as cost from sessions
-     where id in (select session_id from run_stages where run_id = $1)`, [runId])
+     where id in (select session_id from run_stages where run_id = $1)
+        or id in (select r.session_id from session_replays r join proposals p on p.id = r.proposal_id where p.run_id = $1)`, [runId])
   return Number(cost)
 }
 
@@ -316,23 +322,27 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     }
     // A stage that runs again goes back to its own session, so the agent remembers.
     const earlier = rows.find((r) => r.stage === row.stage && r.session_id)?.session_id
+    const model = stage.model ?? agent.model
     type SessionRow = { id: string; harness_session_id: string | null; cost_usd: string | null }
     const session = earlier
       ? await one<SessionRow>(client, `session ${earlier}`, 'select id, harness_session_id, cost_usd from sessions where id = $1', [earlier])
       : await one<SessionRow>(client, 'the new stage session',
         `insert into sessions (team_id, task_id, workspace_id, instance_id, agent_id, stage, harness, model)
          values ($1, $2, $3, $4, $5, $6, $7, $8) returning id, harness_session_id, cost_usd`,
-        [run.team_id, task.id, workspace.id, workspace.instance_id, agent.id, row.stage, agent.harness, agent.model])
+        [run.team_id, task.id, workspace.id, workspace.instance_id, agent.id, row.stage, agent.harness, model])
     const outcomes = outcomesOf(stage)
     const text = stage.prompt(ctx) + REPORT_INSTRUCTION(outcomes)
     const [seq] = await appendEvents(client, session.id, {
       events: [{ clientId: `stage:${row.id}`, kind: 'user', text, body: { text, runId: run.id, stage: row.stage } }],
     })
     if (seq === undefined) throw new Error(`the prompt for ${row.stage} was not recorded`)
+    // What is left of the run's cap, on top of what this session has spent, since
+    // the harness counts its whole session against the budget.
+    const maxBudgetUsd = Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost
     const payload: MessagePayload = {
-      permissions: WORKSPACE_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
+      permissions: WORKSPACE_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model, instructions: agent.instructions,
       harnessSessionId: session.harness_session_id, workspaceId: workspace.id,
-      stage: { outcomes, allow: stage.allow ?? [], maxBudgetUsd: Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost },
+      stage: { outcomes, allow: stage.allow ?? [], maxBudgetUsd }, maxBudgetUsd,
     }
     await client.query(
       `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
@@ -388,41 +398,69 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     await setRow(client, row, { status: 'running', command_id: sent.id, data: { phase: 'push' }, started: true })
     return true
   }
-  let outcome = 'done'
-  let summary: string
+  if (stage.action === 'replay_sessions') return replaySessions(client, run, pipeline, rows, row)
+  const action = stage.action
+  let result: ActionResult
   try {
-    if (stage.action === 'merge_pull_request') {
-      const opened = [...rows].reverse().find((r) => r.data.pullRequest !== undefined)
-      if (!opened) throw new Error('there is no pull request to merge')
-      const number = Number(opened.data.pullRequest)
-      const pr = await forge.merge(repoPath(repo.remote_url), number)
-      if (!pr.merged) throw new Error(`pull request #${number} did not merge`)
-      await client.query(`update artifacts set state = 'merged', updated_at = now() where task_id = $1 and url = $2`, [run.task_id, pr.html_url])
-      // A merged pipeline change is approved, and its version becomes current now.
-      await client.query(
-        `update proposals set status = 'approved', decided_by = $2, decided_at = now() where run_id = $1 and status = 'open'`,
-        [run.id, await approver(client, run)])
-      await syncPipelines([repo.repoId])
-      summary = `Merged pull request #${number}.`
-    } else if (stage.action === 'propose_instructions') {
-      const study = [...rows].reverse().find((r) => r.kind === 'agent' && r.status === 'done')
-      summary = await proposeInstructions(client, run.team_id, run.id, study?.summary ?? '', study?.data ?? {})
-    } else if (stage.action === 'apply_proposal') {
-      await applyProposal(client, run.id, await approver(client, run))
-      summary = 'Applied the proposal.'
-    } else {
-      const issue = ctx.report.issue
-      if (issue) {
-        await forge.comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
-        await forge.closeIssue(repoPath(repo.remote_url), issue)
+    switch (action) {
+      case 'merge_pull_request': {
+        const opened = [...rows].reverse().find((r) => r.data.pullRequest !== undefined)
+        if (!opened) throw new Error('there is no pull request to merge')
+        const number = Number(opened.data.pullRequest)
+        const pr = await forge.merge(repoPath(repo.remote_url), number)
+        if (!pr.merged) throw new Error(`pull request #${number} did not merge`)
+        await client.query(`update artifacts set state = 'merged', updated_at = now() where task_id = $1 and url = $2`, [run.task_id, pr.html_url])
+        // A merged pipeline change is approved, and its version becomes current now.
+        await client.query(
+          `update proposals set status = 'approved', decided_by = $2, decided_at = now() where run_id = $1 and status = 'open'`,
+          [run.id, await approver(client, run)])
+        await syncPipelines([repo.repoId])
+        result = { outcome: 'done', summary: `Merged pull request #${number}.` }
+        break
       }
-      summary = issue ? `Closed issue #${issue}.` : 'There was no issue to close.'
+      case 'close_issue': {
+        const issue = ctx.report.issue
+        if (issue) {
+          await forge.comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
+          await forge.closeIssue(repoPath(repo.remote_url), issue)
+        }
+        result = { outcome: 'done', summary: issue ? `Closed issue #${issue}.` : 'There was no issue to close.' }
+        break
+      }
+      case 'pick_sessions':
+      case 'record_findings':
+      case 'propose_hunks':
+      case 'decide_replays':
+      case 'settle_hunks':
+        result = await learn(client, action, { id: RunId.parse(run.id), teamId: TeamId.parse(run.team_id), report: ctx.report }, rows, pipeline)
+        break
     }
   } catch (error) {
-    outcome = 'failed'
-    summary = messageOf(error)
+    result = { outcome: 'failed', summary: messageOf(error) }
   }
-  await setRow(client, row, { status: 'done', outcome, summary, started: true, ended: true })
+  await setRow(client, row, { status: 'done', outcome: result.outcome, summary: result.summary, data: result.data ?? {}, started: true, ended: true })
+  return true
+}
+
+// Starts the replays that score a coach proposal. A change that writes no text
+// has nothing to replay, and goes on unscored. A savepoint keeps a failure from
+// leaving half the replays queued for a machine.
+async function replaySessions(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: Row[], row: Row): Promise<boolean> {
+  await client.query('savepoint replays')
+  try {
+    const proposal = proposalOf(rows, pipeline)
+    const started = await startSessionReplays(client, TeamId.parse(run.team_id), proposal, pipeline.spendCapUsd - await runCost(client, run.id))
+    if (!started) {
+      await client.query(`update proposals set status = 'open' where id = $1 and status = 'scoring'`, [proposal])
+      await setRow(client, row, { status: 'done', outcome: 'unscored', summary: 'The change writes no text, so there is nothing to replay.', data: { proposal }, started: true, ended: true })
+      return true
+    }
+    await setRow(client, row, { status: 'running', summary: `Replaying ${started} turns, each with and without the change.`, data: { phase: 'replaying', proposal, replays: started }, started: true })
+  } catch (error) {
+    await client.query('rollback to savepoint replays')
+    await client.query(`update proposals set status = 'failed' where run_id = $1 and status = 'scoring'`, [run.id])
+    await setRow(client, row, { status: 'done', outcome: 'failed', summary: messageOf(error), started: true, ended: true })
+  }
   return true
 }
 
@@ -436,6 +474,17 @@ async function poll(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: R
   }
 
   if (stage.kind === 'agent' && row.session_id) return pollAgent(client, run, stage, row, row.session_id)
+
+  // Coach's replays: once every one has replied or failed, the judge reads them.
+  if (stage.kind === 'action' && stage.action === 'replay_sessions' && row.data.phase === 'replaying') {
+    const proposal = ProposalId.parse(row.data.proposal)
+    if (await advanceSessionReplays(client, proposal)) return false
+    await setRow(client, row, {
+      status: 'done', outcome: 'replayed', summary: `Replayed ${String(row.data.replays)} turns, each with and without the change.`,
+      data: { ...row.data, prompt: await judgePrompt(client, proposal) }, ended: true,
+    })
+    return true
+  }
 
   // Scoring waits for every replay of the proposal to finish, then compares.
   if (stage.kind === 'action' && stage.action === 'score_change' && row.data.phase === 'scoring') {
@@ -470,7 +519,7 @@ async function poll(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: R
     await setRow(client, row, { status: 'done', outcome: 'failed', summary: `The push failed: ${command.error ?? 'no reason given'}`, ended: true })
     return true
   }
-  if (stage.action === 'score_change') return startScoring(client, run, rows, row)
+  if (stage.action === 'score_change') return startScoring(client, run, pipeline, rows, row)
   if (stage.action === 'open_pull_request') return openPullRequest(client, run, stage, rows, row, command)
   return false
 }
@@ -528,21 +577,26 @@ async function pollAgent(client: pg.PoolClient, run: Run, stage: Stage, row: Row
 }
 
 // The change is pushed. Take it as a candidate and replay past runs with it.
-async function startScoring(client: pg.PoolClient, run: Run, rows: Row[], row: Row): Promise<boolean> {
+// A change with no checked evidence behind it, or one repeating a hunk the team
+// turned down, is refused before any replay. A savepoint keeps a failure from
+// leaving half the replays queued.
+async function startScoring(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: Row[], row: Row): Promise<boolean> {
   const task = await taskOf(client, run)
   const repo = await repoOf(client, run)
   const study = [...rows].reverse().find((r) => r.kind === 'agent' && r.status === 'done')
+  await client.query('savepoint scoring')
   try {
     const candidate = await candidateFrom(client, run.team_id, repo, branchOf(run, task))
-    const proposal = await one<{ id: string }>(client, 'the new proposal',
-      `insert into proposals (team_id, target, pipeline_id, base_version_id, candidate_version_id, diff, summary, status, run_id)
-       values ($1, 'pipeline', $2, $3, $4, $5, $6, 'scoring', $7) returning id`,
-      [run.team_id, candidate.pipelineId, candidate.baseVersionId, candidate.candidateVersionId, candidate.diff, study?.summary ?? '', run.id])
-    const replayed = await startReplays(client, run.team_id, proposal.id, candidate.pipelineId, [candidate.candidateVersionId, candidate.baseVersionId])
+    const proposed = await proposePipelineChange(client, { id: RunId.parse(run.id), teamId: TeamId.parse(run.team_id) }, rows, pipeline, candidate, study?.summary ?? '')
+    if ('refused' in proposed) {
+      await setRow(client, row, { status: 'done', outcome: 'refused', summary: `Refused the change: ${proposed.refused}`, ended: true })
+      return true
+    }
+    const replayed = await startReplays(client, run.team_id, proposed.proposal, candidate.pipelineId, [candidate.candidateVersionId, candidate.baseVersionId])
     if (!replayed) throw new Error(`${candidate.name} has no finished runs to replay yet`)
-    await setRow(client, row, { data: { phase: 'scoring', proposal: proposal.id, pipeline: candidate.name, replays: replayed } })
+    await setRow(client, row, { data: { phase: 'scoring', proposal: proposed.proposal, pipeline: candidate.name, replays: replayed } })
   } catch (error) {
-    await client.query(`update proposals set status = 'failed' where run_id = $1 and status = 'scoring'`, [run.id])
+    await client.query('rollback to savepoint scoring')
     await setRow(client, row, { status: 'done', outcome: 'failed', summary: messageOf(error), ended: true })
   }
   return true
@@ -679,6 +733,7 @@ async function finishRun(client: pg.PoolClient, run: Run, status: 'done' | 'fail
   const replays = await many<Run>(client,
     `select * from runs where proposal_id in (select id from proposals where run_id = $1) and status in ('queued', 'running', 'waiting') for update`, [run.id])
   for (const replay of replays) await finishRun(client, replay, 'cancelled', 'The proposal it was scoring was dropped.')
+  await stopSessionReplays(client, run.id)
   await post(client, run, 'end', `${status === 'done' ? 'Finished' : status === 'cancelled' ? 'Cancelled' : 'Stopped'}: ${note}`)
 }
 

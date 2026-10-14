@@ -3,9 +3,8 @@
 // replays those past runs with the change and with the current version at the
 // commits they started from, and only because the change scored better does a
 // pull request reach the shepherd. Approving it makes the change current. A change
-// that scores no better, and one that does not load, never reach anyone. The
-// coach pipeline turns a correction people keep making into new instructions or
-// a skill, and refuses a skill whose name is a path.
+// that scores no better, and one that does not load, never reach anyone. Coach
+// is checked in test/step20a.ts and test/step20b.ts.
 //   npm run check:step9
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -53,18 +52,6 @@ const SCENARIO = {
   },
   Broken: {
     'changed,nothing': [{ outcome: 'changed', summary: 'Starts somewhere else.', replace: { [`${PIPES}/pipelines/bug-fix.ts`]: ["start: 'triage'", "start: 'nowhere'"] } }],
-  },
-  Coach: {
-    'changed,nothing': [{ outcome: 'changed', summary: 'Two people asked for British spelling in separate sessions.',
-      data: { agent: 'fixer', instructions: 'You fix bugs in small JavaScript projects. Keep replies short. Write in British English.' } }],
-  },
-  SkillCoach: {
-    'changed,nothing': [{ outcome: 'changed', summary: 'People kept asking for release notes in the same shape.',
-      data: { agent: 'fixer', skill: { name: 'release-notes', content: 'Write one line per merged pull request, newest first.' } } }],
-  },
-  EscapeCoach: {
-    'changed,nothing': [{ outcome: 'changed', summary: 'A skill with a path for a name.',
-      data: { agent: 'fixer', skill: { name: '../../escape', content: 'Anything.' } } }],
   },
 }
 
@@ -125,7 +112,6 @@ try {
     'shared/pipeline.ts': readFileSync(join(ROOT, 'shared/pipeline.ts'), 'utf8'),
     'pipelines/bug-fix.ts': readFileSync(join(ROOT, 'pipelines/bug-fix.ts'), 'utf8').replace("runsOn: 'box'", "runsOn: 'home'"),
     'pipelines/improve.ts': readFileSync(join(ROOT, 'pipelines/improve.ts'), 'utf8'),
-    'pipelines/coach.ts': readFileSync(join(ROOT, 'pipelines/coach.ts'), 'utf8'),
   }, 'step 9 pipelines', false)
   for (const repo of [SHOP, PIPES]) await db.query('insert into repos (team_id, remote_url) values ($1, $2)', [teamId, `${forgeConfig().url}/${org}/${repo}.git`])
   const repoId = async (name: string) => must(await one<{ id: string }>('select id from repos where team_id = $1 and remote_url like $2', [teamId, `%/${name}.git`]), 'repoId').id
@@ -142,7 +128,7 @@ try {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
     env: { ...process.env, AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home, AGENTS_CLAUDE_BIN: join(ROOT, 'test/fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(home, 'scenario.json') },
   }))
-  await within(60, async () => Number((await one<{ n: number }>(`select count(*)::int as n from pipelines where team_id = $1 and current_version_id is not null`, [teamId]))?.n) === 3)
+  await within(60, async () => Number((await one<{ n: number }>(`select count(*)::int as n from pipelines where team_id = $1 and current_version_id is not null`, [teamId]))?.n) === 2)
   const pipeline = async (name: string) => must(await one<{ id: string; current_version_id: string }>('select id, current_version_id from pipelines where team_id = $1 and name = $2', [teamId, name]), 'pipeline')
   const bugFix = await pipeline('bug-fix')
 
@@ -160,6 +146,16 @@ try {
   check((await reminders(must(past[0], 'the first past run'))) === 1 && (await reminders(must(past[1], 'the second past run'))) === 1,
     'each past run needed a reminder at triage')
   const prsBefore = (await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${SHOP}/pulls?state=all&limit=50`)).length
+
+  // Each study cites the step of each past run where triage needed its reminder.
+  const nudges = await all<{ session_id: string; seq: number }>(
+    `select e.session_id, e.seq::int from events e join run_stages s on s.session_id = e.session_id
+     where s.run_id = any($1) and e.kind = 'user' and e.text like 'You ended your turn without calling report_result%' order by e.id`, [past])
+  const findings = nudges.map((n) => ({ kind: 'ignored', session: n.session_id, step: n.seq, quote: 'You ended your turn without calling report_result', note: 'Triage needed a reminder to report.' }))
+  for (const step of [...SCENARIO.Improve['changed,nothing'], ...SCENARIO.Shuffle['changed,nothing'], ...SCENARIO.Broken['changed,nothing']]) {
+    Object.assign(step, { data: { findings } })
+  }
+  writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
 
   // The improve pipeline proposes a clearer triage prompt.
   const { runId: improve } = await post(`/v1/pipelines/${(await pipeline('improve')).id}/runs`, { title: 'Improve bug-fix', body: 'Make bug-fix runs need fewer reminders.', repoId: await repoId(PIPES) })
@@ -186,6 +182,10 @@ try {
   check(candidate?.finished === 2 && current?.finished === 2 && candidate?.problems === 0 && current?.problems === 2,
     `the scores show the change needs no reminders where the current version needed two: ${JSON.stringify(proposal?.scores)}`)
   check(proposal?.diff.includes(`+`) && proposal.diff.includes(CLEARER) && proposal.status === 'open', 'the proposal carries the diff and waits for the shepherd')
+  const cited = await all<{ evidence: { quote: string; session: string }[] }>('select evidence from proposal_hunks where proposal_id = $1', [proposal?.id])
+  check(cited.length === 1 && cited[0]?.evidence.length === 2 && cited[0].evidence.every((q) => q.quote.startsWith('You ended your turn without calling report_result'))
+    && new Set(cited[0].evidence.map((q) => q.session)).size === 2,
+  "the change's hunk cites the reminder in each past run, checked in code")
   const pr = await forgeAdmin.call<{ number: number; body: string }[]>('GET', `/repos/${org}/${PIPES}/pulls?state=open`)
   const gate = await openAsk(improve)
   check(pr.length === 1 && pr[0]?.body.includes('Replayed 2 past runs') && proposal?.pull_request?.includes(`/pulls/${pr[0].number}`)
@@ -222,38 +222,6 @@ try {
   if (brokenAsk) await post(`/v1/asks/${brokenAsk.id}/answer`, { decision: 'stop' })
   const prsNow = await forgeAdmin.call<unknown[]>('GET', `/repos/${org}/${PIPES}/pulls?state=all&limit=50`)
   check(prsNow.length === 1, 'neither of those opened a pull request')
-
-  // The coach turns a repeated correction into new instructions.
-  const { runId: coach } = await post(`/v1/pipelines/${(await pipeline('coach')).id}/runs`, { title: 'Coach fixer', body: 'Look at the last week.', repoId: await repoId(PIPES) })
-  await within(120, async () => (await openAsk(coach))?.kind === 'gate')
-  const advice = await one<{ target: string; diff: string; status: string }>('select target, diff, status from proposals where run_id = $1', [coach])
-  check(advice?.target === 'instructions' && advice.diff.includes('+') && advice.diff.includes('British') && advice.status === 'open',
-    'the coach proposed new instructions with a diff')
-  const coachGate = await openAsk(coach)
-  if (coachGate) await post(`/v1/asks/${coachGate.id}/answer`, { decision: 'approve' })
-  check(await waitFor(coach, ['done'], 60) && (await one<{ instructions: string }>(`select instructions from agents where team_id = $1 and name = 'fixer'`, [teamId]))?.instructions.includes('British English'),
-    "approving it changed the agent's instructions")
-
-  // A coach run can propose a skill instead, approved the same way.
-  const { runId: skillRun } = await post(`/v1/pipelines/${(await pipeline('coach')).id}/runs`, { title: 'SkillCoach fixer', body: 'Look at the last week.', repoId: await repoId(PIPES) })
-  await within(120, async () => (await openAsk(skillRun))?.kind === 'gate')
-  const skillProposal = await one<{ target: string; skill_name: string | null; diff: string }>('select target, skill_name, diff from proposals where run_id = $1', [skillRun])
-  const skillGate = await openAsk(skillRun)
-  if (skillGate) await post(`/v1/asks/${skillGate.id}/answer`, { decision: 'approve' })
-  check(skillProposal?.target === 'skill' && skillProposal.skill_name === 'release-notes' && skillProposal.diff.includes('+Write one line')
-    && await waitFor(skillRun, ['done'], 60)
-    && (await one<{ content: string }>(`select content from skills where team_id = $1 and name = 'release-notes'`, [teamId]))?.content.includes('one line per'),
-  'a coach run can propose a skill with a diff, and approving it adds the skill')
-
-  // A skill's name becomes a folder on the agent's machine, so a path is refused.
-  const { runId: escape } = await post(`/v1/pipelines/${(await pipeline('coach')).id}/runs`, { title: 'EscapeCoach fixer', body: 'Look at the last week.', repoId: await repoId(PIPES) })
-  await within(120, async () => (await openAsk(escape))?.kind === 'question')
-  const escapeAsk = await openAsk(escape)
-  const escapeRow = await one<{ summary: string }>(`select summary from run_stages where run_id = $1 and stage = 'propose' and kind = 'action' order by n desc limit 1`, [escape])
-  check(escapeAsk?.payload.question.includes('could not be written') && escapeRow?.summary.includes('lowercase letters')
-    && !(await one('select 1 from proposals where run_id = $1', [escape])),
-  `a skill named with a path is refused before anyone is asked to approve it: ${escapeRow?.summary ?? 'no propose stage'}`)
-  if (escapeAsk) await post(`/v1/asks/${escapeAsk.id}/answer`, { decision: 'stop' })
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack}`)

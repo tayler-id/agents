@@ -103,6 +103,8 @@ const personShapes: Record<string, PersonShape> = {
   repos: async (p) => ({ table: 'repos', where: 'team_id = $1', params: [p.team_id] }),
   pipelines: async (p) => ({ table: 'pipelines', where: 'team_id = $1', params: [p.team_id] }),
   proposals: async (p) => ({ table: 'proposals', where: 'team_id = $1', params: [p.team_id] }),
+  // Hunks quote only team sessions, since coach reads no private ones.
+  proposal_hunks: async (p) => ({ table: 'proposal_hunks', where: 'team_id = $1', params: [p.team_id] }),
   skills: async (p) => ({ table: 'skills', where: 'team_id = $1', params: [p.team_id] }),
   plugins: async (p) => ({ table: 'plugins', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
   routines: async (p) => ({ table: 'routines', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),

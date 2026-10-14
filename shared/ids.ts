@@ -27,3 +27,12 @@ export const FileChangeId = z.uuid().brand<'FileChangeId'>()
 export type FileChangeId = z.infer<typeof FileChangeId>
 export const PushId = z.uuid().brand<'PushId'>()
 export type PushId = z.infer<typeof PushId>
+export const RunId = z.uuid().brand<'RunId'>()
+export type RunId = z.infer<typeof RunId>
+export const PipelineId = z.uuid().brand<'PipelineId'>()
+export type PipelineId = z.infer<typeof PipelineId>
+export const ProposalId = z.uuid().brand<'ProposalId'>()
+export type ProposalId = z.infer<typeof ProposalId>
+// events.id is a bigint, which Postgres sends as text.
+export const EventId = z.string().regex(/^\d+$/).brand<'EventId'>()
+export type EventId = z.infer<typeof EventId>

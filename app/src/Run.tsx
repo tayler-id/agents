@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
-import { ProposalView } from './Proposal.tsx'
+import { ProposalView, useProposalContext } from './Proposal.tsx'
 import { Markdown } from './Markdown.tsx'
 import { Changes } from './Changes.tsx'
 import {
@@ -35,6 +35,8 @@ export function RunView({ runId, openSession, openFile }: { runId: string; openS
   const ordered = useMemo(() => [...stages].sort(byNumber((s: RunStage) => s.n)), [stages])
   const waiting = asks.filter((a) => a.run_id === runId && a.status === 'open')
   const report = run?.trigger_payload.report
+  const proposed = proposals.filter((p) => p.run_id === runId)
+  const proposalContext = useProposalContext(proposed.length > 0)
 
   if (!run) return <section className="page"><p className="muted">Loading the run…</p></section>
   const metrics = run.metrics
@@ -70,7 +72,7 @@ export function RunView({ runId, openSession, openFile }: { runId: string; openS
           </dl>
         )}
 
-        {proposals.filter((p) => p.run_id === runId).map((p) => <ProposalView key={p.id} proposal={p} />)}
+        {proposed.map((p) => <ProposalView key={p.id} proposal={p} context={proposalContext} />)}
         {waiting.map((ask) => <AskCard key={ask.id} ask={ask} />)}
 
         <h2 className="kicker section">Stages</h2>

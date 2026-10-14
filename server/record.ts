@@ -124,6 +124,11 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     `insert into asks (team_id, kind, session_id, conversation_id, tool_use_id, payload)
      values ($1, 'tool_approval', $2, $3, $4, $5) returning id`,
     [session.team_id, session.id, session.conversation_id, event.toolUseId ?? null, JSON.stringify(scrub(body))])
+  // A replay of a coach change never waits on a person, so any tool it asks for is denied.
+  if (await maybe(client, 'select 1 from session_replays where session_id = $1', [session.id])) {
+    await answerAsk(client, ask.id, null, 'deny', 'A replay never waits on a person.')
+    return
+  }
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
     `select decision from approval_rules
      where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
@@ -266,12 +271,17 @@ async function postAgentReply(client: pg.PoolClient, session: Session, conversat
 // What an agent brings to every session: its skills, its plugins and what it
 // remembers about the people involved and the team.
 export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'memory'>> {
-  const { rows: skills } = await client.query<AgentSkill>(
-    `select s.name, s.description, s.content from skills s join agents a on a.team_id = s.team_id
-     where a.id = $1 and (s.agent_id = a.id or s.agent_id is null) order by s.name`, [agentId])
   const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
   const memory = await memoryBlock(client, agentId, personIds)
-  return { skills, plugins, memory: memory || undefined }
+  return { skills: await skillsOf(client, agentId), plugins, memory: memory || undefined }
+}
+
+// An agent's skills: its own and the team's.
+export async function skillsOf(client: pg.PoolClient | pg.Pool, agentId: string): Promise<AgentSkill[]> {
+  const { rows } = await client.query<AgentSkill>(
+    `select s.name, s.description, s.content from skills s join agents a on a.team_id = s.team_id
+     where a.id = $1 and (s.agent_id = a.id or s.agent_id is null) order by s.name`, [agentId])
+  return rows
 }
 
 // Finds the person's DM with an agent, or opens one.

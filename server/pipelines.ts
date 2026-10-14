@@ -11,10 +11,10 @@ import { pathToFileURL } from 'node:url'
 import { one, pool, tx, type Db } from './db.ts'
 import { messageOf } from '../shared/errors.ts'
 import { forge, forgeConfig, repoPath } from './forge.ts'
-import type { Pipeline, Stage } from '../shared/pipeline.ts'
+import { ACTION_OUTCOMES, type Pipeline, type Stage } from '../shared/pipeline.ts'
 
 const CACHE = join(process.env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'pipelines')
-const ACTIONS = ['open_pull_request', 'merge_pull_request', 'close_issue', 'score_change', 'propose_instructions', 'apply_proposal']
+const ACTIONS: string[] = Object.keys(ACTION_OUTCOMES)
 const TEXT_ACTIONS = ['open_pull_request', 'close_issue']
 const KINDS = ['agent', 'check', 'action', 'gate']
 
@@ -27,7 +27,7 @@ export const blobSha = (source: string) => {
 // The outcomes a stage can end with. An agent picks from its `next` keys.
 export function outcomesOf(stage: Stage): string[] {
   if (stage.kind === 'check') return ['passes', 'fails']
-  if (stage.kind === 'action') return stage.action === 'score_change' ? ['better', 'not_better', 'failed'] : ['done', 'failed']
+  if (stage.kind === 'action') return [...ACTION_OUTCOMES[stage.action]]
   if (stage.kind === 'gate') return ['approved', 'rejected']
   return Object.keys(stage.next)
 }
@@ -62,8 +62,11 @@ function problems(value: unknown): string[] {
     if (stage.kind === 'agent' && !fn('prompt')) out.push(`${name}: an agent stage needs a prompt`)
     if (stage.kind === 'check' && !fn('command')) out.push(`${name}: a check needs a command`)
     if (stage.kind === 'action') {
-      if (typeof stage.action !== 'string' || !ACTIONS.includes(stage.action)) out.push(`${name}: an action must be one of ${ACTIONS.join(', ')}`)
-      else if (TEXT_ACTIONS.includes(stage.action) && !fn('text')) out.push(`${name}: ${stage.action} needs a text`)
+      if (typeof stage.action !== 'string' || !ACTIONS.includes(stage.action)) {
+        out.push(`${name}: an action must be one of ${ACTIONS.join(', ')}`)
+        continue
+      }
+      if (TEXT_ACTIONS.includes(stage.action) && !fn('text')) out.push(`${name}: ${stage.action} needs a text`)
     }
     if (stage.kind === 'gate' && !fn('question')) out.push(`${name}: a gate needs a question`)
     const labels = stage.labels

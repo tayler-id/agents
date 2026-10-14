@@ -45,6 +45,10 @@ export async function startTask(client: pg.PoolClient, person: Person, body: Omi
 
 export async function messageTaskSession(client: pg.PoolClient, person: Person, sessionId: string, text: string) {
   if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, 'no such session')
+  // A replay's task is visible to the team, so canSeeSession lets any teammate in.
+  if (await maybe(client, 'select 1 from session_replays where session_id = $1', [sessionId])) {
+    throw new HttpError(409, "a replay scores a proposed change and takes no messages, since a message would restart it with workspace permissions, the agent's plugins and memory, and no budget")
+  }
   await sendToSession(client, person, sessionId, text)
 }
 
@@ -80,7 +84,8 @@ export async function addComment(client: pg.PoolClient, person: Person, artifact
   if (sendTo) {
     const quote = body.quote ? `On "${body.quote}":\n` : ''
     await sendToSession(client, person, sendTo,
-      `${person.login} commented on ./task/${artifact.path}, version ${body.version}:\n\n${quote}${body.text}\n\nRevise the document in ./task/${artifact.path} if the comment calls for it, then say what you changed.`)
+      `${person.login} commented on ./task/${artifact.path}, version ${body.version}:\n\n${quote}${body.text}\n\nRevise the document in ./task/${artifact.path} if the comment calls for it, then say what you changed.`,
+      body.text)
   }
   return comment.id
 }

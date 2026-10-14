@@ -144,13 +144,23 @@ try {
   const shopRepo = must(await one<{ id: string }>('select id from repos where team_id = $1 and remote_url like $2', [teamId, `%/${SHOP}.git`]), 'the shop repo').id
 
   // Two past runs that each needed a reminder, both turned down so main keeps the bug.
+  const past: string[] = []
   for (const title of ['TENOFF makes a $5 order negative', 'TENOFF goes below zero']) {
     const { runId } = await post(`/v1/pipelines/${await pipelineId('bug-fix')}/runs`, { title, body: 'discount(5) is -5.', repoId: shopRepo })
+    past.push(must(runId, 'the past run'))
     await within(240, () => one(`select 1 from asks where run_id = $1 and kind = 'gate' and status = 'open'`, [runId]))
     const gate = await one<{ id: string }>(`select id from asks where run_id = $1 and kind = 'gate' and status = 'open'`, [runId])
     if (gate) await post(`/v1/asks/${gate.id}/answer`, { decision: 'reject' })
     await within(60, async () => (await one<{ status: string }>('select status from runs where id = $1', [runId]))?.status === 'failed')
   }
+  // The study cites the step of each past run where triage needed its reminder.
+  const { rows: nudges } = await db.query<{ session_id: string; seq: number }>(
+    `select e.session_id, e.seq::int from events e join run_stages s on s.session_id = e.session_id
+     where s.run_id = any($1) and e.kind = 'user' and e.text like 'You ended your turn without calling report_result%' order by e.id`, [past])
+  for (const step of SCENARIO.Improve['changed,nothing']) {
+    Object.assign(step, { data: { findings: nudges.map((n) => ({ kind: 'ignored', session: n.session_id, step: n.seq, quote: 'You ended your turn without calling report_result', note: 'Triage needed a reminder to report.' })) } })
+  }
+  writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
 
   const errors: string[] = []
   // Chromium drives the improvement from the improve pipeline's page.
@@ -166,6 +176,8 @@ try {
     check(await visible(page, 'table.scores tbody tr', 10, /With the change/) && /2 of 2/.test(await scores.innerText()),
       `the proposal shows both versions' scores: ${(await scores.innerText().catch(() => '')).replace(/\s+/g, ' ')}`)
     check(await visible(page, '.diff .added', 10, /Always call report_result/), "the proposal's diff shows the added line")
+    check(await page.locator('.quotes blockquote', { hasText: 'You ended your turn without calling report_result' }).count() === 2,
+      'the proposal shows the reminder from each past run that the change rests on')
     check(await visible(page, 'section.ask-card', 10, /scored better/), 'the gate to approve it sits beside the proposal')
     await page.screenshot({ path: join(SHOTS, 'chromium-proposal-light.png'), fullPage: true })
     check(await serious(page) === 0, 'chromium: the proposal page has no serious accessibility problems')

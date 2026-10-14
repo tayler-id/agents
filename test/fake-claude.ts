@@ -26,6 +26,17 @@ import { fakeSetupToken } from './fake-claude-login.ts'
 // `claude setup-token`, for the checks of a box's own Claude sign-in.
 if (process.argv[2] === 'setup-token') process.exit(await fakeSetupToken())
 
+// A reader's finding, placed by finding `match` in the transcript the prompt
+// holds: the step it is on and the session above it. `rule` and `candidate` are
+// words of the line that names the rule or candidate meant.
+type FakeFinding = {
+  match: string; kind: string; quote?: string; rule?: string; candidate?: string
+  correction?: string; same?: string; fix?: string; when?: string; note?: string
+}
+// A writer's hunk, citing every finding whose line in the prompt has any of the
+// words in `cite`. `rule` and `after` are words of the rule meant.
+type FakeHunk = { op: string; cite: string[]; rule?: string; after?: string; text?: string; name?: string; description?: string; person?: string }
+
 type Step = {
   outcome?: string
   summary?: string
@@ -40,6 +51,11 @@ type Step = {
   fail?: boolean
   sleepMs?: number
   cost?: number
+  findings?: FakeFinding[]
+  hunks?: FakeHunk[]
+  // A judge: a correction is fixed when the reply has `fixedIf`, and a turn that
+  // went fine is worse when the reply has `worseIf`.
+  verdicts?: { fixedIf: string; worseIf?: string }
 }
 
 const args = process.argv.slice(2)
@@ -55,7 +71,9 @@ const sessionId = flag('--resume') ?? randomUUID()
 // token it was given is kept only as a fingerprint.
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
-appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({ sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid }) + '\n')
+appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({
+  sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid, maxBudgetUsd: flag('--max-budget-usd') ?? null,
+}) + '\n')
 type Append = {
   // The call's tool_use id. Random when unset.
   id?: string
@@ -76,7 +94,9 @@ type Append = {
   dieAsking?: boolean
 }
 // `hang` stops the turn when the rule matches, as if the model never finished.
-type Rule = { match: string; reply?: string; write?: Record<string, string>; append?: Append; hang?: boolean }
+// `replyIf` answers differently when the session's instructions have these
+// words, the way an agent follows what it was told.
+type Rule = { match: string; reply?: string; replyIf?: Record<string, string>; write?: Record<string, string>; append?: Append; hang?: boolean }
 const scenario: Record<string, Record<string, Step[]>> & { turns?: Rule[] } = process.env.AGENTS_FAKE_SCENARIO
   ? JSON.parse(readFileSync(process.env.AGENTS_FAKE_SCENARIO, 'utf8')) : {}
 
@@ -172,6 +192,53 @@ function say(text: string) {
   emit({ type: 'assistant', parent_tool_use_id: null, message: { id: `msg_${randomUUID().slice(0, 8)}`, model: 'fake', content: [{ type: 'text', text }] } })
 }
 
+// Where words appear in a transcript: the step whose line holds them, and the
+// session that step is under.
+function locate(prompt: string, words: string): { session: string; step: number } | null {
+  const lines = prompt.split('\n')
+  let step: number | null = null
+  for (let i = lines.findIndex((l) => l.includes(words)); i >= 0; i--) {
+    const line = lines[i] ?? ''
+    const numbered = /^(\d+)\. /.exec(line)
+    if (step === null && numbered) step = Number(numbered[1])
+    const session = /^session ([0-9a-f-]{36}) /.exec(line)?.[1]
+    if (session && step !== null) return { session, step }
+  }
+  return null
+}
+
+// The id on the first line naming a rule or candidate whose text has these words.
+const idOf = (prompt: string, kind: 'rule' | 'candidate', words: string | undefined) => words === undefined ? undefined
+  : prompt.split('\n').find((l) => l.startsWith(`${kind} `) && l.includes(words))?.split(/[ :]/)[1]
+
+function findingsIn(prompt: string, wanted: FakeFinding[]) {
+  return wanted.flatMap((f) => {
+    const at = locate(prompt, f.match)
+    if (!at) return []
+    const { match, rule, candidate, ...rest } = f
+    return [{ ...rest, ...at, quote: f.quote ?? match, rule: idOf(prompt, 'rule', rule), candidate: idOf(prompt, 'candidate', candidate) }]
+  })
+}
+
+function hunksIn(prompt: string, wanted: FakeHunk[]) {
+  const findings = (words: string[]) => prompt.split('\n').flatMap((line) => {
+    const id = /^\s*finding ([0-9a-f-]{36}) /.exec(line)?.[1]
+    return id && words.some((w) => line.includes(w)) ? [id] : []
+  })
+  return wanted.map(({ cite, rule, after, ...rest }) => ({ ...rest, rule: idOf(prompt, 'rule', rule), after: idOf(prompt, 'rule', after), findings: findings(cite) }))
+}
+
+function verdictsIn(prompt: string, { fixedIf, worseIf }: { fixedIf: string; worseIf?: string }) {
+  const verdicts: Record<string, string> = {}
+  for (const block of prompt.split(/\n(?=replay R\d+ · )/)) {
+    const head = /^replay (R\d+) · (a correction|went fine before)/.exec(block)
+    if (!head?.[1]) continue
+    const reply = block.split('\nThe reply:\n')[1] ?? ''
+    verdicts[head[1]] = head[2] === 'a correction' ? (reply.includes(fixedIf) ? 'fixed' : 'still') : (worseIf && reply.includes(worseIf) ? 'worse' : 'ok')
+  }
+  return verdicts
+}
+
 // With --replay-user-messages, Claude prints each message back, with the uuid it
 // was sent with, when a turn takes it in.
 const replays = args.includes('--replay-user-messages')
@@ -210,9 +277,17 @@ async function turn(text: string, uuid: string | undefined) {
   }
   const holdsBack = step.noReport || (step.reportOnlyIf !== undefined && !text.includes(step.reportOnlyIf))
   if (key && step.outcome && !(holdsBack && !nudge)) {
-    tool('mcp__stage__report_result', { outcome: step.outcome, summary: step.summary ?? `fake ${step.outcome}`, data: step.data ?? {} }, `Recorded ${step.outcome}.`)
+    const data = {
+      ...step.data,
+      ...(step.findings ? { findings: findingsIn(text, step.findings), merges: [] } : {}),
+      ...(step.hunks ? { hunks: hunksIn(text, step.hunks) } : {}),
+      ...(step.verdicts ? { verdicts: verdictsIn(text, step.verdicts) } : {}),
+    }
+    tool('mcp__stage__report_result', { outcome: step.outcome, summary: step.summary ?? `fake ${step.outcome}`, data }, `Recorded ${step.outcome}.`)
   }
-  say(key ? `Done with this stage (${step.outcome ?? 'no outcome'}).` : note ?? rule?.reply ?? 'fake reply')
+  const instructions = flag('--append-system-prompt') ?? ''
+  const told = Object.entries(rule?.replyIf ?? {}).find(([words]) => instructions.includes(words))?.[1]
+  say(key ? `Done with this stage (${step.outcome ?? 'no outcome'}).` : note ?? told ?? rule?.reply ?? 'fake reply')
   const cost = (existsSync(costFile) ? Number(readFileSync(costFile, 'utf8')) : 0) + (step.cost ?? 0.01)
   writeFileSync(costFile, String(cost))
   emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', num_turns: 1, total_cost_usd: cost })
