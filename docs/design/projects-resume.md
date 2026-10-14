@@ -1,6 +1,6 @@
 # Projects work, where it stands
 
-A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `564f5da`, the people socket, with its own `node_modules` from `npm ci`.
+A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, worktree `~/Projects/agents/.claude/worktrees/agent-a9f12f8ca4798f55b`. The design is `docs/design/projects.md`. The branch is rebased on main at `47a2d31`, with the people socket and the JSON gate, and has its own `node_modules` from `npm ci`.
 
 ## Done, committed
 
@@ -22,8 +22,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 ## Next steps, in order
 
 1. Answer the open questions below with Tayler.
-2. Once main's gate that takes a person's change only as JSON lands, rebase and rerun the three checks.
-3. Layer 2, a team's own GitHub App made through the manifest flow, as the design describes.
+2. Layer 2, a team's own GitHub App made through the manifest flow, as the design describes.
 
 ## Must know
 
@@ -32,7 +31,7 @@ A note for whoever picks this up. Branch `worktree-agent-a9f12f8ca4798f55b`, wor
 - Team names start with `proj-`. Gitea test repos start with `proj-`. `.scratch/cleanup-proj.ts <id>` removes what a failed run kept.
 - GitHub's settings `AGENTS_GITHUB_DIR`, `AGENTS_GITHUB_API`, `AGENTS_GITHUB_GIT` have no defaults, and `AGENTS_GITHUB_CLIENT_ID` turns sign-in on. Checks strip any of them from the environment and set their own, so they never touch a real token.
 - The fake GitHub runs inside the check's own process, so a child that talks to it must be started without blocking (`spawn`, never `spawnSync`).
-- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Don't run main's shared checks while the coordinator's suite runs.
+- Don't add `check:` scripts to `package.json`, don't edit `.gitignore` or any protected file. Take the lock in `AGENTS.md` before any check on port 7701. Run main's shared checks with `.scratch/main-suite.ts`, which takes the lock before each, and not while the coordinator's suite runs.
 
 ## Open questions for Tayler
 
