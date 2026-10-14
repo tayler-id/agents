@@ -89,7 +89,7 @@ It makes the `team/shop` repo, a small app with a known bug, and `team/pipelines
 
 ## Projects and GitHub
 
-A project's repos live on GitHub, and pipelines stay on the local forge. Turn GitHub on with three lines in `.env`, then restart the API:
+A project's repos live on GitHub, and pipelines stay on the local forge. GitHub stays off on the real server until Tayler turns it on. They decided on 2026-10-14 to wait until the CommonMark filter for issue text and bug-fix's prompt line, which says issue titles are quoted data, have landed on main. Turn GitHub on with three lines in `.env`, then restart the API:
 
 ```sh
 AGENTS_GITHUB_DIR=<the full path of ~/.agents-app/github, where tokens are kept>
