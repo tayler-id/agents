@@ -4,12 +4,12 @@
 // memory. Replays score a coach change before anyone is asked. The design is
 // docs/design/evidence.md.
 //
-// Each zod schema is the one definition of its shape. What a model reports and
-// what a JSON column holds is parsed through them, and the types are inferred.
+// Each zod schema is the one definition of its shape. What a model reports, a
+// row of the five evidence tables and a JSON column are parsed through them, and
+// the types are inferred.
 
 import { z } from 'zod'
-import { PersonId, ProposalId, RunId, SessionId } from './ids.ts'
-import type { AgentId } from './ids.ts'
+import { AgentId, EventId, PersonId, PipelineId, ProposalId, RunId, SessionId, TaskId, TeamId } from './ids.ts'
 
 export const FindingId = z.uuid().brand<'FindingId'>()
 export type FindingId = z.infer<typeof FindingId>
@@ -23,6 +23,7 @@ export const Source = z.enum(['person', 'pipeline', 'box'])
 export type Source = z.infer<typeof Source>
 export const FindingKind = z.enum(['followed', 'ignored', 'harm', 'gap'])
 export type FindingKind = z.infer<typeof FindingKind>
+const RuleKind = z.enum(['followed', 'ignored', 'harm'])
 // Whether a lint rule, type or check could catch a gap, or only text can fix it.
 export const Fix = z.enum(['check', 'text'])
 export type Fix = z.infer<typeof Fix>
@@ -39,15 +40,17 @@ export const Picked = z.object({
 })
 export type Picked = z.infer<typeof Picked>
 
-// What a model reports. Each finding and hunk is parsed on its own, so one bad
-// entry is dropped with its reason and the rest go on.
+// What a model reports. Each finding, merge, hunk and verdict is parsed on its
+// own, so one bad entry is dropped with its reason and the rest go on.
 
 const Step = z.number().int().positive()
 const Said = z.string().trim().min(1)
+// A time as text. Postgres sends the server a Date and the app a string.
+const Time = z.union([z.string(), z.date().transform((d) => d.toISOString())])
 
 // Coach's reader, one finding.
 export const ReadFinding = z.discriminatedUnion('kind', [
-  z.object({ kind: z.enum(['followed', 'ignored', 'harm']), session: z.uuid(), step: Step, quote: z.string(), rule: RuleHash }),
+  z.object({ kind: RuleKind, session: z.uuid(), step: Step, quote: z.string(), rule: RuleHash }),
   z.object({
     kind: z.literal('gap'), session: z.uuid(), step: Step, quote: z.string(), correction: Said, fix: Fix,
     // An open candidate this gap repeats, or a label shared by new gaps that are one correction.
@@ -57,11 +60,9 @@ export const ReadFinding = z.discriminatedUnion('kind', [
   }),
 ])
 export type ReadFinding = z.infer<typeof ReadFinding>
-export const ReadReport = z.object({
-  findings: z.array(z.unknown()),
-  // Pairs of open candidates the reader judged to be one correction.
-  merges: z.array(z.tuple([z.uuid(), z.uuid()])).optional(),
-})
+// Two open candidates the reader judged to be one correction, the one kept first.
+export const MergePair = z.tuple([z.uuid(), z.uuid()])
+export const ReadReport = z.object({ findings: z.array(z.unknown()), merges: z.array(z.unknown()).optional() })
 
 // Improve's study, one finding about a pipeline's run.
 export const StudyFinding = z.object({ kind: FindingKind, session: z.uuid(), step: Step, quote: z.string(), note: Said })
@@ -84,8 +85,8 @@ export const WriteReport = z.object({ hunks: z.array(z.unknown()) })
 
 export const Verdict = z.enum(['fixed', 'still', 'ok', 'worse'])
 export type Verdict = z.infer<typeof Verdict>
-// The judge, one verdict per label it was shown.
-export const JudgeReport = z.object({ verdicts: z.record(z.string(), Verdict) })
+// The judge, a verdict for each label it was shown.
+export const JudgeReport = z.object({ verdicts: z.record(z.string(), z.unknown()) })
 
 // Candidates, counted in code from their live findings.
 
@@ -130,16 +131,27 @@ export const Quote = z.object({
 })
 export type Quote = z.infer<typeof Quote>
 
+// What a hunk changes. Each target has only its own operations and fields, so a
+// check hunk that deletes, or a skill hunk with no name, does not parse or compile.
+const Unnamed = { rule_hash: z.null(), skill_name: z.null(), skill_description: z.null(), person_id: z.null() }
+export const HunkChange = z.union([
+  z.object({ ...Unnamed, target: z.literal('instructions'), op: z.literal('add'), rule_hash: RuleHash.nullable() }),
+  z.object({ ...Unnamed, target: z.literal('instructions'), op: z.enum(['change', 'delete']), rule_hash: RuleHash }),
+  z.object({ ...Unnamed, target: z.literal('skill'), op: z.enum(['add', 'change']), skill_name: z.string(), skill_description: z.string() }),
+  z.object({ ...Unnamed, target: z.literal('profile'), op: z.literal('add'), person_id: PersonId }),
+  z.object({ ...Unnamed, target: z.literal('check'), op: z.literal('add') }),
+  z.object({ ...Unnamed, target: z.literal('pipeline'), op: HunkOp }),
+])
+export type HunkChange = z.infer<typeof HunkChange>
+
 // A row of proposal_hunks, with its times as text.
-export const ProposalHunk = z.object({
-  id: HunkId, proposal_id: ProposalId, n: z.number().int(),
-  target: HunkTarget, op: HunkOp, rule_hash: RuleHash.nullable(),
-  skill_name: z.string().nullable(), skill_description: z.string().nullable(), person_id: PersonId.nullable(),
-  before: z.string(), after: z.string(), diff: z.string(), content_hash: z.string(),
+export const ProposalHunk = z.intersection(HunkChange, z.object({
+  id: HunkId, team_id: TeamId, proposal_id: ProposalId, n: z.number().int(),
+  before: z.string(), after: z.string(), diff: z.string(), content_hash: z.string(), after_hash: z.string(),
   finding_ids: z.array(FindingId), occasions: z.number().int(), counts: Counts, evidence: z.array(Quote),
-  decision: HunkDecision.nullable(), reason: z.string().nullable(), decided_by: PersonId.nullable(), decided_at: z.string().nullable(),
-  created_at: z.string(),
-})
+  decision: HunkDecision.nullable(), reason: z.string().nullable(), decided_by: PersonId.nullable(), decided_at: Time.nullable(),
+  created_at: Time,
+}))
 export type ProposalHunk = z.infer<typeof ProposalHunk>
 
 // A person keeps or turns down one hunk. Turning one down needs a reason.
@@ -148,6 +160,53 @@ export const HunkDecisionBody = z.discriminatedUnion('decision', [
   z.object({ decision: z.literal('reject'), reason: z.string().trim().min(1).max(2000) }),
 ])
 export type HunkDecisionBody = z.infer<typeof HunkDecisionBody>
+
+// Rows of the other evidence tables, with bigints and times as text.
+
+// A row of session_findings: about one of an agent's rules, a gap in an agent's
+// rules, or a pipeline's run.
+const FindingRow = z.object({
+  id: FindingId, team_id: TeamId, session_id: SessionId, event_id: EventId, seq: z.coerce.number().int(),
+  quote: z.string(), source: Source, person_id: PersonId.nullable(), occasion: z.uuid(), seen_at: Time, run_id: RunId.nullable(),
+  created_at: Time,
+})
+export const SessionFinding = z.union([
+  FindingRow.extend({
+    agent_id: AgentId, pipeline_id: z.null(), kind: RuleKind, rule_hash: RuleHash, rule_text: z.string(),
+    candidate_id: z.null(), note: z.null(), fix: z.null(), trigger: z.null(),
+  }),
+  FindingRow.extend({
+    agent_id: AgentId, pipeline_id: z.null(), kind: z.literal('gap'), rule_hash: z.null(), rule_text: z.null(),
+    candidate_id: CandidateId, note: z.string(), fix: Fix, trigger: z.string().nullable(),
+  }),
+  FindingRow.extend({
+    agent_id: z.null(), pipeline_id: PipelineId, kind: FindingKind, rule_hash: z.null(), rule_text: z.null(),
+    candidate_id: z.null(), note: z.string(), fix: z.null(), trigger: z.null(),
+  }),
+])
+export type SessionFinding = z.infer<typeof SessionFinding>
+
+// A row of candidates.
+export const CandidateRow = z.object({
+  id: CandidateId, team_id: TeamId, agent_id: AgentId, correction: z.string(), status: CandidateStatus,
+  merged_into: CandidateId.nullable(), run_id: RunId.nullable(), created_at: Time,
+})
+export type CandidateRow = z.infer<typeof CandidateRow>
+
+// A row of session_reads.
+export const SessionRead = z.object({
+  session_id: SessionId, team_id: TeamId, read_to_seq: z.coerce.number().int(), run_id: RunId.nullable(), read_at: Time,
+})
+export type SessionRead = z.infer<typeof SessionRead>
+
+// A row of session_replays.
+export const SessionReplay = z.object({
+  id: z.uuid(), team_id: TeamId, proposal_id: ProposalId, kind: z.enum(['behind', 'unrelated']), variant: z.enum(['change', 'current']),
+  source_session_id: SessionId, upto_seq: z.coerce.number().int(), finding_id: FindingId.nullable(), label: z.string(),
+  task_id: TaskId, session_id: SessionId, status: z.enum(['running', 'replied', 'failed']), reply: z.string().nullable(),
+  verdict: Verdict.nullable(), superseded_at: Time.nullable(), created_at: Time, replied_at: Time.nullable(),
+})
+export type SessionReplay = z.infer<typeof SessionReplay>
 
 // Scores, in proposals.scores. Improve's replays of runs, or coach's replays of
 // turns. Empty until scored.

@@ -103,7 +103,7 @@ function SessionScores({ change, current }: { change: SessionScore; current: Ses
 function hunkTitle(hunk: Hunk, login: (id: string | null) => string): string {
   switch (hunk.target) {
     case 'instructions': return hunk.op === 'add' ? 'Add a rule' : hunk.op === 'change' ? 'Reword a rule' : 'Delete a rule'
-    case 'skill': return `${hunk.op === 'add' ? 'Add' : 'Change'} the skill ${hunk.skill_name ?? ''}`
+    case 'skill': return `${hunk.op === 'add' ? 'Add' : 'Change'} the skill ${hunk.skill_name}`
     case 'profile': return `Add to ${login(hunk.person_id)}'s profile`
     case 'check': return 'Make this a lint rule, type or check'
     case 'pipeline': return hunk.op === 'add' ? 'Add lines' : hunk.op === 'change' ? 'Change lines' : 'Remove lines'

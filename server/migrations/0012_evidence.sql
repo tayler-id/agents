@@ -84,6 +84,7 @@ create table proposal_hunks (
   after text not null,
   diff text not null,
   content_hash text not null,
+  after_hash text not null,
   finding_ids uuid[] not null,
   occasions int not null,
   counts jsonb not null,
@@ -123,9 +124,11 @@ create table session_replays (
   status text not null default 'running' check (status in ('running', 'replied', 'failed')),
   reply text,
   verdict text,
+  -- A retried replay stage starts over. The earlier rows stay, so their sessions
+  -- still count toward the run's spend and are still treated as replays.
+  superseded_at timestamptz,
   created_at timestamptz not null default now(),
   replied_at timestamptz,
-  unique (proposal_id, label),
   unique (session_id),
   check ((kind = 'behind') = (finding_id is not null)),
   check ((status = 'replied') = (reply is not null)),
@@ -133,7 +136,8 @@ create table session_replays (
     or (kind = 'behind' and verdict in ('fixed', 'still'))
     or (kind = 'unrelated' and verdict in ('ok', 'worse')))
 );
-create index session_replays_running on session_replays (proposal_id) where status = 'running';
+create unique index session_replays_label on session_replays (proposal_id, label) where superseded_at is null;
+create index session_replays_running on session_replays (proposal_id) where status = 'running' and superseded_at is null;
 
 -- A coach proposal's hunks touch one agent's instructions, skills, profiles and
 -- checks. The targets instructions and skill stay for proposals already made.

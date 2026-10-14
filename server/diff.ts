@@ -4,18 +4,25 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { messageOf } from '../shared/errors.ts'
 
 function gitDiff(before: string, after: string, name: string, context: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'agents-diff-'))
   try {
     writeFileSync(join(dir, 'a'), before)
     writeFileSync(join(dir, 'b'), after)
-    execFileSync('git', ['diff', '--no-index', '--no-color', `--unified=${context}`, 'a', 'b'], { cwd: dir, encoding: 'utf8' })
+    execFileSync('git', ['diff', '--no-index', '--no-color', `--unified=${context}`, 'a', 'b'], { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
     return ''
   } catch (error) {
-    // git exits 1 when the files differ, with the diff on stdout.
-    const stdout = typeof error === 'object' && error !== null && 'stdout' in error ? error.stdout : undefined
-    return (typeof stdout === 'string' ? stdout : '')
+    // git exits 1 when the files differ, with the diff on stdout. Anything else
+    // is a failure, never an empty diff.
+    const failed = typeof error === 'object' && error !== null ? error : {}
+    const stdout = 'stdout' in failed ? failed.stdout : undefined
+    if (!('status' in failed) || failed.status !== 1 || typeof stdout !== 'string') {
+      const stderr = 'stderr' in failed && typeof failed.stderr === 'string' ? failed.stderr.trim() : ''
+      throw new Error(`git could not diff ${name}: ${stderr || messageOf(error)}`)
+    }
+    return stdout
       .replace(/^diff --git a\/a b\/b\n(index [^\n]*\n)?/, '')
       .replace(/^--- a\/a$/m, `--- a/${name}`).replace(/^\+\+\+ b\/b$/m, `+++ b/${name}`)
   } finally {

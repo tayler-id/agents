@@ -271,12 +271,17 @@ async function postAgentReply(client: pg.PoolClient, session: Session, conversat
 // What an agent brings to every session: its skills, its plugins and what it
 // remembers about the people involved and the team.
 export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'memory'>> {
-  const { rows: skills } = await client.query<AgentSkill>(
-    `select s.name, s.description, s.content from skills s join agents a on a.team_id = s.team_id
-     where a.id = $1 and (s.agent_id = a.id or s.agent_id is null) order by s.name`, [agentId])
   const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
   const memory = await memoryBlock(client, agentId, personIds)
-  return { skills, plugins, memory: memory || undefined }
+  return { skills: await skillsOf(client, agentId), plugins, memory: memory || undefined }
+}
+
+// An agent's skills: its own and the team's.
+export async function skillsOf(client: pg.PoolClient | pg.Pool, agentId: string): Promise<AgentSkill[]> {
+  const { rows } = await client.query<AgentSkill>(
+    `select s.name, s.description, s.content from skills s join agents a on a.team_id = s.team_id
+     where a.id = $1 and (s.agent_id = a.id or s.agent_id is null) order by s.name`, [agentId])
+  return rows
 }
 
 // Finds the person's DM with an agent, or opens one.

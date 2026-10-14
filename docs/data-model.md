@@ -181,7 +181,8 @@ Coach and improve learn from checked evidence, in `server/migrations/0012_eviden
   | skill_name, skill_description | text, optional | For a skill hunk |
   | person_id | uuid, optional | For a profile hunk |
   | before, after, diff | text | The text it replaces, the text it writes, and the diff |
-  | content_hash | text | sha256 of before |
+  | content_hash | text | sha256 of before. Settling refuses a skill hunk whose skill no longer has this content. |
+  | after_hash | text | sha256 of after, so the memory knows the same change when it comes back on other findings |
   | finding_ids | uuid[] | The findings it cites |
   | occasions | int | Distinct occasions behind them |
   | counts | jsonb | Sessions by source, and people |
@@ -203,11 +204,12 @@ Coach and improve learn from checked evidence, in `server/migrations/0012_eviden
   | source_session_id | uuid | The session replayed |
   | upto_seq | bigint | The step the replay answers |
   | finding_id | uuid, optional | The finding a case behind the change checks |
-  | label | text | What the judge sees instead of the variant |
+  | label | text | What the judge sees instead of the variant. Unique among a proposal's replays that are not superseded. |
   | task_id, session_id | uuid | The replay's task and session |
   | status | text | running, replied or failed |
   | reply | text, optional | The replayed reply |
   | verdict | text, optional | fixed, still, ok or worse |
+  | superseded_at | time, optional | Set when a retried replay stage started over. The row stays, so its session still counts toward the run's spend and is still treated as a replay. |
   | created_at, replied_at | time | |
 
 - **`proposals.target` gains `agent`.** A coach proposal's hunks touch one agent's instructions, skills, profiles and checks. The targets `instructions` and `skill` stay for proposals already made.

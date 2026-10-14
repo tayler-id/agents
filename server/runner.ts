@@ -336,10 +336,13 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
       events: [{ clientId: `stage:${row.id}`, kind: 'user', text, body: { text, runId: run.id, stage: row.stage } }],
     })
     if (seq === undefined) throw new Error(`the prompt for ${row.stage} was not recorded`)
+    // What is left of the run's cap, on top of what this session has spent, since
+    // the harness counts its whole session against the budget.
+    const maxBudgetUsd = Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost
     const payload: MessagePayload = {
       permissions: WORKSPACE_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model, instructions: agent.instructions,
       harnessSessionId: session.harness_session_id, workspaceId: workspace.id,
-      stage: { outcomes, allow: stage.allow ?? [] }, maxBudgetUsd: Number(session.cost_usd ?? 0) + pipeline.spendCapUsd - cost,
+      stage: { outcomes, allow: stage.allow ?? [], maxBudgetUsd }, maxBudgetUsd,
     }
     await client.query(
       `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
@@ -446,7 +449,7 @@ async function replaySessions(client: pg.PoolClient, run: Run, pipeline: Pipelin
   await client.query('savepoint replays')
   try {
     const proposal = proposalOf(rows, pipeline)
-    const started = await startSessionReplays(client, TeamId.parse(run.team_id), proposal)
+    const started = await startSessionReplays(client, TeamId.parse(run.team_id), proposal, pipeline.spendCapUsd - await runCost(client, run.id))
     if (!started) {
       await client.query(`update proposals set status = 'open' where id = $1 and status = 'scoring'`, [proposal])
       await setRow(client, row, { status: 'done', outcome: 'unscored', summary: 'The change writes no text, so there is nothing to replay.', data: { proposal }, started: true, ended: true })
