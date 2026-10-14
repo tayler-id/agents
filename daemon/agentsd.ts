@@ -17,7 +17,7 @@ import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
-import { Permissions, type Command, type EventBatch, type MessagePayload, type Recovery, type ResumeTurn, type StageSpec } from '../shared/types.ts'
+import { Permissions, Recovery, ResumeTurn, type Command, type EventBatch, type MessagePayload, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
 import { workspaces } from './workspace.ts'
 import { changeKey } from './changes.ts'
@@ -367,30 +367,55 @@ async function heartbeat() {
   }
 }
 
+// The API's answer to recover, with each turn to resume read on its own, so a
+// turn this daemon can't read fails alone and holds up no other.
+const RecoveryAnswer = Recovery.extend({ resumed: z.array(z.unknown()) })
+// Enough of a turn to fail it.
+const TurnTarget = z.object({ command: z.object({ sessionId: z.uuid() }), covers: z.array(z.uuid()).min(1) })
+
+function failTurn(sessionId: string, covers: string[], why: string) {
+  const reason = scrub(why)
+  console.error(`resuming session ${sessionId}:`, reason)
+  void post(sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: { how: 'exited', ids: covers, reason } })
+}
+
 // Resumes a session the last run cut off, with one message that answers all of
 // its unfinished messages. A session that can't start fails them with the reason.
-function resume({ command, covers }: ResumeTurn) {
+function resume(turn: unknown) {
+  const parsed = ResumeTurn.safeParse(turn)
+  if (!parsed.success) {
+    const target = TurnTarget.safeParse(turn)
+    const reason = `This machine could not read the turn to resume: ${z.prettifyError(parsed.error)}`
+    if (target.success) failTurn(target.data.command.sessionId, target.data.covers, reason)
+    else console.error(scrub(reason))
+    return
+  }
+  const { command, covers } = parsed.data
   console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
   try {
     startSession(command).send(command.payload.text, covers)
   } catch (error) {
-    const reason = scrub(messageOf(error))
-    console.error(`resuming session ${command.sessionId}:`, reason)
-    void post(command.sessionId, { events: [{ clientId: randomUUID(), kind: 'error', text: reason, body: { reason } }], status: 'failed', ended: { how: 'exited', ids: covers, reason } })
+    failTurn(command.sessionId, covers, messageOf(error))
   }
 }
 
 // The machine's queue arrives through sync. Each queued command is claimed, which
 // only one claimer can win, then handled in the order it arrived.
 async function listen(signal: AbortSignal) {
-  const stopped = await stopLeftHarnesses(SESSIONS_DIR)
+  // Resuming beside a harness the last run left would put two processes on one
+  // conversation, so a daemon that can't stop one exits, and its next start tries again.
+  const stopped = await stopLeftHarnesses(SESSIONS_DIR).catch((error: unknown) => {
+    console.error('stopping the harnesses the last run left:', messageOf(error))
+    process.exit(1)
+  })
   if (stopped.length) console.log(`stopped the harnesses the last run left for ${stopped.length} sessions`)
   // The API may not be up yet, after a reboot or a server restart. Keep trying.
   for (let attempt = 0; !stopping; attempt++) {
     try {
-      const recovery = await api<Recovery>('POST', '/v1/instance/recover', {})
+      const recovery = RecoveryAnswer.parse(await api<unknown>('POST', '/v1/instance/recover', {}))
       if (recovery.requeued) console.log(`requeued ${recovery.requeued} unfinished commands`)
       if (recovery.ended) console.log(`ended ${recovery.ended} messages a person asked to stop while this machine was down`)
+      if (recovery.gaveUp) console.log(`failed ${recovery.gaveUp} messages whose turn kept stopping this machine`)
       for (const turn of recovery.resumed) resume(turn)
       // Workspaces from before this process may have changes the API has not seen.
       for (const workspaceId of ws.ids()) refreshChanges(workspaceId)

@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { many, pool, tx, type Db } from './db.ts'
+import { many, one, pool, tx, type Db } from './db.ts'
 import {
   COMMAND_STATUS_OF, commandSources, MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, WORKING, type CommandStatus,
 } from '../shared/lifecycle.ts'
@@ -159,6 +159,10 @@ export async function markLostMachines(teamIds: string[] | null) {
 }
 
 const RESTARTED = 'The machine restarted in the middle of this turn.'
+// A turn whose machine keeps stopping, such as one that runs the machine out of
+// memory each time, is resumed this many times, and then fails.
+export const MAX_RESUMES = 3
+const gaveUpAfter = (restarts: number) => `The machine restarted in the middle of this turn ${restarts} times, so it was not resumed again.`
 const STOPPED_FIRST = 'The machine restarted in the middle of this turn, and a person had asked to stop it, so it was not resumed.'
 const ANSWER_LOST = 'The machine restarted before this answer reached the request it was for. The decision is kept on the ask, and reaches the session when it asks again.'
 
@@ -242,9 +246,10 @@ async function openThreads(client: pg.PoolClient, sessionId: string, from: numbe
 // Called by a machine that has just started. Each session it was answering
 // messages in is interrupted. It ends there when a person asked to stop it
 // meanwhile, and is otherwise returned to be resumed, with every unfinished
-// message and everything the turn left open. Answers on their way to its dead processes
-// fail, keeping their decisions on the asks, and its other commands go back in
-// the queue.
+// message and everything the turn left open, unless it has been resumed
+// MAX_RESUMES times already, when it fails. Answers on their way to its dead
+// processes fail, keeping their decisions on the asks, and its other commands go
+// back in the queue.
 export async function recoverMachine(client: pg.PoolClient, instanceId: string): Promise<Recovery> {
   const sessions = await many<{ id: string; harness_session_id: string | null }>(client,
     `select s.id, s.harness_session_id from sessions s
@@ -253,6 +258,7 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
      order by s.id for update of s`, [instanceId])
   const resumed: ResumeTurn[] = []
   let ended = 0
+  let gaveUp = 0
   for (const session of sessions) {
     const messages = await many<{ id: string; payload: MessagePayload; seq: string | null }>(client,
       `select c.id, c.payload, e.seq from commands c left join events e on e.id = c.event_id
@@ -271,6 +277,24 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
       })
       await closeTurnAsks(client, session.id)
       ended += ids.length
+      continue
+    }
+    // Each restart that resumed any of these messages left a notice naming them.
+    const { resumes } = await one<{ resumes: number }>(client, 'the count of resumes',
+      `select count(*)::int as resumes from events where session_id = $1 and kind = 'notice' and body->>'subtype' = 'interrupted' and body->'messages' ?| $2::text[]`,
+      [session.id, ids])
+    if (resumes >= MAX_RESUMES) {
+      const reason = gaveUpAfter(resumes + 1)
+      await moveMessages(client, ids, 'failed', { error: reason })
+      await appendEvents(client, session.id, {
+        events: [
+          { clientId: `interrupted:${randomUUID()}`, kind: 'notice', text: reason, body: { subtype: 'interrupted', reason, messages: ids } },
+          { clientId: `gave-up:${randomUUID()}`, kind: 'error', text: reason, body: { reason } },
+        ],
+        status: 'failed',
+      })
+      await closeTurnAsks(client, session.id)
+      gaveUp += ids.length
       continue
     }
     const seqs = messages.map((message) => message.seq)
@@ -297,5 +321,5 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
     [instanceId, ANSWER_LOST])
   const { rowCount } = await client.query(
     `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed' and kind <> 'message'`, [instanceId])
-  return { requeued: rowCount ?? 0, resumed, ended }
+  return { requeued: rowCount ?? 0, resumed, ended, gaveUp }
 }

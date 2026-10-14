@@ -67,27 +67,29 @@ export function killAll(pids: number[]) {
 }
 
 // Stops each harness the last run left, with every process under it, and
-// returns the sessions whose harness it stopped.
+// returns the sessions whose harness it stopped. A harness's record goes once
+// its processes have, so after a failure the next start tries again.
 export async function stopLeftHarnesses(dir: string): Promise<string[]> {
   if (!existsSync(dir)) return []
   const table = processTable()
-  const stopped: string[] = []
-  const killed: number[] = []
-  for (const file of readdirSync(dir).filter((name) => name.endsWith('.pid'))) {
-    const sessionId = file.slice(0, -'.pid'.length)
-    const pid = Number(readFileSync(join(dir, file), 'utf8'))
-    const row = table.find((entry) => entry.pid === pid)
-    if (row?.command.includes(`${sessionId}.mcp.json`)) {
-      const tree = [pid, ...descendants(pid, table)]
-      killAll(tree)
-      killed.push(...tree)
-      stopped.push(sessionId)
+  const stopped: { sessionId: string; file: string; tree: number[] }[] = []
+  for (const name of readdirSync(dir).filter((entry) => entry.endsWith('.pid'))) {
+    const sessionId = name.slice(0, -'.pid'.length)
+    const file = join(dir, name)
+    const pid = Number(readFileSync(file, 'utf8'))
+    // A process id that is gone, or belongs to another process by now, has nothing to stop.
+    if (!table.find((entry) => entry.pid === pid)?.command.includes(`${sessionId}.mcp.json`)) {
+      rmSync(file)
+      continue
     }
-    rmSync(join(dir, file))
+    const tree = [pid, ...descendants(pid, table)]
+    killAll(tree)
+    stopped.push({ sessionId, file, tree })
   }
   const deadline = Date.now() + GONE_WITHIN_MS
-  while (killed.some(alive) && Date.now() < deadline) await sleep(50)
-  const left = killed.filter(alive)
+  while (stopped.some(({ tree }) => tree.some(alive)) && Date.now() < deadline) await sleep(50)
+  for (const { file, tree } of stopped) if (!tree.some(alive)) rmSync(file)
+  const left = stopped.flatMap(({ tree }) => tree.filter(alive))
   if (left.length) throw new Error(`processes ${left.join(', ')} from the last run would not stop`)
-  return stopped
+  return stopped.map(({ sessionId }) => sessionId)
 }

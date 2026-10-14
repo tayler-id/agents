@@ -58,35 +58,44 @@ export const EndedMessages = z.discriminatedUnion('how', [
 ])
 export type EndedMessages = z.infer<typeof EndedMessages>
 
-// What a daemon needs to hand a person's message to an agent's harness.
-export type MessagePayload = {
-  permissions: Permissions
-  text: string
-  agentId: string
-  harness: 'claude' | 'codex'
-  model: string | null
-  instructions: string
-  harnessSessionId: string | null
-  // A task's session runs in the task's workspace instead of the agent's folder.
-  workspaceId?: string
-  // Set when the session runs a pipeline stage.
-  stage?: StageSpec
-  // The agent's skills, its plugins (MCP servers) and what it remembers.
-  skills?: AgentSkill[]
-  plugins?: AgentPlugin[]
-  memory?: string
-}
-
-export type AgentSkill = { name: string; description: string; content: string }
+export const AgentSkill = z.object({ name: z.string(), description: z.string(), content: z.string() })
+export type AgentSkill = z.infer<typeof AgentSkill>
 // Env and header values name a secret. The daemon fills them in from its machine.
-export type SecretRef = { secret: string }
-export type AgentPlugin =
-  | { name: string; kind: 'stdio'; config: { command: string; args?: string[]; env?: Record<string, SecretRef> } }
-  | { name: string; kind: 'http'; config: { url: string; headers?: Record<string, SecretRef> } }
+export const SecretRef = z.object({ secret: z.string() })
+export type SecretRef = z.infer<typeof SecretRef>
+export const AgentPlugin = z.discriminatedUnion('kind', [
+  z.object({
+    name: z.string(), kind: z.literal('stdio'),
+    config: z.object({ command: z.string(), args: z.array(z.string()).optional(), env: z.record(z.string(), SecretRef).optional() }),
+  }),
+  z.object({ name: z.string(), kind: z.literal('http'), config: z.object({ url: z.string(), headers: z.record(z.string(), SecretRef).optional() }) }),
+])
+export type AgentPlugin = z.infer<typeof AgentPlugin>
 
 // A pipeline stage's session: the outcomes its report_result tool accepts, the
 // tools it may use without asking, and the most it may spend.
-export type StageSpec = { outcomes: string[]; allow: string[]; maxBudgetUsd: number }
+export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number() })
+export type StageSpec = z.infer<typeof StageSpec>
+
+// What a daemon needs to hand a person's message to an agent's harness.
+export const MessagePayload = z.object({
+  permissions: Permissions,
+  text: z.string(),
+  agentId: z.string(),
+  harness: z.enum(['claude', 'codex']),
+  model: z.string().nullable(),
+  instructions: z.string(),
+  harnessSessionId: z.string().nullable(),
+  // A task's session runs in the task's workspace instead of the agent's folder.
+  workspaceId: z.string().optional(),
+  // Set when the session runs a pipeline stage.
+  stage: StageSpec.optional(),
+  // The agent's skills, its plugins (MCP servers) and what it remembers.
+  skills: z.array(AgentSkill).optional(),
+  plugins: z.array(AgentPlugin).optional(),
+  memory: z.string().optional(),
+})
+export type MessagePayload = z.infer<typeof MessagePayload>
 
 // A task's workspace: one folder per task attempt with a clone of each repo on
 // the task's branch, and a task folder beside them for documents.
@@ -122,9 +131,18 @@ export type AnswerPayload = {
 // A session a restarted machine resumes. The command is its oldest unfinished
 // message, carrying the text that resumes the session, and the turn that takes
 // it in answers every message in `covers`.
-export type ResumeTurn = { command: Extract<Command, { kind: 'message' }>; covers: string[] }
-// What a machine gets back when it reports in after starting.
-export type Recovery = { requeued: number; resumed: ResumeTurn[]; ended: number }
+export const ResumeTurn = z.object({
+  command: z.object({ id: z.uuid(), kind: z.literal('message'), sessionId: z.uuid(), payload: MessagePayload }),
+  covers: z.array(z.uuid()).min(1),
+})
+export type ResumeTurn = z.infer<typeof ResumeTurn>
+// What a machine gets back when it reports in after starting. `ended` counts the
+// messages a person's interrupt ended, and `gaveUp` those of turns that stopped
+// their machine too many times to resume again.
+export const Recovery = z.object({
+  requeued: z.number().int(), resumed: z.array(ResumeTurn), ended: z.number().int(), gaveUp: z.number().int(),
+})
+export type Recovery = z.infer<typeof Recovery>
 
 export type Command =
   | { id: string; kind: 'message'; sessionId: string; payload: MessagePayload }
