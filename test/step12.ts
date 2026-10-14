@@ -16,6 +16,7 @@ import { z } from 'zod'
 import { fakeTailscale } from './fake-tailscale.ts'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
+import { tokenIn } from '../daemon/claude-login.ts'
 import { messageOf } from '../shared/errors.ts'
 import { NAME_MAX, START_ERROR_MAX } from '../shared/onboarding.ts'
 
@@ -472,6 +473,10 @@ try {
   const until = Date.parse(String(signedIn?.valid_until).replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'))
   check(finished.status === 200 && signedIn?.status === 'signed_in' && signedIn.note === null && Math.abs(until - (Date.now() + 365 * 86_400_000)) < 600_000,
     'the box reports it signed in, and the sign-in lasts as long as the CLI said')
+  // The box reads the token from the CLI's screen, which can arrive cut partway through it.
+  const printed = `sk-ant-oat01-${randomBytes(70).toString('base64url')}`
+  check(tokenIn(`Your OAuth token (valid for 1 year):\r\n${printed.slice(0, 50)}`) === null && tokenIn(`${printed}\r\n`) === printed,
+    'the box never takes a token from output cut partway through it, and takes the whole one once its line ends')
   const first = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a second sign-in')
   const second = must((await asPerson(OFF_PEOPLE, invitee, 'POST', '/v1/me/claude-login')).json?.loginId, 'a third sign-in')
   const failed = await asBox(boxToken, `/v1/instance/claude-logins/${second}/failed`, { reason: 'OAuth error: Failed to exchange authorization code for access token.' })

@@ -35,8 +35,12 @@ const ESC = '\u001b'
 const BEL = '\u0007'
 // OSC 8, a terminal hyperlink: ESC ] 8 ; params ; URI, ended by BEL or ESC \.
 const HYPERLINK = new RegExp(`${ESC}\\]8;[^;${BEL}${ESC}]*;(https://[^${BEL}${ESC}]+)(?:${BEL}|${ESC}\\\\)`)
-// The token ends where the CLI's colour code, a space or the line does.
-const TOKEN = new RegExp(`sk-ant-oat\\d{2}-[A-Za-z0-9_-]{20,}(?=[\\s${ESC}${BEL}]|$)`)
+// The token on screen ends where the CLI's colour code, a space or the line does.
+// Output can arrive cut partway through it, so the end of what has arrived so far
+// never counts as its end.
+const TOKEN_ON_SCREEN = new RegExp(`sk-ant-oat\\d{2}-[A-Za-z0-9_-]{20,}(?=[\\s${ESC}${BEL}])`)
+// A token as this box saves it.
+const SAVED_TOKEN = /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}$/
 const DAYS_IN_YEAR = 365
 
 // The screen as text. The CLI places words and lines with cursor moves rather
@@ -59,7 +63,7 @@ export function linkIn(raw: string): string | null {
   return link && /\/oauth\/authorize\?/.test(link) ? link : null
 }
 
-export const tokenIn = (raw: string): string | null => TOKEN.exec(raw)?.[0] ?? null
+export const tokenIn = (raw: string): string | null => TOKEN_ON_SCREEN.exec(raw)?.[0] ?? null
 
 // How long the CLI says the token lasts: "valid for 1 year", "valid for 30 days" or "less than a day".
 export function validDaysIn(raw: string): number | null {
@@ -195,6 +199,6 @@ export function ownClaudeToken(home: string): string | null {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null
     throw error
   }
-  if (!TOKEN.test(saved)) throw new Error(`${tokenFile(home)} does not hold a Claude token`)
+  if (!SAVED_TOKEN.test(saved)) throw new Error(`${tokenFile(home)} does not hold a Claude token`)
   return saved
 }
