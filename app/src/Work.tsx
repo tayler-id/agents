@@ -11,7 +11,7 @@ import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { taskState } from '../../shared/work.ts'
 import { Interrupted } from './Conversation.tsx'
-import { isWorking } from '../../shared/lifecycle.ts'
+import { inFlight, isWorking } from '../../shared/lifecycle.ts'
 
 // A group conversation with teammates and agents.
 export function NewRoom({ me }: { me: { person: { id: string } } }) {
@@ -147,7 +147,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         </div>
         <div className="head-actions">
           {session && <button type="button" className="ghost" onClick={() => go({ task: taskId, session: openSession ? null : session.id })}>{openSession ? 'Hide session' : 'Session details'}</button>}
-          {session && (isWorking(session.status) || session.status === 'lost') && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
+          {session && inFlight(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>
       </header>
       <div className="page-body">
@@ -155,7 +155,7 @@ export function TaskView({ taskId, openSession, openFile }: { taskId: string; op
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
         <TaskOrder task={task} state={state} />
         <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
-          {(changed) => <PullRequests task={task} working={Boolean(session && isWorking(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
+          {(changed) => <PullRequests task={task} working={Boolean(session && inFlight(session.status))} links={artifacts.filter((a) => a.kind === 'link')} changed={changed} />}
         </Changes>
         {!!documents.length && (
           <>

@@ -7,7 +7,7 @@ import {
 import { useLiveText } from './live.ts'
 import { AskCard } from './Asks.tsx'
 import { Markdown } from './Markdown.tsx'
-import { isWorking } from '../../shared/lifecycle.ts'
+import { inFlight, isWorking } from '../../shared/lifecycle.ts'
 
 // How often an open People panel looks again for who is in the room.
 const MEMBERS_POLL_MS = 3000
@@ -77,7 +77,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
             </button>
           )}
           {agent && conversation?.kind === 'dm' && <button type="button" className="ghost" onClick={() => go({ agent: agent.id })}>Agent setup</button>}
-          {session && (working || session.status === 'lost') && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
+          {session && inFlight(session.status) && <button type="button" className="ghost" onClick={act(() => api.interrupt(session.id))}>Interrupt</button>}
         </div>
       </header>
       {room && peopleOpen && <RoomPeople me={me} conversationId={conversationId} people={people} agents={agents} />}

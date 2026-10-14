@@ -12,11 +12,10 @@ import { checkoutsOf } from './checkout.ts'
 import { forge, repoPath } from './forge.ts'
 import { messageOf } from '../shared/errors.ts'
 import { canMove, type PullRequestAsk, type PushStatus } from '../shared/work.ts'
-import { PushResult, type PushPayload, type SessionStatus } from '../shared/types.ts'
+import { PushResult, type PushPayload } from '../shared/types.ts'
+import { IN_FLIGHT } from '../shared/lifecycle.ts'
 import type { PushId, TaskId } from '../shared/ids.ts'
 
-// While a session is in one of these, its agent may still be changing files.
-const WORKING: SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
 // A machine that goes away mid-push never reports the push, which would leave it
 // running and the page's button disabled. The runner's loop fails a push still
 // running after this long, so the page offers to try again.
@@ -30,7 +29,8 @@ export async function askForPullRequests(client: pg.PoolClient, person: Person, 
   const workspace = await maybe<{ id: string; instance_id: string; team_id: string; status: string }>(client,
     'select id, instance_id, team_id, status from workspaces where task_id = $1 order by created_at desc limit 1', [taskId])
   if (workspace?.status !== 'ready') throw new HttpError(409, "the task's workspace is not set up yet")
-  if (await maybe(client, 'select 1 from sessions where task_id = $1 and status = any($2) and archived_at is null', [taskId, WORKING])) {
+  // While a session's turn is in flight, or cut off and to be resumed, its agent may still change files.
+  if (await maybe(client, 'select 1 from sessions where task_id = $1 and status = any($2) and archived_at is null', [taskId, IN_FLIGHT])) {
     throw new HttpError(409, 'the agent is still working. Open the pull request when its turn ends.')
   }
   const repos = await checkoutsOf(client, taskId, `task/${task.slug}`)

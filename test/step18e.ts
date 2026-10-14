@@ -9,7 +9,8 @@
 // comparison of clients and record when they finish. A task of the same agent,
 // mid-call when the machine dies, shows the same way on its page, interrupted
 // with the reason and an Interrupt button, then with the reply. Its transcript
-// never shows the text the resumed session was sent.
+// never shows the text the resumed session was sent, and no pull request opens
+// for it while its turn waits to resume.
 //   node --env-file=.env --env-file=.env.test test/step18e.ts
 
 import { execFileSync } from 'node:child_process'
@@ -102,6 +103,12 @@ try {
   c.check(await shows(taskPage.getByText('stopped answering').waitFor({ timeout: SHOWN_SEC * 1000 })) && await taskInterrupted.isVisible()
     && await taskPage.getByRole('button', { name: 'Interrupt' }).isVisible(),
   'during the outage the task page shows the turn as interrupted, with the reason and an Interrupt button')
+  const pull = await fetch(`${PEOPLE}/v1/tasks/${taskId}/pull-requests`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': login }, body: JSON.stringify({ title: 'Hold a task', body: '' }),
+  })
+  const refusal = await pull.text()
+  c.check(pull.status === 409 && refusal.includes('still working'),
+    `during the outage no pull request opens for the task, since its agent may still change files (${pull.status} ${refusal})`)
 
   c.start('daemon/agentsd.ts', daemonEnv)
   await until('the resumed session to ask again', 60, async () =>

@@ -8,6 +8,10 @@ import type { SessionStatus } from './types.ts'
 export const WORKING: readonly SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
 // The app reads a session's status as a plain string.
 export const isWorking = (status: string): boolean => WORKING.some((working) => working === status)
+// A session whose turn is not over: working now, or cut off with its machine and
+// to be resumed. Its agent may still change files, and a person can interrupt it.
+export const IN_FLIGHT: readonly SessionStatus[] = [...WORKING, 'lost']
+export const inFlight = (status: string): boolean => IN_FLIGHT.some((state) => state === status)
 
 // How often a daemon tells the API its machine is up.
 export const HEARTBEAT_SEC = 15
