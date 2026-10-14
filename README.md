@@ -57,11 +57,11 @@ People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which on
 
 The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. That includes tailscaled's own proxy on 1055, through which a peer would reach serve as this Mac and be taken for its owner, so a person's identity also rests on the policy. `docs/design/people-port.md` gives the rule, and `test/live-tailnet.ts` checks the filter the server enforces. It runs on its own, not in `npm run check`.
 
-A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
+A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people`. An admin invites them from the app, as below, or runs `admin.ts add-person`.
 
 ### Inviting teammates from the app
 
-Don't invite anyone yet. Joining by invite trusts the login header on the people port, which a tailnet peer can currently send for itself, and a fix is in progress.
+Don't invite anyone until the live steps in `docs/design/people-port.md` are done. Until the live API serves people only on its socket and the tailnet policy is in place, a tailnet device can send its own login header, and joining by invite trusts that header.
 
 A team's first login is its admin, and `admin.ts set-role <team> <login> <admin|member>` changes a role. An admin invites people from the app's Team page. A person joins on their first visit, gets a box of their own, and signs in to their own Claude account from the Your box page. A login nobody invited waits until an admin adds it from the Team page.
 

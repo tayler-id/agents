@@ -201,7 +201,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ## Onboarding
 
-The design, with what is not done, is in `docs/design/onboarding.md`. Nobody should be invited until the people port only answers through tailscale serve, since joining by invite trusts the login header.
+The design, with what is not done, is in `docs/design/onboarding.md`. Nobody should be invited until the live steps in `docs/design/people-port.md` are done. Until the live API serves people only on its socket and the tailnet policy is in place, a tailnet device can send its own login header, and joining by invite trusts that header.
 
 ### Admins (`people.role`, `server/admin.ts`)
 
@@ -210,7 +210,7 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 
 ### Invites and joining (`server/onboarding.ts`, `app/src/Team.tsx`)
 
-- **Solves now.** An admin types an email on the Team page. With Tailscale connected, the invite goes through Tailscale's API, which emails the person, and the admin sees the link to send it themselves. The person is on the team from their first visit, with nothing to do. A login nobody invited sees a waiting screen naming it, admins see it under Wants to join with a count in the sidebar, and one click adds it. The waiting screen opens the app by itself once they are added. Invites can be resent and cancelled.
+- **Solves now.** An admin types an email on the Team page. With Tailscale connected, the invite goes through Tailscale's API, which emails the person, and the admin sees the link to send it themselves. The person is on the team from their first visit, with nothing to do. The app reads `/v1/me`, which writes nothing, then asks to join with a JSON post. A login nobody invited sees a waiting screen naming it, admins see it under Wants to join with a count in the sidebar, and one click adds it. The waiting screen opens the app by itself once they are added. Invites can be resent and cancelled.
 - **Helps later.** Growing the team takes no terminal on the server, and the tailnet and the team stay in step.
 - **Not done.** Removing someone from the team. Checked only against a stand-in Tailscale.
 
@@ -234,7 +234,7 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 
 ### Adding someone to a room (`server/rooms.ts`, `app/src/Conversation.tsx`)
 
-- **Solves now.** A room's People button lists who is in it, and someone in the room, or an admin, adds a teammate from there. The room's agents then name that teammate among the room's people on their turns, with what they remember about them.
+- **Solves now.** A room's People button lists who is in it, and someone in the room, or an admin, adds a teammate from there. A private room takes no one from outside it, admins included. The room's agents then name that teammate among the room's people on their turns, with what they remember about them.
 - **Helps later.** Rooms can be built around a piece of work and filled as people join it.
 
 ### The onboarding checks (`test/step12.ts`, `test/step12b.ts`, `test/step12c.ts`)

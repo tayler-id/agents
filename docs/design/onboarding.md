@@ -4,7 +4,7 @@ Tayler asked for "a very easy way to invite and add and have them spin up", and 
 
 ## What it solves
 
-Today a person gets in only after someone runs `server/admin.ts add-person` on the server Mac. Anyone else who opens the app sees "<login> is not on a team". Nobody can be invited from the app, nobody has a box of their own, every box runs Claude on one team-wide token, and Tayler leaves the app to manage the tailnet.
+Before this work a person got in only after someone ran `server/admin.ts add-person` on the server Mac, which still works. Anyone else who opened the app saw "<login> is not on a team". Nobody can be invited from the app, nobody has a box of their own, every box runs Claude on one team-wide token, and Tayler leaves the app to manage the tailnet.
 
 After this change:
 
@@ -21,7 +21,7 @@ Inviting and adding come first. They are the gap Tayler notices most.
 
 ## Not done, and what waits
 
-- **Inviting waits on a security fix.** The app takes a person's identity from the `Tailscale-User-Login` header on the people port. A tailnet peer can reach that port directly in Tailscale's userspace mode and send any login it likes. Joining by invite trusts that header, so a peer could join as any invited email. A separate workstream is closing the port to direct connections. Nobody should be invited until that lands.
+- **Inviting waits on the people socket's live steps.** Nobody should be invited until the live steps in `docs/design/people-port.md` are done. Until the live API serves people only on its socket and the tailnet policy is in place, a tailnet device can send its own login header, and joining by invite trusts that header. The code for it is on main. The API serves people only on a Unix socket, and refuses a person's change that isn't sent as JSON, so a page on another site can't post one.
 - **The real Tailscale API was never called.** Every check runs against `test/fake-tailscale.ts`, a stand-in built from Tailscale's published API spec.
 - **No full Claude sign-in happened.** The checks use a stand-in `claude setup-token`. The real CLI was run only to see its link and its answer to a bad code.
 - **Removing a person from the team is not built.**
@@ -72,12 +72,14 @@ A join request has no team, since the login is on none yet. Admins of every team
 
 ### Joining
 
-The app's first request is `GET /v1/me`. For a login with no `people` row, the API looks for an open invite whose email equals the login, ignoring case.
+The app's first request is `GET /v1/me`, which only reads. It answers that the login is a member, that it has an open invite, matched to its email ignoring case, or that it is waiting. A page on another site can make a browser load any URL, so a read must change nothing. For a login on no team the app then sends `POST /v1/me/join`, a JSON body like every other change.
 
-- If there is one, a single transaction adds the person to the invite's team with the invite's role and the name from `Tailscale-User-Name`, marks the invite joined and adds their box. The API then answers as it does for any member.
-- If there is none, the API records a join request, or moves its `last_seen_at`, and answers `{ kind: 'waiting', login, name }`. The app shows the waiting screen and asks again every five seconds, so it opens once an admin adds them.
+- With an open invite, a single transaction adds the person to the invite's team with the invite's role and the name from `Tailscale-User-Name`, marks the invite joined and adds their box. The API then answers as it does for any member.
+- With none, the API records a join request, or moves its `last_seen_at`, and answers `{ kind: 'waiting', login, name }`. The app shows the waiting screen and reads `/v1/me` again every five seconds. It opens once an admin adds them, and joins by itself if someone invites them meanwhile.
 
-Adding a login from the wants-to-join list, or a tailnet user from the Tailscale page, runs the same join.
+The login must look like a Tailscale login, with an @, or the API answers 400. A display name longer than 200 characters is cut to 200.
+
+Adding a login from the wants-to-join list, or a tailnet user from the Tailscale page, runs the same join. If the login has an open invite on the team, the person gets the invite's role and the invite closes as joined.
 
 Making an invite calls Tailscale, which is outside Postgres. As the coding standards ask, the API commits the invite row first, then asks Tailscale, then records Tailscale's id. If Tailscale refuses, the API removes the row and the admin sees Tailscale's reason. With no Tailscale key saved, the invite is made in the app only, and the admin is told nobody was emailed, so the person must already be on the tailnet.
 
@@ -118,7 +120,7 @@ A personal box differs from the team's pool of boxes in four ways.
 - Its owner cannot release it back to the pool.
 - Only its owner can make an agent whose home it is, because its agents run on the owner's Claude account.
 
-`instances.start_error` holds the last error from starting the box's container, such as a missing image, and starting it clears the error. What the person sees follows from the instance row.
+`instances.start_error` holds the last error from starting the box's container, such as a missing image, and starting it clears the error. It is the last two lines Docker wrote to stderr, scrubbed of secrets and cut to 500 characters, since Docker repeats values it was given. What the person sees follows from the instance row.
 
 | Row | They see |
 |---|---|
@@ -160,10 +162,11 @@ The sign-in runs inside the person's box, so the PKCE secret and the token never
 | waiting_for_code | checking | The person sent their code |
 | checking | signed_in | The CLI printed a token, and the box saved it |
 | checking | waiting_for_code | The API restarted before the box took the code, so the person pastes it again |
-| any open state | failed | The CLI refused the code or exited, 15 minutes passed, or the box restarted during the sign-in |
+| waiting_for_code | failed | The box waited 15 minutes from printing the link and nobody sent a code |
+| any open state | failed | The CLI refused the code or exited, or the box restarted during the sign-in |
 | any open state | cancelled | The person cancelled, or started again |
 
-Only the box's owner sees the row, through a shape filtered by `person_id`, and only they can act on it. Only that box's daemon can fetch its code. The URL is not a secret. It carries a PKCE challenge and a state value, and a code made from it works only with the secret held by that box's process.
+A sign-in whose box never runs stays starting until the person cancels it or starts again. Only the box's owner sees the row, through a shape filtered by `person_id`, and only they can act on it. Only that box's daemon can fetch its code. The API takes a link only on `https://claude.com/cai/oauth/authorize`, the page `claude setup-token` 2.1.296 prints, so a box can send its owner nowhere else. The URL is not a secret. It carries a PKCE challenge and a state value, and a code made from it works only with the secret held by that box's process.
 
 ### The team-wide token
 
@@ -178,7 +181,7 @@ Nothing new. `claude` and `script` are already in `box/Dockerfile`'s image.
 `POST /v1/conversations/{id}/members` takes a teammate's login. An admin or a person already in the room may call it. The room's page has a People button that lists who is in the room and adds a teammate.
 
 - Only rooms take members this way. A DM, an archived room or another team's room answers 404.
-- Someone outside a team room who is not an admin gets 403. A private room answers them 404, since it is hidden from them.
+- Someone outside a team room who is not an admin gets 403. A private room answers everyone outside it 404, admins included, since it is hidden from them. Whether admins should reach private rooms is Tayler's call.
 - A login that is not on the team answers 404. Someone already in the room answers 409.
 - An admin who adds someone does not join the room themselves.
 - Being in the room is what the room's agents see. Each agent's turn names the people in the room, and brings what the agent remembers about each of them.
@@ -189,10 +192,11 @@ These are on the people port. Every route except `/v1/me` needs a person on a te
 
 | Route | Who | Does |
 |---|---|---|
-| `GET /v1/me` | anyone | The person with their role and team, or `{ waiting }`. Joins by invite or records a join request first |
+| `GET /v1/me` | anyone | The person with their role and team, or that the login is invited or waiting. Writes nothing |
+| `POST /v1/me/join` | anyone | Joins by invite, or records a request to join |
 | `POST /v1/invites` | admin | `{ email, role }`. Makes the invite, through Tailscale when it is connected, and returns the link once |
 | `POST /v1/invites/{id}/resend` | admin | Asks Tailscale to email it again, or makes the Tailscale invite if it was never made |
-| `POST /v1/invites/{id}/cancel` | admin | Cancels it here and in Tailscale |
+| `POST /v1/invites/{id}/cancel` | admin | Cancels it here, then asks Tailscale to delete its own. Answers 502 with the reason when Tailscale can't |
 | `GET /v1/invites/{id}/link` | admin | The invite link, read from Tailscale |
 | `POST /v1/team/people` | admin | `{ login, name }`. Adds a login to the team from the wants-to-join list or the Tailscale page |
 | `POST /v1/me/box` | person | Makes their box if they have none |
