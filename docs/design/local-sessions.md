@@ -85,6 +85,12 @@ The daemon follows the `connected_folders` shape for its machine. Every second i
 
 A session that passes all three gets its record session from the API, which checks again that `cwd` is inside the folder. From then on the daemon sends each new line, in posts of at most 200 lines and 4 MB, and keeps how far it got in `~/.agents-app/terminal-sessions.json`. A restart goes on from there, and losing that file only costs a reread, since the record skips any line it already has.
 
+**One bad session, line or file stops nothing else.**
+
+- Each transcript, and each folder of transcripts, is read on its own. One that fails 3 reads in a row, such as a file the daemon may not open, is parked until the daemon starts again, and the daemon's log says why. A file removed between listing and reading it, as Claude Code's cleanup does, is skipped without a word.
+- A post the API fails, or that never reaches it, is tried again on a later read, after 1 s, then 2, 4 and so on up to a minute, while every other session goes on. After 10 failures in a row that the API answered, about four minutes of them, the session is parked too. A post that never reached the API doesn't count, since an API that is down holds every session alike.
+- The scrubber takes NULs out and makes a lone surrogate U+FFFD, in keys as well as values. Postgres refuses either, and the whole post would fail.
+
 Disconnecting a folder stops its sessions at once. The daemon forgets them, and the API refuses their events from then on. A folder connected again starts over, so this holds after the reconnect too. The daemon saves the folder's `connected_at` with each session it takes, and drops one whose folder's `connected_at` has changed since, which catches a disconnect it missed while it was stopped. The API refuses the events of a session made before its folder's `connected_at`, as it does a disconnected folder's.
 
 Durability leaves terminal sessions alone where it resumes turns, since a terminal session has no claimed messages, and its fence stops only the harnesses the daemon started. Its watchdog marks a terminal session lost when the Mac stops answering, as it does an agent's, and the next batch the daemon sends sets the status again. That is read from the code, and no check covers it.
@@ -162,6 +168,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end.
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried.
+- One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
 ## Tayler's calls

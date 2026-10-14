@@ -25,6 +25,7 @@ The branch's commits, oldest first, by subject:
 12. Secrets: every `.env` file under the folder, every value whatever its name, files sent as base64, the cwd and the session id, and the login shell's values, with terminal sessions held when the shell can't be read.
 13. A bare `connect` keeps a folder's visibility, and `--team` widens a private one, saying how many sessions that shows.
 14. What a session writes while its folder is disconnected stays on the Mac after a reconnect: the daemon keys each session to its folder's `connected_at`, and the API refuses a session older than it.
+15. One bad session, line or file stops nothing else: each transcript is read in its own attempt and parked after 3 failed reads, a failed post backs off without holding up the others, and the scrubber takes out NULs and lone surrogates.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 

@@ -7,7 +7,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -141,7 +141,9 @@ try {
   const journal = join(root, 'journal')
   // The shortest connected path, so the daemon reads this folder last in each read.
   const last = join(root, 'z')
-  for (const dir of [claudeDir, home, zdot, diary, journal, last, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  // The longest connected path, so the daemon reads this folder first in each read.
+  const deep = join(root, 'the-folder-with-the-longest-path-so-the-daemon-reads-it-first')
+  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -279,8 +281,9 @@ try {
       settled += 1
       const want = settled
       sentinel.turn({ prompt: `Settle ${want}.`, reply: 'Settled.' })
-      if (!await until(`settle ${want}`, LANDS_SEC, async () => (await turnsEnded(sentinel.session)) === want)) throw new Error('the daemon stopped reading')
+      if (!await until(`settle ${want}`, LANDS_SEC, async () => (await turnsEnded(sentinel.session)) >= want)) return false
     }
+    return true
   }
   const journalRun = transcript(claudeDir, journal, new Date(await connectedAt(journal) + 1000))
   journalRun.turn({ prompt: 'First entry.', reply: 'Noted.' })
@@ -292,14 +295,45 @@ try {
   journalRun.turn({ prompt: 'Written while the folder was disconnected.', reply: 'Noted again.' })
   folders(token, root, ['connect', journal])
   daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
-  await settle()
-  check(await turnsEnded(journalRun.session) === 1,
+  check(await settle() && await turnsEnded(journalRun.session) === 1,
     'what a session wrote while its folder was disconnected stays on the Mac after the folder is connected again, though the daemon missed the disconnect')
   const late = await machine(token, 'POST', `/v1/sessions/${String((await sessionOf(journalRun.session))?.id)}/events`,
     { events: [{ clientId: `late-${id}`, kind: 'notice', body: {} }] })
   check(late.status === 409, `the API refuses events for a session that started before its folder was connected again (${late.status})`)
   // The API would refuse the post, so only the daemon's log shows whether it tried.
   check(!logs.slice(loggedBefore).filter((l) => l.startsWith('daemon: ')).join('').includes(journalId), "and the daemon doesn't try to send it")
+
+  // One bad session, line or file stops nothing else.
+  check(folders(token, root, ['connect', deep]).code === 0, 'a folder the daemon reads first connects')
+  const deepAt = new Date(await connectedAt(deep) + 1000)
+  const failing = transcript(claudeDir, deep, deepAt)
+  failing.turn({ prompt: 'First.', reply: 'One.' })
+  await until('the session the API will fail', LANDS_SEC, async () => (await turnsEnded(failing.session)) === 1)
+  const failingId = String((await sessionOf(failing.session))?.id)
+  // An event already at the session's next number, so the API's next insert breaks a unique key and it answers 500.
+  await db.query(`insert into events (team_id, session_id, seq, updated_seq, kind, body, client_id)
+    select team_id, id, last_seq + 1, last_seq + 1, 'notice', '{}', $2 from sessions where id = $1`, [failingId, `squatter-${id}`])
+  failing.turn({ prompt: 'Second.', reply: 'Two.' })
+  check(await settle() && await turnsEnded(failing.session) === 1, "a session whose posts the API fails with 500 holds up no other folder's session")
+  await db.query('delete from events where client_id = $1', [`squatter-${id}`])
+  check(await until('the failed turn', 30, async () => (await turnsEnded(failing.session)) === 2), 'once the API takes its posts again, the rest of that session lands')
+
+  const odd = transcript(claudeDir, deep, deepAt)
+  odd.turn({ prompt: 'A NUL here:\u0000, half a pair here:\ud800.', calls: [{ name: 'Grep', input: { 'pat\u0000tern': 'x' }, result: 'none' }], reply: 'Odd.' })
+  await until('the session with a NUL', LANDS_SEC, async () => (await turnsEnded(odd.session)) === 1)
+  const oddRow = await sessionOf(odd.session)
+  const oddEvents = oddRow ? await eventsOf(oddRow.id) : []
+  const oddPrompt: unknown = oddEvents.find((e) => e.kind === 'user')?.text
+  const oddInput: unknown = oddEvents.find((e) => e.kind === 'tool_call')?.body.input
+  check(oddPrompt === 'A NUL here:, half a pair here:\ufffd.' && JSON.stringify(oddInput) === '{"pattern":"x"}',
+    `a line with NULs, in a value and in a key, and a lone surrogate lands, the NULs taken out and the surrogate made U+FFFD: ${JSON.stringify(oddPrompt)}`)
+
+  const locked = transcript(claudeDir, deep, deepAt)
+  locked.turn({ prompt: 'Locked.', reply: 'Locked.' })
+  chmodSync(locked.path, 0o000)
+  const lockedParked = await until('the daemon to park the transcript it cannot read', LANDS_SEC, async () =>
+    logs.join('').includes(`${locked.path}: EACCES`) && logs.join('').includes('It is parked until the daemon starts again'))
+  check(lockedParked && await settle(), "a transcript the daemon can't read is reported and parked, and the other folders' sessions land")
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

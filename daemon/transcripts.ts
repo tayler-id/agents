@@ -17,7 +17,8 @@ import { messageOf } from '../shared/errors.ts'
 import { FolderId, SessionId } from '../shared/ids.ts'
 import { makeScrub, type Scrub } from '../shared/scrub.ts'
 import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
-import { ApiError, postEvents, type Api, type Config } from './api.ts'
+import type { EventBatch } from '../shared/types.ts'
+import { ApiError, type Api, type Config } from './api.ts'
 import { TranscriptLine, transcriptBatch, withoutFiles } from './claude.ts'
 import { dotenvFinder, dotenvSecrets, type Secrets } from './secrets.ts'
 
@@ -30,6 +31,17 @@ const READ_EVERY_MS = 1000
 // after a restart goes in parts well under the API's 20 MB limit.
 const LINES_PER_POST = 200
 const BYTES_PER_POST = 4 * 1024 * 1024
+// A post the API failed, or that never reached it, is tried again on a later
+// read, after 1 s, then 2, 4 and so on up to a minute. Every other session goes
+// on meanwhile. After this many failures in a row that the API answered, the
+// session is parked until the daemon starts again. A post that never reached the
+// API doesn't count, since an API that is down holds every session alike.
+const RETRY_FIRST_MS = 1000
+const RETRY_MOST_MS = 60_000
+const ANSWERED_FAILURES_TO_PARK = 10
+// A transcript or folder that fails this many reads in a row is parked until the
+// daemon starts again, so one bad file can't stop the others.
+const READ_FAILURES_TO_PARK = 3
 // How far into a transcript its start is looked for. Claude Code writes it within
 // the first few lines, and a transcript that has none this far in is passed over.
 const START_BYTES = 1024 * 1024
@@ -143,6 +155,55 @@ export async function followTerminalSessions(options: {
     }
   })
 
+  // Transcripts and folders parked until the daemon starts again.
+  const parked = new Set<string>()
+  const readFailures = new Map<string, number>()
+  const retries = new Map<string, { tries: number; answered: number; at: number }>()
+  function park(path: string, why: string) {
+    parked.add(path)
+    console.error(`terminal sessions, ${path}: ${why}. It is parked until the daemon starts again.`)
+  }
+
+  // Reads one transcript or folder. A failure counts against it alone.
+  async function attempt(path: string, work: () => Promise<void>) {
+    try {
+      await work()
+      readFailures.delete(path)
+    } catch (error) {
+      // Claude Code's cleanup removes old transcripts, so one can go between listing it and reading it.
+      if (missing(error)) return
+      const failures = (readFailures.get(path) ?? 0) + 1
+      readFailures.set(path, failures)
+      if (failures >= READ_FAILURES_TO_PARK) park(path, `${messageOf(error)}. It failed ${failures} reads in a row`)
+      else console.error(`terminal sessions, ${path}: ${messageOf(error)}`)
+    }
+  }
+
+  // Posts a part of a transcript, and says whether the record has it.
+  async function post(file: string, sessionId: string, batch: EventBatch): Promise<boolean> {
+    try {
+      await api('POST', `/v1/sessions/${sessionId}/events`, batch)
+      retries.delete(file)
+      return true
+    } catch (error) {
+      const status = error instanceof ApiError ? error.status : 0
+      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+        // The batch itself is wrong, or its session takes no more.
+        console.error(`dropped a batch for ${sessionId}:`, messageOf(error))
+        return true
+      }
+      // fetch fails with a TypeError when the API can't be reached. Anything else is a bug.
+      if (!(error instanceof ApiError) && !(error instanceof TypeError)) throw error
+      const last = retries.get(file) ?? { tries: 0, answered: 0, at: 0 }
+      const tries = last.tries + 1
+      const answered = last.answered + (error instanceof ApiError ? 1 : 0)
+      retries.set(file, { tries, answered, at: Date.now() + Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** (tries - 1)) })
+      if (answered >= ANSWERED_FAILURES_TO_PARK) park(file, `the API failed its posts ${answered} times in a row, the last with ${messageOf(error)}`)
+      else if (tries === 1) console.error(`terminal session ${sessionId}: ${messageOf(error)}. It is tried again with backoff, and the other sessions go on.`)
+      return false
+    }
+  }
+
   // Each connected folder's .env files, found again on every read.
   const finders = new Map<string, (root: string) => string[]>()
   // Each folder's scrubber in the current read, so its .env files are read once a read.
@@ -163,6 +224,8 @@ export async function followTerminalSessions(options: {
 
   // Sends what a transcript gained since last time.
   async function send(file: string, tracked: Tracked, folder: FolderRow) {
+    const retry = retries.get(file)
+    if (retry && retry.at > Date.now()) return
     const lines = linesFrom(file, tracked.offset)
     if (!lines.length) return
     const scrub = scrubFor(folder)
@@ -172,7 +235,7 @@ export async function followTerminalSessions(options: {
         return result.success ? [result.data] : []
       })
       const batch = transcriptBatch(parsed, tracked.parentToolUseId)
-      if (batch.events.length || batch.status) await postEvents(api, tracked.sessionId, scrub(batch))
+      if ((batch.events.length || batch.status) && !await post(file, tracked.sessionId, scrub(batch))) return
       const last = part[part.length - 1]
       if (last) tracked.offset = last.end
       changed = true
@@ -235,20 +298,32 @@ export async function followTerminalSessions(options: {
     }
   }
 
+  // One transcript, with its subagents, each of those in its own attempt.
+  async function readTranscript(file: string, folder: FolderRow) {
+    const tracked = sent.get(file) ?? await track(file)
+    if (!tracked || tracked.folderId !== folder.id) return
+    await send(file, tracked, folder)
+    trackSubagents(file, tracked)
+    const subagents = `${file.slice(0, -'.jsonl'.length)}${sep}`
+    for (const [path, sub] of sent) {
+      if (path.startsWith(subagents) && !parked.has(path)) await attempt(path, () => send(path, sub, folder))
+    }
+  }
+
   async function readAll() {
     scrubs = new Map()
-    const projects = existsSync(PROJECTS) ? readdirSync(PROJECTS) : []
+    let projects: string[] = []
+    await attempt(PROJECTS, async () => { projects = listed(PROJECTS) })
     for (const folder of folders) {
       for (const dir of projects.filter((name) => name.startsWith(projectName(folder.path)))) {
-        for (const name of readdirSync(join(PROJECTS, dir)).filter((n) => n.endsWith('.jsonl'))) {
-          const file = join(PROJECTS, dir, name)
-          if (passed.has(file)) continue
-          const tracked = sent.get(file) ?? await track(file)
-          if (!tracked || tracked.folderId !== folder.id) continue
-          await send(file, tracked, folder)
-          trackSubagents(file, tracked)
-          const subagents = `${file.slice(0, -'.jsonl'.length)}${sep}`
-          for (const [path, sub] of sent) if (path.startsWith(subagents)) await send(path, sub, folder)
+        const path = join(PROJECTS, dir)
+        if (parked.has(path)) continue
+        let names: string[] = []
+        await attempt(path, async () => { names = listed(path).filter((n) => n.endsWith('.jsonl')) })
+        for (const name of names) {
+          const file = join(path, name)
+          if (passed.has(file) || parked.has(file)) continue
+          await attempt(file, () => readTranscript(file, folder))
         }
       }
     }
@@ -257,13 +332,23 @@ export async function followTerminalSessions(options: {
   }
 
   while (!signal.aborted) {
-    // A transcript Claude Code removes while it is read, as its cleanup does with
-    // old ones, fails one read. The next read lists what is there then.
-    await readAll().catch((error: unknown) => { console.error('terminal sessions:', messageOf(error)) })
+    await readAll()
     await sleep(READ_EVERY_MS, undefined, { signal }).catch((error: unknown) => {
       // Aborting the wait is how the daemon stops this loop.
       if (!signal.aborted) throw error
     })
+  }
+}
+
+const missing = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT'
+
+// A folder's entries, or none when it doesn't exist yet.
+function listed(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+  } catch (error) {
+    if (missing(error)) return []
+    throw error
   }
 }
 

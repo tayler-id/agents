@@ -31,7 +31,10 @@ export function envSecrets(env: NodeJS.ProcessEnv): [string, string][] {
 }
 
 export function makeScrub(secrets: [string, string][] = []): Scrub {
-  const scrubText = (text: string) => {
+  const scrubText = (raw: string) => {
+    // Postgres can't hold a NUL, and refuses JSON with a lone surrogate, so either
+    // would fail the whole post. NULs go, and a lone surrogate becomes U+FFFD.
+    let text = raw.replaceAll('\u0000', '').toWellFormed()
     for (const [name, value] of secrets) {
       if (text.includes(value)) text = text.replaceAll(value, `[secret:${name}]`)
     }
@@ -42,7 +45,7 @@ export function makeScrub(secrets: [string, string][] = []): Scrub {
     if (typeof value === 'string') return scrubText(value)
     if (Array.isArray(value)) return value.map(walk)
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]))
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [scrubText(k), walk(v)]))
     }
     return value
   }
