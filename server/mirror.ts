@@ -137,6 +137,11 @@ export async function changes(m: Mirror, base: string, head: string): Promise<Fi
     }
     counts.set(target, { added: binary ? 0 : Number(added), deleted: binary ? 0 : Number(deleted), binary })
   }
+  // Node reads a name that is not UTF-8 with U+FFFD in place of its bytes, so
+  // two files can come out as one path, and the gates would read one of them
+  // twice and the other never.
+  const listed = entries.map((e) => e.path)
+  const twice = new Set(listed.filter((path, i) => listed.indexOf(path) !== i))
   const out: FileChange[] = []
   for (const entry of entries) {
     const count = counts.get(entry.path)
@@ -154,7 +159,7 @@ export async function changes(m: Mirror, base: string, head: string): Promise<Fi
     out.push({
       ...entry, ...count,
       addedLines,
-      untrusted: untrusted(paths, addedLines, count.added),
+      untrusted: untrusted(paths, addedLines, count.added, twice),
       image: count.binary && entry.status !== 'deleted' ? imageFormat(await firstBytes(m, head, entry.path, IMAGE_HEAD_BYTES)) : null,
       before: entry.status === 'added' ? null : await readable(base, entry.from ?? entry.path),
       after: entry.status === 'deleted' ? null : await readable(head, entry.path),
@@ -176,11 +181,17 @@ const quotedByGit = (path: string) => {
 }
 
 // Why the gates cannot trust a file's diff, or null when they can. git quotes
-// a path holding a quote, a backslash or a control character, and a diff
-// whose hunks add another number of lines than git counts was misread.
-export function untrusted(paths: readonly string[], added: ReadonlySet<number>, counted: number): string | null {
+// a path holding a quote, a backslash or a control character. A path holding
+// U+FFFD may be a name that is not UTF-8, which reads the same as another
+// file's, and `shared` holds the paths git lists for more than one change. A
+// diff whose hunks add another number of lines than git counts was misread.
+export function untrusted(paths: readonly string[], added: ReadonlySet<number>, counted: number, shared: ReadonlySet<string>): string | null {
   const quoted = paths.find(quotedByGit)
   if (quoted !== undefined) return `git quotes the path ${JSON.stringify(quoted)}, which holds a quote, a backslash or a control character, so the gates cannot match it to its diff. Rename the file.`
+  const replaced = paths.find((p) => p.includes('\uFFFD'))
+  if (replaced !== undefined) return `the path ${JSON.stringify(replaced)} holds U+FFFD, which is how a name that is not UTF-8 reads, so the gates cannot tell it from another file. Rename the file.`
+  const twice = paths.find((p) => shared.has(p))
+  if (twice !== undefined) return `git lists ${JSON.stringify(twice)} for more than one change, so the gates cannot tell which file they read. Rename the files.`
   if (added.size !== counted) return `git counts ${counted} added lines and the diff's hunks add ${added.size}, so no gate can trust which lines are new.`
   return null
 }

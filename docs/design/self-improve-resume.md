@@ -18,7 +18,7 @@ green with it restored byte for byte, and its own commit.
 Blocking:
 
 1. A script passed the opaque gate by starting with image bytes. An image now needs its extension to name the format its first bytes show. Done.
-2. Two files could share one path, since git's output is read as UTF-8. Not started.
+2. Two files could share one path, since git's output is read as UTF-8. A path holding U+FFFD, or one git lists twice, now fails closed. Done.
 3. A person's message to a judge's session started it without its limits. Not started.
 4. `JUDGE_PERMISSIONS` had no check. Not started.
 5. The obligation backoff overflowed at 31 tries. Not started.

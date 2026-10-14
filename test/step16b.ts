@@ -185,6 +185,18 @@ writeFileSync(join(gitRepo, 'server/forged.ts'), 'export const a = 1\n++ b/ok.ts
 writeFileSync(join(gitRepo, 'server/we"ird.ts'), `export const key = 'sk-ant-${'a'.repeat(30)}'\n`)
 writeFileSync(join(gitRepo, 'server/helper.ts'), `GIF89a: 0\n// ${String.fromCharCode(0)} hidden\nimport { exec } from 'node:child_process'\nexec('ls')\n`)
 inRepo('add', '-A')
+// Two files whose names Node reads as one: one named with the byte 0xff,
+// which is not UTF-8, and one named with U+FFFD itself. The file system may
+// refuse a name that is not UTF-8, so both go straight into git's index. The
+// first holds a key, and the second is clean.
+const blob = (text: string) => execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: gitRepo, input: text, encoding: 'utf8' }).trim()
+execFileSync('git', ['update-index', '--add', '-z', '--index-info'], {
+  cwd: gitRepo,
+  input: Buffer.concat([
+    Buffer.from(`100644 ${blob(`export const key = 'sk-ant-${'b'.repeat(30)}'\n`)}\tserver/x`), Buffer.from([0xff]), Buffer.from('.ts\0'),
+    Buffer.from(`100644 ${blob('export const key = process.env.KEY\n')}\tserver/x\uFFFD.ts\0`),
+  ]),
+})
 inRepo('commit', '--quiet', '-m', 'head')
 const realFiles = await changes({ dir: gitRepo, env: process.env }, baseCommit, inRepo('rev-parse', 'HEAD'))
 rmSync(gitRepo, { recursive: true, force: true })
@@ -198,7 +210,15 @@ expect('secrets', realFiles, 'fail', 'the key in a file whose path git quotes is
 const disguised = realFiles.filter((f) => f.path === 'server/helper.ts')
 check(disguised[0]?.binary === true && disguised[0].image === 'gif', 'diff: a script that opens with GIF89a: and holds a NUL byte is binary to git and starts as a GIF')
 expect('opaque', disguised, 'fail', 'a script that opens with the GIF89a: label and holds a NUL byte fails')
-check(untrusted(['server/ok.ts'], new Set([1, 2]), 2) === null && untrusted(['server/ok.ts'], new Set([1]), 2)?.includes('git counts 2') === true,
+// Both come out of git as server/x\uFFFD.ts, so the gates would read the
+// clean file twice and the one with the key never.
+const sharing = realFiles.filter((f) => f.path === 'server/x\uFFFD.ts')
+check(sharing.length === 2, `diff: a name that is not UTF-8 and one with U+FFFD come out of git as one path (${sharing.length} changes)`)
+const pairGate = expect('opaque', sharing, 'fail', 'two files that come out of git as one path fail closed')
+check(pairGate.findings.length === 2 && pairGate.findings.every((f) => f.text.includes('U+FFFD')), 'opaque: each of the two files is named untrusted for its U+FFFD')
+check(untrusted(['server/x\uFFFD.ts'], new Set([1]), 1, new Set()) !== null, 'diff: a path that holds U+FFFD fails closed on its own')
+check(untrusted(['server/a.ts'], new Set([1]), 1, new Set(['server/a.ts']))?.includes('more than one change') === true, 'diff: a path git lists for two changes fails closed on its own')
+check(untrusted(['server/ok.ts'], new Set([1, 2]), 2, new Set()) === null && untrusted(['server/ok.ts'], new Set([1]), 2, new Set())?.includes('git counts 2') === true,
   'diff: a file whose hunks add another number of lines than git counts fails closed')
 expect('opaque', [{ ...appended('server/x.ts', 'a', 'b'), untrusted: 'git counts 2 added lines and the hunks add 1.' }], 'fail', 'a file whose diff the gates cannot trust fails')
 // A binary file fails whatever its name, unless its first bytes and its
