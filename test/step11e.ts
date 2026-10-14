@@ -10,8 +10,9 @@
 // refusal starts from a fresh database and volumes. Uploads go in parts with
 // CRC32s, and one that fails is given up. Deleting the bucket stops on an object
 // S3 keeps. The health report sends what the alarms watch, and notices a stopped
-// API. Every script's dry run makes no AWS call, and the systemd installer and
-// the Compose override say what docs/design/aws.md says.
+// API. Every script's dry run makes no AWS call. A real export prints the steps
+// for the server in order, the box image's build before the start. The systemd
+// installer and the Compose override say what docs/design/aws.md says.
 //   node --env-file=.env --env-file=.env.test test/step11e.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -329,14 +330,15 @@ try {
 
   // ---- Dry runs that touch nothing ----
   calls.length = 0
+  // Everything export.ts could touch is the check's own, so even a dry run that acted would harm nothing.
+  const exportEnv = {
+    DATABASE_URL: urlFor(scratch), AGENTS_HOOK_SECRET: 'unused', AGENTS_FORGE_CONTAINER: forgeContainer, AGENTS_FORGE_VOLUME: forgeVolume,
+    AGENTS_HOME: appHome, AGENTS_API_PORT: String(UNUSED_PORT), AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock'),
+  }
   const dryRuns: [string, string[], Record<string, string>][] = [
     ['bootstrap.ts on the server', ['ops/aws/bootstrap.ts', 'server', '--dry-run'], {}],
     ['bootstrap.ts on the box host', ['ops/aws/bootstrap.ts', 'boxes', '--dry-run'], {}],
-    // Everything export.ts could touch is the check's own, so even a dry run that acted would harm nothing.
-    ['export.ts', ['ops/aws/export.ts', '--dry-run'], {
-      DATABASE_URL: urlFor(scratch), AGENTS_HOOK_SECRET: 'unused', AGENTS_FORGE_CONTAINER: forgeContainer, AGENTS_FORGE_VOLUME: forgeVolume,
-      AGENTS_HOME: appHome, AGENTS_API_PORT: String(UNUSED_PORT), AGENTS_PEOPLE_SOCKET: join(work, 'no-api.sock'),
-    }],
+    ['export.ts', ['ops/aws/export.ts', '--dry-run'], exportEnv],
     ['update.ts on the server', ['ops/aws/update.ts', 'server', '--dry-run'], {}],
     ['update.ts on the box host', ['ops/aws/update.ts', 'boxes', '--dry-run'], {}],
     ['down.ts', ['ops/aws/down.ts', '--delete-backups', '--delete-secrets', '--dry-run'], {}],
@@ -349,6 +351,21 @@ try {
   }
   check(calls.length === 0 && !existsSync(join(work, 'dry.env')) && docker('inspect', '-f', '{{.State.Running}}', forgeContainer) === 'true',
     'none of those dry runs called AWS, wrote a file, or stopped the forge')
+
+  // ---- What the export tells you to run on the server ----
+  // A real export, of the scratch database and the check's forge, with no API and no boxes.
+  const exported = await script(['ops/aws/export.ts'], exportEnv)
+  const printed = exported.out.split('\n').map((line) => line.trim())
+  const lineOf = (pattern: RegExp) => printed.findIndex((line) => pattern.test(line))
+  const steps = [
+    lineOf(/^sudo systemctl stop agents-api agents-compose agents-backup\.timer$/),
+    lineOf(/^sudo systemctl restart agents-secrets$/),
+    lineOf(new RegExp(`ops/aws/restore\\.ts s3://${BUCKET}/cutover/[0-9TZ-]+/$`)),
+    lineOf(/\/agents\/server\/boxes\.ts build$/),
+    lineOf(/^sudo systemctl start agents-compose agents-api agents-backup\.timer$/),
+  ]
+  check(exported.status === 0 && steps.every((line, index) => line >= 0 && line > (steps[index - 1] ?? -1)),
+    'the export prints the steps for the server in order: stop with the backup timer, write the secrets, restore, build the box image, then start')
 
   // ---- The systemd units and the Compose override ----
   const serverUnits = await script(['ops/install-systemd.ts', 'server', '--aws', '--dry-run'])
