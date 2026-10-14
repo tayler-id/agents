@@ -48,6 +48,7 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 | Docs for the review round, the rebases, and two trades for Tayler | The design, the build log, decisions, data model, parts and this note |
 | Say what Tayler decided for agent computers on 2026-10-14 | The design, decisions, onboarding's resume note and this note |
 | The daemon saves no screenshot while a page shows a secret the box holds | `daemon/page-secrets.ts` reads every tab over DevTools. `save_screenshot`, and Playwright's screenshot tool given a file name, refuse and name the secret |
+| Record the screenshot refusal's runs | The build log, the design's sizes and latency, and this note |
 
 ## Before this lands
 
@@ -56,8 +57,8 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 
 ## Checks
 
-- Step 15 has 45 checks and step 15b has 17 in each of Chromium, WebKit and Firefox, 51 in all. Both passed on the final code, at 01:32 and 01:33 on 2026-10-14.
-- Step 15's two lines for the screenshot refusal came after those runs and have not run yet.
+- Step 15 has 47 checks and step 15b has 17 in each of Chromium, WebKit and Firefox, 51 in all. Both passed on the final code, at 09:42 and 09:45 on 2026-10-14.
+- Step 15's two lines for the screenshot refusal were seen failing with `if (names.length === 0) return null` in `daemon/computer-mcp.ts` changed to `>= 0`, a break `.scratch/breaks.ts` doesn't hold. Both failed, each tool having saved its file, and the other 45 passed. With the file put back byte for byte, all 47 passed.
 - Every check was seen failing under `.scratch/breaks.ts`, a local file that git ignores. `node .scratch/breaks.ts check-all` checks every anchor, `node .scratch/breaks.ts <set>` applies one set, and `git checkout -- <files it lists>` restores. Step 15's sets are quiet, input, stuck, flow, team, noscreen, notunnel, filter and told. Step 15b's are ui-a to ui-d, run with `AGENTS_UI_ENGINES=chromium`. Before the review round's fixes, step 15's new lines failed on the old code in one run.
 - `.scratch/each-commit.ts <from> <to>` typechecks and lints every commit on its own. `.scratch/clean-teams.ts` deletes the `comp-` teams and folders that failed runs keep, and refuses any database but `agents_test`.
 - If the API ever aborts at start with no message, look at `ipcs -s -b`. This Mac ran out of System V semaphores once, and lmdb aborts without them.
@@ -66,15 +67,15 @@ Rebased onto main at 7197f4b on 2026-10-14, after onboarding and the work layer 
 
 - Take the lock first with `mkdir ~/.agents-app/checks/run.lock`, and `rmdir` it after. Both checks use port 7701, the only check port the box firewall opens.
 - Before a run that builds an image, check `colima ssh -- df -h /var/lib/docker`, and stop above 80%. After it, run `docker image prune -f`. On 2026-10-13 untagged copies of an earlier fixed tag, `agents-box:computers`, helped fill the disk. Each run of step 15 or 15b now builds `agents-box:comp-<id>` and removes it when it ends, so every run builds the image from the start.
-- `node --env-file=.env --env-file=.env.test test/step15.ts` took about 4 minutes with the image cached, and building the image added about 3 minutes.
-- `node --env-file=.env --env-file=.env.test test/step15b.ts` took under a minute in three engines.
-- Teams are `comp-*`. A failed run keeps its team in `agents_test` and its folder under `~/.agents-app/checks/`.
+- `node --env-file=.env --env-file=.env.test test/step15.ts` took 6.6 and 7.5 minutes on 2026-10-14, of which building the image took 164 and 216 seconds.
+- `node --env-file=.env --env-file=.env.test test/step15b.ts` took 3.8 minutes in three engines, building its image included.
+- Teams are `comp-<id>` and `comp-other-<id>`. A failed run keeps both in `agents_test` and its folder under `~/.agents-app/checks/`. `.scratch/clean-one-team.ts <team>` deletes one. `.scratch/clean-teams.ts` deletes every `comp-` team, so don't run it while the box below is up.
 - Main's step 12c builds `agents-box:onboard-check`, a tag other runs use. To run it from this branch, put another tag in its `IMAGE` line for that run only, then remove the tag and put the file back from git. After a failure it can wait for good on a browser's open connection, so stop it, then remove its boxes, their volumes and its team.
 
 ## Left running
 
-- No containers or volumes. Every box a check makes is removed when it ends.
-- No image. Each run removes its own tag, and `agents-box:computers`, which earlier runs kept, is removed. `agents-box:latest` is the live server's and was never touched.
+- One box from a run of step 15 that stopped with the last agent at about 08:58 on 2026-10-14: the container `agents-box-fbe9b1dc-fa07-41c9-8b26-0482fd68cb97`, its volume `agents-box-fbe9b1dc-fa07-41c9-8b26-0482fd68cb97-home`, the image `agents-box:comp-000abdf4` it runs, and the team `comp-04ea6387` in `agents_test` with its folder. The box keeps dialing 7701, where other checks run their APIs. A permission check blocked my `docker rm -f` of it, so it waits for Tayler or the coordinator. Remove the container, then the volume and the image, then run `.scratch/clean-one-team.ts comp-04ea6387` and `.scratch/clean-one-team.ts comp-other-04ea6387`.
+- Every box the runs on 2026-10-14 made was removed when its run ended. Each run removes its own image tag too, and `agents-box:computers`, which earlier runs kept, is removed. `agents-box:latest` is the live server's and was never touched.
 
 ## Not done
 
