@@ -151,7 +151,8 @@ try {
   // The longest connected path, so the daemon reads this folder first in each read.
   const deep = join(root, 'the-folder-with-the-longest-path-so-the-daemon-reads-it-first')
   const cased = join(root, 'cased-folder')
-  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, cased, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  const skewed = join(root, 'skewed')
+  for (const dir of [claudeDir, home, zdot, diary, journal, last, deep, cased, skewed, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -184,7 +185,8 @@ try {
   const connected = folders(token, root, ['connect', shop])
   check(connected.code === 0 && connected.out.startsWith(`ok: connected ${shop}.`), `connect says ok: ${connected.out.split('\n')[0] ?? ''}`)
   const { rows: [shopFolder] } = await db.query('select id, connected_at from connected_folders where path = $1', [shop])
-  const afterShop = new Date(Date.parse(must(shopFolder, 'the shop folder').connected_at) + 1000)
+  // Sessions start as their folder is connected, so a folder connected again a moment later is newer than every one of them.
+  const afterShop = new Date(must(shopFolder, 'the shop folder').connected_at)
 
   const sessionOf = async (harness: string) => (await db.query('select * from sessions where harness_session_id = $1', [harness])).rows[0]
   const eventsOf = async (sessionId: string) => (await db.query(
@@ -263,7 +265,7 @@ try {
   // Who sees a folder's sessions: connecting again keeps it, and only --team widens it, saying how many sessions that shows.
   check(folders(token, root, ['connect', diary, '--private']).code === 0, 'a second folder connects as private')
   const { rows: [diaryFolder] } = await db.query('select id, connected_at from connected_folders where path = $1', [diary])
-  const diaryRun = transcript(claudeDir, diary, new Date(Date.parse(must(diaryFolder, 'the diary folder').connected_at) + 1000))
+  const diaryRun = transcript(claudeDir, diary, new Date(must(diaryFolder, 'the diary folder').connected_at))
   diaryRun.turn({ prompt: 'Write in the diary.', reply: 'Written.' })
   await until('the private session', LANDS_SEC, async () => (await turnsEnded(diaryRun.session)) === 1)
   const visibilityOf = async (path: string) => String((await db.query('select visibility from connected_folders where path = $1', [path])).rows[0]?.visibility)
@@ -278,8 +280,9 @@ try {
 
   // What a session writes while its folder is disconnected stays on the Mac, even when the daemon misses the disconnect.
   check(folders(token, root, ['connect', journal]).code === 0 && folders(token, root, ['connect', last]).code === 0, 'two more folders connect')
-  const connectedAt = async (path: string) => Date.parse(String((await db.query('select connected_at from connected_folders where path = $1', [path])).rows[0]?.connected_at))
-  const sentinel = transcript(claudeDir, last, new Date(await connectedAt(last) + 1000))
+  // pg gives a timestamptz as a Date, which keeps its milliseconds only as a number, not through String().
+  const connectedAt = async (path: string) => new Date(must((await db.query('select connected_at from connected_folders where path = $1', [path])).rows[0], path).connected_at).getTime()
+  const sentinel = transcript(claudeDir, last, new Date(await connectedAt(last)))
   let settled = 0
   // A line in the folder the daemon reads last lands only after a read went past
   // every other folder. The second line's read began after the first's ended, so
@@ -293,7 +296,7 @@ try {
     }
     return true
   }
-  const journalRun = transcript(claudeDir, journal, new Date(await connectedAt(journal) + 1000))
+  const journalRun = transcript(claudeDir, journal, new Date(await connectedAt(journal)))
   journalRun.turn({ prompt: 'First entry.', reply: 'Noted.' })
   await until('the journal session', LANDS_SEC, async () => (await turnsEnded(journalRun.session)) === 1)
   const journalId = String((await sessionOf(journalRun.session))?.id)
@@ -313,7 +316,7 @@ try {
 
   // One bad session, line or file stops nothing else.
   check(folders(token, root, ['connect', deep]).code === 0, 'a folder the daemon reads first connects')
-  const deepAt = new Date(await connectedAt(deep) + 1000)
+  const deepAt = new Date(await connectedAt(deep))
   const failing = transcript(claudeDir, deep, deepAt)
   failing.turn({ prompt: 'First.', reply: 'One.' })
   await until('the session the API will fail', LANDS_SEC, async () => (await turnsEnded(failing.session)) === 1)
@@ -345,7 +348,7 @@ try {
 
   // A transcript whose lines name another session can't write into it.
   const firstEventsBefore = await count('select count(*) from events where session_id = $1', [String(firstRow?.id)])
-  const impostor = transcript(claudeDir, journal, new Date(await connectedAt(journal) + 1000), randomUUID())
+  const impostor = transcript(claudeDir, journal, new Date(await connectedAt(journal)), randomUUID())
   impostor.write([impostor.line({ type: 'user', sessionId: first.session, message: { role: 'user', content: 'Written into another session.' }, turnOrigin: 'human' })])
   const impostorSaid = await until('the daemon to say the file names another session', LANDS_SEC, async () =>
     logs.join('').includes(`${impostor.path}: its lines name session ${first.session}`))
@@ -437,7 +440,7 @@ try {
   if (!existsSync(cased.toUpperCase())) throw new Error(`${root} is on a case-sensitive volume, so this check can't show the case taken from the disk`)
   const casedConnect = folders(token, root, ['connect', join(root, 'CASED-folder')])
   const { rows: [casedRow] } = await db.query('select path, connected_at from connected_folders where lower(path) = lower($1)', [cased])
-  const casedRun = transcript(claudeDir, cased, new Date(Date.parse(String(must(casedRow, 'the cased folder').connected_at)) + 1000))
+  const casedRun = transcript(claudeDir, cased, new Date(must(casedRow, 'the cased folder').connected_at))
   casedRun.turn({ prompt: 'In a folder connected in the wrong case.', reply: 'Found.' })
   check(casedConnect.code === 0 && casedRow?.path === cased && await until('the session in the folder typed in the wrong case', LANDS_SEC, async () => (await turnsEnded(casedRun.session)) === 1),
     `connect takes each name's case from the disk, so a folder typed in the wrong case still gets its sessions: ${String(casedRow?.path)}`)
@@ -446,6 +449,21 @@ try {
   const configured = folders(token, root, ['connect', cased], { CLAUDE_CONFIG_DIR: join(root, 'elsewhere') })
   check(configured.code === 0 && configured.out.includes('warning: this shell sets CLAUDE_CONFIG_DIR'),
     'connect warns when the shell sets CLAUDE_CONFIG_DIR, which the daemon under launchd does not see')
+
+  // A Mac clock ahead of the server's can make a session look newer than its folder's reconnect, while the API knows it is older.
+  check(folders(token, root, ['connect', skewed]).code === 0, 'a folder for a clock running ahead connects')
+  const skewedRun = transcript(claudeDir, skewed, new Date(await connectedAt(skewed) + 60_000))
+  skewedRun.turn({ prompt: 'From a clock a minute ahead.', reply: 'Ahead.' })
+  await until('the session from a clock running ahead', LANDS_SEC, async () => (await turnsEnded(skewedRun.session)) === 1)
+  const skewedId = String((await sessionOf(skewedRun.session))?.id)
+  folders(token, root, ['disconnect', skewed])
+  folders(token, root, ['connect', skewed])
+  skewedRun.turn({ prompt: 'After the reconnect.', reply: 'After.' })
+  const skewedSettled = await settle() && await settle()
+  const refusals = logs.filter((l) => l.startsWith('daemon: ')).join('').split('\n')
+    .filter((line) => line.includes(skewedId) && line.includes('disconnected since it started')).length
+  check(skewedSettled && refusals === 1 && await turnsEnded(skewedRun.session) === 1,
+    `a session the API closes is passed over after its first refusal, not taken again on every read (${String(refusals)} refusals)`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

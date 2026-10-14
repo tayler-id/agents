@@ -30,6 +30,7 @@ The branch's commits, oldest first, by subject:
 17. No line is lost: a refused post keeps its lines and parks the session, posts are sized in encoded bytes, lines that don't parse are counted, and a field whose type changes reads as absent.
 18. A transcript cut short or rewritten is read again from its start, by its inode and first uuid.
 19. `connect` stores each name in its case on disk, prints the transcript folder the daemon reads, and warns when the shell sets `CLAUDE_CONFIG_DIR`.
+20. A session the API closes is passed over for good after its first 409. A Mac clock ahead of the server's made the daemon take the session again on every read. step21b's sessions now start exactly at their folder's `connected_at`.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 

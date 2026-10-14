@@ -97,6 +97,8 @@ A session that passes all three gets its record session from the API, which chec
 
 Disconnecting a folder stops its sessions at once. The daemon forgets them, and the API refuses their events from then on. A folder connected again starts over, so this holds after the reconnect too. The daemon saves the folder's `connected_at` with each session it takes, and drops one whose folder's `connected_at` has changed since, which catches a disconnect it missed while it was stopped. The API refuses the events of a session made before its folder's `connected_at`, as it does a disconnected folder's.
 
+The daemon starts a session only when its first line is no earlier than its folder's `connected_at`, by the Mac's clock, while the API judges it by the server's. A Mac whose clock runs ahead can show the daemon a session that started before a reconnect as newer than it. The API then answers its first post with 409, and the daemon passes that transcript over for good, so it is refused once and not again on every read.
+
 Durability leaves terminal sessions alone where it resumes turns, since a terminal session has no claimed messages, and its fence stops only the harnesses the daemon started. Its watchdog marks a terminal session lost when the Mac stops answering, as it does an agent's, and the next batch the daemon sends sets the status again. That is read from the code, and no check covers it.
 
 ## Mapping a transcript to events
@@ -171,7 +173,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 
 - A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end.
 - Who sees a folder: a private folder connected again with no flag stays private, `--team` widens it and says how many sessions that shows, and both flags together are a usage error.
-- What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried.
+- What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried. A session from a Mac clock a minute ahead of the server's, closed by a reconnect, is refused once and then passed over. Every session in the check starts exactly at its folder's `connected_at`, so a folder connected again a moment later is newer than all of them.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
 - A transcript replaced by a new file, one cut short in place, and one rewritten in place with a different first line are each read again from the start, and the record takes only the lines it didn't have.
 - No line is lost: a post the API refuses with 404 parks its session and a restart sends its lines, three 4.2 MB prompts in three-byte characters land in posts under 20 MiB, lines that don't parse are counted in the log, and a prompt whose fields changed type lands with its raw line as written.

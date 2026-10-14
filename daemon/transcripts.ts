@@ -192,7 +192,10 @@ export async function followTerminalSessions(options: {
       const status = error instanceof ApiError ? error.status : 0
       if (status === 409) {
         // The API says the folder is closed to this session, so the daemon stops sending it.
+        // Passing it over for good matters when the Mac's clock runs ahead of the server's,
+        // since the session can then look newer than the folder's connection and be taken again.
         sent.delete(file)
+        passed.add(file)
         changed = true
         console.error(`terminal session ${sessionId}: its folder was disconnected since it started, so the rest of it stays on the Mac`)
         return false
