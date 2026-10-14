@@ -12,7 +12,6 @@ import type pg from 'pg'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { z } from 'zod'
 import { checkAudience, instanceFrom, personFrom, type Instance } from './auth.ts'
-import type { Audience } from './http.ts'
 import { many, maybe, one, pool, tx } from './db.ts'
 import { appendEvents, HttpError, type Person } from './record.ts'
 import { VISIBLE_CONVERSATION, VISIBLE_TASK } from './access.ts'
@@ -301,7 +300,11 @@ function refuse(socket: Duplex, status: number, message: string) {
     + `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
 }
 
-async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex, head: Buffer) {
+// Which listener an upgrade came in on. People's carries the origins the app's
+// pages are served from, which the API reads from AGENTS_PEOPLE_ORIGINS.
+export type UpgradeSide = { audience: 'machines' } | { audience: 'people'; origins: ReadonlySet<string> }
+
+async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, head: Buffer) {
   // Node takes its own error listener off a socket before it hands over an
   // upgrade, and ws adds one only once it has the socket. A client that resets
   // the connection in between, while the API looks it up or refuses it, would
@@ -314,41 +317,43 @@ async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex,
     sockets.handleUpgrade(req, socket, head, then)
   }
   try {
-    checkAudience(audience, req)
+    checkAudience(side.audience, req)
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
-    if (audience === 'machines' && path === '/v1/instance/screen') {
-      const instance = await instanceFrom(req)
-      const id = InstanceId.parse(instance.id)
-      await loadControl(id)
-      accept(machineSockets, (ws) => { linkBox(id, ws) })
-      return
-    }
-    const tunnel = audience === 'machines' ? TUNNEL_PATH.exec(path)?.[1] : undefined
-    if (tunnel) {
+    if (side.audience === 'machines') {
+      if (path === '/v1/instance/screen') {
+        const instance = await instanceFrom(req)
+        const id = InstanceId.parse(instance.id)
+        await loadControl(id)
+        accept(machineSockets, (ws) => { linkBox(id, ws) })
+        return
+      }
+      const tunnel = TUNNEL_PATH.exec(path)?.[1]
+      if (!tunnel) throw new HttpError(404, 'no such route')
       const viewer = waitingViewer(tunnel, await instanceFrom(req))
       accept(machineSockets, (ws) => { joinTunnel(viewer, ws) })
       return
     }
-    const screenId = audience === 'people' ? VIEWER_PATH.exec(path)?.[1] : undefined
-    if (screenId) {
-      // A browser can't read the status of a refused upgrade, only a close
-      // reason, so a person who may not watch gets the socket closed with why.
-      const allowed = await (async () => {
-        const person = await personFrom(req)
-        const screen = await watchable(person, screenId)
-        await loadControl(screen.id)
-        return { person, screen }
-      })().catch((error: unknown) => {
-        if (error instanceof HttpError) return { refused: error.message }
-        throw error
-      })
-      accept(peopleSockets, (ws) => {
-        if ('refused' in allowed) ws.close(ScreenClose.notAllowed, allowed.refused)
-        else watch(allowed.person, allowed.screen, ws)
-      })
-      return
-    }
-    throw new HttpError(404, 'no such route')
+    const screenId = VIEWER_PATH.exec(path)?.[1]
+    if (!screenId) throw new HttpError(404, 'no such route')
+    // A browser sends its page's origin with every WebSocket it opens. A page on
+    // another site, open in a teammate's browser, would otherwise watch and take
+    // over as them. Host is no help, since the page picks the host it connects to.
+    if (!side.origins.has(req.headers.origin ?? '')) throw new HttpError(403, 'Only the app may open a screen.')
+    // A browser can't read the status of a refused upgrade, only a close
+    // reason, so a person who may not watch gets the socket closed with why.
+    const allowed = await (async () => {
+      const person = await personFrom(req)
+      const screen = await watchable(person, screenId)
+      await loadControl(screen.id)
+      return { person, screen }
+    })().catch((error: unknown) => {
+      if (error instanceof HttpError) return { refused: error.message }
+      throw error
+    })
+    accept(peopleSockets, (ws) => {
+      if ('refused' in allowed) ws.close(ScreenClose.notAllowed, allowed.refused)
+      else watch(allowed.person, allowed.screen, ws)
+    })
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500
     if (status === 500) console.error(error)
@@ -357,6 +362,6 @@ async function upgrade(audience: Audience, req: IncomingMessage, socket: Duplex,
 }
 
 // Each HTTP server's upgrade listener. Upgrades are WebSockets, and only screens use them.
-export const screenUpgrades = (audience: Audience) => (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-  void upgrade(audience, req, socket, head)
+export const screenUpgrades = (side: UpgradeSide) => (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  void upgrade(side, req, socket, head)
 }

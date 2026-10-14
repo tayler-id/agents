@@ -710,6 +710,12 @@ const STOP_GRACE_MS = 5000
 // Tailscale-User-Login is a socket, which only tailscale serve is pointed at.
 const PeopleSocket = z.string().startsWith('/')
 
+// The origins the app's pages are served from, such as
+// http://agents-server.<tailnet>.ts.net, separated by commas. Only pages from
+// these may open a screen's WebSocket, which carries a person's identity.
+const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin) => origin.trim()))
+  .pipe(z.array(z.url().refine((url) => new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
+
 const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
 
 // Whether something accepts connections on the socket at this path.
@@ -755,11 +761,13 @@ async function listenForPeople(server: Server, path: string) {
 if (import.meta.main) {
   const people = PeopleSocket.safeParse(process.env.AGENTS_PEOPLE_SOCKET)
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
+  const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
+  if (!origins.success) throw new Error(`AGENTS_PEOPLE_ORIGINS must list the origins the app is served from, such as http://agents-server.<tailnet>.ts.net: ${z.prettifyError(origins.error)}`)
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
-  await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades('people')), people.data)
+  await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   // Closing the stream store gives back what its database holds, such as System V
@@ -771,7 +779,7 @@ if (import.meta.main) {
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  createServer(serve('machines')).on('upgrade', screenUpgrades('machines'))
+  createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
     .listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
   startScreenSweep()
   if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
