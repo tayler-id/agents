@@ -113,7 +113,7 @@ The work layer, in `server/migrations/0007_workflow.sql`. The design is in `docs
 Agent computers, in `server/migrations/0008_computers.sql`. The design is in `docs/design/computers.md`.
 
 - **`instances.screen_width` and `.screen_height`.** The size of the screen a machine reports on its heartbeat, or null when it has none. Both are set or both are null. The app offers a Screen button only for machines with a screen.
-- **`screen_takeovers`, new.** One row for each time a person held a machine's screen: the machine, the person, the session they were looking at, when it started, when it ended, and how (`handed_back`, or `left` when their last Screen view closed). A unique index allows one open row per machine, and the open row is who holds the screen, so the control state has a single home.
+- **`screen_takeovers`, new.** One row for each time a person held a machine's screen: the machine, the person, the session they were looking at, when it started, when it ended, and how (`handed_back`, or `left` when their last Screen view closed). A unique index allows one open row per machine, and the open row is the record of who holds the screen. The API and the box keep copies, which the API updates after it writes the row.
 - **`blobs`, new.** The bytes of image documents, one row per team and SHA-256, with the media type (PNG, JPEG, WebP or GIF) and size (5 MB at most). Kept apart from `artifact_versions` so Electric never streams image bytes. Never a shape.
 - **`artifact_versions.blob_id`.** Set on an image version, whose `content` is then empty. A version is text or an image, never both.
 

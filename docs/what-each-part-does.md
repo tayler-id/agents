@@ -337,8 +337,8 @@ The design is `docs/design/computers.md`.
 
 ### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
 
-- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download.
-- **Helps later.** Each developer's own box and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until the desktop is up, and stops so the box starts again when it can't come up. The sessions on a box share its one computer. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
+- **Helps later.** Each person's own box, which onboarding added, and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
 
 ### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`)
 
@@ -347,7 +347,7 @@ The design is `docs/design/computers.md`.
 
 ### Watching and taking over a screen (`server/screens.ts`, `server/rfb-filter.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
 
-- **Solves now.** A person on the team watches a box's screen live through the people port, as their Tailscale login, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` is its state. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work.
+- **Solves now.** A person on the team watches a box's screen live through the people socket, as their Tailscale login, from the app's own pages only, and the screen leaves the box only through outbound connections to the machine port. The box keeps one control connection open, and the API asks it for a tunnel per viewer, pinging both and dropping either once it stops answering. Who holds the screen is a typed state machine, and the open row of `screen_takeovers` records it. Only the holder's keys and clicks pass the API's filter. While a person holds the screen the agent's screen and browser actions are refused by name, a browser call under way stops, and the record notes each takeover. A view closed without handing back returns the screen to the agent after 30 seconds. A box that ran private work in the last day can be watched only by people who can see that work, and someone already watching when such work starts is cut off.
 - **Helps later.** A Mac with the computer-use helper in the design can serve the same Screen view through the same tunnel.
 
 ### The Screen view (`app/src/Screen.tsx`)
@@ -357,7 +357,7 @@ The design is `docs/design/computers.md`.
 
 ### Images as documents (`shared/documents.ts`, `server/record.ts`, `app/src/Document.tsx`)
 
-- **Solves now.** Images an agent writes in its task's folder, such as the screenshots it saves to show what it checked, become documents with versions and comments, beside the text ones. A file is an image when its bytes say so: PNG, JPEG, WebP or GIF, up to 5 MB. The bytes live in Postgres in `blobs`, a table sync never reads, and the app fetches them through the people port for anyone who can see the task.
+- **Solves now.** Images an agent writes in its task's folder, such as the screenshots it saves to show what it checked, become documents with versions and comments, beside the text ones. A file is an image when its bytes say so: PNG, JPEG, WebP or GIF, up to 5 MB. The bytes live in Postgres in `blobs`, a table sync never reads, and the app fetches them through the people socket for anyone who can see the task.
 - **Helps later.** A run's report or pull request can show the screenshots its agents saved, from the same table.
 
 ### Checking their own work (`daemon/computer-guide.ts`)

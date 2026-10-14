@@ -332,18 +332,21 @@ Tayler went with the coordinator's picks on all of these.
 
 ### Agent computers
 
-- **Purpose.** Every agent has its own computer and checks its own work by looking at it.
+- **Purpose.** Tayler asked for every agent to have its own computer and to check its own work by looking at it.
 - **How it works.**
-  - Boxes get a desktop, a browser, browser control and computer use.
-  - A Screen view in the app shows the live display, and a person can take over and hand back.
+  - Boxes get a desktop, a browser, browser control and computer use. The sessions on one box share its computer, so an agent has one to itself only when it has a box to itself.
+  - A Screen view in the app shows the live display, and a person can take over and hand back. Only the app's own pages may open it, from the origins in `AGENTS_PEOPLE_ORIGINS`, which the API needs to start.
+  - Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
   - Agents verify each change with tests and in the browser, and attach screenshots to the task.
   - Documents can hold images.
   - A helper that lets agents use a Mac is designed but not built.
 - **Implementation.** On the agent computers branch, designed in `docs/design/computers.md`. Its checks, `test/step15.ts` and `test/step15b.ts`, run a real box with the stand-in for Claude, and both pass on its last commit. `docs/build-log.md` records what they proved.
-- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Three choices wait on Tayler:
+- **Status.** Built on its branch, not merged. No real Claude session has used the computer in a box yet, and nothing is tried over the tailnet. Five choices wait on Tayler, and the last two take away something boxes do today:
   - what to do about secrets in saved screenshots, which the scrubber can't read
   - the 24-hour window in which a box that ran private work can be watched only by people who can see that work
   - whether agents keep the standing instruction never to type passwords or act on real accounts without a person, and the approval before five browser tools, both of which limit the browser for safety
+  - the box limits, since a box running three browser engines at once used 2.5 CPUs before the 2-CPU limit, and boxes had no limits before
+  - whether a box whose desktop can't come up should take no work, as it does now, or work without its computer, as it did before
 
 ### The cloud half moves to AWS
 

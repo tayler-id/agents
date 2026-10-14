@@ -1,6 +1,6 @@
 # Agent computers
 
-Every agent that runs in a box gets its own computer: a Linux desktop, a browser, and tools to see and drive both. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
+Every box gets a computer: a Linux desktop, a browser, and tools to see and drive both. The agents' sessions on a box share it, one action at a time, so an agent has a computer to itself only when it has a box to itself. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
 
 Tayler asked for this on 2026-10-13: each agent should have its own computer, with computer use, a browser and a way for people to control it, and agents need to be able to verify their own work, always. This is the design, and everything in it is built on the agent computers branch except what "Not done" at the end lists. `docs/build-log.md` records how it was checked.
 
@@ -21,7 +21,7 @@ Tayler asked for this on 2026-10-13: each agent should have its own computer, wi
    └─ Chromium  (the box's browser, CDP on loopback)     /v1/instance/screen/      │       │
  daemon (agentsd)                                          tunnels/<id>        ◄──┤       │ WebSocket
    ├─ starts and restarts the three above                                         │       ▼
-   ├─ screen service: one RFB client for the agent's  ── outbound WebSockets ─────┘    API, people port 7710
+   ├─ screen service: one RFB client for the agent's  ── outbound WebSockets ─────┘    API, people socket
    │  actions, the control state, and a tunnel per                                      /v1/screens/<box>
    │  viewer to Xvnc                                     relay: pairs each viewer      (Tailscale identity)
    └─ per session: Claude Code with the `computer`       with a box tunnel and drops
@@ -37,6 +37,8 @@ Tayler asked for this on 2026-10-13: each agent should have its own computer, wi
 - **The browser.** Playwright's Chromium build, started by the daemon with its DevTools port on the box's loopback. Its profile is in the box's home volume, which outlives the container the way workspaces do. No check yet shows a login surviving a rebuild. It stays open on the screen, so a person watching sees the page the agent works on.
 - **Playwright's browsers for checks.** The image carries Playwright 1.64.0, the version `package-lock.json` pins, with its Chromium, Chromium headless shell, Firefox and WebKit builds and the system libraries each needs on Debian 12 arm64. Agents and `agentsctl` run checks in all three engines without a download.
 - **Who starts what.** The daemon is the box's main process (under `tini`, which reaps the browser's child processes). It starts Xvnc, matchbox and Chromium, restarts any that exit, and first clears the locks that would stop them. A killed box keeps Xvnc's lock, and Xvnc refuses to start while the process the lock names is alive, which in a probe was the new Xvnc itself. A home volume whose browser was killed on another host keeps Chromium's profile lock, and Chromium refuses a profile locked by another host. `test/step15.ts` brings a box back after an idle stop, after a kill, and on a volume locked elsewhere.
+- **What the desktop sees.** Xvnc, matchbox, Chromium and xclip get only `PATH`, `HOME` and `DISPLAY`. The daemon's own environment holds the machine's token and the team's Claude token, and the browser can show any file it can read, such as `file:///proc/self/environ`, in a screenshot no scrubber reads. On a person's own box, onboarding keeps their Claude token in a file in the home volume. Everything in a box runs as one user, so the browser can open that file too, as the box's agents can.
+- **No work without the computer.** The daemon takes no commands until its desktop is up, so a session never starts without its tools. A part of the desktop that doesn't come up within 30 seconds stops the daemon, and the container's restart policy starts the box again.
 
 ### Agent tools
 
@@ -53,7 +55,7 @@ Every session on a machine with a screen gets one MCP server, `computer` (`daemo
 - **How actions reach the screen.** The daemon's screen service keeps one RFB connection to Xvnc for agents. Clicks and keys go out as RFB pointer and key events, and screenshots come back as raw framebuffer updates that the service encodes as PNG, once the screen has been still for 200 ms or after 3 s at most. No xdotool, ImageMagick or ffmpeg is needed. Printable ASCII is typed key by key. Other text is put on the X clipboard with xclip and pasted with ctrl+v, because Xvnc adds a key to its keymap for each such character and the browser often reads the press before the new keymap. Typed key by key, 9 of 18 strings of accented, Greek, Cyrillic, CJK and emoji text arrived whole. Pasted, 90 of 90 did. Pasting needs an app where ctrl+v pastes, which the browser is. Actions from several sessions on one box run one at a time.
 - **Inputs and outputs are zod schemas.** Each tool's input and structured output is a zod schema in `shared/screen.ts`. The proxied browser tools keep Playwright's own schemas.
 
-**Which actions run without asking.** The box is the agent's own computer, the way its workspace is its own folder. Watching and driving its own screen and browser are allowed without a prompt, because verification needs dozens of them per change and a prompt for each would make the tools useless. These ask a person first, through the usual approval card, because each one can carry data or code out of the box or read a logged-in site's secrets:
+**Which actions run without asking.** The box's computer belongs to the agents that run there, the way a workspace belongs to its session. Watching and driving its own screen and browser are allowed without a prompt, because verification needs dozens of them per change and a prompt for each would make the tools useless. These ask a person first, through the usual approval card, because each one can carry data or code out of the box or read a logged-in site's secrets:
 
 - `browser_file_upload` and `browser_drop`, which send files from the box to a page.
 - `browser_evaluate`, which runs JavaScript with the page's own access, including a logged-in site's cookies and storage.
@@ -65,14 +67,16 @@ The standing instructions also tell agents never to type passwords, payment deta
 ### Watching and taking over
 
 - **The stream leaves the box only outbound.** When a box's desktop is up, its daemon keeps one WebSocket open to the API's machine port, `/v1/instance/screen`, authenticated by the box's instance token. When a person opens the Screen view, the API asks the box over that socket to open a tunnel. The box dials a second WebSocket, `/v1/instance/screen/tunnels/<id>`, and joins it to Xvnc's Unix socket. Nothing listens in the box for the API to call.
-- **The person comes in only through the people port.** The browser opens `/v1/screens/<box>` on the people port, which only `tailscale serve` reaches, so the person's identity is their Tailscale login. The API pairs the person's WebSocket with the box's tunnel and passes RFB bytes both ways.
-- **Who may watch.** Anyone on the box's team, unless the box ran work they can't see. If a session on the box that is working now, or was active in the last 24 hours, belongs to a private task or conversation the person is not in, the API refuses with "This screen has shown work you can't see." The screen shows whatever the box shows, so the rule is about the box, not one session.
-- **Taking over is a typed state machine** (`shared/screen.ts`). The control is either `{ holder: 'agent' }` or `{ holder: 'person', personId, login, since }`. Three events move it. `take` gives a free screen to a person and is a no-op for the person who already holds it. `hand_back` returns it from its holder. `left` returns it when the holder has had no Screen view open for 30 seconds, so a closed tab never strands an agent. Every other combination is refused with a reason a person can read. The server, the box and the app all use the one transition function.
+- **The person comes in only through tailscale serve.** The browser opens `/v1/screens/<box>` on the app's own address. Serve sends it to the API's people socket, `AGENTS_PEOPLE_SOCKET`, with the person's Tailscale login. The API pairs the person's WebSocket with the box's tunnel and passes RFB bytes both ways.
+- **Only the app's pages may open a screen.** A browser sends its page's origin with every WebSocket it opens. The API refuses, with 403, an upgrade whose origin isn't in `AGENTS_PEOPLE_ORIGINS`, a setting it requires at startup, such as `http://agents-server.<tailnet>.ts.net`. Otherwise a page on another site, open in a teammate's browser, could watch and take over as them. Host isn't compared, since the page picks the host it connects to. The take and hand-back posts are covered by main's rule that a person's change must be sent as JSON.
+- **Who may watch.** Anyone on the box's team, unless the box ran work they can't see. If a session on the box that is working now, or was active in the last 24 hours, belongs to a private task or conversation the person is not in, the API refuses with "This screen has shown work you can't see." The screen shows whatever the box shows, so the rule is about the box, not one session. The rule runs again for everyone watching on each sweep, every 5 seconds, and whenever a session on the box reports its status. A viewer who may no longer watch is closed with 4403, and a screen they held goes back to the agent. Handing back runs no watch rule, only a check that the screen is the person's team's, so a person cut off can still hand it back.
+- **Taking over is a typed state machine** (`shared/screen.ts`). The control is either `{ holder: 'agent' }` or `{ holder: 'person', personId, login, since }`. Three events move it. `take` gives a free screen to a person and is a no-op for the person who already holds it. `hand_back` returns it from its holder. `left` returns it when the holder has had no Screen view open for 30 seconds, so a closed tab never strands an agent, or may no longer watch it. Every other combination is refused with a reason a person can read. The server, the box and the app all use the one transition function.
 - **What enforces it.**
   - **The API filters each viewer's input.** It parses the RFB messages a viewer's browser sends and forwards key and pointer events only from the person who holds the screen. Clipboard pastes, desktop resizes and power requests from any viewer are dropped, so nothing enters the box from a viewer except typed and clicked input. When control moves away from a person, the API releases any key or mouse button they still hold, so the agent never inherits a stuck modifier.
-  - **The box refuses the agent's actions while a person holds the screen.** The API sends every change of control to the box over the control socket. The screen service aborts an action in progress, releases what it held, and answers each `computer` or `browser_*` call with "alice has taken over the screen. Wait until they hand it back (screen_status tells you), then take a screenshot before you act." After the hand-back, the agent's next action reports that a person used the screen and includes a fresh screenshot.
-  - **The record shows it.** Each takeover is a row in `screen_takeovers`, and a notice goes into the active sessions on that box: "alice took over the screen", then "alice handed the screen back" or "The screen went back to the agent after alice closed the Screen view".
-- **Latency.** Measured on this Mac by `test/step15.ts` and `test/step15b.ts`, from a key press in the viewer to the changed pixels arriving, through the people port, the API relay, the box tunnel, Xvnc and the box's browser. The first frame arrives 27 to 111 ms after a viewer connects. Through the API to a Node viewer, the median is 15 to 25 ms and the 95th percentile 29 to 36 ms. In the Screen view, the median is 32 ms in Chromium, 16 to 32 ms in WebKit and 15 to 23 ms in Firefox. Over the tailnet it is not measured, and adds the round trip to the server Mac.
+  - **The box refuses the agent's actions while a person holds the screen.** The API sends every change of control to the box over the control socket. The screen service aborts an action in progress, releases what it held, and answers each `computer` or `browser_*` call with "alice has taken over the screen. Wait until they hand it back (screen_status tells you), then take a screenshot before you act." A browser call under way when a person takes over stops then, and the agent gets the refusal, since the `computer` server asks the screen service who holds the screen every 250 ms while a call runs. After the hand-back, the agent's next action reports that a person used the screen and includes a fresh screenshot.
+  - **The record shows it.** Each takeover is a row in `screen_takeovers`, and a notice goes into the active sessions on that box: "alice took over the screen", then "alice handed the screen back", "The screen went back to the agent after alice closed the Screen view" or "The screen went back to the agent because alice may no longer watch it".
+  - **Dead connections are dropped.** The API pings each viewer and each tunnel every 15 seconds and drops one that hasn't answered in 45. A laptop that sleeps or a box that hangs leaves its connection open with nobody behind it, and a holder's dead view would otherwise keep the screen from going back to the agent.
+- **Latency.** Measured on this Mac by `test/step15.ts` and `test/step15b.ts`, from a key press in the viewer to the changed pixels arriving, through the people socket, the API relay, the box tunnel, Xvnc and the box's browser. The first frame arrives 27 to 111 ms after a viewer connects. Through the API to a Node viewer, the median is 15 to 30 ms and the 95th percentile 29 to 38 ms. In the Screen view, the median is 32 ms in Chromium, 16 to 32 ms in WebKit and 15 to 23 ms in Firefox. Over the tailnet it is not measured, and adds the round trip to the server Mac.
 
 ### Verifying their own work
 
@@ -93,22 +97,22 @@ The standing instructions also tell agents never to type passwords, payment deta
 Migration `server/migrations/0008_computers.sql`. Row types are declared once in `shared/screen.ts` and `shared/documents.ts` until the schema generator lands.
 
 - **`instances.screen_width`, `instances.screen_height`.** The size of the screen a machine reports on its heartbeat, or null when it has none. Both set or both null.
-- **`screen_takeovers`, new.** One row per time a person held a machine's screen: `id`, `team_id`, `instance_id`, `person_id`, `session_id` (the session the person was looking at, if any), `started_at`, `ended_at`, and `ended_by` (`handed_back` or `left`). At most one open row per machine, enforced by a unique index. The open row is the control state, so there is no second copy of who holds a screen to drift.
+- **`screen_takeovers`, new.** One row per time a person held a machine's screen: `id`, `team_id`, `instance_id`, `person_id`, `session_id` (the session the person was looking at, if any), `started_at`, `ended_at`, and `ended_by` (`handed_back` or `left`). At most one open row per machine, enforced by a unique index. The open row is the record of who holds a screen. The API keeps a copy per screen and the box keeps the one the API sends it, and every change goes through the API, which writes the row before it updates either copy.
 - **`blobs`, new.** `id`, `team_id`, `sha256`, `media_type`, `size_bytes`, `data` (bytea), `created_at`. Unique on `(team_id, sha256)`.
 - **`artifact_versions.blob_id`.** Set on an image version, whose `content` is empty. A version is text or an image, never both.
 
 ## API routes
 
-| Port | Route | Who | What |
+| Listener | Route | Who | What |
 |---|---|---|---|
 | machines | `GET /v1/instance/screen` (WebSocket) | a box | The box's control connection. Carries control changes and tunnel requests to the box, and keep-alives both ways. |
 | machines | `GET /v1/instance/screen/tunnels/<id>` (WebSocket) | a box | One viewer's RFB stream, from the box's Xvnc. |
 | machines | `POST /v1/instance/heartbeat` | a machine | Now also reports `screen: { width, height }` or `null`. |
 | machines | `POST /v1/sessions/<id>/documents` | a machine | Now also takes images: `{ path, image: { mediaType, base64 } }`. |
-| people | `GET /v1/screens/<box>` (WebSocket) | a person | Watch the screen. Binary frames carry RFB, and text frames carry the control state whenever it changes. |
-| people | `POST /v1/screens/<box>/take` | a person | Take over the keyboard and mouse. Body `{ sessionId? }`, the session the person is looking at. |
-| people | `POST /v1/screens/<box>/hand-back` | a person | Give the screen back to the agent. |
-| people | `GET /v1/artifacts/<id>/versions/<n>/image` | a person | An image version's bytes. |
+| people socket | `GET /v1/screens/<box>` (WebSocket) | a person | Watch the screen, from an origin in `AGENTS_PEOPLE_ORIGINS`. Binary frames carry RFB, and text frames carry the control state whenever it changes. |
+| people socket | `POST /v1/screens/<box>/take` | a person | Take over the keyboard and mouse. Body `{ sessionId? }`, the session the person is looking at. |
+| people socket | `POST /v1/screens/<box>/hand-back` | a person | Give the screen back to the agent. |
+| people socket | `GET /v1/artifacts/<id>/versions/<n>/image` | a person | An image version's bytes. |
 
 ## What each person sees
 
@@ -137,9 +141,10 @@ Agents could also drive a teammate's Mac, for apps that only run there. This is 
 Measured with `docker stats` during `test/step15.ts` on this Mac's colima VM (arm64, 4 CPUs, 8 GB). Claude Code is not in these numbers, since the checks run the stand-in for it.
 
 - **Image.** 1.05 GB compressed and 3.78 GB on disk, against 251 MB and 974 MB before. What each layer costs is in the build log.
-- **Idle box.** The desktop with Chromium open on a blank page takes 323 to 328 MiB, at 0 to 4% of a CPU.
-- **Busy box.** An agent driving the screen takes 564 to 587 MiB at most, up to 24% of a CPU. With Chromium, Firefox and WebKit open at once beside it, as an agent's checks would have them, it takes 1136 to 1160 MiB at most, up to 249% of a CPU.
-- **What to plan per box,** before adding Claude Code: about 0.6 GB while it works on the screen, and about 1.2 GB with a peak of 2.5 CPUs while its checks run three engines.
+- **Limits.** `server/boxes.ts` runs each box with 4 GB of memory and no swap, 2 CPUs and 4,096 processes, threads included, so a runaway browser or agent can't take the host. Step 15 runs three engines at once in a box within them, and passes.
+- **Idle box.** The desktop with Chromium open on a blank page takes 323 to 332 MiB, at 0 to 4% of a CPU.
+- **Busy box.** An agent driving the screen takes 564 to 592 MiB at most, up to 24% of a CPU. With Chromium, Firefox and WebKit open at once beside it, as an agent's checks would have them, it took 1136 to 1160 MiB at most and up to 249% of a CPU before the limits, and 1149 to 1461 MiB and up to 194% under them.
+- **What to plan per box,** before adding Claude Code: about 0.6 GB while it works on the screen, and about 1.5 GB with 2 CPUs while its checks run three engines, which used 2.5 CPUs when nothing held them back.
 
 ## x86 (not built)
 
@@ -147,8 +152,8 @@ Only arm64 is built and tried. Debian ships TigerVNC, matchbox and xclip for amd
 
 ## What other agents need from this
 
-- **Onboarding (each developer's own box and their Claude login).** A developer's box should be created from this image so it has the desktop. Their Claude login needs nothing new. The Screen view works for any box whose daemon reports a screen.
-- **The AWS move.** Boxes need 512 MB of `/dev/shm` (`--shm-size`), outbound WebSockets from the box to the API's machine port (an ALB or the tailnet must allow WebSocket upgrades), and the sizes above. The export must carry the boxes' home volumes, which now hold the browser's profile too. Whether `tailscale serve` passes the Screen view's WebSocket through with the person's identity is not tried, since the checks reach the people port directly.
+- **Onboarding (each person's own box and their Claude login),** which landed first. A person's own box is built from the same image, so it gets the desktop once `server/boxes.ts build` runs and the box is recreated. Their Claude login needs nothing new. The Screen view works for any box whose daemon reports a screen. No check has opened the screen of a person's own box.
+- **The AWS move.** Boxes need 512 MB of `/dev/shm` (`--shm-size`), outbound WebSockets from the box to the API's machine port (an ALB or the tailnet must allow WebSocket upgrades), and the sizes above. Each box needs a network of its own, as Docker's bridge gives it. The desktop and the browser tools find the box's browser at 127.0.0.1:9222. In a probe, a second browser on a shared network listened on [::1] because another held 127.0.0.1, so on the host's network one box's browser tools would reach another box's browser. Step 12c runs boxes that way, and nothing in it drives a browser. The export must carry the boxes' home volumes, which now hold the browser's profile too. Whether `tailscale serve` passes the Screen view's WebSocket through to the people socket with the person's identity is not tried, since the checks stand in for serve with `test/people.ts`.
 - **Verification (`agentsctl`).** The image carries Playwright 1.64.0 with Chromium 156.0.8078.4 (revision 1248) and its headless shell, Firefox 157.0 (1555), WebKit 27.2 (2370) and ffmpeg (1013), in `/opt/ms-playwright`, which `PLAYWRIGHT_BROWSERS_PATH` names. It is read-only to the agent. Another Playwright version's browsers go in the home volume with `PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright npx playwright install`.
 
 ## Decisions for Tayler
@@ -156,13 +161,16 @@ Only arm64 is built and tried. Debian ships TigerVNC, matchbox and xclip for amd
 - **Screenshots can hold secrets.** Saved images aren't scrubbed. The options are to keep the instruction only, or to have the daemon refuse to save a screenshot while the browser's page text contains a known secret value, which can't cover anything outside the page.
 - **The 24-hour privacy window** for watching a box that ran private work.
 - **Limits on the browser.** The standing instructions tell agents never to type passwords, payment details or one-time codes, and never to submit a form that acts on a real account, but to ask a person to take over for that step. Five browser tools ask a person before each use. Both trade some of what a browser on the open web can do for safety, which `AGENTS.md` leaves to Tayler, so they stay only if Tayler keeps them.
+- **The box limits.** 4 GB of memory, 2 CPUs and 4,096 processes, set in `server/boxes.ts`. Without them a box running three browser engines at once peaked at 2.5 CPUs, so the CPU limit slows a box's busiest moments, and a box can't have more than 4 GB however much its work needs. Real Claude Code's use in a box is not measured. Before this, boxes had no limits, so this takes something away.
+- **A box without its desktop takes no work.** A box whose desktop can't come up now stops and starts again until it can, and takes no work meanwhile. Before, it worked without a computer, so agents could still do work that needs no screen. The review that asked for this wanted a session never to start without its tools.
 
 ## Not done
 
 - **The Mac helper** is a design only. Nothing of it is built.
 - **x86.** No amd64 image has been built.
-- **The tailnet.** Latency over the tailnet, and the Screen view through `tailscale serve`, are not tried. The checks reach the people port directly with the identity header.
+- **The tailnet.** Latency over the tailnet, and the Screen view through `tailscale serve`, are not tried. The checks reach the people socket through `test/people.ts`, which stands in for serve, and set the identity header themselves.
 - **A real agent at the computer.** The checks drive the computer tools themselves and run the stand-in for Claude. Real Claude Code's image results were checked once, outside a box, to get their format right. No real Claude session has used the computer in a box yet, so whether agents follow the verify-work loop unprompted is not shown.
 - **Logins surviving a rebuild.** The browser's profile is in the home volume, and no check signs in, rebuilds the box and looks.
-- **Built, with no check yet.** The API letting go of a viewer's held keys and buttons when control moves, dropping clipboard, resize and power messages from viewers, and actions from several sessions on one box running one at a time.
+- **Boxes on a shared network** share the browser's DevTools port, as "The AWS move" above says. Only step 12c runs boxes that way.
+- **Built, with no check yet.** The API letting go of a viewer's held keys and buttons when control moves, dropping clipboard, resize and power messages from viewers, and actions from several sessions on one box running one at a time. A person taking over between the screen service's check and its action is closed off by checking again with nothing awaited in between, which no check can time.
 - **Screenshot scrubbing** waits on the decision above.
