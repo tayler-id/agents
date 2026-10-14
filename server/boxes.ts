@@ -125,7 +125,10 @@ async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string)
   const { personal } = BoxKind.parse(await one(client, 'the box', 'select personal from instances where id = $1', [instanceId]))
   const secrets: Record<string, string> = { AGENTS_TOKEN: token }
   if (!personal && existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
-  await docker(['run', '-d', '--name', boxContainer(instanceId), '--restart', 'unless-stopped',
+  // Without NET_RAW a box cannot put raw frames on the shared bridge, such as ARP
+  // replies that claim another box's address, and cannot capture packets or run
+  // raw-socket scans. A ping an agent installs still works, through ICMP sockets.
+  await docker(['run', '-d', '--name', boxContainer(instanceId), '--restart', 'unless-stopped', '--cap-drop', 'NET_RAW',
     '--label', `${BOX_LABEL}=${instanceId}`, '-v', `${boxHomeVolume(instanceId)}:/home/agent`,
     '-e', `AGENTS_API=${API_FROM_BOX}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app',
     ...Object.keys(secrets).flatMap((name) => ['-e', name]), ...EXTRA_ARGS, IMAGE], secrets)

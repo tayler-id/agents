@@ -87,7 +87,10 @@ const Container = z.object({
   State: z.object({ Running: z.boolean() }),
   Config: z.object({ Image: z.string(), Env: z.array(z.string()), Labels: z.record(z.string(), z.string()) }),
   Mounts: z.array(z.object({ Type: z.string(), Name: z.string().optional(), Destination: z.string() })),
+  HostConfig: z.object({ CapDrop: z.array(z.string()).nullable() }),
 })
+// CAP_NET_RAW is bit 13 of a process's capability sets.
+const NET_RAW_BIT = 1n << 13n
 type Container = z.infer<typeof Container>
 const inspect = (name: string): Container | null => {
   const out = tryDocker('container', 'inspect', name)
@@ -132,6 +135,11 @@ try {
   check(first.Mounts.some((m) => m.Type === 'volume' && m.Name === `${container}-home` && m.Destination === '/home/agent'),
     "the box's home folder is a volume on the box host")
   check(envOf(first, 'AGENTS_API') === BOX_API, `the box reaches the server at AGENTS_BOX_API (${BOX_API})`)
+  // A line of /proc/<pid>/status reads "CapBnd:	00000000a80425fb".
+  const bounding = tryDocker('exec', container, 'grep', 'CapBnd', '/proc/1/status')?.split(/\s+/)[1]
+  check((first.HostConfig.CapDrop ?? []).some((cap) => cap === 'NET_RAW' || cap === 'CAP_NET_RAW')
+    && bounding !== undefined && (BigInt(`0x${bounding}`) & NET_RAW_BIT) === 0n,
+  `the box runs without NET_RAW, so it cannot put raw frames on the shared bridge (CapBnd ${bounding ?? 'unread'})`)
   check(sha256(token) === await tokenOf(boxId) && envOf(first, 'CLAUDE_CODE_OAUTH_TOKEN') === claudeToken,
     'both tokens reached the container through the Docker CLI\'s environment, and the server keeps the box token\'s hash')
 
