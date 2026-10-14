@@ -124,9 +124,11 @@ const HIDDEN: [string, string][] = [
   ['an escaped backtick', 'Visible. \\`<span hidden>SECRET</span>`'],
   ['backticks split by a blank line', 'Visible. `x\n\n<span hidden>SECRET</span> y`'],
 ]
+// Text in the tag block is not the letters it spells, so the check looks for its characters too.
+const TAG_BLOCK = /[\u{e0000}-\u{e007f}]/u
 for (const [label, hidden] of HIDDEN) {
   const seen = attempt(() => report(hidden))
-  check(typeof seen === 'string' && seen.includes('Visible.') && !seen.includes('SECRET'),
+  check(typeof seen === 'string' && seen.includes('Visible.') && !seen.includes('SECRET') && !TAG_BLOCK.test(seen),
     `${label} stays away from the agent (${typeof seen === 'string' ? seen.split('\n').slice(2).join(' / ') : seen.message})`)
 }
 const joined = attempt(() => text.visibleText(`To${String.fromCodePoint(0x200b)}tal${String.fromCodePoint(0x200d)}s${String.fromCodePoint(0x2066)}.`))
