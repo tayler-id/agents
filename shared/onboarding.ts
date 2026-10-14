@@ -134,7 +134,16 @@ export const JoinBody = z.object({}).strict()
 
 // Request bodies, machine port, from a box's daemon during a Claude sign-in.
 
-export const LoginLinkBody = z.object({ url: z.url({ protocol: /^https$/ }) })
+// Claude's sign-in page, as `claude setup-token` 2.1.296 prints it. A box can send
+// its owner to this page and nowhere else.
+const SIGN_IN_HOST = 'claude.com'
+const SIGN_IN_PATH = '/cai/oauth/authorize'
+export const LoginLinkBody = z.object({
+  url: z.url({ protocol: /^https$/ }).refine((url) => {
+    const { hostname, pathname } = new URL(url)
+    return hostname === SIGN_IN_HOST && pathname === SIGN_IN_PATH
+  }, `the sign-in link must be on ${SIGN_IN_HOST} at ${SIGN_IN_PATH}`),
+})
 export const LoginDoneBody = z.object({ validDays: z.number().int().min(0).max(3660) })
 export const LoginFailedBody = z.object({ reason: z.string().trim().min(1).max(500) })
 export const LoginCodeReply = z.object({ code: ClaudeCode })

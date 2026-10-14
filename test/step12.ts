@@ -396,6 +396,10 @@ try {
   const plain = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: 'http://claude.com/plain' })
   check(fromOther.status === 404 && plain.status === 400,
     `another machine cannot post the link, and a link must be https (${fromOther.status} ${fromOther.text}, ${plain.status} ${plain.text})`)
+  const elsewhere = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: `https://claude.example/cai/oauth/authorize?state=${state}` })
+  const otherPath = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: `https://claude.com/download?state=${state}` })
+  check(elsewhere.status === 400 && otherPath.status === 400 && (await signInRow(loginId))?.status === 'starting',
+    `the box's link must be Claude's sign-in page, on claude.com at /cai/oauth/authorize (${elsewhere.status}, ${otherPath.status})`)
   const linked = await asBox(boxToken, `/v1/instance/claude-logins/${loginId}/link`, { url: signInLink })
   const ownView = await within(10, async () => (await shapeRows(OFF_PEOPLE, invitee, 'claude_logins')).rows.some((r) => r.id === loginId && r.url === signInLink))
   check(linked.status === 200 && (await signInRow(loginId))?.status === 'waiting_for_code' && ownView
