@@ -7,6 +7,7 @@
 // browser to the changed pixels on its screen. Opens a screenshot the agent
 // saved. Then stops the box, and the Screen view must say so. Scans for
 // accessibility problems and takes screenshots (light, dark, phone) to look at.
+// The box image is built under a tag of the run's own, removed at the end.
 // The box reaches this check's API only on 7701, the machine port the box
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step15b.ts
@@ -21,7 +22,9 @@ import { chromium, firefox, webkit, type Browser, type BrowserType, type Page } 
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { must } from './must.ts'
-import { ROOT, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, docker, tryDocker, boxCheckEnv, peopleSocket, computerTools, pageSays, stopAll } from './computers.ts'
+import {
+  ROOT, IMAGE, MACHINE_PORT, SCREEN, SQUARE, INPUT, PAGE_URL, within, docker, tryDocker, boxCheckEnv, peopleSocket, computerTools, pageSays, stopAll,
+} from './computers.ts'
 import { servePeople } from './people.ts'
 
 const SHOTS = join(ROOT, 'test', 'ui-shots')
@@ -326,6 +329,8 @@ try {
     tryDocker('rm', '-f', `agents-box-${boxId}`)
     tryDocker('volume', 'rm', `agents-box-${boxId}-home`)
   }
+  // The run's own image goes too, and the disk keeps no copy of it.
+  tryDocker('rmi', IMAGE)
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
     rmSync(work, { recursive: true, force: true })

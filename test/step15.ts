@@ -1,5 +1,5 @@
-// Agent computers, step 15. A real box built from box/Dockerfile, under the tag
-// agents-box:computers, runs the stand-in for Claude within its limits. Its
+// Agent computers, step 15. A real box built from box/Dockerfile, under a tag
+// of the run's own, runs the stand-in for Claude within its limits. Its
 // desktop comes up, sees none of the daemon's tokens, and reports a screen. A
 // task's session in it gets the computer tools, the standing instructions and
 // the verify-work skill, and those tools drive the box's screen and browser.
@@ -617,6 +617,8 @@ try {
     tryDocker('rm', '-f', `agents-box-${boxId}`)
     tryDocker('volume', 'rm', `agents-box-${boxId}-home`)
   }
+  // The run's own image goes too, and the disk keeps no copy of it.
+  tryDocker('rmi', IMAGE)
   if (!failures.length) {
     await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
     rmSync(work, { recursive: true, force: true })

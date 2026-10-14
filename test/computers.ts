@@ -3,6 +3,7 @@
 // the agent's computer tools, started the way Claude Code starts them.
 
 import { execFileSync, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { once } from 'node:events'
 import { connect } from 'node:net'
 import { join } from 'node:path'
@@ -11,7 +12,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 export const ROOT = new URL('..', import.meta.url).pathname
-export const IMAGE = 'agents-box:computers'
+// Each run builds a box image under its own tag and removes it when it ends.
+// agents-box:latest is the one the live server starts boxes from.
+export const IMAGE = `agents-box:comp-${randomBytes(4).toString('hex')}`
 // The box firewall lets containers reach only 7700 and this port on the Mac, so
 // both checks use it, one at a time, holding ~/.agents-app/checks/run.lock.
 export const MACHINE_PORT = 7701
