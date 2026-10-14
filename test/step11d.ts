@@ -179,10 +179,39 @@ try {
   check([...named('ServerSystemCheck'), ...named('BoxHostSystemCheck')].every((a) => a.actions.includes(':automate:') && a.actions.includes(':ec2:recover'))
     && [...named('ServerInstanceCheck'), ...named('BoxHostInstanceCheck')].every((a) => a.actions.includes(':ec2:reboot')),
   'a failed hardware check recovers the instance, and a failed instance check reboots it')
-  check(['ApiDown', 'ElectricDown', 'ForgeDown', 'BackupOld'].every((prefix) => named(prefix)[0]?.p.TreatMissingData === 'breaching'),
-    'the API, Electric, the forge and the backup alarm when the server stops reporting, not only on a bad value')
-  check(named('BoxHostMemory')[0]?.p.Threshold === 85 && named('ElectricBehind')[0]?.p.MetricName === 'OldestReplicationSlotLag',
-    "the box host's memory and Electric's replication lag have alarms")
+  // Each alarm as docs/aws.md names it: what it watches, how often, and when it fires.
+  type Watch = [namespace: string, metric: string, dimension: string, statistic: string, seconds: number, threshold: number, periods: number,
+    comparison: 'GreaterThanThreshold' | 'LessThanThreshold', missing: 'breaching' | 'notBreaching']
+  const instance = (prefix: string) => `InstanceId={${idOf(resources, 'AWS::EC2::Instance', prefix)}}`
+  const rdsInstance = `DBInstanceIdentifier={${idOf(resources, 'AWS::RDS::DBInstance', 'Database')}}`
+  const GIB = 1024 ** 3
+  const WATCHES: Record<string, Watch> = {
+    ServerSystemCheck: ['AWS/EC2', 'StatusCheckFailed_System', instance('Server'), 'Maximum', 60, 0, 2, 'GreaterThanThreshold', 'notBreaching'],
+    BoxHostSystemCheck: ['AWS/EC2', 'StatusCheckFailed_System', instance('BoxHost'), 'Maximum', 60, 0, 2, 'GreaterThanThreshold', 'notBreaching'],
+    ServerInstanceCheck: ['AWS/EC2', 'StatusCheckFailed_Instance', instance('Server'), 'Maximum', 60, 0, 3, 'GreaterThanThreshold', 'notBreaching'],
+    BoxHostInstanceCheck: ['AWS/EC2', 'StatusCheckFailed_Instance', instance('BoxHost'), 'Maximum', 60, 0, 3, 'GreaterThanThreshold', 'notBreaching'],
+    ServerDisk: ['Agents', 'DiskUsedPercent', 'Host=server', 'Maximum', 300, 80, 2, 'GreaterThanThreshold', 'notBreaching'],
+    BoxHostDisk: ['Agents', 'DiskUsedPercent', 'Host=boxes', 'Maximum', 300, 80, 2, 'GreaterThanThreshold', 'notBreaching'],
+    BoxHostMemory: ['Agents', 'MemoryUsedPercent', 'Host=boxes', 'Average', 300, 85, 3, 'GreaterThanThreshold', 'notBreaching'],
+    ApiDown: ['Agents', 'ApiUp', 'Host=server', 'Minimum', 60, 1, 3, 'LessThanThreshold', 'breaching'],
+    ElectricDown: ['Agents', 'ElectricUp', 'Host=server', 'Minimum', 60, 1, 3, 'LessThanThreshold', 'breaching'],
+    ForgeDown: ['Agents', 'ForgeUp', 'Host=server', 'Minimum', 60, 1, 3, 'LessThanThreshold', 'breaching'],
+    BackupOld: ['Agents', 'BackupAgeHours', 'Host=server', 'Maximum', 300, 30, 1, 'GreaterThanThreshold', 'breaching'],
+    DatabaseStorage: ['AWS/RDS', 'FreeStorageSpace', rdsInstance, 'Average', 300, 4 * GIB, 1, 'LessThanThreshold', 'notBreaching'],
+    DatabaseCpu: ['AWS/RDS', 'CPUUtilization', rdsInstance, 'Average', 300, 80, 3, 'GreaterThanThreshold', 'notBreaching'],
+    ElectricBehind: ['AWS/RDS', 'OldestReplicationSlotLag', rdsInstance, 'Maximum', 300, GIB, 2, 'GreaterThanThreshold', 'notBreaching'],
+  }
+  const Dimensions = z.array(z.object({ Name: z.string(), Value: z.unknown() }))
+  for (const [prefix, [namespace, metric, dimension, statistic, seconds, threshold, periods, comparison, missing]] of Object.entries(WATCHES)) {
+    const found = named(prefix)
+    const p = found[0]?.p ?? {}
+    const seen = [p.Namespace, p.MetricName, Dimensions.parse(p.Dimensions ?? []).map((d) => `${d.Name}=${rendered(d.Value)}`).join(','), p.Statistic, p.Period,
+      p.Threshold, p.EvaluationPeriods, p.DatapointsToAlarm, p.ComparisonOperator, p.TreatMissingData]
+    const wanted = [namespace, metric, dimension, statistic, seconds, threshold, periods, periods, comparison, missing]
+    check(found.length === 1 && seen.every((value, i) => value === wanted[i]),
+      `${prefix}: ${metric} (${statistic}, ${String(seconds)} s) ${comparison === 'GreaterThanThreshold' ? 'over' : 'under'} ${String(threshold)} for ${String(periods)} periods, missing data ${missing}`)
+  }
+  check(Object.keys(WATCHES).length === alarms.length, `no alarm beyond those ${String(Object.keys(WATCHES).length)}`)
 
   // ---- Sizes and teardown ----
   const bigger = resourcesOf(synth({ AGENTS_AWS_BOX_HOST_TYPE: 'm7g.2xlarge' }))
