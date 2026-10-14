@@ -19,7 +19,7 @@ Blocking:
 
 1. A script passed the opaque gate by starting with image bytes. An image now needs its extension to name the format its first bytes show. Done.
 2. Two files could share one path, since git's output is read as UTF-8. A path holding U+FFFD, or one git lists twice, now fails closed. Done.
-3. A person's message to a judge's session started it without its limits. Not started.
+3. A person's message to a judge's session started it without its limits. `sendToSession` now refuses a message to any session a review or confirm row lists among its reviewers, with a 409. No column was added: the reviewers list is the mark, and a schema change to `agents_test` was refused by the permission system. Done.
 4. `JUDGE_PERMISSIONS` had no check. Not started.
 5. The obligation backoff overflowed at 31 tries. Not started.
 
@@ -33,7 +33,7 @@ Not blocking:
 
 - Use `~/.local/node/bin/node`. Typecheck both with `tsc -p .` and `tsc -p app`, then `eslint .` and `node test/names.ts`.
 - step16b and step16f need no database: `node test/step16b.ts`.
-- step16, step16c and step16d run against a scratch database built from this branch's migrations alone, never `agents_test`, which holds other branches' migrations: `createdb agents_test_self`, then `DATABASE_URL=<agents_test's URL with agents_test_self> node --env-file=.env --env-file=.env.test test/step16d.ts`. The real environment wins over the env files. Drop the database when done.
+- step16, step16c and step16d run on `agents_test` through `.env.test`, as `npm run check` does. A scratch database will not do for them: the daemon hears of commands only through the test Electric, which replicates `agents_test` alone. Do not change `agents_test`'s schema by hand. The permission system refuses it.
 - `STEP16_ONLY=HAPPY,BOXED` runs only the named sections of step16.
 - None of these checks use port 7701. Take `~/.agents-app/checks/run.lock` with `mkdir` before anything that does, and `rmdir` it after.
 - `.scratch/seen-failing.ts <spec.json>` breaks a guard with anchored edits, runs its check, restores every file and compares sha256. `.scratch` is ignored by git.

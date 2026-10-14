@@ -506,7 +506,9 @@ function modelProblems(author: AgentRow | undefined, authorName: string, judges:
 }
 
 // Starts each judge's turn in a session of its own, with no team-record tools,
-// so it cannot read the author's session.
+// so it cannot read the author's session. The row's reviewers, written in the
+// transaction that creates each session, mark it a judge's, and sendToSession
+// refuses a person's message to it.
 async function startJudges(client: pg.PoolClient, run: Run, rows: Row[], row: Row, workspace: Workspace, budget: number,
   judges: AgentRow[], prompt: string, outcomes: string[], allow: string[], state: Omit<ReviewState, 'reviewers'>) {
   const earlier = rows.filter((r) => r.stage === row.stage).flatMap((r) => REVIEW_STATE.safeParse(r.data).data?.reviewers ?? [])

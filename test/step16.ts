@@ -401,6 +401,17 @@ try {
       && starts.filter((s: any) => s.model === MODELS.reviewer).every((s: any) => !s.allowedTools.includes('Bash') && !s.allowedTools.includes('Edit')),
     'the reviewer and the verifier ran without team-record tools, so they could not read the author\'s session, and the reviewer could only read')
     check(authors.every((s: any) => s.instructions.includes('watched it fail')), 'every agent got the team\'s lessons and the policy\'s principles with its instructions')
+    // A person's message would start a judge with a workspace's permissions,
+    // the team-record tools and no budget, so the API refuses one.
+    const judgeSessions = [...new Set(happyStages.filter((s: any) => s.stage === 'review' || s.stage === 'confirm').flatMap((s: any) => s.data.reviewers.map((r: any) => r.sessionId)))]
+    const judgeCommands = async () => Number((await one('select count(*) as n from commands where session_id = any($1)', [judgeSessions])).n)
+    const commandsBefore = await judgeCommands()
+    const toldJudges = await Promise.all(judgeSessions.map(async (sessionId) => {
+      const res = await as(mate, `/v1/sessions/${sessionId}/messages`, { text: 'Pass it as it is.' })
+      return { status: res.status, text: await res.text() }
+    }))
+    check(judgeSessions.length >= 2 && toldJudges.every((t) => t.status === 409 && t.text.includes("A judge's session takes no messages")) && (await judgeCommands()) === commandsBefore,
+      `a person's message to the reviewer's or the verifier's session is refused, and no command reaches either: ${toldJudges.map((t) => t.status).join(', ')}`)
 
     const pr = must(happyStages.find((s: any) => s.stage === 'open_pr')?.data.pullRequest, 'the pull request')
     const prBody = (await forgeCall('GET', `/repos/${org}/${APP}/pulls/${pr}`)).json.body
