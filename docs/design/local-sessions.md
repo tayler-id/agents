@@ -103,7 +103,7 @@ Durability leaves terminal sessions alone where it resumes turns, since a termin
 
 ## Mapping a transcript to events
 
-The mapping is `transcriptBatch` in `daemon/claude.ts`, beside the mapping for the app's sessions, and both make their blocks into events with the same function.
+The mapping is `transcriptBatch` in `daemon/claude.ts`, beside the mapping for the app's sessions, and both make their blocks into events with the same function. A block is parsed with one schema, a union on its `type`. A text, thinking, tool call or tool result block names the fields the mapping reads and their types. Any other block, and one of those with a field of the wrong type after an update, is a `notice` that keeps the block as written, so it can't make the API refuse the post it is in.
 
 | Transcript line | Event |
 |---|---|
@@ -176,7 +176,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - What a session writes while its folder is disconnected, with the daemon stopped through the disconnect and the connect after it: it stays on the Mac, the API refuses it, and the daemon's log shows it never tried. A session from a Mac clock a minute ahead of the server's, closed by a reconnect, is refused once and then passed over. Every session in the check starts exactly at its folder's `connected_at`, so a folder connected again a moment later is newer than all of them.
 - One bad session, line or file: a session the API answers with 500, from an event the check puts at its next number, holds up no other folder's session and lands whole once the API takes it. A line with NULs and a lone surrogate lands. A transcript the daemon can't read is parked, with a message. The check doesn't wait the four minutes it takes to park a session the API keeps failing.
 - A transcript replaced by a new file, one cut short in place, and one rewritten in place with a different first line are each read again from the start, and the record takes only the lines it didn't have.
-- No line is lost: a post the API refuses with 404 parks its session and a restart sends its lines, three 4.2 MB prompts in three-byte characters land in posts under 20 MiB, lines that don't parse are counted in the log, and a prompt whose fields changed type lands with its raw line as written.
+- No line is lost: a post the API refuses with 404 parks its session and a restart sends its lines, three 4.2 MB prompts in three-byte characters land in posts under 20 MiB, lines that don't parse are counted in the log, and a prompt whose fields changed type lands with its raw line as written, and so do a text block, a tool call and a tool result whose fields changed type, each as a notice holding the block.
 - The folders command: a folder typed in the wrong case is stored in its case on disk and gets its sessions, connect prints the transcript folder the daemon reads, and it warns when the shell sets `CLAUDE_CONFIG_DIR`.
 - A transcript whose lines name another folder's session writes nothing into it, and the daemon says why. The API refuses that session id for another folder.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.

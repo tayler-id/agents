@@ -23,7 +23,34 @@ export const CLAUDE_BIN = process.env.AGENTS_CLAUDE_BIN ?? 'claude'
 // Progress counters and command lists. They stay in the raw lines but make no event.
 const SKIPPED_SYSTEM = new Set(['thinking_tokens', 'commands_changed'])
 
-type Block = { type: string; [key: string]: unknown }
+// The blocks of a message, as the CLI streams them and as a transcript keeps
+// them. A block of a kind this file maps names the fields it reads, with their
+// types. Any other block, a kind it doesn't map or a mapped one whose field
+// changed type in a Claude Code update, is an `other` block. It makes a notice
+// and keeps the block as written, so it can't break the line around it.
+const optional = <T extends z.ZodType>(schema: T) => schema.optional().catch(undefined)
+const KnownBlock = z.discriminatedUnion('type', [
+  z.looseObject({ type: z.literal('text'), text: z.string() }),
+  z.looseObject({ type: z.literal('thinking'), thinking: z.string() }),
+  z.looseObject({ type: z.enum(['tool_use', 'server_tool_use']), id: z.string(), name: z.string(), input: z.unknown().optional() }),
+  z.looseObject({ type: z.literal('tool_result'), tool_use_id: z.string(), content: z.unknown().optional(), is_error: optional(z.boolean()) }),
+])
+const OtherBlock = z.looseObject({ type: z.string() }).transform((block) => ({ type: 'other' as const, kind: block.type, block }))
+export const Block = z.union([KnownBlock, OtherBlock])
+export type Block = z.infer<typeof Block>
+
+const textBlock = (text: string): Block => ({ type: 'text', text })
+// Whether a block is an `other` one of this kind.
+const isOther = (block: Block, kind: string) => block.type === 'other' && block.kind === kind
+
+// A message's content as blocks. A string is one text block, and content that
+// is neither a string nor blocks has none.
+function blocksOf(content: unknown): Block[] {
+  if (typeof content === 'string') return [textBlock(content)]
+  const parsed = z.array(Block).safeParse(content)
+  return parsed.success ? parsed.data : []
+}
+
 type StreamEvent = {
   type?: string
   index?: number
@@ -36,17 +63,20 @@ type Line = {
   uuid?: string
   session_id?: string
   parent_tool_use_id?: string | null
-  message?: { id?: string; model?: string; content?: string | Block[] }
+  message?: { id?: string; model?: string; content?: unknown }
   [key: string]: unknown
 }
 
+const InputFields = z.record(z.string(), z.unknown())
+
 // The part of a tool call a person would scan for: the command, the path, the query.
 function toolCallText(name: unknown, input: unknown): string {
-  const fields = (input ?? {}) as Record<string, unknown>
+  // An input that isn't an object has no field to pick, and the text shows the input whole.
+  const fields = InputFields.safeParse(input).data ?? {}
   const key = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']
     .find((k) => typeof fields[k] === 'string')
   const value = key ? fields[key] : undefined
-  return `${typeof name === 'string' ? name : 'tool'} ${typeof value === 'string' ? value : JSON.stringify(fields)}`
+  return `${typeof name === 'string' ? name : 'tool'} ${typeof value === 'string' ? value : JSON.stringify(input ?? {})}`
 }
 
 function resultText(content: unknown): string {
@@ -66,27 +96,27 @@ function blockEvent(line: Pick<Line, 'type' | 'parent_tool_use_id' | 'message'>,
   switch (block.type) {
     case 'text':
       return line.type === 'assistant'
-        ? { clientId, kind: 'assistant', parentToolUseId, text: block.text as string, body: { text: block.text, model: line.message?.model, ...context } }
-        : { clientId, kind: 'notice', parentToolUseId, text: block.text as string, body: { role: 'user', text: block.text, ...context } }
+        ? { clientId, kind: 'assistant', parentToolUseId, text: block.text, body: { text: block.text, model: line.message?.model, ...context } }
+        : { clientId, kind: 'notice', parentToolUseId, text: block.text, body: { role: 'user', text: block.text, ...context } }
     case 'thinking':
-      return { clientId, kind: 'thinking', parentToolUseId, text: block.thinking as string, body: { thinking: block.thinking, ...context } }
+      return { clientId, kind: 'thinking', parentToolUseId, text: block.thinking, body: { thinking: block.thinking, ...context } }
     case 'tool_use':
     case 'server_tool_use':
       return {
         clientId, kind: 'tool_call', parentToolUseId,
-        toolUseId: block.id as string, toolName: block.name as string, text: toolCallText(block.name, block.input),
+        toolUseId: block.id, toolName: block.name, text: toolCallText(block.name, block.input),
         body: { id: block.id, name: block.name, input: block.input, ...context },
       }
     case 'tool_result':
       return {
         clientId, kind: 'tool_result', parentToolUseId,
-        toolUseId: block.tool_use_id as string, text: resultText(block.content),
+        toolUseId: block.tool_use_id, text: resultText(block.content),
         body: { toolUseId: block.tool_use_id, content: block.content, isError: block.is_error ?? false, ...context },
       }
-    default:
+    case 'other':
       return {
-        clientId, kind: block.type.endsWith('_tool_result') ? 'tool_result' : 'notice', parentToolUseId,
-        body: { block, ...context },
+        clientId, kind: block.kind.endsWith('_tool_result') ? 'tool_result' : 'notice', parentToolUseId,
+        body: { block: block.block, ...context },
       }
   }
 }
@@ -112,9 +142,7 @@ export function toBatch(line: Line): EventBatch {
   // record as the person's user event, so it only tells the harness which turn took it.
   if (type === 'user' && line.isReplay === true) return { events: [], raw }
   if (type === 'assistant' || type === 'user') {
-    const content = line.message?.content
-    const blocks: Block[] = typeof content === 'string' ? [{ type: 'text', text: content }] : content ?? []
-    return { events: blocks.map((block, i) => blockEvent(line, block, `${clientId}:${i}`)), raw, status: 'running' }
+    return { events: blocksOf(line.message?.content).map((block, i) => blockEvent(line, block, `${clientId}:${i}`)), raw, status: 'running' }
   }
   if (type === 'result') {
     const events: NewEvent[] = [{ clientId, kind: 'usage', body: { subtype, ...rest } }]
@@ -163,8 +191,6 @@ function liveDeltas(line: Line): EventBatch['live'] {
 // Claude Code's own and not documented, so every field but the type is optional
 // here, and one whose type changes in a Claude Code update reads as absent
 // rather than losing the line. A line of a type this file does not map makes no event.
-const optional = <T extends z.ZodType>(schema: T) => schema.optional().catch(undefined)
-const TranscriptBlock = z.looseObject({ type: z.string() })
 export const TranscriptLine = z.looseObject({
   type: z.string(),
   uuid: optional(z.string()),
@@ -180,7 +206,7 @@ export const TranscriptLine = z.looseObject({
     model: optional(z.string()),
     stop_reason: optional(z.string().nullable()),
     usage: z.unknown().optional(),
-    content: optional(z.union([z.string(), z.array(TranscriptBlock)])),
+    content: optional(z.union([z.string(), z.array(Block)])),
   })),
 })
 export type TranscriptLine = z.infer<typeof TranscriptLine>
@@ -194,7 +220,6 @@ const SKIPPED_TRANSCRIPT_SYSTEM = new Set(['stop_hook_summary', 'turn_duration']
 const INTERRUPTED = /^\[Request interrupted by user/
 // Stop reasons that leave the turn with the model. Any other ends the turn.
 const CONTINUING = new Set(['tool_use', 'pause_turn'])
-const THINKING = new Set(['thinking', 'redacted_thinking'])
 
 // A block whose content is sent as base64, such as a PDF Claude read.
 const Base64Source = z.looseObject({ type: z.literal('base64') })
@@ -229,21 +254,21 @@ function transcriptEvents(line: TranscriptLine, id: string, parentToolUseId: str
   const subagent = parentToolUseId !== null
   const context = { type: line.type, parent_tool_use_id: parentToolUseId, message: line.message }
   const content = line.message?.content
-  const blocks: Block[] = typeof content === 'string' ? [{ type: 'text', text: content }] : content ?? []
+  const blocks: Block[] = typeof content === 'string' ? [textBlock(content)] : content ?? []
   if (line.type === 'assistant') {
     const events = blocks.map((block, i) => blockEvent(context, block, `${id}:${i}`))
     if (subagent) return { events }
     // Every line of a message carries the message's stop reason. A message that
     // ends the turn has its words after its thinking, so its thinking ends nothing.
     const stop = line.message?.stop_reason
-    if (typeof stop !== 'string' || CONTINUING.has(stop) || blocks.every((b) => THINKING.has(b.type))) return { events, status: 'running' }
+    if (typeof stop !== 'string' || CONTINUING.has(stop) || blocks.every((b) => b.type === 'thinking' || isOther(b, 'redacted_thinking'))) return { events, status: 'running' }
     return { events: [...events, { clientId: `${id}:end`, kind: 'usage', body: { stopReason: stop, usage: line.message?.usage } }], status: 'idle' }
   }
   if (line.type === 'user') {
     if (line.isMeta) return null
-    const events = blocks.flatMap((block, i) => (block.type === 'text' || block.type === 'image' ? [] : [blockEvent(context, block, `${id}:${i}`)]))
-    const said = blocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
-    const images = blocks.filter((b) => b.type === 'image').length
+    const events = blocks.flatMap((block, i) => (block.type === 'text' || isOther(block, 'image') ? [] : [blockEvent(context, block, `${id}:${i}`)]))
+    const said = blocks.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n')
+    const images = blocks.filter((b) => isOther(b, 'image')).length
     if (!said && !images) return { events, status: subagent ? undefined : 'running' }
     if (INTERRUPTED.test(said)) {
       // The terminal page draws a notice with this subtype as Interrupted, and hides the other notices.
@@ -252,7 +277,7 @@ function transcriptEvents(line: TranscriptLine, id: string, parentToolUseId: str
     if (!subagent && fromPerson(line)) {
       return { events: [...events, { clientId: `${id}:said`, kind: 'user', text: said, body: { text: said, images } }], status: 'running' }
     }
-    return { events: [...events, blockEvent(context, { type: 'text', text: said }, `${id}:said`)] }
+    return { events: [...events, blockEvent(context, textBlock(said), `${id}:said`)] }
   }
   if (line.type === 'system' && line.subtype !== undefined && !SKIPPED_TRANSCRIPT_SYSTEM.has(line.subtype)) {
     return { events: [{ clientId: id, kind: 'notice', text: line.subtype, parentToolUseId: parentToolUseId ?? undefined, body: { subtype: line.subtype, content: line.content } }] }

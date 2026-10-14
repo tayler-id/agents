@@ -11,6 +11,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpath
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
 import { must } from './must.ts'
 
@@ -223,6 +224,25 @@ try {
   const stop = (await eventsOfHarness(escaped.session)).find((e) => e.kind === 'notice')
   check(stop?.body.subtype === 'interrupted' && stop.text === '[Request interrupted by user]' && (await sessionOf(escaped.session))?.status === 'idle',
     `a turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle: ${JSON.stringify(stop?.body)}`)
+
+  // A block with a field of the wrong type, as a Claude Code update might write one, is a notice that keeps the block as written.
+  // The turns around it land, where a tool call with a number for its id would have had the whole post refused.
+  const wrongBlocks = [
+    { type: 'text', text: 5 },
+    { type: 'tool_use', id: 7, name: 'Read', input: {} },
+    { type: 'tool_result', tool_use_id: 7, content: 'a result for a call with a number for its id' },
+  ]
+  const wrongRun = transcript(claudeDir, shop, afterShop)
+  wrongRun.write([
+    wrongRun.line({ type: 'user', message: { role: 'user', content: 'Call a tool whose id is a number.' }, turnOrigin: 'human' }),
+    wrongRun.line({ type: 'assistant', message: { id: 'msg_wrong', type: 'message', role: 'assistant', model: 'claude-haiku-4-5', stop_reason: 'tool_use', content: wrongBlocks.slice(0, 2) } }),
+    wrongRun.line({ type: 'user', message: { role: 'user', content: wrongBlocks.slice(2) } }),
+  ])
+  wrongRun.turn({ prompt: 'And a normal one.', reply: 'Done.' })
+  const wrongLanded = await until('the session with blocks of the wrong type', LANDS_SEC, async () => (await turnsEnded(wrongRun.session)) === 1)
+  const wrongNotices = (await eventsOfHarness(wrongRun.session)).filter((e) => e.kind === 'notice')
+  check(wrongLanded && isDeepStrictEqual(wrongNotices.map((e) => e.body.block), wrongBlocks),
+    `a text block, a tool call and a tool result with a field of the wrong type are notices holding the block as written, and the turns around them land (${wrongNotices.length} notices)`)
 
   // Secrets: a nested .env, values under any name, a PDF, a folder and a session named with a secret, and the login shell's.
   const secrets = transcript(claudeDir, shop, afterShop)

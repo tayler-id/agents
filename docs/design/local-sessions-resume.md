@@ -32,6 +32,7 @@ The branch's commits, oldest first, by subject:
 19. `connect` stores each name in its case on disk, prints the transcript folder the daemon reads, and warns when the shell sets `CLAUDE_CONFIG_DIR`.
 20. A session the API closes is passed over for good after its first 409. A Mac clock ahead of the server's made the daemon take the session again on every read. step21b's sessions now start exactly at their folder's `connected_at`.
 21. The Esc notice carries `subtype: 'interrupted'`, so the terminal page shows it. It had `interrupted: true`, which nothing read.
+22. A transcript block is parsed with a zod union on its type, in place of `as string` casts. A block with a field of the wrong type is a notice that holds it as written. A tool call with a number for its id had made the API refuse the whole post, which parked the session.
 
 Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
