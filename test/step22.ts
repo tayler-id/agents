@@ -638,6 +638,28 @@ try {
   run = cli(['done', 'lambda', '--yes'])
   check(run.code === 0 && commit('refs/heads/lambda') === null, 'done finishes the landed worktree')
 
+  // A push publishes every commit GitHub lacks, so the scan covers all of them, not only the branch's own.
+  const logWith = (cwd: string, entry: string) => `${readFileSync(join(cwd, 'docs/build-log.md'), 'utf8')}\n## ${entry}\n\nAdded ${entry.toLowerCase()}.\n`
+  cli(['start', 'pi', '--note', 'step22 pi'])
+  const pi = join(root, 'pi')
+  commitFile(pi, 'pi.md', 'pi work\n')
+  commitFile(pi, 'docs/build-log.md', logWith(pi, 'Pi'))
+  run = cli(['submit', 'pi', '--message', 'Add pi', '--review', 'second model: fine'])
+  check(run.code === 0, `pi submits while GitHub lacks nothing but its own commits (${run.first})`)
+  commitFile(main, 'leak.md', `token ${token}\n`)
+  cli(['start', 'rho', '--note', 'step22 rho'])
+  const rho = join(root, 'rho')
+  commitFile(rho, 'rho.md', 'rho work\n')
+  commitFile(rho, 'docs/build-log.md', logWith(rho, 'Rho'))
+  run = cli(['submit', 'rho', '--message', 'Add rho', '--review', 'second model: fine'])
+  check(run.code === 3 && run.out.includes('leak.md:1: matches the github secret pattern') && !run.out.includes(token), "submit scans a commit on main that GitHub lacks, since the push publishes it with the branch, and never prints the secret")
+  check(!git(main, 'ls-remote', github).includes('refs/heads/rho'), 'and it pushes nothing')
+  const githubBeforePi = git(github, 'rev-parse', 'refs/heads/main')
+  const pushedBeforePi = commit('refs/mirror/local-pushed')
+  run = cli(['land', 'pi'])
+  check(run.code === 1 && run.first.includes('landed on local main') && run.first.includes("GitHub's main was left alone") && run.out.includes('leak.md:1: matches the github secret pattern') && !run.out.includes(token), "land scans every commit GitHub lacks before it mirrors main, and stops on a secret one")
+  check(git(github, 'rev-parse', 'refs/heads/main') === githubBeforePi && commit('refs/mirror/local-pushed') === pushedBeforePi && entry('pi').landed?.copy === null, "and GitHub's main and the pushed pair stay as they were, with the branch landed on local main")
+
   check(fingerprint(realLedger) === realBefore, `the real ledger at ${realLedger} was not touched`)
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error))

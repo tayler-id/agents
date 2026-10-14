@@ -66,15 +66,29 @@ async function configuredEmail(repo: string): Promise<string | null> {
   return ran.code === 0 ? ran.stdout.trim() : null
 }
 
+// The local commit GitHub's history starts from, and its copy there.
+async function roots(repo: string): Promise<{ from: Sha, onto: Sha }> {
+  const from = await commitOf(repo, ROOT.local)
+  const onto = await commitOf(repo, ROOT.github)
+  if (!from || !onto) throw new Error(`${ROOT.local} and ${ROOT.github} must name the local commit GitHub's history starts from and its copy there`)
+  return { from, onto }
+}
+
+// The commits a push of tip would put on GitHub, oldest first: everything after the
+// last pair pushed, or after the root before any push, whether or not main has it. A
+// copy of each goes up with the branch, so each is scanned before anything is pushed.
+async function unpublished(repo: string, tip: Sha): Promise<Sha[]> {
+  const known = await commitOf(repo, PUSHED.local) ?? (await roots(repo)).from
+  return (await git(repo, ['rev-list', '--reverse', `${known}..${tip}`])).split('\n').filter((line) => line !== '').map((id) => Sha.parse(id))
+}
+
 // Copies every commit reachable from tips and not from the local root onto
 // GitHub's root, as the coordinator's graft script did: the same tree, message and
 // dates, parents mapped through the copies, and the configured email swapped for
 // the no-reply one. The same commits always give the same copies, so a commit
 // copied before comes out as the commit GitHub already has.
 async function graft(repo: string, tips: readonly Sha[]): Promise<Map<Sha, Sha>> {
-  const from = await commitOf(repo, ROOT.local)
-  const onto = await commitOf(repo, ROOT.github)
-  if (!from || !onto) throw new Error(`${ROOT.local} and ${ROOT.github} must name the local commit GitHub's history starts from and its copy there`)
+  const { from, onto } = await roots(repo)
   const email = await configuredEmail(repo)
   const swap = (address: string) => (address === email ? GITHUB_EMAIL : address)
   const copies = new Map<Sha, Sha>([[from, onto]])
@@ -107,14 +121,21 @@ export async function copyOf(repo: string, commit: Sha): Promise<Sha> {
   return copy
 }
 
-// Pushes main's copy to GitHub's main, never forced, and moves the pushed pair.
-export async function mirrorMain(repo: string, main: Sha): Promise<Sha> {
+// Main's copy on GitHub, or the problems that stopped the push.
+export type Mirrored = { copy: Sha } | { problems: string[] }
+
+// Pushes main's copy to GitHub's main, never forced, and moves the pushed pair. First
+// it scans every commit GitHub lacks, since the push publishes all of them, including
+// any a person committed straight to main. A scan that finds something pushes nothing.
+export async function mirrorMain(repo: string, main: Sha): Promise<Mirrored> {
+  const problems = await publicProblems(repo, main, await unpublished(repo, main), [])
+  if (problems.length) return { problems }
   const copy = await copyOf(repo, main)
   const pushed = await gitRun(repo, ['push', GITHUB, `${copy}:refs/heads/${MAIN_BRANCH}`])
   if (pushed.code !== 0) throw new Error(`git push to ${GITHUB}'s ${MAIN_BRANCH} exited ${pushed.code}: ${pushed.stderr.trim()}`)
   await moveRef(repo, PUSHED.local, main, await commitOf(repo, PUSHED.local))
   await moveRef(repo, PUSHED.github, copy, await commitOf(repo, PUSHED.github))
-  return copy
+  return { copy }
 }
 
 const where = (finding: Finding) => `${finding.path ?? 'the change'}${finding.line === null ? '' : `:${finding.line}`}`
@@ -368,7 +389,7 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
     return { repo, entry, tip: worktree.head, main, base, merged: { ...merged, message: merged.message }, policy: await policyAt(repo.main, main) }
   })
   if (isReport(plan)) return plan
-  const commits = (await git(plan.repo.main, ['rev-list', '--reverse', `${plan.main}..${plan.tip}`])).split('\n').filter((line) => line !== '').map((id) => Sha.parse(id))
+  const commits = await unpublished(plan.repo.main, plan.tip)
   const judged = await gates(plan.repo, plan.policy, plan.main, plan.base, plan.tip, new Set(plan.merged.approved))
   const problems = [...judged.problems, ...await publicProblems(plan.repo.main, plan.main, commits, textsOf(plan.merged))]
   if (problems.length) return { code: 3, lines: [`refused: submit ${name}: ${plural(problems.length, 'problem')} in what it would publish. Nothing changed.`, ...listed(problems)] }

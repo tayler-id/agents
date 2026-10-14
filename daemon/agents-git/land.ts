@@ -13,7 +13,7 @@ import type { Policy } from '../../shared/policy.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommitted, worktreeList } from './git.ts'
 import { MAIN_BRANCH, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
-import { gates, listed, mirrorMain, publicProblems, withNotes } from './github.ts'
+import { gates, listed, mirrorMain, publicProblems, withNotes, type Mirrored } from './github.ts'
 import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, worktreeRoot, type Report } from './repo.ts'
 import { npmCi } from './worktrees.ts'
 
@@ -147,12 +147,16 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
 
 // Copies main onto GitHub's history and pushes it, then records the copy.
 async function mirror(ledgerFile: string, main: string, name: Name, merge: Sha): Promise<Report> {
-  let copy: Sha
+  let mirrored: Mirrored
   try {
-    copy = await mirrorMain(main, await mainCommit(main))
+    mirrored = await mirrorMain(main, await mainCommit(main))
   } catch (error) {
     return failed(`${name} landed on local main as ${short(merge)}, and mirroring main to GitHub failed: ${messageOf(error)}`, `next: land ${name} again to mirror it`)
   }
+  if ('problems' in mirrored) {
+    return failed(`${name} landed on local main as ${short(merge)}, and GitHub's main was left alone: ${plural(mirrored.problems.length, 'problem')} in the commits it would publish`, ...listed(mirrored.problems), `next: take them out of main's commits that GitHub lacks, then land ${name} again to mirror it`)
+  }
+  const copy = mirrored.copy
   await withLedger(ledgerFile, `land ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.repo === main && e.name === name)
     if (entry?.state !== 'active' || !entry.landed) throw new Error(`${name} left the ledger while main was mirrored`)
