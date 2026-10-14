@@ -148,8 +148,8 @@ Tayler went with the coordinator's picks on all of these.
   - a verdict from an agent that did not write the change
   - a clean merge against current main
 - **Grading and the ledger.** Verdicts are graded, from verified in the live UI down to type-checked only. "Couldn't verify" is kept apart from pass and fail. The ledger is keyed by pull request and head commit. After a rebase, a verdict survives only if the patch itself is unchanged.
-- **Implementation.** `docs/design/self-improve.md` and a fuller rules file, on the framework agent's branch. Its rules merge into `AGENTS.md` when it lands. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
-- **Status.** Being built. It still has to decide between forward-only runs and sending failures back to implement, and write down why. The framework and the verifier describe evidence in two different formats, so the merge gate can't read the verifier's screenshots yet. One schema in `shared/`, used by both, comes before either merges.
+- **Implementation.** `docs/design/self-improve.md`, with the rules merged into `AGENTS.md`, on the framework agent's branch. Each repo gets a versioned policy with its sandbox, caps, protected paths and size limit.
+- **Status.** Built on the framework agent's branch, not on main. It sends a failure back to its author, with bounds, and the design says why. The gates and the verifier parse evidence with one schema, `shared/verification.ts`, though the runner does not check screenshots yet. It does not hold changes to this repo until the repo is registered with its policy. The design lists what is not enforced.
 
 ### Size and time limits per task
 

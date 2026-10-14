@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { SuitePayload, VerifyPayload } from './framework.ts'
 
 export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
@@ -76,8 +77,12 @@ export type AgentPlugin = z.infer<typeof AgentPlugin>
 // tools it may use without asking, and the most it may spend. The budget is
 // required, so a stage payload without one fails the daemon's parse instead of
 // starting Claude with no cap. The server sends it here too, where daemons
-// before the payload's own maxBudgetUsd read it.
-export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number() })
+// before the payload's own maxBudgetUsd read it. An isolated session, such as a
+// reviewer's, gets no team-record tools, so it cannot read the session of the
+// agent whose work it judges.
+export const StageSpec = z.object({
+  outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number(), isolated: z.boolean(),
+})
 export type StageSpec = z.infer<typeof StageSpec>
 
 // What a daemon needs to hand a person's message to an agent's harness.
@@ -116,9 +121,14 @@ export type ExecResult = { exitCode: number | null; output: string; timedOut: bo
 // Commits whatever changed in the workspace's repos, pushes each task branch,
 // and counts the commits each holds past its base branch. The machine reads the
 // forge's branch before pushing, and never pushes over commits it has not seen.
-export type PushPayload = {
-  workspaceId: string; repos: { repoId: string; name: string; branch: string; base: string }[]; message: string; author: string
-}
+// The daemon parses it, since it arrives as JSON.
+export const PUSH_PAYLOAD = z.object({
+  workspaceId: z.uuid(),
+  repos: z.array(z.object({ repoId: z.uuid(), name: z.string().min(1), branch: z.string().min(1), base: z.string().min(1) })),
+  message: z.string(),
+  author: z.string().min(1),
+})
+export type PushPayload = z.infer<typeof PUSH_PAYLOAD>
 // The server reads a push's result back from its command's JSON column, so it is parsed.
 export const PushResult = z.object({
   pushed: z.array(z.object({ repoId: z.string(), commit: z.string(), ahead: z.number().int().min(0) })),
@@ -156,3 +166,5 @@ export type Command =
   | { id: string; kind: 'setup_workspace'; sessionId: null; payload: SetupWorkspacePayload }
   | { id: string; kind: 'exec'; sessionId: null; payload: ExecPayload }
   | { id: string; kind: 'push'; sessionId: null; payload: PushPayload }
+  | { id: string; kind: 'verify'; sessionId: null; payload: VerifyPayload }
+  | { id: string; kind: 'suite'; sessionId: null; payload: SuitePayload }

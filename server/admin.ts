@@ -1,14 +1,51 @@
-// Run on the server host. Adds teams, people, instances and agents. A team's
-// first login is its admin, who can then invite everyone else from the app.
+// Run on the server host. Adds teams, people, instances and agents, and puts a
+// repo under the coding framework with a policy and its owner. A team's first
+// login is its admin, who can then invite everyone else from the app.
 //   node --env-file=.env server/admin.ts add-team <team> <first login>
 //   node --env-file=.env server/admin.ts add-person <team> <login>
 //   node --env-file=.env server/admin.ts set-role <team> <login> <admin|member>
-//   node --env-file=.env server/admin.ts add-instance <team> <name> <mac|box> <owner login>
+//   node --env-file=.env server/admin.ts add-instance <team> <name> <mac|box|check> <owner login>
 //   node --env-file=.env server/admin.ts add-agent <team> <name> <home instance> [model] [instructions]
+//   node --env-file=.env server/admin.ts forge-login <login> <forge user>
+//   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
+//   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
 
 import { randomBytes } from 'node:crypto'
-import { maybe, pool } from './db.ts'
+import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
+import { maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
+import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
+import { STATUS } from '../shared/framework.ts'
+import { POLICY } from '../shared/policy.ts'
+
+// Records a new version of the policy, points the repo at it with its owner,
+// and protects the repo's default branch on the forge to match.
+async function setPolicy(team: string, remote: string, file: string, ownerLogin: string) {
+  const rules = POLICY.parse(JSON.parse(readFileSync(file, 'utf8')))
+  const name = basename(file, '.json')
+  const set = await tx(async (client) => {
+    const owner = await maybe<{ id: string; team_id: string; forge_login: string | null }>(client,
+      'select p.id, p.team_id, p.forge_login from people p join teams t on t.id = p.team_id where t.name = $1 and p.login = $2', [team, ownerLogin])
+    if (!owner) throw new Error(`no person ${ownerLogin} on ${team}`)
+    const repo = await maybe<{ id: string; default_branch: string }>(client,
+      'select id, default_branch from repos where team_id = $1 and remote_url = $2', [owner.team_id, remote])
+    if (!repo) throw new Error(`no repo ${remote} on ${team}`)
+    const policy = await one<{ id: string; version: number }>(client, 'the new policy version',
+      `insert into policies (team_id, name, version, rules, created_by)
+       values ($1, $2, (select coalesce(max(version), 0) + 1 from policies where team_id = $1 and name = $2), $3, $4) returning id, version`,
+      [owner.team_id, name, JSON.stringify(rules), owner.id])
+    await client.query('update repos set policy_id = $2, owner_id = $3 where id = $1', [repo.id, policy.id, owner.id])
+    return { owner, repo, policy }
+  })
+  if (remote.startsWith(forgeConfig().url)) {
+    if (!set.owner.forge_login) throw new Error(`${ownerLogin} has no forge user. Set one with forge-login, then run this again.`)
+    await forgeAdmin.protect(repoPath(remote), set.repo.default_branch, {
+      owner: set.owner.forge_login, contexts: Object.values(STATUS), protectedFiles: rules.protectedPaths,
+    })
+  }
+  return { policy: name, version: set.policy.version, repo: remote, owner: ownerLogin }
+}
 
 async function addPerson(team: string, login: string, role: 'admin' | 'member') {
   const { rowCount } = await pool.query(
@@ -20,8 +57,11 @@ const USAGE = [
   'add-team <team> <login>',
   'add-person <team> <login>',
   'set-role <team> <login> <admin|member>',
-  'add-instance <team> <name> <mac|box> <owner login>',
+  'add-instance <team> <name> <mac|box|check> <owner login>',
   'add-agent <team> <name> <home instance> [model] [instructions]',
+  'forge-login <login> <forge user>',
+  'set-policy <team> <repo clone url> <policy.json> <owner login>',
+  'add-lesson <team> <rule> <incident>',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
@@ -59,6 +99,19 @@ try {
       [team, name, home, model || null, instructions ?? null])
     if (!agent) throw new Error(`no team ${team} with instance ${home}`)
     console.log(JSON.stringify({ agent: name, agentId: agent.id }))
+  } else if (command === 'forge-login' && args.length === 2) {
+    const { rowCount } = await pool.query('update people set forge_login = $2 where login = $1', [first, second])
+    if (!rowCount) throw new Error(`no person ${first}`)
+    console.log(`${first} is ${second} on the forge`)
+  } else if (command === 'set-policy' && args.length === 4) {
+    // The length check above means each of the four is there.
+    const [team = '', remote = '', file = '', owner = ''] = args
+    console.log(JSON.stringify(await setPolicy(team, remote, file, owner)))
+  } else if (command === 'add-lesson' && args.length === 3) {
+    const [team, rule, incident] = args
+    const { rowCount } = await pool.query('insert into lessons (team_id, rule, incident) select id, $2, $3 from teams where name = $1', [team, rule, incident])
+    if (!rowCount) throw new Error(`no team ${team ?? ''}`)
+    console.log(`added a written lesson to ${team}. It becomes enforced once it names what holds it.`)
   } else {
     console.error(`usage: ${USAGE}`)
     process.exitCode = 2

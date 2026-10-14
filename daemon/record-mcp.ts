@@ -148,4 +148,17 @@ server.registerTool('agent_profile', {
   ].join('\n\n'))
 })
 
+// The call itself lands in the record, and the API copies it into the task's
+// decision log from there, so the tool has nothing else to do.
+server.registerTool('log_decision', {
+  title: 'Log a decision',
+  description: 'Record a decision that shapes your work in the task\'s decision log: what you decided, why, and what else you weighed. '
+    + 'People read the log on the run and in the pull request.',
+  inputSchema: {
+    what: z.string().min(1).describe('The decision, in one sentence'),
+    why: z.string().min(1).describe('The reason, with the evidence behind it'),
+    alternatives: z.array(z.string()).optional().describe('What else you weighed, and why not'),
+  },
+}, () => text('Logged in the decision log.'))
+
 await server.connect(new StdioServerTransport())

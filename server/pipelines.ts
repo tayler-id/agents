@@ -11,12 +11,13 @@ import { pathToFileURL } from 'node:url'
 import { one, pool, tx, type Db } from './db.ts'
 import { messageOf } from '../shared/errors.ts'
 import { forge, forgeConfig, repoPath } from './forge.ts'
-import { ACTION_OUTCOMES, type Pipeline, type Stage } from '../shared/pipeline.ts'
+import { ACTION_OUTCOMES, GATE_ROLES, type Pipeline, type Stage } from '../shared/pipeline.ts'
+import { PLAYBOOK_NAMES } from '../shared/framework.ts'
 
 const CACHE = join(process.env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'pipelines')
 const ACTIONS: string[] = Object.keys(ACTION_OUTCOMES)
-const TEXT_ACTIONS = ['open_pull_request', 'close_issue']
-const KINDS = ['agent', 'check', 'action', 'gate']
+const TEXT_ACTIONS = ['open_pull_request', 'close_issue', 'ask_reporter']
+const KINDS = ['agent', 'check', 'action', 'gate', 'route', 'verify', 'review', 'confirm', 'suite']
 
 // git's id for a file with this content.
 export const blobSha = (source: string) => {
@@ -24,12 +25,51 @@ export const blobSha = (source: string) => {
   return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
 }
 
-// The outcomes a stage can end with. An agent picks from its `next` keys.
+// The outcomes a stage can end with. An agent, or a router, picks from its `next` keys.
 export function outcomesOf(stage: Stage): string[] {
-  if (stage.kind === 'check') return ['passes', 'fails']
-  if (stage.kind === 'action') return [...ACTION_OUTCOMES[stage.action]]
-  if (stage.kind === 'gate') return ['approved', 'rejected']
-  return Object.keys(stage.next)
+  switch (stage.kind) {
+    case 'check': return ['passes', 'fails']
+    case 'action': return [...ACTION_OUTCOMES[stage.action]]
+    case 'gate': return ['approved', 'rejected']
+    case 'verify': return ['passes', 'fails', 'stopped']
+    case 'review': return ['clean', 'fix', 'overruled']
+    case 'confirm': return ['verified', 'fix', 'overruled']
+    case 'suite': return ['passes', 'fails']
+    case 'agent':
+    case 'route':
+      return Object.keys(stage.next)
+  }
+}
+
+const strings = (value: unknown) => Array.isArray(value) && value.every((v) => typeof v === 'string')
+
+// What is wrong with one of the coding framework's stage fields.
+function frameworkProblems(name: string, stage: Loose): string[] {
+  const out: string[] = []
+  const fn = (key: string) => typeof stage[key] === 'function'
+  if (stage.kind === 'route') {
+    if (!fn('prompt')) out.push(`${name}: a route stage needs a prompt`)
+    if (isObject(stage.next)) {
+      for (const playbook of Object.keys(stage.next)) {
+        if (!PLAYBOOK_NAMES.some((p) => p === playbook)) out.push(`${name}: ${playbook} is not a playbook (${PLAYBOOK_NAMES.join(', ')})`)
+      }
+    }
+  }
+  if (stage.kind === 'review' && (!fn('prompt') || !strings(stage.reviewers) || typeof stage.author !== 'string' || !strings(stage.allow))) {
+    out.push(`${name}: a review stage needs a prompt, reviewers, an author and the tools it allows`)
+  }
+  if (stage.kind === 'confirm' && (!fn('prompt') || typeof stage.verifier !== 'string' || typeof stage.author !== 'string' || !strings(stage.allow))) {
+    out.push(`${name}: a confirm stage needs a prompt, a verifier, an author and the tools it allows`)
+  }
+  if (stage.kind === 'gate' && stage.role !== undefined && !GATE_ROLES.some((r) => r === stage.role)) {
+    out.push(`${name}: a gate's role must be one of ${GATE_ROLES.join(', ')}`)
+  }
+  const document = stage.document
+  if (stage.kind === 'agent' && document !== undefined
+    && !(isObject(document) && typeof document.path === 'string' && strings(document.headings) && typeof document.plan === 'boolean')) {
+    out.push(`${name}: a document needs a path, headings and whether it is the plan`)
+  }
+  return out
 }
 
 type Loose = Record<string, unknown>
@@ -73,6 +113,7 @@ function problems(value: unknown): string[] {
     if (stage.kind === 'gate' && labels !== undefined && !(isObject(labels) && typeof labels.approve === 'string' && typeof labels.reject === 'string')) {
       out.push(`${name}: a gate's labels must name approve and reject`)
     }
+    out.push(...frameworkProblems(name, stage))
     if (!isObject(stage.next) || !Object.keys(stage.next).length) {
       out.push(`${name}: next is empty`)
       continue
@@ -152,7 +193,9 @@ export async function recordVersion(teamId: string, repoId: string | null, name:
 }
 
 // Reads pipelines/ from the given repos on the forge, or from every repo of the
-// given teams, or of every team when neither is given.
+// given teams, or of every team when neither is given. A repo with a policy
+// holds code, such as the app's own repo with its pipelines/ folder, and is
+// never read as the team's pipelines.
 export async function syncPipelines(repoIds?: string[], teamIds: string[] | null = null) {
   let forgeUrl: string
   try {
@@ -162,7 +205,7 @@ export async function syncPipelines(repoIds?: string[], teamIds: string[] | null
   }
   const { rows: repos } = await pool.query<{ id: string; team_id: string; remote_url: string; default_branch: string }>(
     `select id, team_id, remote_url, default_branch from repos
-     where starts_with(remote_url, $1) and ($2::uuid[] is null or id = any($2)) and ($3::uuid[] is null or team_id = any($3))`,
+     where starts_with(remote_url, $1) and policy_id is null and ($2::uuid[] is null or id = any($2)) and ($3::uuid[] is null or team_id = any($3))`,
     [forgeUrl, repoIds ?? null, teamIds])
   for (const repo of repos) {
     try {

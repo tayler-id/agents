@@ -39,6 +39,8 @@ export type RunContext = {
   comments: RunComment[]
   // Set when this run replays a past one to score a pipeline version.
   replay: boolean
+  // The playbook a route stage picked, with its guide for the agent, on a repo with a policy.
+  playbook: { name: string; guide: string } | null
 }
 
 // Where a run goes after a stage: another stage, the end, or a person.
@@ -62,7 +64,53 @@ export type AgentStage<S extends string = string> = Common<S> & {
   allow?: string[]
   // How many tries before a person takes over. Defaults to 3.
   maxAttempts?: number
+  // A document the agent must leave in the task folder, with these headings,
+  // before the stage counts as done. A plan is also linted, and the plan gate
+  // pins the version a person approves.
+  document?: { path: string; headings: string[]; plan: boolean }
 }
+
+// The coding framework's stages, for a repo with a policy. The runner, not an
+// agent, decides how each ends. docs/design/self-improve.md describes them.
+
+// An agent picks the playbook. Its outcomes are the playbooks named in `next`
+// that the repo's policy allows.
+export type RouteStage<S extends string = string> = Common<S> & { kind: 'route'; agent?: string; prompt: (ctx: RunContext) => string; allow?: string[] }
+
+// The runner pushes the change, runs the static gates on it from its own copy
+// of the repo, then has the box run the policy's commands and the changed
+// checks. Ends as `passes`, `fails`, or `stopped` when the run must end at once.
+export type VerifyStage<S extends string = string> = Common<S> & { kind: 'verify' }
+
+// Reviewers, each on a model other than the author's and each other's, judge
+// the change in sessions of their own, without the author's. Ends as `clean`,
+// `fix` while rounds remain, or `overruled` when the repo's owner overrules
+// the findings left at the last round.
+export type ReviewStage<S extends string = string> = Common<S> & {
+  kind: 'review'
+  reviewers: string[]
+  // The agent that wrote the change.
+  author: string
+  prompt: (ctx: RunContext) => string
+  allow: string[]
+}
+
+// A fresh agent that did not write the change checks the plan's Done means and
+// Keep items with the repo's verification skill, and gives a verdict from the
+// ladder in shared/verification.ts. The runner reads what it ran from the record.
+// Ends as `verified` when the verdict meets the policy's floor, `fix` when the
+// verifier failed the change, or `overruled` when the owner accepts a weaker one.
+export type ConfirmStage<S extends string = string> = Common<S> & {
+  kind: 'confirm'
+  verifier: string
+  author: string
+  prompt: (ctx: RunContext) => string
+  allow: string[]
+}
+
+// The check host runs the policy's suite on the change merged into the current
+// main, after a person approved running it. Ends as `passes` or `fails`.
+export type SuiteStage<S extends string = string> = Common<S> & { kind: 'suite' }
 
 // A command run in the repo's folder on the run's machine. Ends as `passes`
 // (exit code 0) or `fails`.
@@ -90,6 +138,13 @@ export type CheckStage<S extends string = string> = Common<S> & { kind: 'check';
 // - decide_replays: scores both versions from the verdicts the last agent stage
 //   reported. Better only when the change wins.
 // - settle_hunks: records the decision on every hunk, and applies the kept ones.
+// - merge_change: on a repo with a policy, merges the pull request at the
+//   commit every gate judged, once the owner approved it. Ends as `done`,
+//   `stale` when main moved since the suite ran, or `failed`.
+// - deploy: asks the deployer to release what the run merged. Ends as `done`,
+//   `rolled_back` when the health check failed and the release was undone, or `failed`.
+// - ask_reporter: comments `text`, one question, on the report's issue and
+//   leaves it open for the reporter to answer.
 export const ACTION_OUTCOMES = {
   open_pull_request: ['done', 'failed'],
   merge_pull_request: ['done', 'failed'],
@@ -101,6 +156,9 @@ export const ACTION_OUTCOMES = {
   replay_sessions: ['replayed', 'unscored', 'failed'],
   decide_replays: ['better', 'not_better', 'failed'],
   settle_hunks: ['applied', 'declined', 'failed'],
+  merge_change: ['done', 'stale', 'failed'],
+  deploy: ['done', 'rolled_back', 'failed'],
+  ask_reporter: ['done', 'failed'],
 } as const satisfies Record<string, readonly string[]>
 export type Action = keyof typeof ACTION_OUTCOMES
 
@@ -113,15 +171,23 @@ export type ActionStage<S extends string = string> = Common<S> & {
   text?: (ctx: RunContext) => string
 }
 
+// What a gate approves, on a repo with a policy. Only the repo's owner answers
+// `protected`, `suite`, `merge` and `deploy`. A `protected` gate passes by
+// itself when the change touched no protected path or dependency.
+export const GATE_ROLES = ['plan', 'protected', 'suite', 'merge', 'deploy'] as const
+export type GateRole = (typeof GATE_ROLES)[number]
+
 // Waits for a person. Ends as `approved` or `rejected`. `labels` name its two
 // buttons when Approve and Reject would not say what happens.
 export type GateStage<S extends string = string> = Common<S> & {
   kind: 'gate'
   question: (ctx: RunContext) => string
   labels?: { approve: string; reject: string }
+  role?: GateRole
 }
 
 export type Stage<S extends string = string> = AgentStage<S> | CheckStage<S> | ActionStage<S> | GateStage<S>
+  | RouteStage<S> | VerifyStage<S> | ReviewStage<S> | ConfirmStage<S> | SuiteStage<S>
 
 // A pipeline is named after its file: pipelines/bug-fix.ts is bug-fix.
 export type Pipeline<S extends string = string> = {

@@ -2,7 +2,7 @@
 // The daemon scrubs with its own environment's secrets plus the patterns. The API
 // scrubs again with the patterns, since it never sees an instance's environment.
 
-const PATTERNS: [string, RegExp][] = [
+export const PATTERNS: [string, RegExp][] = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   ['anthropic', /sk-ant-[A-Za-z0-9_-]{20,}/g],
   ['openai', /sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g],
