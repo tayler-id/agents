@@ -101,11 +101,12 @@ const BREAKS: Break[] = [
   { name: 'record', why: 'record stop saves no video', sections: 'web', red: 'record start, then stop, keeps a video of the steps',
     edits: [{ file: 'ctl/playwright.ts', anchor: '      await video.saveAs(path)\n', replace: '' }] },
 
-  // The desktop app, the API, seeds and the machine.
+  // The desktop app, the API, seeds and the machine. A wrong login keeps the instance's
+  // suffix, so the join request it makes on opening the app is one down removes.
   { name: 'desktop-login', why: 'the desktop app opens as someone on no team', sections: 'desktop', red: 'desktop opens the team in the Electron app',
-    edits: [{ file: 'ctl/playwright.ts', anchor: 'AGENTS_DEV_LOGIN: key.login', replace: "AGENTS_DEV_LOGIN: 'nobody@verify.local'" }] },
+    edits: [{ file: 'ctl/playwright.ts', anchor: 'AGENTS_DEV_LOGIN: key.login', replace: "AGENTS_DEV_LOGIN: key.login.replace(/^[^-]+/, 'nobody')" }] },
   { name: 'api-person', why: 'api calls as someone on no team', sections: 'api', red: 'api calls as a person, and the machine door refuses a person with 400',
-    edits: [{ file: 'ctl/cli.ts', anchor: "login: values.as === 'person' ? loginFor(state, values.login) : undefined", replace: "login: values.as === 'person' ? 'nobody@verify.local' : undefined" }] },
+    edits: [{ file: 'ctl/cli.ts', anchor: "login: values.as === 'person' ? loginFor(state, values.login) : undefined", replace: "login: values.as === 'person' ? loginFor(state, 'nobody') : undefined" }] },
   { name: 'seed-person', why: 'seeding a person who is there says it added them', sections: 'seed', red: 'seed person adds cy, who can open the app, and seeding again says already: true',
     edits: [{ file: 'ctl/seed.ts', anchor: "  if (found) return { already: true }\n  await admin('add-person', team, login)", replace: "  if (found) return { already: false }\n  await admin('add-person', team, login)" }] },
   { name: 'seed-box', why: 'seed box says what it meant to leave, not what the record holds', sections: 'seed', red: 'seed adds an agent, a box and a task',
