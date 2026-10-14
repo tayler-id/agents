@@ -137,8 +137,8 @@ export function editOf(hunk: ProposalHunk): Edit | null {
 }
 export const editsOf = (hunks: ProposalHunk[]): Edit[] => hunks.flatMap((h) => editOf(h) ?? [])
 
-type LiveFinding = SessionFinding & { login: string | null }
 const LiveFinding = z.intersection(SessionFinding, z.object({ login: z.string().nullable() }))
+type LiveFinding = z.infer<typeof LiveFinding>
 
 type Subject = { agentId: AgentId } | { pipelineId: PipelineId }
 
