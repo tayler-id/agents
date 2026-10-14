@@ -4,6 +4,7 @@
 
 import { z } from 'zod'
 import { AgentId, ArtifactId, ConversationId, FileChangeId, MessageId, PersonId, PushId, RepoId, TaskId, WorkspaceId } from './ids.ts'
+import { ProjectId } from './projects.ts'
 
 // A pull request's title is the task's title, so both share the forge's limit.
 const TITLE_MAX = 255
@@ -30,6 +31,8 @@ export const NewTask = TaskFields.extend({
   repoId: RepoId.optional(),
   conversationId: ConversationId.optional(),
   messageId: MessageId.optional(),
+  // The project it starts in. Without one it joins its first repo's project.
+  projectId: ProjectId.optional(),
   draft: z.boolean().default(false),
 })
 export type NewTask = z.infer<typeof NewTask>

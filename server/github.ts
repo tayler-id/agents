@@ -229,6 +229,12 @@ export function githubRemoteUrl(fullName: string): string {
   return `${connection().git}/${fullName}.git`
 }
 
+// The organization or account that new repos go under. Throws a 503 that says
+// what is missing when GitHub is off or not connected.
+export function connectedOwner(): string {
+  return connection().credential.owner
+}
+
 // Checks a token with GitHub, by asking whose it is and then for the
 // organization, and saves it. Throws, with a reason a person can act on, when
 // GitHub refuses.

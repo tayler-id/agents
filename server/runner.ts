@@ -14,6 +14,7 @@ import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
 import { forgeFor, type RepoOnForge } from './repos.ts'
+import { placeTask } from './projects.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
   advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, proposePipelineChange, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
@@ -160,6 +161,7 @@ export async function startRun(client: pg.PoolClient, options: {
     [pipeline.team_id, slug, options.report.title, options.report.body, options.startedBy ?? null, agent.id,
       pipeline.conversation_id, options.trigger])
   await client.query('insert into task_repos (task_id, repo_id, is_primary) values ($1, $2, true)', [task.id, options.repoId])
+  await placeTask(client, task.id)
   const payload: Payload = { report: options.report, repoId: options.repoId, openIssues: options.openIssues ?? [], once: options.once }
   const run = await one<{ id: string }>(client, 'the new run',
     `insert into runs (team_id, pipeline_version_id, task_id, trigger, trigger_payload)

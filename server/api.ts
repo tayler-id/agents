@@ -13,11 +13,11 @@ import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { instanceFrom, personFrom } from './auth.ts'
-import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
 import { messageOf } from '../shared/errors.ts'
-import { canSeeSession, canSeeTask } from './access.ts'
+import { canSeeSession, canSeeTask, isAdmin } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
 } from './record.ts'
@@ -28,7 +28,10 @@ import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
-import { forgeFor, type RepoOnForge } from './repos.ts'
+import { forgeFor, reposOverview, type RepoOnForge } from './repos.ts'
+import { connectGithub, githubStatus } from './github.ts'
+import { addRepoToProject, createProject, retryRepoRequest } from './projects.ts'
+import { AddRepoBody, ConnectGithubBody, NewProjectBody, ProjectId, RepoRequestId } from '../shared/projects.ts'
 import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wakeRunner } from './runner.ts'
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
@@ -60,6 +63,14 @@ const PERSON_KINDS: EventKind[] = ['user', 'answer']
 function parsed<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value)
   if (!result.success) throw new HttpError(400, z.prettifyError(result.error))
+  return result.data
+}
+
+// A project a room is started in. Leaving it out starts one outside any project.
+function optionalProject(value: unknown): ProjectId | undefined {
+  if (value === undefined || value === null) return undefined
+  const result = ProjectId.safeParse(value)
+  if (!result.success) throw new HttpError(400, 'projectId must be an id')
   return result.data
 }
 
@@ -310,7 +321,8 @@ const routes: Route[] = [
     const body = await readJson(req)
     if (body.kind === 'room') {
       const list = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
-      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents))) }
+      const projectId = optionalProject(body.projectId)
+      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)) }
     }
     if (body.kind !== 'dm') throw new HttpError(400, 'kind must be dm or room')
     const agent = text(body.agent, 'agent')
@@ -435,6 +447,40 @@ const routes: Route[] = [
         return { ok: true }
       }
     }
+  }],
+
+  // Projects and their repos. docs/design/projects.md has the whole design.
+  ['people', 'POST', /^\/v1\/projects$/, async (req) => {
+    const person = await personFrom(req)
+    return createProject(person, await parseBody(req, NewProjectBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/projects/${UUID}/repos$`), async (req, [projectId]) => {
+    const person = await personFrom(req)
+    return addRepoToProject(person, pathId(ProjectId, projectId), await parseBody(req, AddRepoBody))
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/repo-requests/${UUID}/retry$`), async (req, [requestId]) => {
+    const person = await personFrom(req)
+    await retryRepoRequest(person, pathId(RepoRequestId, requestId))
+    return { ok: true }
+  }],
+
+  // Every repo of the team, with what its forge says is open on it.
+  ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview((await personFrom(req)).team_id)],
+
+  // Whether GitHub is connected, and to which account and organization. Never the token.
+  ['people', 'GET', /^\/v1\/github$/, async (req) => {
+    await personFrom(req)
+    return githubStatus()
+  }],
+
+  ['people', 'POST', /^\/v1\/github$/, async (req) => {
+    const person = await personFrom(req)
+    if (!(await isAdmin(person))) throw new HttpError(403, 'Only an admin can connect GitHub.')
+    const body = await parseBody(req, ConnectGithubBody)
+    // connectGithub's refusals are written for the admin to act on.
+    return connectGithub(body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
