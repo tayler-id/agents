@@ -8,8 +8,8 @@ import type pg from 'pg'
 import { many, maybe, one, pool } from './db.ts'
 import { HttpError, scrub } from './record.ts'
 import type { Instance } from './auth.ts'
-import { PersonId } from '../shared/ids.ts'
-import { EVENT_KINDS, type EventKind } from '../shared/types.ts'
+import { PersonId, SessionId } from '../shared/ids.ts'
+import { EVENT_KINDS, PERSON_KINDS, type EventKind } from '../shared/types.ts'
 import {
   FolderRow, insideFolder, type ConnectAnswer, type ConnectFolder, type DisconnectFolder, type FolderAnswer, type TerminalSessionAsk,
 } from '../shared/terminal.ts'
@@ -67,7 +67,7 @@ export async function connectedFolders(instance: Instance): Promise<FolderRow[]>
 
 // The record's session for a Claude Code session the Mac found in one of its
 // connected folders. Asking twice gives the same session.
-export async function terminalSession(client: pg.PoolClient, instance: Instance, ask: TerminalSessionAsk): Promise<string> {
+export async function terminalSession(client: pg.PoolClient, instance: Instance, ask: TerminalSessionAsk): Promise<SessionId> {
   const found = await maybe(client, `select ${FOLDER} from connected_folders where id = $1 and instance_id = $2`, [ask.folderId, instance.id])
   if (!found) throw new HttpError(404, 'no such folder on this Mac')
   const folder = FolderRow.parse(found)
@@ -86,7 +86,7 @@ export async function terminalSession(client: pg.PoolClient, instance: Instance,
        where sessions.folder_id = excluded.folder_id
      returning id`, [folder.team_id, instance.id, folder.id, cwd, harnessSessionId, folder.connected_by])
   if (!session) throw new HttpError(409, `Claude Code session ${harnessSessionId} is another connected folder's session on this Mac`)
-  return session.id
+  return SessionId.parse(session.id)
 }
 
 // Who writes a session's events from a machine, and which kinds it may write.
@@ -95,12 +95,12 @@ export async function terminalSession(client: pg.PoolClient, instance: Instance,
 // they answer Claude's questions in their terminal, so it has no asks.
 export type SessionWriter =
   | { kind: 'app'; kinds: readonly EventKind[] }
-  | { kind: 'terminal'; kinds: readonly EventKind[]; author: string | null }
+  | { kind: 'terminal'; kinds: readonly EventKind[]; author: PersonId | null }
 
-const APP_KINDS = EVENT_KINDS.filter((kind) => kind !== 'user' && kind !== 'answer')
-const TERMINAL_KINDS = EVENT_KINDS.filter((kind) => kind !== 'ask' && kind !== 'answer')
+const APP_KINDS = EVENT_KINDS.filter((kind) => !PERSON_KINDS.includes(kind))
+const TERMINAL_KINDS = EVENT_KINDS.filter((kind) => kind === 'user' || (kind !== 'ask' && !PERSON_KINDS.includes(kind)))
 
-export async function sessionWriter(instance: Instance, sessionId: string): Promise<SessionWriter> {
+export async function sessionWriter(instance: Instance, sessionId: SessionId): Promise<SessionWriter> {
   // A folder connected again starts over, so a session made under its earlier
   // connection is closed like one whose folder is disconnected now.
   const session = await maybe<{ folder_id: string | null; connected_by: string | null; closed: boolean | null }>(pool,
@@ -109,5 +109,5 @@ export async function sessionWriter(instance: Instance, sessionId: string): Prom
   if (!session) throw new HttpError(404, 'no such session on this instance')
   if (session.folder_id === null) return { kind: 'app', kinds: APP_KINDS }
   if (session.closed) throw new HttpError(409, "this session's folder was disconnected since the session started, so the rest of it stays on the Mac")
-  return { kind: 'terminal', kinds: TERMINAL_KINDS, author: session.connected_by }
+  return { kind: 'terminal', kinds: TERMINAL_KINDS, author: session.connected_by === null ? null : PersonId.parse(session.connected_by) }
 }

@@ -4,6 +4,8 @@ export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
+// The kinds a person writes: what they say, and their answer to an ask. Only these carry an author.
+export const PERSON_KINDS: readonly EventKind[] = ['user', 'answer']
 
 export const SESSION_STATUSES = [
   'draft', 'starting', 'running', 'idle', 'needs_input', 'needs_approval', 'limited', 'lost', 'failed',

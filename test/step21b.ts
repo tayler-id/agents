@@ -220,7 +220,7 @@ try {
 
   const sessionOf = async (harness: string) => (await db.query('select * from sessions where harness_session_id = $1', [harness])).rows[0]
   const eventsOf = async (sessionId: string) => (await db.query(
-    'select seq::int, kind, author, tool_name, tool_use_id, text, body, body::text as raw from events where session_id = $1 order by seq', [sessionId])).rows
+    'select seq::int, kind, author, tool_name, tool_use_id, client_id, text, body, body::text as raw from events where session_id = $1 order by seq', [sessionId])).rows
   const turnsEnded = async (harness: string) => {
     const s = await sessionOf(harness)
     return s ? count(`select count(*) from events where session_id = $1 and kind = 'usage'`, [s.id]) : 0
@@ -253,6 +253,20 @@ try {
   const stop = (await eventsOfHarness(escaped.session)).find((e) => e.kind === 'notice')
   check(stop?.body.subtype === 'interrupted' && stop.text === '[Request interrupted by user]' && (await sessionOf(escaped.session))?.status === 'idle',
     `a turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle: ${JSON.stringify(stop?.body)}`)
+
+  // What a machine may write into a terminal session: the person's prompts, as theirs, and what Claude did, but never an ask
+  // or an answer, since the person gives those in their terminal.
+  const ruled = transcript(claudeDir, shop, afterShop)
+  ruled.turn({ prompt: 'A session to post into.', reply: 'Ready.' })
+  await until('the session to post into', LANDS_SEC, async () => (await turnsEnded(ruled.session)) === 1)
+  const ruledId = String((await sessionOf(ruled.session))?.id)
+  const postKind = (kind: string) => machine(token, 'POST', `/v1/sessions/${ruledId}/events`, { events: [{ clientId: `${kind}-${id}`, kind, text: kind, body: {} }] })
+  const refusedKinds = [(await postKind('ask')).status, (await postKind('answer')).status]
+  const takenKinds = [(await postKind('user')).status, (await postKind('notice')).status]
+  const writers = (await eventsOf(ruledId)).filter((e) => e.client_id === `user-${id}` || e.client_id === `notice-${id}`)
+  check(refusedKinds.join() === '400,400' && takenKinds.join() === '200,200'
+    && writers.find((e) => e.kind === 'user')?.author === ownerRow.id && writers.find((e) => e.kind === 'notice')?.author === null,
+  `a machine's ask and answer for a terminal session are refused (${refusedKinds.join()}), and its user event is authored as the person where its notice is not (${takenKinds.join()})`)
 
   // A block with a field of the wrong type, as a Claude Code update might write one, is a notice that keeps the block as written.
   // The turns around it land, where a tool call with a number for its id would have had the whole post refused.

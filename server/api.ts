@@ -38,7 +38,7 @@ import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
-import { ArtifactId, TaskId, WorkspaceId } from '../shared/ids.ts'
+import { ArtifactId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
 import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
@@ -301,7 +301,7 @@ const routes: Route[] = [
 
   ['machines', 'POST', new RegExp(`^/v1/sessions/${UUID}/events$`), async (req, [sessionId]) => {
     const instance = await instanceFrom(req)
-    const writer = await sessionWriter(instance, sessionId)
+    const writer = await sessionWriter(instance, parsed(SessionId, sessionId))
     const batch = parseBatch(await readJson(req), writer.kinds)
     // A terminal session's prompts are its person's own.
     const seqs = await tx((client) => appendEvents(client, sessionId, batch, writer.kind === 'terminal' ? writer.author : null))
