@@ -691,6 +691,28 @@ try {
     .filter((line) => line.includes(skewedId) && line.includes('disconnected since it started')).length
   check(skewedSettled && refusals === 1 && await turnsEnded(skewedRun.session) === 1,
     `a session the API closes is passed over after its first refusal, not taken again on every read (${String(refusals)} refusals)`)
+
+  // Reading a session's subagents looks in that session's own folder, not at every entry in the daemon's state. With 40,000
+  // entries for subagent transcripts that are gone, as Claude Code's cleanup leaves them, a daemon with nothing to read uses
+  // little CPU while it idles, where each of those entries cost a failed look at its file on every read.
+  await stopDaemon()
+  const stateFile = join(home, 'terminal-sessions.json')
+  const state = z.record(z.string(), z.unknown()).parse(JSON.parse(readFileSync(stateFile, 'utf8')))
+  const template = z.record(z.string(), z.unknown()).parse(must(state[first.path], "the first session in the daemon's state"))
+  const gone = Object.fromEntries(Array.from({ length: 40_000 }, (_, i) => [
+    join(first.path.slice(0, -'.jsonl'.length), 'subagents', `agent-${i}.jsonl`), { ...template, parentToolUseId: `toolu_${i}` },
+  ]))
+  writeFileSync(stateFile, JSON.stringify({ ...state, ...gone }))
+  daemon = startDaemon()
+  await settle()
+  // Two seconds for the last read to finish saving, then eight seconds of reads with nothing in them to send.
+  const idleFrom = Date.now() + 2000
+  await until('the daemon to idle', 5, async () => Date.now() >= idleFrom)
+  const cpuFrom = (await meterAfter()).cpuMs
+  const idleUntil = Date.now() + 8000
+  await until('eight seconds of idle reads', 12, async () => Date.now() >= idleUntil)
+  const cpuUsed = (await meterAfter()).cpuMs - cpuFrom
+  check(cpuUsed < 1500, `a daemon with 40000 entries for subagent transcripts that are gone and nothing to read used ${cpuUsed} ms of CPU in eight seconds`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

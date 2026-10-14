@@ -9,7 +9,7 @@
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
@@ -418,18 +418,25 @@ export async function followTerminalSessions(options: {
   }
 
   // A tracked session's subagents, each linked to the Agent call that started it.
-  function trackSubagents(file: string, main: Tracked) {
+  // It returns the transcripts of all of them, found in the session's own folder,
+  // so no other session's entry is looked at.
+  function trackSubagents(file: string, main: Tracked): string[] {
     const dir = join(file.slice(0, -'.jsonl'.length), 'subagents')
-    if (!existsSync(dir)) return
+    if (!existsSync(dir)) return []
+    const paths: string[] = []
     for (const name of readdirSync(dir).filter((n) => n.endsWith('.jsonl'))) {
       const path = join(dir, name)
-      const facts = join(dir, `${basename(name, '.jsonl')}.meta.json`)
-      if (sent.has(path) || !existsSync(facts)) continue
-      const parsed = SubagentFacts.safeParse(parseJson(readFileSync(facts, 'utf8')))
-      if (!parsed.success) continue
-      sent.set(path, { ...main, offset: 0, inode: statSync(path).ino, firstUuid: firstUuidOf(path), parentToolUseId: parsed.data.toolUseId, withheld: [] })
-      changed = true
+      if (!sent.has(path)) {
+        const facts = join(dir, `${basename(name, '.jsonl')}.meta.json`)
+        if (!existsSync(facts)) continue
+        const parsed = SubagentFacts.safeParse(parseJson(readFileSync(facts, 'utf8')))
+        if (!parsed.success) continue
+        sent.set(path, { ...main, offset: 0, inode: statSync(path).ino, firstUuid: firstUuidOf(path), parentToolUseId: parsed.data.toolUseId, withheld: [] })
+        changed = true
+      }
+      paths.push(path)
     }
+    return paths
   }
 
   // One transcript, with its subagents, each of those in its own attempt.
@@ -437,10 +444,9 @@ export async function followTerminalSessions(options: {
     const tracked = sent.get(file) ?? await track(file)
     if (!tracked || tracked.folderId !== folder.id) return
     await send(file, tracked, folder)
-    trackSubagents(file, tracked)
-    const subagents = `${file.slice(0, -'.jsonl'.length)}${sep}`
-    for (const [path, sub] of sent) {
-      if (path.startsWith(subagents) && !parked.has(path)) await attempt(path, () => send(path, sub, folder))
+    for (const path of trackSubagents(file, tracked)) {
+      const sub = sent.get(path)
+      if (sub && !parked.has(path)) await attempt(path, () => send(path, sub, folder))
     }
   }
 
