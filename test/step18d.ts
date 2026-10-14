@@ -3,12 +3,14 @@
 // box is gone, its session shows as lost. A new container on the same home
 // volume brings back the file and the session, and the turn finishes without
 // writing the file twice. The check's API listens on 7701, the port the box
-// firewall keeps open for checks, so it takes the shared lock first.
+// firewall keeps open for checks, so the caller holds ~/.agents-app/checks/run.lock
+// while it runs, as for step7 and step8. The check never takes the lock itself,
+// since a suite's runner already holds it.
 //   node --env-file=.env --env-file=.env.test test/step18d.ts
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -25,9 +27,6 @@ const boxName = `box-${id}`
 const image = `agents-box:dur-${id}`
 // Box mounts come from the colima VM, which sees only the home folder.
 const work = join(homedir(), '.agents-app', 'checks', team)
-const lock = join(homedir(), '.agents-app', 'checks', 'run.lock')
-// Other agents' checks hold the lock while they use 7701.
-const LOCK_WAIT_MIN = 20
 
 const c = new Check()
 const say = person(PEOPLE, login)
@@ -54,27 +53,10 @@ const boxEnv: Record<string, string> = {
   ]),
 }
 
-async function takeLock() {
-  const deadline = Date.now() + LOCK_WAIT_MIN * 60_000
-  for (;;) {
-    try {
-      mkdirSync(lock)
-      return
-    } catch {
-      // Another check holds it.
-      if (Date.now() > deadline) throw new Error(`${lock} was held for ${LOCK_WAIT_MIN} minutes`)
-      await sleep(5000)
-    }
-  }
-}
-
-let locked = false
 let instanceId = ''
 const container = () => `agents-box-${instanceId}`
 
 try {
-  await takeLock()
-  locked = true
   await c.db.connect()
   mkdirSync(work, { recursive: true })
   writeFileSync(join(work, 'scenario.json'), JSON.stringify({
@@ -146,7 +128,6 @@ try {
     rmSync(work, { recursive: true, force: true })
   }
   await c.db.end().catch(() => {})
-  if (locked) rmdirSync(lock)
 }
 
 console.log(`\n${c.failures.length ? `${c.failures.length} failed (team ${team} kept)` : 'all passed (test team, box and image removed)'}`)

@@ -328,3 +328,11 @@ Rebased onto main at 5556f3b, the durability merge. Four files conflicted, in fo
 - **Seen failing.** At the schema only so far. Six payloads were read through the real `MessagePayload`. With the field optional again, a stage with no budget parsed clean. With the file restored, identical by sha256, it was refused with `at stage.maxBudgetUsd`. The server's own stage payload, a stage with its budget only in the stage, a replay and a plain message parsed in both states.
 - **Verified.** Typecheck, lint and the name guard pass.
 - **Not run.** step18l and step20b, so the new check has not been seen red or green. They load `.env` and `.env.test`, and this worktree had neither.
+
+### step18d no longer takes the lock itself (not merged)
+
+- **What changed.** `test/step18d.ts` made `~/.agents-app/checks/run.lock` itself with mkdir, waited up to 20 minutes for it, and removed it when it ended. It no longer touches the lock. The caller takes it before any check on port 7701, as `AGENTS.md` asks, and step7 and step8 already work that way. `docs/design/durability-resume.md` said step18d takes the lock itself, and now says to take it around the check.
+- **Why.** A full suite whose runner already holds the lock reached step18d, which waited on that same lock and fails after 20 minutes. The coordinator hit this in a suite run on 2026-10-14 and had to stop it. The wait was the first thing the check did, before it made a team, a container or a database connection, so the failure said nothing about durability.
+- **Verified.** Typecheck, lint and the name guard pass.
+- **Not run yet.** step18d, so the change has not been seen to fail with the old wait or pass without it.
+- **Not covered.** Run without the lock held, step18d now collides with another agent's check on port 7701, as step7 and step8 do. Nothing in the check enforces the lock. `AGENTS.md` and the durability resume note are what tell the caller to take it.
