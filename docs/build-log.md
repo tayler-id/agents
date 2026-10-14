@@ -302,3 +302,7 @@ Tayler approved seven items from the evaluation in `research/evaluations/instruc
   - A profile hunk could carry another person's correction, an agent repeating a person's words counted as that person's correction, the memory missed the very change on new findings, a retried replay stage lost its replays' spend, and a replay remembered logs and other people's profiles. The review found these, and each now has a check.
   - Main's API serves people only on a socket, so step20b, step20c and step20d failed until they moved to `servePeople`.
 - **Open.** On 2026-10-13 no API could start on this Mac for about 13 minutes, since the stream store's System V semaphores ran out. Main's API now closes its stream store when stopped.
+
+### Two review fixes to the evidence branch (not merged)
+
+- **A large document diff failed.** `server/diff.ts` ran git under Node's default 1 MiB cap on a child's output. The daemon takes documents up to 1 MiB, so rewriting a 600 KB one makes a diff of about 1.2 MB, and the Diff tab showed "internal error". The cap is now a named 4 MiB. A step20a check diffs a 700 KB rewrite, which makes 1.42 MB. With the cap back at Node's default it failed with `spawnSync git ENOBUFS` and the other 68 checks passed. With the fix all 69 passed.

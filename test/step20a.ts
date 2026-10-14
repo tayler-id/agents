@@ -101,6 +101,21 @@ try {
   }
   check(diffed.startsWith('threw:'), `a diff git could not make throws, rather than reading as no change: ${JSON.stringify(diffed)}`)
 
+  // The daemon takes documents up to 1 MiB. Rewriting 700 KB of one diffs to about
+  // 1.4 MB, past the 1 MiB Node lets a child write unless the caller asks for more.
+  const [REWRITE_LINES, LINE_BYTES, NODE_OUTPUT_CAP] = [10_000, 70, 1024 * 1024]
+  const rewrite = (word: string) => Array.from({ length: REWRITE_LINES }, (_, n) => `${word} ${n}`.padEnd(LINE_BYTES - 1, '.')).join('\n') + '\n'
+  let large: string
+  try {
+    large = diffText(rewrite('old'), rewrite('new'), 'big.md')
+  } catch (error) {
+    large = `threw: ${messageOf(error)}`
+  }
+  const largeLines = large.split('\n')
+  const [largeRemoved, largeAdded] = [largeLines.filter((l) => l.startsWith('-old ')).length, largeLines.filter((l) => l.startsWith('+new ')).length]
+  check(largeRemoved === REWRITE_LINES && largeAdded === REWRITE_LINES && large.length > NODE_OUTPUT_CAP,
+    `a 700 KB document rewritten diffs whole, past Node's default 1 MiB: ${large.startsWith('threw:') ? large : `${largeRemoved} lines removed, ${largeAdded} added, ${large.length} bytes`}`)
+
   // Each run proposes, so each gets its own run of a learning pipeline.
   const learner = await recordVersion(teamId, null, 'learner', 'pipelines/learner.ts', LEARNER)
   const newRun = async () => {

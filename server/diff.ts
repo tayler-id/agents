@@ -6,12 +6,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { messageOf } from '../shared/errors.ts'
 
+// The daemon takes documents up to 1 MiB, and rewriting one diffs to about twice
+// that. Node cuts a child's output at 1 MiB unless told otherwise.
+const MAX_DIFF_BYTES = 4 * 1024 * 1024
+
 function gitDiff(before: string, after: string, name: string, context: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'agents-diff-'))
   try {
     writeFileSync(join(dir, 'a'), before)
     writeFileSync(join(dir, 'b'), after)
-    execFileSync('git', ['diff', '--no-index', '--no-color', `--unified=${context}`, 'a', 'b'], { cwd: dir, encoding: 'utf8', stdio: 'pipe' })
+    execFileSync('git', ['diff', '--no-index', '--no-color', `--unified=${context}`, 'a', 'b'], { cwd: dir, encoding: 'utf8', stdio: 'pipe', maxBuffer: MAX_DIFF_BYTES })
     return ''
   } catch (error) {
     // git exits 1 when the files differ, with the diff on stdout. Anything else
