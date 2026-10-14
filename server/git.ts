@@ -1,13 +1,13 @@
 // Machines clone and push through the API, as themselves. The API checks that the
 // repo is their team's and forwards to the repo's forge, this Mac's Gitea or
 // GitHub, with the server's credentials, so forge tokens never leave the server.
-// Machines never push to a repo's default branch. Changes reach it through pull
-// requests, even on GitHub plans that can't protect a private repo's branches.
-// On a repo with a policy, a machine may also push only to the task branches of
-// its own workspaces. Any other ref is refused here and recorded, so the run
-// whose machine tried it stops, and the forge's branch protection refuses a push
-// to main again. A repo without a policy takes pushes to any branch but the
-// default one.
+// Machines never push to a repo's default branch, as the forge names it when the
+// push comes. Changes reach it through pull requests, even on GitHub plans that
+// can't protect a private repo's branches. On a repo with a policy, a machine may
+// also push only to the task branches of its own workspaces. Any other ref is
+// refused here and recorded, so the run whose machine tried it stops, and the
+// forge's branch protection refuses a push to main again. A repo without a
+// policy takes pushes to any branch but the default one.
 
 import { createGunzip } from 'node:zlib'
 import { Readable } from 'node:stream'
@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { instanceFrom } from './auth.ts'
 import { many, maybe, pool } from './db.ts'
 import { ForgeError } from './forge.ts'
-import { gitUpstreamFor, type RepoOnForge } from './repos.ts'
+import { currentDefaultBranch, gitUpstreamFor, type RepoOnForge } from './repos.ts'
 import { HttpError } from './record.ts'
 
 export const GIT_PATH = /^\/v1\/git\/([0-9a-f-]{36})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/
@@ -109,13 +109,25 @@ function webStream(chunks: AsyncIterable<Buffer>): ReadableStream<Uint8Array> {
   })
 }
 
+// A forge's refusal reaches the machine with its status and reason, such as a 503
+// when GitHub is not set up or no sign-in reaches the repo.
+async function fromForge<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
+    throw error
+  }
+}
+
 export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: URL) {
   const instance = await instanceFrom(req)
   const [, repoId, rest] = GIT_PATH.exec(url.pathname) ?? []
   if (!repoId || !rest) throw new HttpError(404, 'no such git path')
-  const repo = await maybe<RepoOnForge & { policy_id: string | null; default_branch: string }>(pool,
+  const row = await maybe<RepoOnForge & { policy_id: string | null; default_branch: string }>(pool,
     'select forge, remote_url, policy_id, default_branch from repos where id = $1 and team_id = $2', [repoId, instance.team_id])
-  if (!repo) throw new HttpError(404, 'no such repo')
+  if (!row) throw new HttpError(404, 'no such repo')
+  const repo = { ...row, id: repoId }
   const headers: Record<string, string> = {}
   for (const name of FORWARDED) {
     const value = req.headers[name]
@@ -136,19 +148,14 @@ export async function proxyGit(req: IncomingMessage, res: ServerResponse, url: U
         throw new HttpError(403, `on a repo with a policy a machine pushes only to its own task branches, so ${refused.join(', ')} was refused. Changes reach main only through a pull request the owner approves.`)
       }
     }
-    if (refs.includes(`refs/heads/${repo.default_branch}`)) {
-      throw new HttpError(403, `machines push task branches, never ${repo.default_branch}. Changes reach ${repo.default_branch} through pull requests.`)
+    // The branch rule asks the forge which branch is the default now.
+    const defaultBranch = await fromForge(() => currentDefaultBranch(repo))
+    if (refs.includes(`refs/heads/${defaultBranch}`)) {
+      throw new HttpError(403, `machines push task branches, never ${defaultBranch}. Changes reach ${defaultBranch} through pull requests.`)
     }
     body = stream
   }
-  let upstream: { url: string; authorization: string }
-  try {
-    upstream = await gitUpstreamFor(repo)
-  } catch (error) {
-    // GitHub is not set up, or no sign-in reaches the repo. The machine is told so, as a 503.
-    if (error instanceof ForgeError) throw new HttpError(error.status, error.message)
-    throw error
-  }
+  const upstream = await fromForge(() => gitUpstreamFor(repo))
   headers.authorization = upstream.authorization
   // Node's fetch needs `duplex` to send a streamed body, and the DOM's RequestInit type has no field for it.
   const init: RequestInit & { duplex: 'half' } = { method: req.method, headers, body: req.method === 'GET' ? undefined : webStream(bytesOf(body)), duplex: 'half' }

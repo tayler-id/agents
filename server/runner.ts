@@ -13,7 +13,7 @@ import { appendEvents, appendMessage, HttpError, type Person } from './record.ts
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
-import { checkAsker, forgeFor, type RepoOnForge } from './repos.ts'
+import { checkAsker, forgeFor, type RepoOnForge, type TeamRepo } from './repos.ts'
 import { placeTask } from './projects.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
@@ -68,6 +68,8 @@ export type Row = {
 export type Task = { id: string; slug: string; title: string; agent_id: string | null; conversation_id: string | null }
 export type Workspace = { id: string; instance_id: string; path: string; status: string }
 type RepoRef = RepoOnForge & { repoId: string; name: string; default_branch: string; setup_command: string | null }
+// A task's repo as the calls to its forge take it.
+const onForge = (repo: RepoRef): TeamRepo => ({ ...repo, id: repo.repoId })
 type Command = { status: string; error: string | null; result: unknown }
 export type AgentRow = { id: string; name: string; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 export type SessionRow = { id: string; harness_session_id: string | null; cost_usd: string | null }
@@ -536,7 +538,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
       case 'ask_reporter': {
         const issue = ctx.report.issue
         if (issue === undefined) throw new Error('the report came from no issue, so there is no reporter to ask')
-        await forgeFor(repo).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) ?? '')
+        await forgeFor(onForge(repo)).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) ?? '')
         result = { outcome: 'done', summary: `Asked the reporter one question on issue #${issue}.` }
         break
       }
@@ -554,7 +556,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
         const opened = [...rows].reverse().find((r) => r.data.pullRequest !== undefined)
         if (!opened) throw new Error('there is no pull request to merge')
         const number = Number(opened.data.pullRequest)
-        const pr = await forgeFor(repo).merge(repoPath(repo.remote_url), number)
+        const pr = await forgeFor(onForge(repo)).merge(repoPath(repo.remote_url), number)
         if (!pr.merged) throw new Error(`pull request #${number} did not merge`)
         await client.query(`update artifacts set state = 'merged', updated_at = now() where task_id = $1 and url = $2`, [run.task_id, pr.html_url])
         // A merged pipeline change is approved, and its version becomes current now.
@@ -568,8 +570,8 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
       case 'close_issue': {
         const issue = ctx.report.issue
         if (issue) {
-          await forgeFor(repo).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
-          await forgeFor(repo).closeIssue(repoPath(repo.remote_url), issue)
+          await forgeFor(onForge(repo)).comment(repoPath(repo.remote_url), issue, stage.text?.(ctx) || 'Closed by the pipeline.')
+          await forgeFor(onForge(repo)).closeIssue(repoPath(repo.remote_url), issue)
         }
         result = { outcome: 'done', summary: issue ? `Closed issue #${issue}.` : 'There was no issue to close.' }
         break
@@ -791,14 +793,14 @@ async function openPullRequest(client: pg.PoolClient, run: Run, pipeline: Pipeli
   const repo = await repoOf(client, run)
   const ctx = await context(client, run, rows, row)
   try {
-    await checkAsker(repo, run.trigger_payload.sender)
+    await checkAsker(onForge(repo), run.trigger_payload.sender)
     // On a repo with a policy the pull request is the commit the gates judged,
     // and its description is the runner's evidence, with the agent's summary in it.
     const governed = await framework.policyOf(client, run)
     const body = governed
       ? await framework.pullRequestBody(client, run, pipeline, rows, command.result, stage.text?.(ctx) ?? '')
       : stage.text?.(ctx) ?? ''
-    const pr = await forgeFor(repo).openPullRequest(repoPath(repo.remote_url), branchOf(run, task), repo.default_branch,
+    const pr = await forgeFor(onForge(repo)).openPullRequest(repoPath(repo.remote_url), branchOf(run, task), repo.default_branch,
       stage.title?.(ctx) ?? ctx.report.title, body)
     // A pull request opened on an earlier pass gets the evidence for this commit.
     if (governed) await forge.describe(repoPath(repo.remote_url), pr.number, body)

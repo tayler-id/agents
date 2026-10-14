@@ -4,17 +4,19 @@
 // page, and the API keeps the token GitHub then gives it. Tokens live only in files on this
 // machine, mode 600, one per person, and never reach Postgres, a log, a machine
 // or a browser. A repo's calls to GitHub use the token of the person who brought
-// the repo into a project. An admin's personal access token is a stopgap for a
-// team before anyone has signed in, and the docs mark it as one.
+// the repo into its team's project. An admin's fine-grained personal access
+// token is a stopgap for their team before anyone has signed in, and the docs
+// mark it as one. Nothing here crosses from one team to another.
 
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { maybe, pool } from './db.ts'
-import { ForgeError } from './forge.ts'
+import { ForgeError, repoPath } from './forge.ts'
+import type { Person } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
-import { GithubOwner, GithubToken, type GithubStatus, type YourGithub } from '../shared/projects.ts'
+import { FineGrainedToken, GithubOwner, type GithubStatus, type RepoId, type YourGithub } from '../shared/projects.ts'
 
 const trimSlash = (url: string) => url.replace(/\/+$/, '')
 
@@ -51,6 +53,22 @@ export function setup(): Extract<Setup, { on: true }> {
   return GITHUB
 }
 
+// Every call to GitHub's API and sign-in gives up after this long, so a GitHub
+// that hangs never holds a person, a repo request or the GitHub worker. Pushes
+// and clones through the git proxy take as long as they take.
+export const GITHUB_TIMEOUT_MS = 15_000
+
+export async function githubFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS) })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new ForgeError(504, `GitHub did not answer within ${GITHUB_TIMEOUT_MS / 1000} seconds.`)
+    }
+    throw error
+  }
+}
+
 // A person's sign-in. With the app's expiring tokens, the token lasts eight hours
 // and the refresh token renews it for six months.
 const SignedIn = z.object({
@@ -58,13 +76,13 @@ const SignedIn = z.object({
   expiresAt: z.string().nullable(), refreshToken: z.string().nullable(), refreshExpiresAt: z.string().nullable(),
 })
 type SignedIn = z.infer<typeof SignedIn>
-// The stopgap: an admin's personal access token, for the whole team.
-const Stopgap = z.object({ token: GithubToken, login: z.string(), owner: GithubOwner, ownerKind: z.enum(['org', 'user']), savedAt: z.string() })
+// The stopgap: an admin's fine-grained personal access token, for their whole team.
+const Stopgap = z.object({ token: FineGrainedToken, login: z.string(), owner: GithubOwner, ownerKind: z.enum(['org', 'user']), savedAt: z.string() })
 type Stopgap = z.infer<typeof Stopgap>
 
-const PersonId = z.uuid()
-const personFile = (personId: string) => join(setup().dir, 'people', `${PersonId.parse(personId)}.json`)
-const stopgapFile = () => join(setup().dir, 'stopgap.json')
+const Id = z.uuid()
+const personFile = (personId: string) => join(setup().dir, 'people', `${Id.parse(personId)}.json`)
+const stopgapFile = (teamId: string) => join(setup().dir, 'stopgaps', `${Id.parse(teamId)}.json`)
 
 function readFile<S extends z.ZodType>(schema: S, file: string): z.infer<S> | null {
   let raw: string
@@ -88,7 +106,7 @@ function writeSecret(file: string, value: unknown) {
 
 // GitHub's sign-in endpoints answer JSON when asked to.
 async function postLogin(path: string, body: Record<string, string>): Promise<unknown> {
-  const res = await fetch(`${setup().git}${path}`, {
+  const res = await githubFetch(`${setup().git}${path}`, {
     method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'agents-app' }, body: JSON.stringify(body),
   })
   if (!res.ok) throw new ForgeError(res.status, `GitHub ${path}: ${res.status} ${(await res.text()).slice(0, 200)}`)
@@ -97,7 +115,7 @@ async function postLogin(path: string, body: Record<string, string>): Promise<un
 
 // The account a token belongs to.
 export async function loginOf(token: string): Promise<string> {
-  const res = await fetch(`${setup().api}/user`, {
+  const res = await githubFetch(`${setup().api}/user`, {
     headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'agents-app' },
   })
   if (!res.ok) throw new ForgeError(res.status, res.status === 401 ? 'GitHub refused the token.' : `GitHub /user: ${res.status}`)
@@ -235,42 +253,48 @@ async function renew(personId: string, found: SignedIn): Promise<SignedIn | null
   return renewed
 }
 
-function stopgap(): Stopgap | null {
-  return readFile(Stopgap, stopgapFile())
+function stopgap(teamId: string): Stopgap | null {
+  return readFile(Stopgap, stopgapFile(teamId))
 }
 
-// Who a call to GitHub acts as: a person, for what they do themselves, or a
-// repo, for what agents and the server do in it.
-export type Who = { person: string } | { repo: string }
+// A person, as far as GitHub's calls need: who they are, and their team.
+export type Someone = Pick<Person, 'id' | 'team_id'>
+// Who a call to GitHub acts as: a person, for what they do themselves, or one of
+// a team's repos, by its row in repos, for what agents and the server do in it.
+export type Who = { person: Someone } | { repo: RepoId }
 
-// The person who brought a GitHub repo into a project, whose sign-in its calls use.
-async function bringerOf(path: string): Promise<string | null> {
-  const row = await maybe<{ requested_by: string | null }>(pool,
-    `select rr.requested_by from repo_requests rr join repos r on r.id = rr.repo_id
-     where r.forge = 'github' and r.remote_url = $1 order by rr.updated_at desc limit 1`, [`${setup().git}/${path}.git`])
-  return row?.requested_by ?? null
+// The team a repo row belongs to, and the person who brought it into that
+// team's project, whose sign-in its calls use.
+async function repoOwners(repoId: RepoId): Promise<{ team_id: string; remote_url: string; requested_by: string | null }> {
+  const row = await maybe<{ team_id: string; remote_url: string; requested_by: string | null }>(pool,
+    `select r.team_id, r.remote_url, (select rr.requested_by from repo_requests rr where rr.repo_id = r.id
+       order by rr.updated_at desc limit 1) as requested_by
+     from repos r where r.id = $1`, [repoId])
+  if (!row) throw new ForgeError(404, 'no such repo')
+  return row
 }
 
-// The token and account a call acts with: the person's own sign-in, or the
-// stopgap token when they have none. A 503 says what to do when there is neither.
+// The token and account a call acts with: the person's own sign-in, or their
+// team's stopgap token when they have none. A 503 says what to do when there is neither.
 export async function tokenFor(who: Who): Promise<{ token: string; login: string }> {
-  const personId = 'person' in who ? who.person : await bringerOf(who.repo)
-  const own = personId ? await signedIn(personId) : null
-  if (own) return own
-  const shared = stopgap()
-  if (shared) return shared
-  throw new ForgeError(503, 'person' in who
-    ? 'Connect GitHub on the Repos page first.'
-    : `No one's GitHub sign-in reaches ${who.repo}. Whoever added it to its project connects GitHub again on the Repos page.`)
+  if ('person' in who) {
+    const found = await signedIn(who.person.id) ?? stopgap(who.person.team_id)
+    if (found) return found
+    throw new ForgeError(503, 'Connect GitHub on the Repos page first.')
+  }
+  const repo = await repoOwners(who.repo)
+  const found = (repo.requested_by ? await signedIn(repo.requested_by) : null) ?? stopgap(repo.team_id)
+  if (found) return found
+  throw new ForgeError(503, `No one's GitHub sign-in reaches ${repoPath(repo.remote_url)}. Whoever added it to its project connects GitHub again on the Repos page.`)
 }
 
 // What a person may know about GitHub on this server: whether it is set up,
-// whether they are signed in and as whom, and the stopgap's account. Never a token.
-export function githubStatus(personId: string): GithubStatus {
+// whether they are signed in and as whom, and their team's stopgap account. Never a token.
+export function githubStatus(person: Someone): GithubStatus {
   if (!GITHUB.on) return { state: 'off', missing: GITHUB.missing }
-  const shared = stopgap()
+  const shared = stopgap(person.team_id)
   return {
-    state: 'on', signIn: GITHUB.clientId !== null, you: yourGithub(personId),
+    state: 'on', signIn: GITHUB.clientId !== null, you: yourGithub(person.id),
     stopgap: shared ? { login: shared.login, owner: shared.owner } : null,
   }
 }
@@ -286,32 +310,34 @@ function yourGithub(personId: string): YourGithub {
 }
 
 // The organization or account a person's new project repos go under, unless
-// they name another: their own account, or the stopgap's organization.
-export async function defaultOwner(personId: string): Promise<string> {
-  const own = await signedIn(personId)
+// they name another: their own account, or their team's stopgap organization.
+export async function defaultOwner(person: Someone): Promise<string> {
+  const own = await signedIn(person.id)
   if (own) return own.login
-  const shared = stopgap()
+  const shared = stopgap(person.team_id)
   if (shared) return shared.owner
   throw new ForgeError(503, 'Connect GitHub on the Repos page first.')
 }
 
-// Sets the stopgap token, after checking with GitHub whose it is and that it can
-// see the organization. Throws, with a reason an admin can act on, when GitHub
-// refuses. Returns the token's account and the owner, never the token.
-export async function setStopgap(token: string, owner: string): Promise<{ login: string; owner: string }> {
-  const parsedToken = GithubToken.parse(token)
+// Sets a team's stopgap token, after checking with GitHub whose it is and that it
+// can see the organization. Throws, with a reason an admin can act on, when the
+// token is not fine-grained or GitHub refuses it. Returns the token's account and
+// the owner, never the token.
+export async function setStopgap(teamId: string, token: string, owner: string): Promise<{ login: string; owner: string }> {
+  const parsedToken = FineGrainedToken.safeParse(token)
+  if (!parsedToken.success) throw new Error(parsedToken.error.issues.map((issue) => issue.message).join(' '))
   const parsedOwner = GithubOwner.parse(owner)
-  const login = await loginOf(parsedToken).catch((error: unknown) => {
+  const login = await loginOf(parsedToken.data).catch((error: unknown) => {
     throw new Error(error instanceof ForgeError && error.status === 401 ? 'GitHub refused the token.' : `Could not ask GitHub about the token: ${messageOf(error)}`)
   })
   const ownerKind = parsedOwner.toLowerCase() === login.toLowerCase() ? 'user' : 'org'
   if (ownerKind === 'org') {
-    const res = await fetch(`${setup().api}/orgs/${parsedOwner}`, {
-      headers: { authorization: `Bearer ${parsedToken}`, accept: 'application/vnd.github+json', 'user-agent': 'agents-app' },
+    const res = await githubFetch(`${setup().api}/orgs/${parsedOwner}`, {
+      headers: { authorization: `Bearer ${parsedToken.data}`, accept: 'application/vnd.github+json', 'user-agent': 'agents-app' },
     })
     if (res.status === 404) throw new Error(`The token belongs to ${login}, and can't see an organization named ${parsedOwner}.`)
     if (!res.ok) throw new Error(`GitHub answered ${res.status} about ${parsedOwner}.`)
   }
-  writeSecret(stopgapFile(), { token: parsedToken, login, owner: parsedOwner, ownerKind, savedAt: new Date().toISOString() } satisfies Stopgap)
+  writeSecret(stopgapFile(teamId), { token: parsedToken.data, login, owner: parsedOwner, ownerKind, savedAt: new Date().toISOString() } satisfies Stopgap)
   return { login, owner: parsedOwner }
 }

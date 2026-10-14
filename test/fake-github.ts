@@ -17,7 +17,7 @@ type Issue = {
   created_at: string; updated_at: string; author: string
 }
 type Pull = { number: number; title: string; body: string; head: string; base: string; state: 'open' | 'closed'; merged: boolean; merged_at: string | null }
-type LabelEvent = { actor: string; label: string; issue: number; created_at: string }
+type LabelEvent = { event: 'labeled' | 'unlabeled'; actor: string; label: string; issue: number; created_at: string }
 type Repo = { owner: string; name: string; description: string; defaultBranch: string; issues: Issue[]; pulls: Pull[]; events: LabelEvent[]; next: number; createdBy: string }
 type Grant = { login: string; expiresAt: number | null }
 type DeviceCode = { userCode: string; approvedAs: string | null; denied: boolean }
@@ -29,9 +29,18 @@ export type FakeGithub = {
   url: string
   seen: Seen[]
   // Each person's role on every repo, as GitHub's collaborator permission call names it. Anyone else reads only.
+  // Whoever made a repo is its admin.
   roles: Map<string, string>
   // While set, creating a repo is refused as GitHub refuses a token without the permission for it.
   refuseCreate: boolean
+  // People whose role GitHub fails to answer for, once each, with a 500.
+  failRoleOnce: Set<string>
+  // Accepts another token, as a personal access token of the account.
+  grantToken(token: string, login: string): void
+  // Holds GitHub's answer to making the named repo until it is released, as a GitHub that hangs would.
+  hold(name: string): void
+  held(name: string): boolean
+  release(name: string): void
   // Every token issued, which a check looks for where none may be.
   issued(): string[]
   // How many times a refresh token bought a new token.
@@ -48,8 +57,13 @@ export type FakeGithub = {
   // Opens an issue as its author would, outside the app. Labels it opens with are
   // put on by the author, as an issue form does.
   openIssue(fullName: string, title: string, body: string, labels: string[], author: string): Issue
-  // Someone puts a label on an issue.
+  // Someone puts a label on an issue, or takes it off.
   label(fullName: string, n: number, label: string, actor: string): void
+  unlabel(fullName: string, n: number, label: string, actor: string): void
+  // Someone closes an issue on GitHub.
+  close(fullName: string, n: number): void
+  // A repo's owner makes another branch its default, starting from the old default's head.
+  setDefaultBranch(fullName: string, branch: string): void
   issue(fullName: string, n: number): Issue | undefined
   pull(fullName: string, n: number): Pull | undefined
   pulls(fullName: string): Pull[]
@@ -92,6 +106,8 @@ export async function startFakeGithub(options: {
   const now = () => new Date().toISOString()
   const seen: Seen[] = []
   const created = new Map<string, number>()
+  // Repos whose making waits until released, by name in lower case.
+  const holds = new Map<string, { reached: boolean; released: Promise<void>; release: () => void }>()
   mkdirSync(dir, { recursive: true })
 
   function grant(login: string) {
@@ -102,10 +118,18 @@ export async function startFakeGithub(options: {
     return { access_token: token, token_type: 'bearer', scope: '', expires_in: USER_TOKEN_SECONDS, refresh_token: refresh, refresh_token_expires_in: REFRESH_TOKEN_SECONDS }
   }
 
-  const repoJson = (repo: Repo) => ({
-    full_name: `${repo.owner}/${repo.name}`, name: repo.name, owner: { login: repo.owner }, private: true, description: repo.description,
-    default_branch: repo.defaultBranch, html_url: `${url}/${repo.owner}/${repo.name}`, clone_url: `${url}/${repo.owner}/${repo.name}.git`,
-  })
+  // A person's role on a repo: whoever made it is its admin, and anyone else has the role a check gave them.
+  const roleOn = (repo: Repo, login: string) => (login.toLowerCase() === repo.createdBy.toLowerCase() ? 'admin' : fake.roles.get(login) ?? 'read')
+  const PUSHES = new Set(['admin', 'maintain', 'write'])
+  // A repo as `login` sees it, with what they may do in it.
+  const repoJson = (repo: Repo, login: string) => {
+    const role = roleOn(repo, login)
+    return {
+      full_name: `${repo.owner}/${repo.name}`, name: repo.name, owner: { login: repo.owner }, private: true, description: repo.description,
+      default_branch: repo.defaultBranch, html_url: `${url}/${repo.owner}/${repo.name}`, clone_url: `${url}/${repo.owner}/${repo.name}.git`,
+      permissions: { admin: role === 'admin', maintain: role === 'admin' || role === 'maintain', push: PUSHES.has(role), triage: PUSHES.has(role) || role === 'triage', pull: true },
+    }
+  }
   const issueJson = (repo: Repo, issue: Issue) => ({
     number: issue.number, title: issue.title, body: issue.body, state: issue.state, html_url: `${url}/${repo.owner}/${repo.name}/issues/${issue.number}`,
     user: { login: issue.author }, labels: issue.labels.map((name) => ({ name })), created_at: issue.created_at, updated_at: issue.updated_at,
@@ -280,8 +304,13 @@ export async function startFakeGithub(options: {
         if (repos.has(full.toLowerCase())) {
           return send(res, 422, { message: 'Repository creation failed.', errors: [{ resource: 'Repository', code: 'custom', field: 'name', message: 'name already exists on this account' }] })
         }
+        const wait = holds.get(wanted.name.toLowerCase())
+        if (wait) {
+          wait.reached = true
+          await wait.released
+        }
         created.set(full, (created.get(full) ?? 0) + 1)
-        return send(res, 201, repoJson(makeRepo(create, wanted.name, wanted.description, wanted.auto_init, login)))
+        return send(res, 201, repoJson(makeRepo(create, wanted.name, wanted.description, wanted.auto_init, login), login))
       }
 
       const inRepo = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path)
@@ -292,7 +321,7 @@ export async function startFakeGithub(options: {
       const issue = repo.issues.find((i) => i.number === number)
       const pull = repo.pulls.find((p) => p.number === number)
 
-      if (req.method === 'GET' && rest === '') return send(res, 200, repoJson(repo))
+      if (req.method === 'GET' && rest === '') return send(res, 200, repoJson(repo, login))
       if (req.method === 'GET' && rest === '/issues') {
         return send(res, 200, [...repo.issues.filter((i) => i.state === 'open').map((i) => issueJson(repo, i)),
           ...repo.pulls.filter((p) => p.state === 'open').map((p) => pullAsIssue(repo, p))])
@@ -305,15 +334,17 @@ export async function startFakeGithub(options: {
       if (req.method === 'GET' && rest === '/issues/events') {
         return send(res, 200, [...repo.events].reverse().map((e) => {
           const target = repo.issues.find((i) => i.number === e.issue)
-          return { event: 'labeled', actor: { login: e.actor }, label: { name: e.label }, created_at: e.created_at, issue: target ? issueJson(repo, target) : null }
+          return { event: e.event, actor: { login: e.actor }, label: { name: e.label }, created_at: e.created_at, issue: target ? issueJson(repo, target) : null }
         }))
       }
       const roleOf = /^\/collaborators\/([^/]+)\/permission$/.exec(rest)?.[1]
       if (req.method === 'GET' && roleOf) {
-        const name = fake.roles.get(decodeURIComponent(roleOf)) ?? 'read'
+        const person = decodeURIComponent(roleOf)
+        if (fake.failRoleOnce.delete(person)) return send(res, 500, { message: 'Server Error' })
+        const name = roleOn(repo, person)
         // GitHub's legacy permission maps maintain to write and triage to read.
         const legacy = name === 'admin' ? 'admin' : name === 'maintain' || name === 'write' ? 'write' : 'read'
-        return send(res, 200, { permission: legacy, role_name: name, user: { login: decodeURIComponent(roleOf) } })
+        return send(res, 200, { permission: legacy, role_name: name, user: { login: person } })
       }
       if (/^\/issues\/\d+$/.test(rest) && issue) {
         if (req.method === 'GET') return send(res, 200, issueJson(repo, issue))
@@ -369,8 +400,25 @@ export async function startFakeGithub(options: {
     if (!repo) throw new Error(`the fake GitHub has no repo ${fullName}`)
     return repo
   }
+  const issueNamed = (repo: Repo, n: number) => {
+    const issue = repo.issues.find((i) => i.number === n)
+    if (!issue) throw new Error(`the fake GitHub has no issue ${repo.owner}/${repo.name}#${n}`)
+    return issue
+  }
   const fake: FakeGithub = {
-    url, seen, created, refuseCreate: false, roles: new Map(),
+    url, seen, created, refuseCreate: false, roles: new Map(), failRoleOnce: new Set(),
+    grantToken(token, login) {
+      grants.set(token, { login, expiresAt: null })
+    },
+    hold(name) {
+      const { promise, resolve } = Promise.withResolvers<undefined>()
+      holds.set(name.toLowerCase(), { reached: false, released: promise, release: () => { resolve(undefined) } })
+    },
+    held: (name) => holds.get(name.toLowerCase())?.reached ?? false,
+    release(name) {
+      holds.get(name.toLowerCase())?.release()
+      holds.delete(name.toLowerCase())
+    },
     issued: () => [...grants.keys(), ...refreshTokens.keys()],
     refreshes: () => refreshed,
     approve(userCode, login) {
@@ -395,11 +443,28 @@ export async function startFakeGithub(options: {
     },
     label(fullName, n, label, actor) {
       const repo = repoNamed(fullName)
-      const target = repo.issues.find((i) => i.number === n)
-      if (!target) throw new Error(`the fake GitHub has no issue ${fullName}#${n}`)
+      const target = issueNamed(repo, n)
       target.labels.push(label)
       target.updated_at = now()
-      repo.events.push({ actor, label, issue: n, created_at: now() })
+      repo.events.push({ event: 'labeled', actor, label, issue: n, created_at: now() })
+    },
+    unlabel(fullName, n, label, actor) {
+      const repo = repoNamed(fullName)
+      const target = issueNamed(repo, n)
+      target.labels = target.labels.filter((l) => l !== label)
+      target.updated_at = now()
+      repo.events.push({ event: 'unlabeled', actor, label, issue: n, created_at: now() })
+    },
+    close(fullName, n) {
+      const target = issueNamed(repoNamed(fullName), n)
+      target.state = 'closed'
+      target.updated_at = now()
+    },
+    setDefaultBranch(fullName, branch) {
+      const repo = repoNamed(fullName)
+      if (!branches(repo).includes(branch)) git(repo, 'update-ref', `refs/heads/${branch}`, git(repo, 'rev-parse', repo.defaultBranch))
+      git(repo, 'symbolic-ref', 'HEAD', `refs/heads/${branch}`)
+      repo.defaultBranch = branch
     },
     issue: (fullName, n) => repos.get(fullName.toLowerCase())?.issues.find((i) => i.number === n),
     pull: (fullName, n) => repos.get(fullName.toLowerCase())?.pulls.find((p) => p.number === n),
@@ -410,7 +475,11 @@ export async function startFakeGithub(options: {
       if (!pull) throw new Error(`the fake GitHub has no pull request ${fullName}#${n}`)
       merge(repo, pull)
     },
-    stop: () => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections() }),
+    stop: () => new Promise<void>((resolve) => {
+      for (const wait of holds.values()) wait.release()
+      server.close(() => resolve())
+      server.closeAllConnections()
+    }),
   }
   return fake
 }

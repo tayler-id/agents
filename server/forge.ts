@@ -90,6 +90,8 @@ export type Forge = {
   merge(repo: string, n: number): Promise<PullRequest>
   openPullRequests(repo: string): Promise<OpenPullRequest[]>
   branches(repo: string): Promise<string[]>
+  // The branch the forge says is the repo's default now.
+  defaultBranch(repo: string): Promise<string>
 }
 
 // What the coding framework reads of a pull request, parsed from the forge's answer.
@@ -114,9 +116,10 @@ async function parsed<T>(schema: z.ZodType<T>, method: string, path: string, bod
   return schema.parse(await call<unknown>(method, path, body, token, sudo))
 }
 
-// Gitea's answers to the calls added for the Repos page, as much as the app reads.
+// Gitea's answers to the calls added for projects, as much as the app reads.
 const GiteaPull = z.object({ number: z.number().int(), title: z.string(), html_url: z.string(), head: z.object({ ref: z.string() }) })
 const GiteaBranch = z.object({ name: z.string() })
+const GiteaRepo = z.object({ default_branch: z.string() })
 // Gitea's largest page by default, its MAX_RESPONSE_ITEMS setting. A repo's open
 // pull requests and branches fit in one.
 const GITEA_PAGE = 50
@@ -146,6 +149,7 @@ export const forge = {
   },
   branches: async (repo: string) =>
     z.array(GiteaBranch).parse(await call<unknown>('GET', `/repos/${repo}/branches?limit=${GITEA_PAGE}`)).map((b) => b.name),
+  defaultBranch: async (repo: string) => GiteaRepo.parse(await call<unknown>('GET', `/repos/${repo}`)).default_branch,
   // The files in a folder on a branch, each with git's blob id for its content.
   async files(repo: string, dir: string, ref: string): Promise<{ path: string; sha: string; content: string }[]> {
     const entries = await call<{ type: string; path: string; sha: string }[]>('GET', `/repos/${repo}/contents/${dir}?ref=${ref}`)

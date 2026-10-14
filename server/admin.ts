@@ -9,10 +9,11 @@
 //   node --env-file=.env server/admin.ts forge-login <login> <forge user>
 //   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
 //   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
-//   pbpaste | node --env-file=.env server/admin.ts github-token <organization or account>
-// github-token sets the stopgap personal access token, for a team before anyone
-// signs in with GitHub. It reads the token from standard input, so it never shows
-// in the process list or the shell history, and keeps it in AGENTS_GITHUB_DIR.
+//   pbpaste | node --env-file=.env server/admin.ts github-token <team> <organization or account>
+// github-token sets a team's stopgap, a fine-grained personal access token, for
+// the team before anyone signs in with GitHub. It reads the token from standard
+// input, so it never shows in the process list or the shell history, and keeps
+// it in AGENTS_GITHUB_DIR.
 
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -70,7 +71,7 @@ const USAGE = [
   'forge-login <login> <forge user>',
   'set-policy <team> <repo clone url> <policy.json> <owner login>',
   'add-lesson <team> <rule> <incident>',
-  'github-token <organization or account> (the stopgap token on standard input)',
+  'github-token <team> <organization or account> (the stopgap token on standard input)',
 ].join(' | ')
 
 const [command, ...args] = process.argv.slice(2)
@@ -121,8 +122,10 @@ try {
     const { rowCount } = await pool.query('insert into lessons (team_id, rule, incident) select id, $2, $3 from teams where name = $1', [team, rule, incident])
     if (!rowCount) throw new Error(`no team ${team ?? ''}`)
     console.log(`added a written lesson to ${team}. It becomes enforced once it names what holds it.`)
-  } else if (command === 'github-token' && args.length === 1) {
-    console.log(JSON.stringify(await setStopgap(await readStdin(), first)))
+  } else if (command === 'github-token' && args.length === 2) {
+    const team = await maybe<{ id: string }>(pool, 'select id from teams where name = $1', [first])
+    if (!team) throw new Error(`no team ${first}`)
+    console.log(JSON.stringify(await setStopgap(team.id, await readStdin(), second)))
   } else {
     console.error(`usage: ${USAGE}`)
     process.exitCode = 2

@@ -16,8 +16,10 @@ export const RepoName = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/, 'A repo name
 export type RepoName = z.infer<typeof RepoName>
 // A GitHub organization or account name.
 export const GithubOwner = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'An organization or account name is letters, digits and dashes.')
-// Classic tokens are ghp_ and 36 characters, fine-grained ones github_pat_ and 82.
-export const GithubToken = z.string().regex(/^[A-Za-z0-9_]{20,255}$/, 'That does not look like a GitHub token.')
+// A fine-grained personal access token, github_pat_ and 82 characters. The
+// stopgap takes no classic token, which reaches every repo its account can.
+export const FineGrainedToken = z.string().regex(/^github_pat_[A-Za-z0-9_]{20,255}$/,
+  'The stopgap takes a fine-grained personal access token, which starts with github_pat_. A classic token reaches every repo its account can.')
 
 export const PROJECT_NAME_MAX = 80
 // The repo a project's name makes: lowercase, with anything GitHub would refuse
@@ -112,7 +114,7 @@ export type NewProjectBody = z.infer<typeof NewProjectBody>
 export const AddRepoBody = z.union([z.object({ name: RepoName, owner: GithubOwner.optional() }), z.object({ repoId: RepoId })])
 export type AddRepoBody = z.infer<typeof AddRepoBody>
 // The stopgap: an admin's personal access token for the whole team.
-export const StopgapBody = z.object({ owner: GithubOwner, token: GithubToken })
+export const StopgapBody = z.object({ owner: GithubOwner, token: FineGrainedToken })
 
 // Responses.
 export const NewProjectResult = z.object({ projectId: ProjectId, conversationId: z.uuid(), requestId: RepoRequestId })

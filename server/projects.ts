@@ -1,15 +1,17 @@
 // Projects: a team's work on one thing. Making one writes the project, its room
-// and a request for its GitHub repo in one transaction, then asks GitHub, then
-// records the repo. Each try at a request looks the repo up first, so trying
-// again adopts a repo an earlier try made instead of making a second one.
+// and a request for its GitHub repo in one transaction, then asks GitHub with no
+// transaction open, then records the repo in another. Each try at a request
+// looks the repo up first, so trying again adopts a repo an earlier try made
+// instead of making a second one.
 
 import type pg from 'pg'
 import { maybe, one, pool, tx } from './db.ts'
 import { ForgeError, repoPath } from './forge.ts'
-import { explainGithub, github, githubRemoteUrl, type GithubRepo } from './github.ts'
-import { defaultOwner, type Who } from './github-auth.ts'
+import { explainGithub, githubAs, githubRemoteUrl, type GithubRepo } from './github.ts'
+import { defaultOwner } from './github-auth.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { createRoom } from './rooms.ts'
+import type { PersonId, TeamId } from '../shared/onboarding.ts'
 import {
   RepoName, repoNameFor,
   type AddRepoBody, type NewProjectBody, type ProjectId, type REPO_REQUEST_MOVES, type RepoId, type RepoRequestId, type RepoRequestStatus,
@@ -67,8 +69,8 @@ async function projectOf(person: Person, projectId: ProjectId) {
 export async function createProject(person: Person, body: NewProjectBody) {
   const name = RepoName.safeParse(repoNameFor(body.name))
   if (!name.success) throw new HttpError(400, 'A project name needs a letter or a digit, which its repo is named after.')
-  const owner = body.owner ?? await askGithub(() => defaultOwner(person.id))
-  const taken = await askGithub(() => github.repo({ person: person.id }, owner, name.data))
+  const owner = body.owner ?? await askGithub(() => defaultOwner(person))
+  const taken = await askGithub(() => githubAs(person).repo(owner, name.data))
   if (taken) {
     throw new HttpError(409, `${taken.full_name} already exists on GitHub. Name the project differently, or add that repo to a project from the project's page.`)
   }
@@ -81,43 +83,72 @@ export async function createProject(person: Person, body: NewProjectBody) {
     const requestId = await requestRepo(client, person, project.id, owner, name.data, body.description)
     return { projectId: project.id, conversationId, requestId }
   }).catch(refuseDuplicate)
-  await fulfillRepoRequest(made.requestId)
+  await fulfillRepoRequest(made.requestId, 'maker')
   return made
 }
 
-// Asks GitHub for a requested repo, made if missing, and records it. GitHub is
-// asked as the person who asked for the repo, whose sign-in the repo's calls use
-// from then on. The request stays locked while GitHub is asked, so two servers
-// never ask for one repo at once, and a try that finds it taken or settled does nothing.
-export async function fulfillRepoRequest(requestId: RepoRequestId): Promise<void> {
+// Who takes a try at a repo request: the person who just made or moved it, or
+// the GitHub worker, which takes over a request whose last try stopped holding it.
+type Taker = 'maker' | 'worker'
+// How long a try holds a request. GitHub answers within GITHUB_TIMEOUT_MS, so a
+// request still creating after this was left by a crash or a restart.
+export const CLAIM_SEC = 30
+
+type Claimed = {
+  team_id: TeamId; project_id: ProjectId; owner: string; name: RepoName; description: string; requested_by: PersonId | null
+  // When the try claimed the request, to microseconds, which only that try knows.
+  claimed: string
+}
+
+// Asks GitHub for a requested repo, made if missing, and records it. A try first
+// claims the request in a transaction of its own, then asks GitHub as the person
+// who asked for the repo with no transaction open, then records the answer in a
+// second transaction, if its claim still holds. A repo that exists already
+// joins only if that person can push to it.
+export async function fulfillRepoRequest(requestId: RepoRequestId, taker: Taker): Promise<void> {
+  const claim = await maybe<Claimed>(pool,
+    `update repo_requests set updated_at = clock_timestamp()
+     where id = $1 and status = 'creating' and updated_at < clock_timestamp() - make_interval(secs => $2)
+     returning team_id, project_id, owner, name, description, requested_by, updated_at::text as claimed`,
+    [requestId, taker === 'worker' ? CLAIM_SEC : 0])
+  if (!claim) return
+  if (!claim.requested_by) {
+    await settle(requestId, claim, { error: 'The person who asked for this repo has left the team. Try again to ask for it yourself.' })
+    return
+  }
+  const github = githubAs({ id: claim.requested_by, team_id: claim.team_id })
+  let answer: { repo: GithubRepo } | { error: string }
+  try {
+    const existing = await github.repo(claim.owner, claim.name)
+    answer = existing && !existing.permissions.push
+      ? { error: `${existing.full_name} is on GitHub already, and whoever asked for it can't push to it, so it can't join a project. Someone who can push to it adds it.` }
+      : { repo: existing ?? await github.createRepo(claim.owner, claim.name, claim.description) }
+  } catch (error) {
+    // GitHub said no, did not answer in time, or could not be reached. The
+    // request keeps the reason, and Try again starts over.
+    answer = { error: scrub(explainGithub(error)) }
+  }
+  await settle(requestId, claim, answer)
+}
+
+// Records a try's answer, if no other try claimed the request since.
+async function settle(requestId: RepoRequestId, claim: Claimed, answer: { repo: GithubRepo } | { error: string }) {
   await tx(async (client) => {
-    const request = await maybe<{ team_id: string; project_id: ProjectId; owner: string; name: RepoName; description: string; requested_by: string | null }>(client,
-      `select team_id, project_id, owner, name, description, requested_by from repo_requests
-       where id = $1 and status = 'creating' for update skip locked`, [requestId])
-    if (!request) return
-    if (!request.requested_by) {
-      await move(client, requestId, { to: 'failed', error: 'The person who asked for this repo has left the team. Try again to ask for it yourself.' })
-      return
-    }
-    const who: Who = { person: request.requested_by }
-    let repo: GithubRepo
-    try {
-      repo = await github.repo(who, request.owner, request.name) ?? await github.createRepo(who, request.owner, request.name, request.description)
-    } catch (error) {
-      // GitHub said no or could not be reached. The request keeps the reason, and
-      // Try again starts over. Failures after this point are Postgres's, and leave
-      // the request creating for the GitHub worker to try again.
-      await move(client, requestId, { to: 'failed', error: scrub(explainGithub(error)) })
+    const held = await maybe(client,
+      `select 1 from repo_requests where id = $1 and status = 'creating' and updated_at = $2::timestamptz for update`, [requestId, claim.claimed])
+    if (!held) return
+    if ('error' in answer) {
+      await move(client, requestId, { to: 'failed', error: answer.error })
       return
     }
     const row = await one<{ id: RepoId; project_id: ProjectId | null }>(client, 'the registered repo',
       `insert into repos (team_id, forge, remote_url, default_branch, project_id) values ($1, 'github', $2, $3, $4)
        on conflict (team_id, remote_url) do update set project_id = coalesce(repos.project_id, excluded.project_id)
        returning id, project_id`,
-      [request.team_id, githubRemoteUrl(repo.full_name), repo.default_branch, request.project_id])
-    await move(client, requestId, row.project_id === request.project_id
+      [claim.team_id, githubRemoteUrl(answer.repo.full_name), answer.repo.default_branch, claim.project_id])
+    await move(client, requestId, row.project_id === claim.project_id
       ? { to: 'done', repoId: row.id }
-      : { to: 'failed', error: `${repo.full_name} already belongs to another project.` })
+      : { to: 'failed', error: `${answer.repo.full_name} already belongs to another project.` })
   })
 }
 
@@ -131,7 +162,7 @@ export async function retryRepoRequest(person: Person, requestId: RepoRequestId)
     return retried
   })
   if (!moved) throw new HttpError(409, 'Only a request that failed can be tried again.')
-  await fulfillRepoRequest(requestId)
+  await fulfillRepoRequest(requestId, 'maker')
 }
 
 // A GitHub repo by name, made when it does not exist, or a team repo that
@@ -144,9 +175,9 @@ export async function addRepoToProject(person: Person, projectId: ProjectId, bod
     if (!rowCount) throw new HttpError(409, "That repo isn't one of the team's repos without a project.")
     return { repoId: body.repoId }
   }
-  const owner = body.owner ?? await askGithub(() => defaultOwner(person.id))
+  const owner = body.owner ?? await askGithub(() => defaultOwner(person))
   const requestId = await tx((client) => requestRepo(client, person, project.id, owner, body.name, project.description)).catch(refuseDuplicate)
-  await fulfillRepoRequest(requestId)
+  await fulfillRepoRequest(requestId, 'maker')
   return { requestId }
 }
 

@@ -28,7 +28,7 @@ import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
 import { forgeHook, pipelineHook } from './hooks.ts'
 import { repoPath } from './forge.ts'
-import { forgeFor, reposOverview, type RepoOnForge } from './repos.ts'
+import { forgeFor, reposOverview, type TeamRepo } from './repos.ts'
 import { githubStatus, setStopgap, signOut, startSignIn } from './github-auth.ts'
 import { startGithubWorker } from './github-worker.ts'
 import { addRepoToProject, askGithub, createProject, retryRepoRequest } from './projects.ts'
@@ -471,29 +471,29 @@ const routes: Route[] = [
   ['people', 'GET', /^\/v1\/repos$/, async (req) => reposOverview(await personFrom(req))],
 
   // Whether GitHub is set up, and the person's own sign-in. Never a token.
-  ['people', 'GET', /^\/v1\/github$/, async (req) => githubStatus((await personFrom(req)).id)],
+  ['people', 'GET', /^\/v1\/github$/, async (req) => githubStatus(await personFrom(req))],
 
   // Signs the person in with GitHub's device flow. The answer has the code they enter on GitHub.
   ['people', 'POST', /^\/v1\/github\/sign-in$/, async (req) => {
     const person = await personFrom(req)
     await askGithub(() => startSignIn(person.id))
-    return githubStatus(person.id)
+    return githubStatus(person)
   }],
 
   ['people', 'POST', /^\/v1\/github\/sign-out$/, async (req) => {
     const person = await personFrom(req)
     signOut(person.id)
-    return githubStatus(person.id)
+    return githubStatus(person)
   }],
 
-  // The stopgap until people sign in: an admin's personal access token for the whole team.
+  // The stopgap until people sign in: an admin's fine-grained personal access token for their whole team.
   ['people', 'POST', /^\/v1\/github\/token$/, async (req) => {
     const person = await personFrom(req)
     if (!(await isAdmin(person))) throw new HttpError(403, 'Only an admin can set the stopgap token.')
     const body = await parseBody(req, StopgapBody)
     // setStopgap's refusals are written for the admin to act on.
-    await setStopgap(body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
-    return githubStatus(person.id)
+    await setStopgap(person.team_id, body.token, body.owner).catch((error: unknown) => { throw new HttpError(400, messageOf(error)) })
+    return githubStatus(person)
   }],
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
@@ -555,8 +555,8 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/pipelines/${UUID}/runs$`), async (req, [pipelineId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    const repo = await maybe<RepoOnForge>(pool,
-      'select forge, remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
+    const repo = await maybe<TeamRepo>(pool,
+      'select id, forge, remote_url from repos where id = $1 and team_id = $2', [text(body.repoId, 'repoId'), person.team_id])
     if (!repo) throw new HttpError(404, 'no such repo')
     const pipeline = await maybe(pool, 'select 1 from pipelines where id = $1 and team_id = $2', [pipelineId, person.team_id])
     if (!pipeline) throw new HttpError(404, 'no such pipeline')
@@ -785,11 +785,14 @@ if (import.meta.main) {
   await listenForPeople(createServer(serve('people')), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
+  let githubWorker: ReturnType<typeof startGithubWorker> | null = null
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
+  // The GitHub worker finishes the round it is in and starts no other.
   const stop = () => {
-    setTimeout(() => { console.error('the stream server did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
-    streams.stop().then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the stream server: ${messageOf(error)}`); process.exit(1) })
+    setTimeout(() => { console.error('the API did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
+    Promise.all([githubWorker?.stop(), streams.stop()])
+      .then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the API: ${messageOf(error)}`); process.exit(1) })
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
@@ -797,6 +800,6 @@ if (import.meta.main) {
   createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
   if (process.env.AGENTS_RUNNER !== 'off') {
     runner = startRunner()
-    startGithubWorker()
+    githubWorker = startGithubWorker()
   }
 }
