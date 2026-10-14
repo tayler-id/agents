@@ -357,11 +357,11 @@ Tayler went with the coordinator's picks on all of these.
   - Postgres moves to RDS.
   - One server instance runs the API, Electric and the forge.
   - One instance hosts boxes.
-  - Nothing has a public port. Everything goes through the tailnet.
+  - Nothing has a public port. Everything goes through the tailnet, except boxes reaching the server's machine port inside the VPC, which Tayler approved on 2026-10-14.
   - Boxes reach the web like any computer, so every agent has its own browser. They never reach the metadata endpoint, the private network, the tailnet or other boxes, and they reach the server only on its machine port.
-  - The cutover takes about 10 minutes, and the Mac's stack stays as the rollback.
+  - The cutover takes the app down for the export, the restore and a build of the box image. It has not been timed, so the plan allows an hour, and the Mac's stack stays as the rollback.
 - **Implementation.** The AWS stack is written in the CDK in TypeScript, on the AWS agent's branch.
-- **Status.** Built on the AWS agent's branch, not ready to run. Its export moves Postgres, the forge and the secrets but not the boxes' home volumes, so agents would lose their workspaces, sessions and browser logins. The export must move those too, proven by a rehearsal in which tasks resume. The branch also limits boxes to an allowlist that blocks browsing, which Tayler rejected on 2026-10-13, and it is being changed to the rule above. One choice waits on Tayler, box-to-server traffic inside the VPC rather than over the tailnet. It costs about $217 a month, $119 of it the box host running all day.
+- **Status.** Built on the AWS agent's branch, and not yet run on AWS. Its export moves Postgres, the forge, the secrets and every box's home volume, and a rehearsal on this Mac, `test/step11f.ts`, resumes a task on a box restored from the export. The nightly backup does not cover the boxes' homes yet. Boxes reach the web as above, and the allowlist that blocked browsing is gone. On 2026-10-14 Tayler approved the `ops/` files, box-to-server traffic inside the VPC, dropping `NET_RAW` from boxes, colima on this Mac dropping the box host's private ranges, and the cost, about $217 a month once it runs, $119 of it the box host running all day. Boxes now run without `NET_RAW`, checked by `test/step11b.ts`. Colima's script and `test/step11g.ts` are written and were tried in a throwaway copy of the VM, and the live steps in `docs/aws.md` wait for Tayler. Nothing is deployed until the Mac version settles.
 
 ### Under evaluation
 

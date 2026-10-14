@@ -8,11 +8,15 @@ import { HttpError, Person } from './record.ts'
 import { Login, NAME_MAX } from '../shared/onboarding.ts'
 import type { Audience } from './http.ts'
 
+// tailscale serve adds several identity headers, all starting with this. The
+// machine port refuses every one, so none can be read there by later code.
+const TAILSCALE_HEADER = 'tailscale-'
+
 // The machine port refuses any person's identity, for requests and WebSocket
 // upgrades alike. Containers can reach this Mac's loopback, so a box could
 // otherwise pose as a person.
 export function checkAudience(audience: Audience, req: IncomingMessage) {
-  if (audience === 'machines' && req.headers['tailscale-user-login']) {
+  if (audience === 'machines' && Object.keys(req.headers).some((name) => name.startsWith(TAILSCALE_HEADER))) {
     throw new HttpError(400, 'people connect through Tailscale, not the machine port')
   }
 }
