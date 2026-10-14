@@ -1,20 +1,24 @@
 // Text that crosses between the team and the public. Anyone can open an issue on
 // a public GitHub repo, so what an issue says reaches an agent only as a quoted
-// report, without these parts a reader of the issue can't see: invisible
-// characters, comments, hidden elements, style and script elements, image alt
-// text and link definitions. Nine other constructs a reader can't see, such as
-// link titles and fence info strings, still pass, as docs/design/projects.md
-// lists. Code spans and fenced code stay as written, since GitHub shows
-// them as written, and only what parses as an HTML tag is taken out. Each pass
-// reads the text once, after it is cut to BODY_MAX, so no issue can hold the
-// API. Going the other way, everything the app sends GitHub's API loses links to
-// this tailnet and to private addresses, email addresses and secrets. Commits
-// that machines push are not filtered.
+// report, without the parts a reader of the issue can't see. Invisible
+// characters go first. Then micromark, a CommonMark parser, finds the parts of
+// the Markdown that never render: link reference definitions, link and image
+// destinations and titles, images and their alt text, and fence info strings.
+// Raw HTML is read as a browser reads it, so its tags, comments, hidden elements
+// and style and script elements go, and a comment, tag or element left open
+// hides what follows it. Everything else stays as written, code spans and
+// fenced code included, since GitHub shows them as written. Going the other way,
+// everything the app sends GitHub's API loses links to this tailnet and to
+// private addresses, email addresses and secrets. Commits that machines push are
+// not filtered.
 
+import { parse, postprocess, preprocess } from 'micromark'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 
 // How much of an issue's body reaches an agent. GitHub allows 65,536 characters.
-const BODY_MAX = 20_000
+// The parser's slowest inputs take time that grows with the square of their
+// length, and at this length the slowest found take under half a second.
+const BODY_MAX = 10_000
 // How much of a title is read, and how long it may be once on one line. GitHub allows 256.
 const TITLE_READ_MAX = 1000
 const TITLE_MAX = 120
@@ -44,15 +48,8 @@ function cut(text: string, max: number): string {
   return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max)
 }
 
-const code = (c: string | undefined) => (c === undefined ? -1 : c.charCodeAt(0))
 const isSpace = (c: string | undefined) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f'
-const isLetter = (c: string | undefined) => { const n = code(c); return (n >= 65 && n <= 90) || (n >= 97 && n <= 122) }
-const isDigit = (c: string | undefined) => { const n = code(c); return n >= 48 && n <= 57 }
-const isNameChar = (c: string | undefined) => isLetter(c) || isDigit(c) || c === '-'
-const isAttrStart = (c: string | undefined) => isLetter(c) || c === '_' || c === ':'
-const isAttrChar = (c: string | undefined) => isNameChar(c) || c === '_' || c === '.' || c === ':'
-const isUnquoted = (c: string | undefined) => c !== undefined && !isSpace(c) && !'"\'=<>`'.includes(c)
-const isBlank = (line: string) => /^[ \t\r]*$/.test(line)
+const isLetter = (c: string | undefined) => c !== undefined && /^[A-Za-z]$/.test(c)
 
 // indexOf that remembers its last answer for each needle, so a scan that asks
 // again from later places in the text reads each stretch of it once.
@@ -80,32 +77,30 @@ function hidesWith(attribute: string, value: string | null): boolean {
   return attribute === 'style' && value !== null && HIDING_STYLE.test(value)
 }
 
-type Tag = { name: string; close: boolean; end: number; hides: boolean }
+type Tag = { name: string; close: boolean; hides: boolean; end: number }
 
-// An HTML tag at `at`, as Markdown reads one: a name, then attributes, each
-// value bare or quoted. Null when the text there is not a tag, such as `a < b`.
-function readTag(text: string, at: number, limit: number, find: Find): Tag | null {
+// An HTML tag at `at`, as a browser reads one: `<` or `</` and a letter, then a
+// name and attributes up to the first `>` outside a quoted value. Null when no
+// tag starts there, and 'cut' when the raw HTML ends before the tag does.
+function readTag(text: string, at: number, limit: number): Tag | 'cut' | null {
   let i = at + 1
   const close = text[i] === '/'
   if (close) i++
-  const nameStart = i
   if (!isLetter(text[i])) return null
-  while (i < limit && isNameChar(text[i])) i++
+  const nameStart = i
+  while (i < limit && !isSpace(text[i]) && text[i] !== '/' && text[i] !== '>') i++
   const name = text.slice(nameStart, i).toLowerCase()
-  if (close) {
-    while (i < limit && isSpace(text[i])) i++
-    return i < limit && text[i] === '>' ? { name, close, end: i + 1, hides: false } : null
-  }
-  let hides = HIDING.has(name)
-  for (;;) {
-    const before = i
-    while (i < limit && isSpace(text[i])) i++
-    if (i >= limit) return null
-    if (text[i] === '>') return { name, close, end: i + 1, hides }
-    if (text[i] === '/' && i + 1 < limit && text[i + 1] === '>') return { name, close, end: i + 2, hides }
-    if (i === before || !isAttrStart(text[i])) return null
+  let hides = !close && HIDING.has(name)
+  while (i < limit) {
+    if (text[i] === '>') return { name, close, hides, end: i + 1 }
+    if (isSpace(text[i]) || text[i] === '/') {
+      i++
+      continue
+    }
+    // An attribute's name runs to a space, `/`, `>` or `=`, and may start with `=`.
     const attributeStart = i
-    while (i < limit && isAttrChar(text[i])) i++
+    i++
+    while (i < limit && !isSpace(text[i]) && text[i] !== '/' && text[i] !== '>' && text[i] !== '=') i++
     const attribute = text.slice(attributeStart, i).toLowerCase()
     let j = i
     while (j < limit && isSpace(text[j])) j++
@@ -115,273 +110,165 @@ function readTag(text: string, at: number, limit: number, find: Find): Tag | nul
       while (j < limit && isSpace(text[j])) j++
       const quote = text[j]
       if (quote === '"' || quote === "'") {
-        const end = find(quote, j + 1)
-        if (end === -1 || end >= limit) return null
-        value = text.slice(j + 1, end)
-        i = end + 1
+        const endQuote = text.indexOf(quote, j + 1)
+        if (endQuote === -1 || endQuote >= limit) return 'cut'
+        value = text.slice(j + 1, endQuote)
+        i = endQuote + 1
       } else {
         const valueStart = j
-        while (j < limit && isUnquoted(text[j])) j++
-        if (j === valueStart) return null
+        while (j < limit && !isSpace(text[j]) && text[j] !== '>') j++
         value = text.slice(valueStart, j)
         i = j
       }
     }
-    if (hidesWith(attribute, value)) hides = true
+    if (!close && hidesWith(attribute, value)) hides = true
   }
+  return 'cut'
 }
 
-// Blocks, as GitHub's Markdown reads lines. Fenced code shows as written. An HTML
-// block is raw HTML, where backticks are not code. The rest is Markdown.
-type Kind = 'code' | 'html' | 'markdown'
-type Block = { kind: Kind; start: number; end: number }
-
-// Block quote and list markers before a line's content.
-const CONTAINERS = /^(?:[ \t]{0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)))*/
-const FENCE = /^ {0,3}(`{3,}|~{3,})/
-// Tags that start an HTML block running to the next blank line.
-const BLOCK_TAGS = new Set([
-  'address', 'article', 'aside', 'base', 'basefont', 'blockquote', 'body', 'caption', 'center', 'col', 'colgroup', 'dd', 'details', 'dialog',
-  'dir', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'head', 'header', 'hr', 'html', 'iframe', 'legend', 'li', 'link', 'main', 'menu', 'menuitem', 'nav', 'noframes', 'ol', 'optgroup',
-  'option', 'p', 'param', 'search', 'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'title', 'tr', 'track', 'ul',
-])
-// What ends an HTML block: a blank line, or a marker such as `-->`.
-type HtmlEnd = 'blank' | { marker: string }
-
-function htmlBlockStart(content: string): HtmlEnd | null {
-  const line = content.replace(/^ {0,3}/, '')
-  if (!line.startsWith('<')) return null
-  const raw = /^<(script|pre|style|textarea)(?:[\s>]|$)/i.exec(line)?.[1]
-  if (raw) return { marker: `</${raw.toLowerCase()}>` }
-  if (line.startsWith('<!--')) return { marker: '-->' }
-  if (line.startsWith('<?')) return { marker: '?>' }
-  if (line.startsWith('<![CDATA[')) return { marker: ']]>' }
-  if (/^<![A-Za-z]/.test(line)) return { marker: '>' }
-  const name = /^<\/?([A-Za-z][A-Za-z0-9-]*)(?=[\s/>]|$)/.exec(line)?.[1]
-  if (name && BLOCK_TAGS.has(name.toLowerCase())) return 'blank'
-  const tag = readTag(line, 0, line.length, finder(line))
-  return tag && isBlank(line.slice(tag.end)) ? 'blank' : null
-}
-
-function blocksOf(text: string): Block[] {
-  const blocks: Block[] = []
-  const add = (kind: Kind, start: number, end: number) => {
-    const last = blocks.at(-1)
-    if (last?.kind === kind) last.end = end
-    else blocks.push({ kind, start, end })
-  }
-  let fence: { char: string; size: number } | null = null
-  let html: HtmlEnd | null = null
-  for (let at = 0; at < text.length;) {
-    const newline = text.indexOf('\n', at)
-    const end = newline === -1 ? text.length : newline + 1
-    const line = text.slice(at, newline === -1 ? text.length : newline)
-    if (fence) {
-      add('code', at, end)
-      const closing = /^ {0,3}(`+|~+)[ \t\r]*$/.exec(line)?.[1]
-      if (closing?.[0] === fence.char && closing.length >= fence.size) fence = null
-    } else if (html === 'blank' && isBlank(line)) {
-      add('markdown', at, end)
-      html = null
-    } else if (html) {
-      add('html', at, end)
-      if (html !== 'blank' && line.toLowerCase().includes(html.marker)) html = null
-    } else {
-      const opened = FENCE.exec(line)
-      const marker = opened?.[1]
-      // A backtick fence's info string has no backticks, or the line is inline code.
-      if (opened && marker && !(marker.startsWith('`') && line.slice(opened[0].length).includes('`'))) {
-        add('code', at, end)
-        fence = { char: marker.charAt(0), size: marker.length }
-      } else {
-        const started = htmlBlockStart(line.replace(CONTAINERS, ''))
-        if (started) {
-          add('html', at, end)
-          const endsHere = started !== 'blank' && line.toLowerCase().indexOf(started.marker, line.indexOf('<') + 2) !== -1
-          html = endsHere ? null : started
-        } else {
-          add('markdown', at, end)
-        }
-      }
-    }
-    at = end
-  }
-  return blocks
-}
-
-// A link reference definition, `[label]: destination "title"`, which never renders.
-const LINK_DEFINITION = /^ {0,3}\[(?:[^\\\]\n]|\\.){1,999}\]:/
-const TITLE_LINE = /^[ \t]*["'(]/
-
-// Where a link definition starting at `at` ends, with a title on the next line,
-// or null when the line is not one.
-function definitionEnd(text: string, at: number, limit: number, find: Find): number | null {
-  const lineEnd = find('\n', at)
-  const next = lineEnd === -1 || lineEnd >= limit ? limit : lineEnd + 1
-  if (!LINK_DEFINITION.test(text.slice(at, next).replace(CONTAINERS, ''))) return null
-  const titleEnd = find('\n', next)
-  const after = titleEnd === -1 || titleEnd >= limit ? limit : titleEnd + 1
-  return next < limit && TITLE_LINE.test(text.slice(next, after)) ? after : next
-}
-
-// Where each blank line starts, and the first one after a place. Code spans and
-// images end at one.
-function blankLines(text: string): { starts: Set<number>; after: (from: number) => number } {
-  const starts: number[] = []
-  for (let at = 0; at < text.length;) {
-    const newline = text.indexOf('\n', at)
-    const end = newline === -1 ? text.length : newline
-    if (isBlank(text.slice(at, end))) starts.push(at)
-    at = end + 1
-  }
-  const after = (from: number) => {
-    let low = 0
-    let high = starts.length
-    while (low < high) {
-      const middle = (low + high) >> 1
-      if ((starts[middle] ?? Infinity) <= from) low = middle + 1
-      else high = middle
-    }
-    return starts[low] ?? Infinity
-  }
-  return { starts: new Set(starts), after }
-}
-
-// The next run of exactly `size` backticks at or after `from`, which closes a
-// code span. Each size remembers its last answer, as `finder` does.
-function backtickRuns(text: string, find: Find): (size: number, from: number) => number {
-  const last = new Map<number, { from: number; at: number }>()
-  return (size, from) => {
-    const hit = last.get(size)
-    if (hit && from >= hit.from && (hit.at === -1 || from <= hit.at)) return hit.at
-    let at = find('`', from)
-    while (at !== -1) {
-      let end = at
-      while (text[end] === '`') end++
-      if (end - at === size) break
-      at = find('`', end)
-    }
-    last.set(size, { from, at })
-    return at
-  }
-}
-
-// Matching square brackets in each paragraph, for image alt text.
-function bracketPairs(text: string, blocks: Block[], blankStarts: Set<number>): Map<number, number> {
-  const pairs = new Map<number, number>()
-  for (const block of blocks) {
-    if (block.kind === 'code') continue
-    let open: number[] = []
-    for (let at = block.start; at < block.end; at++) {
-      const c = text[at]
-      if (c === '\\') at++
-      else if (c === '[') open.push(at)
-      else if (c === ']') {
-        const from = open.pop()
-        if (from !== undefined) pairs.set(from, at)
-      } else if (c === '\n' && blankStarts.has(at + 1)) open = []
-    }
-  }
-  return pairs
-}
-
-// Comments and other markup a page never shows, ended by a marker. -1 means the
-// marker never comes, so the rest of the text is hidden. Null when none starts at `at`.
+// Comments and other markup a page never shows: where one starting at `at`
+// ends, or the marker it waits for past `limit`. Null when none starts there.
 const UNSHOWN: [string, string][] = [['<!--', '-->'], ['<?', '?>'], ['<![CDATA[', ']]>']]
-function unshownEnd(text: string, at: number, find: Find): number | null {
+function unshown(text: string, at: number, limit: number, find: Find): { end: number } | { awaits: string } | null {
   for (const [start, end] of UNSHOWN) {
     if (!text.startsWith(start, at)) continue
     const found = find(end, at + 2)
-    return found === -1 ? -1 : found + end.length
+    return found !== -1 && found + end.length <= limit ? { end: found + end.length } : { awaits: end }
   }
   if (text[at + 1] !== '!' || !isLetter(text[at + 2])) return null
   const found = find('>', at + 2)
-  return found === -1 ? -1 : found + 1
+  return found !== -1 && found < limit ? { end: found + 1 } : { awaits: '>' }
 }
+
+// The parts of the text raw HTML hides, read over each piece of it in order:
+// each tag, comment and hidden element. Raw HTML can leave an element, a comment
+// or a tag open past its own piece, and text a browser would read as part of it
+// stays hidden, from where it opened until a later piece ends it, or to the end.
+// Text between pieces is escaped Markdown, which never ends it.
+function hideRawHtml(browser: string, pieces: { start: number; end: number }[], hide: (start: number, end: number, replace?: string) => void) {
+  const find = finder(browser)
+  let element: { name: string; depth: number } | null = null
+  let awaiting: string | null = null
+  let openedAt: number | null = null
+  pieces: for (const piece of pieces) {
+    let at = piece.start
+    while (at < piece.end) {
+      if (awaiting !== null) {
+        const found = find(awaiting, at)
+        if (found === -1 || found + awaiting.length > piece.end) continue pieces
+        at = found + awaiting.length
+        awaiting = null
+      } else {
+        const open = find('<', at)
+        if (open === -1 || open >= piece.end) continue pieces
+        at = open
+        const skipped = unshown(browser, at, piece.end, find)
+        const tag = skipped ? null : readTag(browser, at, piece.end)
+        if (skipped) {
+          openedAt ??= at
+          if ('awaits' in skipped) {
+            awaiting = skipped.awaits
+            continue pieces
+          }
+          at = skipped.end
+        } else if (tag === null) {
+          at++
+          continue
+        } else if (tag === 'cut') {
+          // The browser reads the rest of the tag from what follows, markup
+          // GitHub writes included, which this can't see.
+          hide(openedAt ?? at, browser.length)
+          return
+        } else if (!element && !tag.close && tag.name === 'img') {
+          hide(at, tag.end, '[image]')
+          at = tag.end
+          continue
+        } else {
+          openedAt ??= at
+          at = tag.end
+          if (element) {
+            if (tag.name === element.name && !VOID.has(tag.name)) element.depth += tag.close ? -1 : 1
+            if (element.depth === 0) element = null
+          } else if (!tag.close && tag.hides && !VOID.has(tag.name)) {
+            element = { name: tag.name, depth: 1 }
+          }
+        }
+      }
+      if (!element && openedAt !== null) {
+        hide(openedAt, at)
+        openedAt = null
+      }
+    }
+  }
+  if (openedAt !== null) hide(openedAt, browser.length)
+}
+
+// The parser's tokens that never render: link reference definitions, a link's
+// destination and title or its reference, and a fence's info string.
+const NEVER_SHOWN = new Set(['definition', 'resource', 'reference', 'codeFencedFenceInfo', 'codeFencedFenceMeta'])
+// Emphasis never hides text, and the parser matches it in time that grows with
+// the square of the text's length, so the parser reads its marks as plain text.
+const PLAIN_EMPHASIS = { disable: { null: ['attention'] } }
+
+type Hidden = { start: number; end: number; replace: string }
 
 // The text a reader of the issue sees, without what they can't.
 export function visibleText(input: string): string {
   const text = withoutInvisible(input)
-  const find = finder(text)
-  const blocks = blocksOf(text)
-  const blanks = blankLines(text)
-  const nextRun = backtickRuns(text, find)
-  const brackets = bracketPairs(text, blocks, blanks.starts)
-  // Where a Markdown image starting at `at` ends: ![alt](link), ![alt][ref] or ![alt].
-  const imageEnd = (at: number, limit: number): number | null => {
-    const close = brackets.get(at + 1)
-    if (close === undefined || close >= limit) return null
-    const after = close + 1
-    const paren = text[after] === '(' ? find(')', after) : -1
-    if (paren !== -1 && paren < Math.min(limit, blanks.after(after))) return paren + 1
-    const reference = text[after] === '[' ? brackets.get(after) : undefined
-    return reference !== undefined && reference < limit ? reference + 1 : after
+  const hidden: Hidden[] = []
+  const hide = (start: number, end: number, replace = '') => {
+    if (end > start) hidden.push({ start, end, replace })
   }
 
-  let out = ''
-  // An element being skipped, by name, with how deep in its own kind the text is.
-  let hidden: { name: string; depth: number } | null = null
-  for (const block of blocks) {
-    if (block.kind === 'code') {
-      if (!hidden) out += text.slice(block.start, block.end)
+  // The pieces of raw HTML, and the text as a browser gets it. A block quote's
+  // `>` and a list item's indent can split raw HTML that runs over lines, and
+  // the browser never sees them, so they read as spaces. An image renders as a
+  // picture, which the agent reads as [image], and raw HTML in its alt text is
+  // only text.
+  const html: { start: number; end: number }[] = []
+  let browser = ''
+  let copied = 0
+  let read = 0
+  let images = 0
+  const events = postprocess(parse({ extensions: [PLAIN_EMPHASIS] }).document().write(preprocess()(text, undefined, true)))
+  for (const [kind, token] of events) {
+    const { type } = token
+    const start = token.start.offset
+    const end = token.end.offset
+    if (type === 'image') {
+      images += kind === 'enter' ? 1 : -1
+      if (kind === 'enter') hide(start, end, '[image]')
+    } else if (kind === 'exit' || images > 0) {
       continue
-    }
-    const markdown = block.kind === 'markdown'
-    let at = block.start
-    while (at < block.end) {
-      const c = text[at]
-      const definition = !hidden && (at === block.start || text[at - 1] === '\n') ? definitionEnd(text, at, block.end, find) : null
-      if (definition !== null) {
-        at = definition
-        continue
-      }
-      if (c === '\\' && markdown) {
-        if (!hidden) out += text.slice(at, at + 2)
-        at += 2
-        continue
-      }
-      if (c === '`' && markdown) {
-        let runEnd = at
-        while (text[runEnd] === '`') runEnd++
-        const close = nextRun(runEnd - at, runEnd)
-        const end = close !== -1 && close < Math.min(block.end, blanks.after(at)) ? close + runEnd - at : runEnd
-        if (!hidden) out += text.slice(at, end)
-        at = end
-        continue
-      }
-      if (c === '<') {
-        const skipped = unshownEnd(text, at, find)
-        if (skipped === -1) return out
-        if (skipped !== null) {
-          at = skipped
-          continue
-        }
-        const tag = readTag(text, at, block.end, find)
-        if (tag) {
-          if (hidden) {
-            if (tag.name === hidden.name) hidden.depth += tag.close ? -1 : 1
-            if (hidden.depth === 0) hidden = null
-          } else if (!tag.close && tag.hides) {
-            if (!VOID.has(tag.name)) hidden = { name: tag.name, depth: 1 }
-          } else if (!tag.close && tag.name === 'img') {
-            out += '[image]'
-          }
-          at = tag.end
-          continue
-        }
-      }
-      const image = c === '!' && text[at + 1] === '[' && !hidden ? imageEnd(at, block.end) : null
-      if (image !== null) {
-        out += '[image]'
-        at = image
-        continue
-      }
-      if (!hidden) out += text.charAt(at)
-      at++
+    } else if (NEVER_SHOWN.has(type)) {
+      hide(start, end)
+    } else if (type === 'htmlFlow' || type === 'htmlText') {
+      html.push({ start, end })
+      read = start
+    } else if (type === 'htmlFlowData' || type === 'htmlTextData') {
+      browser += text.slice(copied, read) + ' '.repeat(start - read)
+      copied = start
+      read = end
     }
   }
-  return out
+  browser += text.slice(copied)
+
+  hideRawHtml(browser, html, hide)
+
+  // What is left, in order. A part inside a larger hidden one goes with it.
+  hidden.sort((a, b) => a.start - b.start || b.end - a.end)
+  let out = ''
+  let at = 0
+  for (const part of hidden) {
+    if (part.end <= at) continue
+    if (part.start < at) {
+      at = part.end
+      continue
+    }
+    out += text.slice(at, part.start) + part.replace
+    at = part.end
+  }
+  return out + text.slice(at)
 }
 
 // A title as a prompt may show it: what a reader sees, on one line, cut at TITLE_MAX.

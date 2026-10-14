@@ -41,6 +41,7 @@
     "@electric-sql/client": "^1.5.28",
     "@electric-sql/react": "^1.0.57",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "micromark": "4.0.3",
     "pg": "^8.23.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
