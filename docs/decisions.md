@@ -37,7 +37,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - A tailnet policy lets devices reach this Mac only on the app's port 80 and the machines' port 7700. Its tests make Tailscale refuse an edit that reopens any other port.
   - A person's change must be sent as JSON. A page on another site can make the person's browser post a form, which serve would sign as them, but it can't send JSON without a CORS preflight, which this API never grants.
 - **Implementation.** `server/api.ts`, `test/step19.ts`, the JSON line in `check:step2`, and `test/live-tailnet.ts` for the live system. The detail is in `docs/design/people-port.md`.
-- **Status.** On main. The live steps wait on Tayler: the policy, one `sudo tailscale serve` command and a restart. Nobody is invited until they're done.
+- **Status.** Live since 2026-10-14. Tayler saved the policy, pointed serve at the socket and restarted the API and daemon, and `test/live-tailnet.ts` passed every line.
 
 ### Coach and improve learn only from checked evidence
 
@@ -259,7 +259,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - A hold has a kind (waiting on a person, external, load, parked or future), a reason and an optional end date.
   - A reply an agent promises on an outside channel is tracked as an obligation. It closes only with proof of delivery, or when a person waives it by name.
 - **Implementation.** Dependencies, Ready and holds are on main, merged as 7197f4b with migration 0007. Obligations are on the framework agent's branch.
-- **Status.** Dependencies, Ready and holds merged on 2026-10-14, and go live at the next API restart. Obligations are being built.
+- **Status.** Dependencies, Ready and holds went live on 2026-10-14. Obligations are being built.
 
 ### Files, diffs and pull requests in the app
 
@@ -274,7 +274,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - Comments are pinned to the text they quote.
   - Writes inside a task's own folder no longer ask for approval.
 - **Implementation.** On main, merged as 7197f4b with migration 0007. Its acceptance check is Tayler's README task.
-- **Status.** Merged on 2026-10-14, and the full suite passed on the merge. It goes live at the next API restart.
+- **Status.** Merged and live on 2026-10-14, and the full suite passed on the merge.
 
 ### Inviting the team
 
@@ -286,7 +286,7 @@ Every decision about how Agents is built and how work on it happens, newest grou
   - People can be added to existing rooms.
   - The Tailscale key lives only on the server and needs renewing every 90 days at most.
 - **Implementation.** `server/onboarding.ts`, `server/tailscale.ts`, `server/claudelogin.ts`, `daemon/claude-login.ts`, the Team, Tailscale and Your box pages, and migration 0005. Checked by step12, 12b and 12c.
-- **Status.** Merged on main. Nobody is invited and no Tailscale key is saved until the people socket's live steps are done and `test/live-tailnet.ts` passes. Removing a person from the team isn't built.
+- **Status.** Live since 2026-10-14, when the restart applied migration 0005. The people socket's live steps are done and `test/live-tailnet.ts` passed, so invites can start once a Tailscale key is saved. Removing a person from the team isn't built.
 
 ### Projects and repos
 
