@@ -6,6 +6,7 @@
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import { config } from './config.ts'
+import { pipelineHookSecret } from '../shared/pipeline-hooks.ts'
 import { JSON_VALUE, type JsonValue } from '../shared/cli/output.ts'
 import type { ReadyState } from './state.ts'
 
@@ -41,8 +42,7 @@ export async function call(state: ReadyState, options: {
   if (options.as === 'webhook') {
     const pipelineId = PIPELINE_HOOK.exec(options.path)?.[1]
     if (!pipelineId) throw new Error('a webhook call goes to /v1/hooks/pipelines/<pipeline id>')
-    // The pipeline's secret is derived from the server's hook secret, as server/hooks.ts does.
-    const secret = createHmac('sha256', config().AGENTS_HOOK_SECRET).update(pipelineId).digest('hex')
+    const secret = pipelineHookSecret(config().AGENTS_HOOK_SECRET, pipelineId)
     headers['x-agents-signature'] = `sha256=${createHmac('sha256', secret).update(body ?? '').digest('hex')}`
   }
   const res = await fetch(url(state, door, options.path), { method: options.method, headers, body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })

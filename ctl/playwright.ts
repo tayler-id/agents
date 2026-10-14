@@ -12,7 +12,7 @@ import {
 } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import { childEnv, ROOT } from './config.ts'
-import { describe, type Driver, type NetworkEntry, type PageKey } from './driver.ts'
+import { describe, PageError, type Driver, type NetworkEntry, type PageKey } from './driver.ts'
 import type { Engine, Width } from '../shared/evidence.ts'
 import type { Handle } from './protocol.ts'
 import type { ReadyState } from './state.ts'
@@ -65,6 +65,7 @@ export function locate(page: Page, handle: Handle): Locator {
 
 // Playwright's errors carry a page of call log. The first line, with the handle, is what a reader needs.
 function explain(error: unknown, handle: Handle | undefined, timeoutMs: number): Error {
+  if (error instanceof PageError) return error
   if (error instanceof errors.TimeoutError) {
     return new Error(handle ? `${describe(handle)} was not there within ${String(timeoutMs / 1000)}s` : `timed out after ${String(timeoutMs / 1000)}s`)
   }
@@ -229,7 +230,7 @@ export function playwrightDriver(state: ReadyState, launched: () => Promise<void
       for (;;) {
         const offered = await box.locator('option').evaluateAll((els) => els.map((el) => ({ label: el.textContent.trim(), value: el.getAttribute('value') ?? '' })))
         if (offered.some((o) => ('label' in option ? o.label === option.label : o.value === option.value))) break
-        if (Date.now() > deadline) throw new Error(`${describe(handle)} has no choice ${wanted}. It offers: ${offered.map((o) => o.label).join(', ') || 'nothing'}`)
+        if (Date.now() > deadline) throw new PageError(`${describe(handle)} has no choice ${wanted}, among the ${String(offered.length)} it offers`, offered.map((o) => o.label).join('\n'))
         await sleep(SETTLE_POLL_MS)
       }
       await box.selectOption(option, { timeout: timeoutMs })

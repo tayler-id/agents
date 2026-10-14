@@ -35,6 +35,9 @@ function stale(port: number): boolean {
   return !lock.success || !existsSync(lock.data.stateFile)
 }
 
+// Racy on a stale lock: two ups can both find it stale, both remove it, and both
+// claim it, so the block goes to both. Only one process can listen on each port,
+// so at least one of those ups fails and says so.
 function lockPort(port: number, name: InstanceName): boolean {
   mkdirSync(LOCKS, { recursive: true })
   const file = join(LOCKS, String(port))

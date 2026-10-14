@@ -27,7 +27,21 @@ export const AGENTS: Record<string, string> = {
 }
 export const AGENT_MODEL = 'haiku'
 export const MACHINE = 'mac'
-export const loginOf = (who: 'ada' | 'ben', name: InstanceName) => `${who}-${name}@verify.local`
+// A person an instance drives, by a short name: lowercase letters and digits, no dash.
+export const PERSON_RULE = 'a person is named in lowercase letters and digits, such as cy, or by a full login'
+export const PersonName = z.string().regex(/^[a-z][a-z0-9]*$/, PERSON_RULE).brand<'PersonName'>()
+export type PersonName = z.infer<typeof PersonName>
+// Every login an instance makes is <who>-<instance>@verify.local. who holds no
+// dash, so another instance's login can end the same way without being ours:
+// stranger-y-x is instance y-x's stranger, and x does not own it.
+export const LOGIN_DOMAIN = '@verify.local'
+export const loginOf = (who: PersonName, name: InstanceName) => `${who}-${name}${LOGIN_DOMAIN}`
+// Whether loginOf makes this login for this instance.
+export function isLoginOf(login: string, name: InstanceName): boolean {
+  const ending = `-${name}${LOGIN_DOMAIN}`
+  return login.endsWith(ending) && PersonName.safeParse(login.slice(0, -ending.length)).success
+}
+const [ADA, BEN] = [PersonName.parse('ada'), PersonName.parse('ben')]
 export const orgOf = (name: InstanceName) => `verify-${name}`
 
 // A secret value the scenario's agent repeats, so a run can show it never
@@ -88,7 +102,7 @@ export const orgTaken = (org: string) => forgeAdmin.call('GET', `/orgs/${org}`).
 // each let only one maker win, so a team or org this made is this instance's.
 export async function makeTeam(name: InstanceName, team: string): Promise<void> {
   try {
-    await admin('add-team', team, loginOf('ada', name))
+    await admin('add-team', team, loginOf(ADA, name))
   } catch (error) {
     if (await teamTaken(team) && error instanceof Error && error.message.includes('duplicate key')) {
       throw new Refused(`the team ${team} was made by someone else while this up ran`, ['Pick another name with --instance'])
@@ -110,7 +124,7 @@ export async function makeOrg(name: InstanceName): Promise<void> {
 
 // The team's second person, its machine and its agents, on a team makeTeam made.
 export async function seedTeam(name: InstanceName, team: string): Promise<Seed> {
-  const [owner, teammate] = [loginOf('ada', name), loginOf('ben', name)]
+  const [owner, teammate] = [loginOf(ADA, name), loginOf(BEN, name)]
   await addPerson(team, teammate)
   const { token } = NewInstance.parse(JSON.parse(await admin('add-instance', team, MACHINE, 'mac', owner)))
   const agents: Record<string, z.infer<typeof AgentId>> = {}

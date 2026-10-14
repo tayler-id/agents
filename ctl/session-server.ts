@@ -9,7 +9,7 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { perform, type PageKey } from './driver.ts'
+import { PageError, perform, type PageKey } from './driver.ts'
 import { nextPath } from './evidence.ts'
 import { playwrightDriver } from './playwright.ts'
 import { childrenOf } from './procs.ts'
@@ -96,7 +96,7 @@ async function handle(request: SessionRequest): Promise<SessionReply> {
     await driver.screenshot(key, { path: shot, timeoutMs: request.timeoutMs }).then(() => { files.push(shot) }, (shotError: unknown) => {
       console.error(`no failure screenshot: ${shotError instanceof Error ? shotError.message : String(shotError)}`)
     })
-    return { ok: false, error: messageOf(error), url: driver.url(key), files }
+    return { ok: false, error: messageOf(error), ...(error instanceof PageError ? { outside: error.outside } : {}), url: driver.url(key), files }
   }
 }
 

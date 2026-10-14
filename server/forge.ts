@@ -175,15 +175,6 @@ export const forge = {
 export const forgeAdmin = {
   call: <T>(method: string, path: string, body?: unknown) => call<T>(method, path, body, forgeConfig().adminToken),
 
-  // An org of its own, such as a verification instance's, made if it is missing.
-  async ensureOrg(org: string): Promise<void> {
-    const exists = await this.call('GET', `/orgs/${org}`).then(() => true, (error: unknown) => {
-      if (error instanceof ForgeError && error.status === 404) return false
-      throw error
-    })
-    if (!exists) await this.call('POST', '/orgs', { username: org, visibility: 'private' })
-  },
-
   // Creates the repo in the org if it is missing, with the given files as its first
   // commit, the factory as a writer, main protected, and a webhook to the API.
   // `hook` false leaves the webhook out, and a URL sends it to that API instead,

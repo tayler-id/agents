@@ -16,7 +16,7 @@ import { instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
-import { messageOf } from '../shared/errors.ts'
+import { hasCode, messageOf } from '../shared/errors.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
   answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
@@ -672,8 +672,6 @@ const STOP_GRACE_MS = 5000
 // port on 127.0.0.1, but never to a socket file. So the one listener that trusts
 // Tailscale-User-Login is a socket, which only tailscale serve is pointed at.
 const PeopleSocket = z.string().startsWith('/')
-
-const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
 
 // Whether something accepts connections on the socket at this path.
 function accepts(path: string): Promise<boolean> {

@@ -15,11 +15,11 @@ import { BASELINES_DIR, EVIDENCE_DIR, ROOT, scrubber } from './config.ts'
 import { bind, readOnly, withClient, type Rows } from './db.ts'
 import { call, Caller, Door, Method } from './api.ts'
 import { actions, nextPath, record } from './evidence.ts'
-import { doctor, down, list, ready, resolve, up } from './instance.ts'
+import { doctor, down, list, ready, resolve, up, type DoctorReport } from './instance.ts'
 import { isOurs } from './procs.ts'
-import { Role, type Found, type Handle, type Op, type Target } from './protocol.ts'
+import { Role, type Found, type Handle, type Op, type SessionReply, type Target } from './protocol.ts'
 import { sessionCall, stopSessionServer } from './session-client.ts'
-import { addAgent, addBox, addPerson, seedExtraRepo } from './seed.ts'
+import { addAgent, addBox, addPerson, loginOf, PERSON_RULE, PersonName, seedExtraRepo } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
 import { baseline, BaselineReason, compare } from './visual.ts'
 import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
@@ -47,7 +47,9 @@ const Common = z.object({ instance: InstanceName.optional() })
 export function loginFor(state: ReadyState, who: string | undefined): string {
   if (who === undefined) return state.seed.owner.login
   if (who.includes('@')) return who
-  return `${who}-${state.name}@verify.local`
+  const person = PersonName.safeParse(who)
+  if (!person.success) throw new UsageError(`${who} is not a person's name: ${PERSON_RULE}`)
+  return loginOf(person.data, state.name)
 }
 
 const failed = (error: string, rest: Omit<Extract<Result, { kind: 'failed' }>, 'kind' | 'error' | 'code'>, code: 1 | 3 = 1): Result => ({ kind: 'failed', code, error, ...rest })
@@ -205,6 +207,10 @@ function driveHelp(target: Target, name: OpName | 'visual', found: Found | null,
 // The route a page is on, read from the page after the operation.
 const routeOf = (url: string) => new URL(url).hash || '#/'
 
+// The page's words a failed drive read, fenced, and the data field holding them.
+const pageWords = (reply: Extract<SessionReply, { ok: false }>, source: string) => (reply.outside === undefined ? { outside: [], untrusted: [] }
+  : { outside: [{ source, text: reply.outside }], untrusted: [{ source, field: 'data.outside' }] })
+
 function driveCommand(target: Target, name: OpName): Command {
   const spec = DRIVE[name]
   return command({
@@ -219,7 +225,7 @@ function driveCommand(target: Target, name: OpName): Command {
           target, engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
           op: opFor(name, values, word, state.evidence),
         })
-        if (!reply.ok) return failed(reply.error, { help: driveHelp(target, name, null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence })
+        if (!reply.ok) return failed(reply.error, { help: driveHelp(target, name, null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence, ...pageWords(reply, spec.outside) })
         const found = reply.found
         const [firstLine = '', ...more] = found.summary.split('\n')
         const shared = {
@@ -319,7 +325,8 @@ function checkRows(rows: Rows, values: z.infer<typeof DbArgs>): string | null {
       const value = row[column]
       return (typeof value === 'string' ? value : JSON.stringify(value)) !== wanted
     })
-    if (off) return `expected ${column}=${wanted} in every row, and one has ${JSON.stringify(off[column] ?? null)}`
+    // The value the row has is the record's, so it stays in the rows printed below the head.
+    if (off) return `expected ${column}=${wanted} in every row, and a row has another value`
   }
   if (values.value && (rows.length !== 1 || Object.keys(rows[0] ?? {}).length !== 1)) return `--value needs one row with one column, and there are ${String(rows.length)} rows`
   return null
@@ -473,6 +480,15 @@ const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/
 const secretsFile = (state: ReadyState) => join(state.scratch, 'daemon', 'secrets.json')
 const readSecrets = (file: string) => (existsSync(file) ? z.record(z.string(), z.string()).parse(JSON.parse(readFileSync(file, 'utf8'))) : {})
 
+// A file's text with every secret value the machine holds replaced by [secret:NAME],
+// so reading secrets.json, or a file the daemon wrote from it, shows names and no
+// value. Each value is masked as it is and as JSON spells it, since secrets.json
+// holds a quote or a backslash with an escape.
+function maskedFile(state: ReadyState, text: string): string {
+  const held = Object.entries(readSecrets(secretsFile(state))).filter(([, value]) => value !== '')
+  return scrubber(held.flatMap(([name, value]): [string, string][] => [[name, value], [name, JSON.stringify(value).slice(1, -1)]]))(text)
+}
+
 function secretCommand(action: 'set' | 'unset'): Command {
   return command({
     name: `secret ${action}`, args: '<NAME>', about: action === 'set' ? "give the machine a secret's value, where a person keeps it" : "take a secret's value off the machine",
@@ -521,7 +537,7 @@ const machineRead = command({
       const state = ready(values.instance)
       const file = join(state.scratch, 'daemon', path)
       const deadline = Date.now() + values.timeout * 1000
-      const look = () => (existsSync(file) ? readFileSync(file, 'utf8') : null)
+      const look = () => (existsSync(file) ? maskedFile(state, readFileSync(file, 'utf8')) : null)
       const holds = (text: string | null) => (values.missing ? text === null : text !== null && (values['expect-text'] === undefined || text.includes(values['expect-text'])))
       let text = look()
       while (!holds(text) && Date.now() < deadline) {
@@ -560,13 +576,14 @@ const visualShot = command({
         target: 'browser', engine: values.engine, width: values.width, login: loginFor(state, values.as), timeoutMs: values.timeout * 1000,
         op: { op: 'visual', state: view, ready: readyHandle },
       })
-      if (!reply.ok) return failed(reply.error, { help: driveHelp('browser', 'visual', null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence })
+      if (!reply.ok) return failed(reply.error, { help: driveHelp('browser', 'visual', null, reply.files[0] ?? null), files: reply.files, data: reply, log: state.evidence, ...pageWords(reply, 'page text') })
       const found = reply.found
       const manifestFile = join(state.evidence, EVIDENCE_MANIFEST_FILE)
       const listed = existsSync(manifestFile) ? EVIDENCE_MANIFEST.parse(JSON.parse(readFileSync(manifestFile, 'utf8'))).shots.filter((s) => s.view === view).length : 0
       const shared = {
         detail: found.summary, help: [run('visual compare', 'to diff the captures against the baselines')], files: found.files, data: found, log: state.evidence,
-        outside: found.outside ? [{ source: 'console messages', text: found.outside }] : [], untrusted: [{ source: 'console messages', field: 'data.captures' }],
+        outside: found.outside ? [{ source: 'console messages', text: found.outside }] : [],
+        untrusted: [{ source: 'console messages', field: 'data.captures' }, ...(found.outside === undefined ? [] : [{ source: 'console messages', field: 'data.outside' }])],
       }
       if (!found.pass) return failed('a capture had a problem', shared)
       return { kind: 'write', did: `visual shot ${view}`, state: `${String(listed)} captures of ${view} in ${relative(ROOT, manifestFile)}, each checked`, already: false, ...shared }
@@ -734,17 +751,28 @@ const upCommand = command({
   },
 })
 
+// What doctor prints: a line per check in the tool's own words, and fenced, the
+// words any check read from a server.
+export function doctorParts(report: DoctorReport) {
+  const source = 'server answer'
+  const outside = report.checks.flatMap((c) => (c.outside === undefined ? [] : [{ source, text: `${c.name}: ${c.outside}` }]))
+  return {
+    detail: report.checks.map((c) => `${c.ok ? 'pass' : 'FAIL'}  ${c.name}: ${c.detail}`).join('\n'),
+    outside, untrusted: outside.length ? [{ source, field: 'data.checks' }] : [],
+  }
+}
+
 const doctorCommand = command({
   name: 'doctor', args: '', about: 'check, without changing anything, that the instance is usable', flags: {}, schema: Common,
   prepare: (values) => async () => {
     const state = resolve(values.instance)
     const report = await doctor(values.instance)
     const failing = report.checks.filter((c) => !c.ok)
-    const detail = report.checks.map((c) => `${c.ok ? 'pass' : 'FAIL'}  ${c.name}: ${c.detail}`).join('\n')
+    const parts = doctorParts(report)
     if (!report.ok) {
-      return failed(`${failing.map((c) => c.name).join(', ')} failed`, { detail, help: [`Read the logs in ${relative(ROOT, state.evidence)}`, run(`down${at(state)}`, 'and up again if it does not recover')], data: report, log: state.evidence })
+      return failed(`${failing.map((c) => c.name).join(', ')} failed`, { ...parts, help: [`Read the logs in ${relative(ROOT, state.evidence)}`, run(`down${at(state)}`, 'and up again if it does not recover')], data: report, log: state.evidence })
     }
-    return { kind: 'read', answer: `${state.name} is usable: ${String(report.checks.length)} checks pass`, detail, help: state.phase === 'ready' ? upHelp(state) : [], data: report, log: state.evidence }
+    return { kind: 'read', answer: `${state.name} is usable: ${String(report.checks.length)} checks pass`, ...parts, help: state.phase === 'ready' ? upHelp(state) : [], data: report, log: state.evidence }
   },
 })
 
@@ -752,29 +780,33 @@ const downCommand = command({
   name: 'down', args: '', about: 'stop what the instance started and remove its team, keeping its evidence',
   flags: { 'keep-data': { kind: 'boolean', about: 'keep its team, repos and boxes' } }, schema: Common.extend({ 'keep-data': z.boolean().optional() }),
   prepare: (values) => async () => {
-    const stopped = await down(values.instance, { keepData: values['keep-data'] === true })
-    if (!stopped) {
+    const done = await down(values.instance, { keepData: values['keep-data'] === true })
+    if (!done) {
       const gone = values.instance ? readState(values.instance) === null : list().length === 0
       if (!gone) return failed('down stopped nothing, and the instance is still in this checkout', { help: [run('list', 'to see what is here')], data: null })
       return { kind: 'write', did: 'down', state: values.instance ? `${values.instance} is not in this checkout` : 'no instance in this checkout', already: true, help: [run('up --pipelines', 'to start an instance')], data: null }
     }
-    const kept = existsSync(stopped.evidence)
-    const removed = [
+    const { state: stopped, already } = done
+    const evidenceKept = existsSync(stopped.evidence)
+    const removed = stopped.phase === 'kept' ? [] : [
       stopped.removed.team ? `team ${stopped.team}` : '', ...stopped.removed.repos, ...stopped.removed.containers,
       ...stopped.removed.joinRequests.map((login) => `the join request of ${login}`), stopped.removed.scratch ? 'its scratch folder' : '',
     ].filter(Boolean)
     const detail = [
       stopped.survivors.length ? `still running: ${stopped.survivors.map((s) => `${String(s.pid)} ${s.command}`).join('; ')}` : 'still running: none',
-      `removed: ${removed.length ? removed.join(', ') : 'nothing (--keep-data)'}`,
+      stopped.phase === 'kept' ? 'kept: its team, repos, boxes and scratch folder, until down runs again without --keep-data' : `removed: ${removed.length ? removed.join(', ') : 'nothing'}`,
     ].join('\n')
-    if (stopped.survivors.length || !kept) {
+    if (stopped.survivors.length || !evidenceKept) {
       return failed(stopped.survivors.length ? `${String(stopped.survivors.length)} processes ${stopped.name} started are still running` : `the evidence folder of ${stopped.name} is missing`, {
         detail, help: ['Stop each survivor by its pid after checking with `ps -ww -p <pid>` that it is the instance\'s'], data: stopped, log: stopped.evidence,
       })
     }
     return {
-      kind: 'write', did: `down ${stopped.name}`, state: `nothing it started is running, and its evidence is in ${relative(ROOT, stopped.evidence)}`, already: false, detail,
-      help: [run(`visual compare --from ${relative(ROOT, stopped.evidence)}`, 'to diff its captures, if it took any'), run('up --pipelines', 'to start a fresh instance')], data: stopped, log: stopped.evidence,
+      kind: 'write', did: `down ${stopped.name}`, state: `nothing it started is running, and its evidence is in ${relative(ROOT, stopped.evidence)}`, already, detail,
+      help: [
+        ...(stopped.phase === 'kept' ? [run(`down --instance ${stopped.name}`, 'to remove what it kept')] : []),
+        run(`visual compare --from ${relative(ROOT, stopped.evidence)}`, 'to diff its captures, if it took any'), run('up --pipelines', 'to start a fresh instance'),
+      ], data: stopped, log: stopped.evidence,
     }
   },
 })

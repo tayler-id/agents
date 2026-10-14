@@ -5,10 +5,14 @@
 //       └──> failed ──────────┘
 //
 // A file can also sit in `starting` when `up` died part way, so `starting` may go
-// straight to `stopping`. Each transition is a function whose parameter type is
-// the phases it may leave, so the compiler refuses any other move, and writing a
-// file checks the phase already on disk allows the move, so two commands racing
-// on one instance cannot both act on it.
+// straight to `stopping`. `down --keep-data` ends in `kept`, not `stopped`: the
+// processes are gone and the team, forge repos and scratch folder stay. A later
+// `down` takes `kept` back through `stopping`, which removes them.
+//
+// Each transition is a function whose parameter type is the phases it may leave,
+// so the compiler refuses any other move, and writing a file checks the phase
+// already on disk allows the move, so two commands racing on one instance cannot
+// both act on it.
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -73,21 +77,24 @@ const Common = z.object({
 const Starting = Common.extend({ phase: z.literal('starting'), seed: Seed.optional() })
 const Ready = Common.extend({ phase: z.literal('ready'), seed: Seed, readyAt: z.iso.datetime() })
 const Failed = Common.extend({ phase: z.literal('failed'), seed: Seed.optional(), error: z.string() })
-const Stopping = Common.extend({ phase: z.literal('stopping'), seed: Seed.optional(), left: z.enum(['starting', 'ready', 'failed']) })
+const Stopping = Common.extend({ phase: z.literal('stopping'), seed: Seed.optional(), left: z.enum(['starting', 'ready', 'failed', 'kept']) })
 export const Survivor = z.object({ pid: z.number().int(), command: z.string() })
 const Stopped = Common.extend({
   phase: z.literal('stopped'), seed: Seed.optional(), stoppedAt: z.iso.datetime(),
   survivors: z.array(Survivor),
   removed: z.object({ team: z.boolean(), repos: z.array(z.string()), containers: z.array(z.string()), joinRequests: z.array(z.string()), scratch: z.boolean() }),
 })
+// Stopped by down --keep-data: nothing the instance made is removed.
+const Kept = Common.extend({ phase: z.literal('kept'), seed: Seed.optional(), keptAt: z.iso.datetime(), survivors: z.array(Survivor) })
 
-export const InstanceState = z.discriminatedUnion('phase', [Starting, Ready, Failed, Stopping, Stopped])
+export const InstanceState = z.discriminatedUnion('phase', [Starting, Ready, Failed, Stopping, Stopped, Kept])
 export type InstanceState = z.infer<typeof InstanceState>
 export type StartingState = z.infer<typeof Starting>
 export type ReadyState = z.infer<typeof Ready>
 export type FailedState = z.infer<typeof Failed>
 export type StoppingState = z.infer<typeof Stopping>
 export type StoppedState = z.infer<typeof Stopped>
+export type KeptState = z.infer<typeof Kept>
 export type Phase = InstanceState['phase']
 
 // Which phase may follow which. The transition functions below are typed to
@@ -96,16 +103,19 @@ export const NEXT = {
   starting: ['starting', 'ready', 'failed', 'stopping'],
   ready: ['ready', 'stopping'],
   failed: ['stopping'],
-  stopping: ['stopping', 'stopped'],
+  stopping: ['stopping', 'stopped', 'kept'],
+  kept: ['stopping'],
   stopped: [],
 } as const satisfies Record<Phase, readonly Phase[]>
 
 export const toReady = (state: StartingState, seed: Seed): ReadyState =>
   ({ ...state, phase: 'ready', seed, readyAt: new Date().toISOString() })
 export const toFailed = (state: StartingState, error: string): FailedState => ({ ...state, phase: 'failed', error })
-export const toStopping = (state: StartingState | ReadyState | FailedState): StoppingState => ({ ...state, phase: 'stopping', left: state.phase })
+export const toStopping = (state: StartingState | ReadyState | FailedState | KeptState): StoppingState => ({ ...state, phase: 'stopping', left: state.phase })
 export const toStopped = (state: StoppingState, outcome: Pick<StoppedState, 'survivors' | 'removed'>): StoppedState =>
   ({ ...state, ...outcome, phase: 'stopped', stoppedAt: new Date().toISOString() })
+export const toKept = (state: StoppingState, outcome: Pick<KeptState, 'survivors'>): KeptState =>
+  ({ ...state, ...outcome, phase: 'kept', keptAt: new Date().toISOString() })
 
 export const stateFile = (name: InstanceName) => join(INSTANCES_DIR, `${name}.json`)
 

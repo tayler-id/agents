@@ -65,12 +65,20 @@ export const redact = (url: string) => {
   return `${parsed.protocol}//${parsed.hostname}:${parsed.port}${parsed.pathname}`
 }
 
+// Where a value in agentsctl's environment was set: the shell, over .env.test, over .env.
+export function whereSet(key: string, layers: { shell: Record<string, string>; test: Record<string, string>; base: Record<string, string> }): 'your shell' | '.env.test' | '.env' {
+  if (key in layers.shell) return 'your shell'
+  if (key in layers.test) return '.env.test'
+  return '.env'
+}
+
 let loaded: Config | null = null
 
 export function config(): Config {
   if (loaded) return loaded
   const testFile = readEnvFile('.env.test')
-  const merged = { ...readEnvFile('.env'), ...testFile }
+  const baseFile = readEnvFile('.env')
+  const merged = { ...baseFile, ...testFile }
   const real = FileEnv.parse(Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)))
   const env = { ...merged, ...real }
   const parsed = Config.safeParse(env)
@@ -92,7 +100,7 @@ export function config(): Config {
   const socket = env.AGENTS_PEOPLE_SOCKET
   if (socket && !inScratch(socket)) {
     throw new Refused(`AGENTS_PEOPLE_SOCKET is ${socket}, outside agentsctl's scratch folders, and could be the live server's`, [
-      'Unset AGENTS_PEOPLE_SOCKET in your shell: each instance makes its own socket in its scratch folder',
+      `Unset AGENTS_PEOPLE_SOCKET in ${whereSet('AGENTS_PEOPLE_SOCKET', { shell: real, test: testFile, base: baseFile })}: each instance makes its own socket in its scratch folder`,
     ])
   }
   loaded = { ...parsed.data, env }
@@ -101,8 +109,10 @@ export function config(): Config {
 
 // Takes the secrets in the env files and the shell out of anything agentsctl
 // prints or keeps, along with what shared/scrub.ts knows by pattern, such as a
-// machine's token. Before the config has loaded, only the patterns apply.
-export const scrubber = (): Scrub => makeScrub(loaded ? envSecrets(loaded.env) : [])
+// machine's token, and any `held` [name, value] pairs the caller adds. Before
+// the config has loaded, only the patterns and `held` apply.
+export const scrubber = (held: [string, string][] = []): Scrub =>
+  makeScrub([...(loaded ? envSecrets(loaded.env) : []), ...held].sort((a, b) => b[1].length - a[1].length))
 
 // Who a process agentsctl starts is: each gets only the environment it needs.
 export type ChildRole = 'api' | 'admin' | 'daemon' | 'people' | 'session' | 'build'

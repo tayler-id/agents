@@ -24,6 +24,7 @@ import { isUniqueViolation, many, maybe, one, pool, tx } from './db.ts'
 import { sha256 } from './auth.ts'
 import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
+import { containerName, homeVolumeName } from '../shared/box-names.ts'
 import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
@@ -36,7 +37,6 @@ const API_FROM_BOX = process.env.AGENTS_BOX_API ?? `http://host.docker.internal:
 // A Claude token from `claude setup-token`, so agents in boxes run on the team's subscription.
 const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '.agents-app', 'box-claude-token')
 
-export const containerName = (instanceId: string) => `agents-box-${instanceId}`
 const docker = async (...args: string[]) => (await run('docker', args, { maxBuffer: 8 * 1024 * 1024 })).stdout.trim()
 
 // What docker said went wrong, scrubbed and cut short, since its words can repeat
@@ -64,7 +64,7 @@ async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string)
   if (!personal && existsSync(CLAUDE_TOKEN_FILE)) env.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()}`)
   const extra = JSON.parse(process.env.AGENTS_BOX_DOCKER_ARGS ?? '[]') as string[]
   await docker('run', '-d', '--name', containerName(instanceId), '--restart', 'unless-stopped',
-    '--label', `agents.instance=${instanceId}`, '-v', `${containerName(instanceId)}-home:/home/agent`, ...env, ...extra, IMAGE)
+    '--label', `agents.instance=${instanceId}`, '-v', `${homeVolumeName(instanceId)}:/home/agent`, ...env, ...extra, IMAGE)
 }
 
 async function startContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {

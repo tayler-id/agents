@@ -23,6 +23,16 @@ export type Violation = NonNullable<Found['violations']>[number]
 export type Overflow = NonNullable<Found['overflow']>
 export type NetworkEntry = NonNullable<Found['network']>[number]
 
+// A failure that read words from the page. Its message holds only what the tool
+// knows, and `outside` holds the page's words, which the CLI prints fenced.
+export class PageError extends Error {
+  readonly outside: string
+  constructor(message: string, outside: string) {
+    super(message)
+    this.outside = outside
+  }
+}
+
 export type Driver = {
   // Opens the key's page if it is not open, on the app's home page.
   open(key: PageKey): Promise<void>

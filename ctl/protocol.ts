@@ -110,6 +110,7 @@ export type Found = z.infer<typeof Found>
 
 export const SessionReply = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), found: Found }),
-  z.object({ ok: z.literal(false), error: z.string(), url: z.string(), files: z.array(z.string()) }),
+  // `outside` holds the page's words a failure read, such as the choices a box offers.
+  z.object({ ok: z.literal(false), error: z.string(), outside: z.string().optional(), url: z.string(), files: z.array(z.string()) }),
 ])
 export type SessionReply = z.infer<typeof SessionReply>

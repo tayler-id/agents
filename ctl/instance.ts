@@ -14,17 +14,18 @@ import type { PageKey } from './driver.ts'
 import { z } from 'zod'
 import { childEnv, config, EVIDENCE_DIR, LIVE_PORTS, redact, ROOT, SCRATCH_PREFIX, scrubber } from './config.ts'
 import { withClient } from './db.ts'
-import { call, readShape } from './api.ts'
+import { call, readShape, type Reply } from './api.ts'
 import { CliError, EXIT, Refused, UsageError } from '../shared/cli/output.ts'
 import { playwrightDriver } from './playwright.ts'
 import { claimPorts, releasePorts } from './ports.ts'
 import { owned, spawnRecorded, stop, isOurs, type Owned } from './procs.ts'
-import { makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
+import { isLoginOf, LOGIN_DOMAIN, makeOrg, makeTeam, orgOf, orgTaken, removeForge, seedForge, seedTeam, teamTaken, writeScenario } from './seed.ts'
+import { containerName, homeVolumeName } from '../shared/box-names.ts'
 import { stopSessionServer } from './session-client.ts'
 import { hasCode, messageOf } from '../shared/errors.ts'
 import {
-  InstanceName, listStates, ProcessRecord, readState, saveState, stateFile, toFailed, toReady, toStopped, toStopping,
-  type Harness, type InstanceState, type ReadyState, type StartingState, type StoppedState,
+  InstanceName, listStates, ProcessRecord, readState, saveState, stateFile, toFailed, toKept, toReady, toStopped, toStopping,
+  type Harness, type InstanceState, type KeptState, type ReadyState, type StartingState, type StoppedState, type StoppingState,
 } from './state.ts'
 
 const run = promisify(execFile)
@@ -92,8 +93,10 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
     if (existing.phase === 'ready' && fits(existing) && await running(existing)) return { state: existing, already: true }
   }
   if (named) {
-    const why = named.phase !== 'ready' ? `it is ${named.phase}` : !fits(named) ? `it runs ${named.harness} Claude${named.pipelines ? ' with' : ' without'} pipelines` : 'its API or daemon stopped'
-    throw new Refused(`instance ${named.name} is already here, and ${why}`, [`Run \`bin/agentsctl down --instance ${named.name}\` to stop it, then up again`])
+    // A kept instance still has the team and repos its name refuses, until a later down removes them.
+    const kept = named.phase === 'kept'
+    const why = kept ? 'down --keep-data left its team in place' : named.phase !== 'ready' ? `it is ${named.phase}` : !fits(named) ? `it runs ${named.harness} Claude${named.pipelines ? ' with' : ' without'} pipelines` : 'its API or daemon stopped'
+    throw new Refused(`instance ${named.name} is already here, and ${why}`, [`Run \`bin/agentsctl down --instance ${named.name}\` to ${kept ? 'remove what it kept' : 'stop it'}, then up again`])
   }
   const name = options.name ?? InstanceName.parse(`v${randomBytes(3).toString('hex')}`)
   // What up makes must not be there already. Another checkout's instance of the
@@ -224,8 +227,25 @@ export function ready(name: InstanceName | undefined): ReadyState {
   return state
 }
 
-export const Check = z.object({ name: z.string(), ok: z.boolean(), detail: z.string() })
+// One of doctor's checks. `detail` holds only what the tool knows; `outside`
+// holds a server's words the check read, which the CLI prints fenced.
+export const Check = z.object({ name: z.string(), ok: z.boolean(), detail: z.string(), outside: z.string().optional() })
 export type Check = z.infer<typeof Check>
+
+// Whether the people door answers /v1/me with the owner on the instance's team.
+// Any other answer is the server's words, so it goes in `outside`.
+export function peopleDoorCheck(reply: Reply | { error: string }, expected: { owner: string; team: string }): Check {
+  const name = 'people door answers'
+  if ('error' in reply) return { name, ok: false, detail: `GET /v1/me failed: ${reply.error}` }
+  const parsed = Me.safeParse(reply.body)
+  if (parsed.success && parsed.data.person.login === expected.owner && parsed.data.team.name === expected.team) {
+    return { name, ok: true, detail: `${expected.owner} is on ${expected.team}` }
+  }
+  return {
+    name, ok: false, outside: typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body),
+    detail: `GET /v1/me answered ${String(reply.status)} with ${parsed.success ? `someone other than ${expected.owner} on ${expected.team}` : 'no person on a team'}`,
+  }
+}
 export const DoctorReport = z.object({ instance: z.string(), ok: z.boolean(), checks: z.array(Check) })
 export type DoctorReport = z.infer<typeof DoctorReport>
 
@@ -307,9 +327,8 @@ export async function doctor(name: InstanceName | undefined): Promise<DoctorRepo
     add(door, pid !== null && pid === owner?.pid, pid === null ? `nothing listens on ${String(port)}` : pid === owner?.pid ? `the ${role} process (pid ${String(pid)}) listens on ${String(port)}` : `pid ${String(pid)} listens on ${String(port)}, not the instance's ${role} process`)
   }
   if (state.phase === 'ready') {
-    const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ status: 0, body: messageOf(error) }))
-    const parsed = Me.safeParse(me.body)
-    add('people door answers', parsed.success && parsed.data.team.name === state.team, parsed.success ? `${parsed.data.person.login} is on ${parsed.data.team.name}` : `GET /v1/me answered ${String(me.status)}: ${JSON.stringify(me.body)}`)
+    const me = await call(state, { method: 'GET', path: '/v1/me', as: 'person' }).catch((error: unknown) => ({ error: messageOf(error) }))
+    checks.push(peopleDoorCheck(me, { owner: state.seed.owner.login, team: state.team }))
     // Electric must serve what the database holds: a shape that stopped following
     // the database still answers 200, with rows from before it stopped.
     const shape = await readShape(state, 'agents').catch((error: unknown) => ({ ok: false as const, why: `reading the agents shape failed: ${messageOf(error)}` }))
@@ -369,13 +388,67 @@ async function dockerHas(kind: 'container' | 'volume', name: string): Promise<bo
   }
 }
 
+// What an instance made, removed: its boxes' containers and volumes, its forge
+// org, its team, the join requests of its own logins, and its scratch folder.
+// Only what its state says up made goes.
+async function removeMade(instance: StoppingState): Promise<StoppedState['removed']> {
+  const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], joinRequests: [], scratch: false }
+  const seed = instance.seed
+  if (seed && instance.made.team) {
+    const boxes = await withClient(async (client) => z.array(z.object({ id: z.string() }))
+      .parse((await client.query(`select id from instances where team_id = $1 and kind = 'box'`, [seed.teamId])).rows))
+    for (const box of boxes) {
+      for (const [kind, thing] of [['container', containerName(box.id)], ['volume', homeVolumeName(box.id)]] as const) {
+        if (!(await dockerHas(kind, thing))) continue
+        await docker(kind === 'container' ? 'rm' : 'volume', ...(kind === 'container' ? ['-f', thing] : ['rm', thing]))
+        removed.containers.push(thing)
+      }
+    }
+  }
+  if (instance.made.org) removed.repos = await removeForge(instance.name)
+  const team = instance.team
+  removed.team = instance.made.team && await withClient(async (client) => {
+    const { rowCount } = await client.query('delete from teams where name = $1', [team])
+    return rowCount !== null && rowCount > 0
+  })
+  // A login on no team asks to join when it opens the app, and that request
+  // belongs to no team, so it outlives the team. Only the logins loginOf makes
+  // for this instance go. Another instance's can end the same way: down of
+  // visual leaves stranger-my-visual, which belongs to my-visual.
+  if (instance.made.team) {
+    const name = instance.name
+    const logins = z.array(z.object({ login: z.string() }))
+    removed.joinRequests = await withClient(async (client) => {
+      const asking = logins.parse((await client.query('select login from join_requests where login like $1', [`%${LOGIN_DOMAIN}`])).rows)
+      const ours = asking.map((row) => row.login).filter((login) => isLoginOf(login, name))
+      return logins.parse((await client.query('delete from join_requests where login = any($1) returning login', [ours])).rows).map((row) => row.login)
+    })
+  }
+  rmSync(instance.scratch, { recursive: true, force: true })
+  removed.scratch = true
+  return removed
+}
+
+// The final state goes with the evidence, without the machine's token or any
+// other secret. A stopped instance leaves this checkout's list. A kept one stays
+// on it, so a later down can remove what it kept.
+function closeOut(final: StoppedState | KeptState): StoppedState | KeptState {
+  saveState(final)
+  mkdirSync(final.evidence, { recursive: true })
+  writeFileSync(join(final.evidence, 'instance.json'), `${JSON.stringify(scrubber()(final), null, 2)}\n`)
+  if (final.phase === 'stopped') rmSync(stateFile(final.name))
+  return final
+}
+
 // Stops what the instance started and removes what it made, leaving its evidence.
-// Null when there is nothing to stop: the instance named has no state file here,
-// or no instance is running, so `down` again is a no-op.
-export async function down(name: InstanceName | undefined, options: { keepData: boolean }): Promise<StoppedState | null> {
+// With keepData it removes nothing and leaves the instance `kept`, for a later
+// down to remove. Null when there is nothing to stop: the instance named has no
+// state file here, or no instance is running, so `down` again is a no-op.
+export async function down(name: InstanceName | undefined, options: { keepData: boolean }): Promise<{ state: StoppedState | KeptState; already: boolean } | null> {
   if (name ? !readState(name) : !listStates().length) return null
   const state = resolve(name)
   if (state.phase === 'stopped') return null
+  const alreadyKept = options.keepData && state.phase === 'kept'
   const stopping = state.phase === 'stopping' ? state : toStopping(state)
   saveState(stopping)
   // The browsers and desktop apps the session opened, recorded in case the session itself died first.
@@ -389,48 +462,12 @@ export async function down(name: InstanceName | undefined, options: { keepData: 
     const record = stopping.processes.find((p) => p.role === role)
     if (record && await isOurs(record)) await stop(found.filter((p) => p.pid === record.pid), STOP_GRACE_MS)
   }
-  const survivors = await stop(found, STOP_GRACE_MS)
-  const removed: StoppedState['removed'] = { team: false, repos: [], containers: [], joinRequests: [], scratch: false }
-  if (!options.keepData) {
-    const seed = stopping.seed
-    if (seed && stopping.made.team) {
-      const boxes = await withClient(async (client) => z.array(z.object({ id: z.string() }))
-        .parse((await client.query(`select id from instances where team_id = $1 and kind = 'box'`, [seed.teamId])).rows))
-      for (const box of boxes) {
-        // The names server/boxes.ts gives a box's container and its home volume.
-        for (const [kind, thing] of [['container', `agents-box-${box.id}`], ['volume', `agents-box-${box.id}-home`]] as const) {
-          if (!(await dockerHas(kind, thing))) continue
-          await docker(kind === 'container' ? 'rm' : 'volume', ...(kind === 'container' ? ['-f', thing] : ['rm', thing]))
-          removed.containers.push(thing)
-        }
-      }
-    }
-    if (stopping.made.org) removed.repos = await removeForge(stopping.name)
-    const team = stopping.team
-    removed.team = stopping.made.team && await withClient(async (client) => {
-      const { rowCount } = await client.query('delete from teams where name = $1', [team])
-      return rowCount !== null && rowCount > 0
-    })
-    // A login on no team asks to join when it opens the app, and that request
-    // belongs to no team, so it outlives the team. Every login an instance
-    // drives ends with its name, as loginFor makes them.
-    if (stopping.made.team) {
-      const suffix = `-${stopping.name}@verify.local`
-      removed.joinRequests = await withClient(async (client) => z.array(z.object({ login: z.string() })).parse((await client.query(
-        'delete from join_requests where right(login, length($1)) = $1 returning login', [suffix])).rows).map((row) => row.login))
-    }
-    rmSync(stopping.scratch, { recursive: true, force: true })
-    removed.scratch = true
-  }
+  const survivors = (await stop(found, STOP_GRACE_MS)).map((s) => ({ pid: s.pid, command: s.command }))
+  const removed = options.keepData ? null : await removeMade(stopping)
   releasePorts(stopping.ports, stopping.name)
-  const stopped = toStopped(stopping, { survivors: survivors.map((s) => ({ pid: s.pid, command: s.command })), removed })
-  // The final state goes with the evidence, without the machine's token or any
-  // other secret, and the instance leaves this checkout's list.
-  saveState(stopped)
-  mkdirSync(stopping.evidence, { recursive: true })
-  writeFileSync(join(stopping.evidence, 'instance.json'), `${JSON.stringify(scrubber()(stopped), null, 2)}\n`)
-  rmSync(stateFile(stopping.name))
-  return stopped
+  const final = closeOut(removed === null ? toKept(stopping, { survivors }) : toStopped(stopping, { survivors, removed }))
+  // Keeping what is already kept changes nothing, unless a process was left to stop.
+  return { state: final, already: alreadyKept && found.length === 0 }
 }
 
 export function list(): InstanceState[] {
