@@ -124,6 +124,7 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 - `GET /v1/instance/folders`, `POST /v1/instance/folders` and `POST /v1/instance/folders/disconnect` list, connect and disconnect the calling Mac's folders.
 - `POST /v1/instance/terminal-sessions` gives the record's session for a Claude Code session, the same one each time.
 - `POST /v1/sessions/:id/events` takes `user` events from a machine only into a terminal session, and authors them as the folder's person. It refuses `ask` and `answer` events there, since the person answers Claude in their terminal. It refuses a disconnected folder's events with 409.
+- `POST /v1/sessions/:id/interrupt` refuses a terminal session with 409. The daemon reads that session and doesn't run it, so it couldn't stop it.
 - A person sees a terminal session when its folder is the team's, or when they connected it. The `sessions` shape takes `of=folders`, there is a `connected_folders` shape, and the events shape and `search_record` follow the same rule.
 
 ## The app
@@ -133,15 +134,15 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 
 ## The check
 
-`test/step21.ts` runs on ports 8100 to 8102, and names its teams `local-<id>`. It drives the real `claude` CLI with `haiku` through the real daemon, API and Electric. Its 49 lines cover:
+`test/step21.ts` runs on ports 8100 to 8102, and names its teams `local-<id>`. It drives the real `claude` CLI with `haiku` through the real daemon, API and Electric. Its 50 lines cover:
 
 - The folders command: connect by a path with a link in it, connect again, `--private`, a folder that doesn't exist, a box, the list, disconnect and disconnect again.
 - Two turns in the connected folder, the second reading a PNG, and a third after the daemon restarts. The record must match Claude Code's own transcript: every tool call, every reply, both prompts as the owner's `user` events, nothing else authored, no gap in the numbering, and the session idle after its turns.
 - A session in a folder inside the connected one, whose agent starts a subagent. The subagent's Read must sit under the Agent call, and its orders must not count as the person's prompt.
-- Secrets: the daemon's own, a GitHub-shaped token and a value only the folder's `.env` holds, all in a file Claude reads. None may reach an event or a raw line, and each must show as its `[secret:NAME]`. The picture must arrive only as the note that it stayed on the Mac.
+- Secrets: the daemon's own, a GitHub-shaped token and a value only the folder's `.env` holds, all in a file Claude reads. None may reach an event or a raw line, and each must show as its `[secret:NAME]`. A `.env.local` link to a file that is gone must not stop the folder's sessions. The picture must arrive only as the note that it stayed on the Mac.
 - What stays on the Mac: a session started before connecting, one in `shop-old` beside `shop`, and one started after disconnecting. The private folder's next session shows the daemon read after the disconnect.
 - Who sees what: the teammate, the owner and someone on another team, through the sessions and events shapes and `search_record`, and in Chromium on a plain-HTTP name, at desktop and phone width, with an accessibility scan.
-- What the API refuses: a session that started beside the folder, an ask in a terminal session, and events after the disconnect.
+- What the API refuses: a session that started beside the folder, an ask in a terminal session, an interrupt from the app, and events after the disconnect.
 
 It runs headless sessions only. macOS `script` can't drive Claude Code's terminal interface from a pipe, and the checks are TypeScript, so an interactive session was driven through `expect` by hand.
 

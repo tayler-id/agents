@@ -10,7 +10,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -195,6 +195,8 @@ try {
   writeFileSync(join(must(shop, 'shop'), 'notes.txt'),
     `Deploy password: ${envSecret}\nBackup token: ${githubToken}\nStripe key: ${dotenvSecret}\nThe word to remember is ${WORD}.\n`)
   writeFileSync(join(must(shop, 'shop'), '.env'), `STRIPE_SECRET_KEY=${dotenvSecret}\n`)
+  // A link to a .env file that is gone, as a repo can have. It must not stop the folder's sessions.
+  symlinkSync('gone.env', join(must(shop, 'shop'), '.env.local'))
   writeFileSync(join(must(shop, 'shop'), 'logo.png'), redPng())
   mkdirSync(join(must(shop, 'shop'), 'sub'))
   writeFileSync(join(must(shop, 'shop'), 'sub', 'plan.txt'), 'The word to remember is tern.\n')
@@ -210,7 +212,7 @@ try {
   await until('the Mac online', 30, async () => (await count(`select count(*) from instances where name = $1 and status = 'online'`, [`mac-${id}`])) === 1)
 
   // Before the folder is connected.
-  const early = await claude(must(shop, 'shop'), 'Reply with only the word early.')
+  const early = await claude(must(shop, 'shop'), `Reply with only the word early-${id}.`)
 
   // Connecting, by the path as the shell names it, then again from inside the folder, and what the command refuses.
   const connected = folders(token, root, 'connect', must(shop, 'shop'))
@@ -234,7 +236,7 @@ try {
   const [first, subRun, besideRun, diaryRun] = await Promise.all([
     claude(must(shop, 'shop'), PROMPT),
     claude(join(must(shop, 'shop'), 'sub'), SUBAGENT_PROMPT),
-    claude(must(beside, 'beside'), 'Reply with only the word osprey.'),
+    claude(must(beside, 'beside'), `Reply with only the word osprey-${id}.`),
     claude(must(diary, 'diary'), 'Reply with only the word wren.'),
   ])
   const second = await claude(must(shop, 'shop'), SECOND, first.session)
@@ -315,9 +317,10 @@ try {
   const strays = await count('select count(*) from sessions where harness_session_id = any($1)', [[early.session, besideRun.session]])
   check(strays === 0, 'no session was made for the one started before connecting, or the one in the folder beside it')
   const strayWords = await count(
-    `select (select count(*) from events where text ilike any($1)) + (select count(*) from raw_events where line::text ilike any($1)) as count`,
-    [['%Reply with only the word early%', '%Reply with only the word osprey%']])
-  check(strayWords === 0, 'nothing of those two sessions is anywhere in the record')
+    `select (select count(*) from events where team_id = $1 and text ilike any($2))
+          + (select count(*) from raw_events r join sessions s on s.id = r.session_id where s.team_id = $1 and r.line::text ilike any($2)) as count`,
+    [ownerRow.team_id, [`%early-${id}%`, `%osprey-${id}%`]])
+  check(strayWords === 0, "nothing of those two sessions is in the team's record")
 
   // Who sees what.
   const forMate = await shapeRows(mate, 'sessions?of=folders')
@@ -341,6 +344,10 @@ try {
   const ask = await machine(token, 'POST', `/v1/sessions/${String(session.id)}/events`,
     { events: [{ clientId: `ask-${id}`, kind: 'ask', body: { requestId: 'r' } }] })
   check(ask.status === 400, 'a terminal session takes no asks from the machine')
+  const interrupt = await fetch(`${PEOPLE}/v1/sessions/${String(session.id)}/interrupt`,
+    { method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': owner }, body: '{}' })
+  check(interrupt.status === 409 && await count(`select count(*) from commands where session_id = $1`, [session.id]) === 0,
+    'nobody can interrupt a terminal session from the app, and no command goes to the Mac')
 
   // The app, as the teammate and as the owner.
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })

@@ -15,6 +15,7 @@ import { parseEnv } from 'node:util'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
+import { FolderId, SessionId } from '../shared/ids.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { FolderRow, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
 import { ApiError, postEvents, type Api, type Config } from './api.ts'
@@ -42,7 +43,7 @@ const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
 // How far each transcript has been sent, so a restart goes on from there. Losing
 // this file costs only a reread, since the record skips lines it already has.
 const Sent = z.record(z.string(), z.object({
-  sessionId: z.string(), folderId: z.string(), cwd: z.string(), offset: z.number().int().min(0), parentToolUseId: z.string().nullable(),
+  sessionId: SessionId, folderId: FolderId, cwd: z.string(), offset: z.number().int().min(0), parentToolUseId: z.string().nullable(),
 }))
 type Sent = z.infer<typeof Sent>
 type Tracked = Sent[string]
@@ -88,8 +89,9 @@ function linesFrom(file: string, offset: number, limit = Infinity): { text: stri
 function dotenvSecrets(folder: string, cwd: string): [string, string][] {
   const parts = relative(folder, cwd).split(sep).filter(Boolean)
   const dirs = [folder, ...parts.map((_, i) => join(folder, ...parts.slice(0, i + 1)))]
+  // existsSync is false for a link to nothing, which has no values to scrub.
   return dirs.flatMap((dir) => (existsSync(dir) ? readdirSync(dir) : [])
-    .filter((name) => /^\.env(\..+)?$/.test(name) && statSync(join(dir, name)).isFile())
+    .filter((name) => /^\.env(\..+)?$/.test(name) && existsSync(join(dir, name)) && statSync(join(dir, name)).isFile())
     .flatMap((name) => envSecrets(parseEnv(readFileSync(join(dir, name), 'utf8')))))
 }
 

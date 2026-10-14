@@ -200,9 +200,11 @@ export async function answerAsk(
 
 // Asks the session's machine to stop the current turn.
 export async function interruptSession(client: pg.PoolClient, sessionId: string) {
-  const session = await maybe<{ team_id: string; instance_id: string }>(client,
-    'select team_id, instance_id from sessions where id = $1', [sessionId])
+  const session = await maybe<{ team_id: string; instance_id: string; folder_id: string | null }>(client,
+    'select team_id, instance_id, folder_id from sessions where id = $1', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
+  // The daemon reads a terminal session. It doesn't run it, so it can't stop it.
+  if (session.folder_id !== null) throw new HttpError(409, 'A terminal session is stopped from its terminal, not from the app.')
   await client.query(
     `insert into commands (team_id, instance_id, session_id, kind) values ($1, $2, $3, 'interrupt')`,
     [session.team_id, session.instance_id, sessionId])
