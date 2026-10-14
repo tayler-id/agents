@@ -33,11 +33,13 @@ There were two candidates: Claude Code hooks, and the daemon reading the transcr
 - Every conversation line carries `cwd`, `sessionId`, `timestamp` and its own `uuid`, so the reader can check where a session started and the record can skip a line it already has.
 - A headless `claude -p` run with one Read call wrote 33 lines in 6.2 s. Only 4 were the conversation: the prompt, the tool call, the tool result and the reply. The rest were Claude Code's bookkeeping: 17 `attachment` lines, `queue-operation`, `last-prompt`, `atis-latch`, `cost-state` and a `stop_hook_summary` from a plugin's Stop hook.
 - Headless mode writes its transcript when the process ends. All 33 lines appeared at once, 0.6 to 5.7 s after their own timestamps.
-- Interactive mode writes as it goes. In a session driven through a pseudo-terminal, the prompt line appeared 0.17 s after its timestamp.
+- Interactive mode writes as it goes. In a two-turn session driven through a pseudo-terminal with `expect`, every line of the conversation, the prompts, the Read call and its result, the thinking and both replies, reached the reader 0.1 to 0.9 s after its own timestamp.
+- A prompt typed while Claude was busy waited in Claude Code's queue and was written as an ordinary prompt line once the turn ended, 0.15 s before its reply.
+- An interactive session asks before some tool calls. In one run it asked before reading `notes.txt`, the answer typed in the terminal, and the transcript went on with the call and its result.
 - `claude -p --resume <id>` appended to the same file, under the same session id, with no line repeated.
 - Every line of one assistant message carries the message's `stop_reason`, its thinking line included. In the coordinator's own interactive transcript of 5,694 assistant lines, the 221 lines that hold a text block and `end_turn` match its 221 `turn_duration` lines one for one. Headless transcripts have no `turn_duration` line.
 - A subagent writes to `<session id>/subagents/agent-<id>.jsonl`, beside `agent-<id>.meta.json`, whose `toolUseId` names the Agent call that started it.
-- A person's own prompts are `user` lines whose `origin.kind` is `human`, or that have no origin. Background task notices, another session's messages, compaction summaries and Claude Code's caveats are `user` lines too, told apart by `origin`, `turnOrigin`, `isCompactSummary` and `isMeta`.
+- A person's own prompts are `user` lines with `turnOrigin` `human` when typed in the terminal, and `sdk` when given to `claude -p`, which Claude Code also marks with `entrypoint` `sdk-cli`. Background task notices, another session's messages (`turnOrigin` `peer`), compaction summaries and Claude Code's caveats are `user` lines too, told apart by `origin`, `turnOrigin`, `isCompactSummary` and `isMeta`.
 - `~/.claude/sessions/<pid>.json` lists each running interactive session with its `cwd`, session id and `busy` or `idle`.
 
 ### What the hooks showed
@@ -146,6 +148,5 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 - Sessions started in a connected folder through Codex.
 - Telling a closed terminal from a running session.
 - The cost of a terminal session. Claude Code writes it in `cost-state` lines, which aren't read.
-- A person's prompt typed while Claude is busy, if Claude Code writes it as an `attachment`.
 - Connected folders aren't listed in the app. The command lists them on the Mac.
 - A connected folder whose transcript folder name would pass 200 characters. Claude Code shortens such names, and the reader would miss them.

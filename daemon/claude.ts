@@ -199,12 +199,16 @@ export function withoutImages(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, withoutImages(inner)]))
 }
 
-// Whether a user line is the person typing, rather than Claude Code, a hook, a
+// Where a person's own prompt comes from: typed in the terminal, or given to
+// `claude -p`, which Claude Code marks sdk.
+const PERSON_TURNS = new Set(['human', 'sdk'])
+
+// Whether a user line is the person's prompt, rather than Claude Code, a hook, a
 // background task, another session or an agent's orders to its subagent.
 function fromPerson(line: TranscriptLine): boolean {
   return !line.isSidechain && !line.isCompactSummary
     && (line.origin === undefined || line.origin.kind === 'human')
-    && (line.turnOrigin === undefined || line.turnOrigin === 'human')
+    && (line.turnOrigin === undefined || PERSON_TURNS.has(line.turnOrigin))
 }
 
 type Mapped = { events: NewEvent[]; status?: SessionStatus }
