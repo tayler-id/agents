@@ -170,6 +170,8 @@ try {
     'the machine port on the non-loopback address refuses a request carrying Tailscale-User-Login')
   check(await heartbeat(lan, { 'tailscale-user-name': 'Someone Else' }) === 400,
     'it refuses any Tailscale identity header, such as Tailscale-User-Name, not only the login')
+  check(await heartbeat(lan, { 'tailscale-user-login': '' }) === 400,
+    'it refuses a Tailscale header with an empty value too, since the header being there is what it refuses')
   const peopleThere = await tcp(lan, PEOPLE)
   const me = z.object({ person: z.object({ login: z.string() }) })
     .safeParse(await fetch(`http://127.0.0.1:${PEOPLE}/v1/me`, { headers: { 'tailscale-user-login': login } }).then((r) => r.json(), () => null))
