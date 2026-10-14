@@ -14,7 +14,7 @@
 // told. When it starts again, is killed or is recreated, its screen and browser
 // come back, and work that was waiting for it gets its computer. A box whose
 // desktop can't come up starts again, and a connection reset mid-upgrade leaves
-// the API up.
+// the API up, as does a refused viewer's frame that breaks the protocol.
 // Prints the image's size, the time from a key press in a viewer to its pixels,
 // and the box's memory and CPU.
 // The box reaches this check's API only on 7701, the machine port the box
@@ -39,7 +39,7 @@ import {
   pageSays, stopAll, listensHere,
 } from './computers.ts'
 import { servePeople } from './people.ts'
-import { SCREEN_DEAD_MS, SCREEN_PING_MS } from '../shared/screen.ts'
+import { SCREEN_DEAD_MS, SCREEN_PING_MS, SCREEN_SWEEP_MS } from '../shared/screen.ts'
 
 const PEOPLE_PORT = 7980
 const STREAMS_PORT = 7981
@@ -106,7 +106,7 @@ async function post(login: string, path: string, body: unknown = {}) {
 
 // A person's Screen view, as the app opens it. It is a WebSocket on the people
 // port carrying the screen as binary frames and who holds it as text frames.
-type View = { ws: WebSocket; stream: Duplex; controls: any[]; closed: { code: number; reason: string } | null }
+type View = { ws: WebSocket; stream: Duplex; controls: any[]; closed: { code: number; reason: string; at: number } | null }
 function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PEOPLE_PORT}`, headers: Record<string, string> = {}): Promise<View | number> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`${base}/v1/screens/${instanceId}`, { headers: { 'tailscale-user-login': login, origin: ORIGIN, ...headers } })
@@ -123,7 +123,7 @@ function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PE
       else view.controls.push(JSON.parse(data.toString('utf8')))
     })
     ws.on('close', (code, reason) => {
-      view.closed = { code, reason: String(reason) }
+      view.closed = { code, reason: String(reason), at: Date.now() }
       view.stream.destroy()
     })
     ws.on('error', () => { /* an unexpected response or a close reports it */ })
@@ -131,6 +131,33 @@ function openView(login: string, instanceId: string, base = `ws://127.0.0.1:${PE
 }
 
 const holderOf = (view: View) => view.controls.at(-1)?.control
+
+// Opens a screen by hand as `login` and, once the API answers, sends one frame
+// without the mask every frame from a client must have. Resolves with the
+// first line of the answer once the connection ends.
+function sendUnmasked(login: string, instanceId: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = connect(PEOPLE_PORT, '127.0.0.1')
+    let answer = ''
+    const giveUp = setTimeout(() => { socket.destroy() }, 10_000)
+    socket.on('connect', () => {
+      socket.write([`GET /v1/screens/${instanceId} HTTP/1.1`, `Host: 127.0.0.1:${PEOPLE_PORT}`, 'Upgrade: websocket', 'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}`, 'Sec-WebSocket-Version: 13', `Origin: ${ORIGIN}`,
+        `tailscale-user-login: ${login}`, '', ''].join('\r\n'))
+    })
+    socket.on('data', (data) => {
+      if (answer) return
+      answer = data.toString('latin1').split('\r\n')[0] ?? ''
+      // A binary frame, final, one byte long, with no mask bit.
+      if (answer.startsWith('HTTP/1.1 101')) socket.write(Buffer.from([0x82, 0x01, 0x00]))
+    })
+    socket.on('error', () => { /* the close reports it */ })
+    socket.on('close', () => {
+      clearTimeout(giveUp)
+      resolve(answer)
+    })
+  })
+}
 
 // How opening a screen goes for a person: watching once the API says who holds
 // it, closed with the code and reason the API gave, or an HTTP refusal.
@@ -212,9 +239,15 @@ try {
     `without AGENTS_PEOPLE_ORIGINS the API stops at once and names it (exit ${String(noOrigins.status)}, ${named ? 'named' : 'not named'})`)
 
   const api = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
-    cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...checkEnv },
+    cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...checkEnv },
   })
   children.push(api)
+  // The API's log goes on to this check's own, and is kept to see what it says.
+  let apiLog = ''
+  api.stderr.on('data', (chunk: Buffer) => {
+    apiLog += chunk.toString('utf8')
+    process.stderr.write(chunk)
+  })
   // Stands in for tailscale serve, which sends people to the API's socket.
   await servePeople(PEOPLE_PORT, peopleSocket(work))
   await within(20, () => fetch(API).then(() => true, () => false))
@@ -271,6 +304,8 @@ try {
   if (typeof foreign !== 'number') foreign.ws.close()
   check(foreign === 403 && aliceScreen.width === SCREEN.width,
     `a page from another origin is refused the screen with 403, and the app's own origin opens it (${typeof foreign === 'number' ? foreign : 'opened'})`)
+  check(await within(5, async () => apiLog.includes('origin http://elsewhere.example is not in AGENTS_PEOPLE_ORIGINS')),
+    'the API logs the origin it refused and names AGENTS_PEOPLE_ORIGINS')
 
   // A task in the box. Its session gets the computer, the instructions and the skill.
   const task = await post(alice, '/v1/tasks', { title: 'Check the page', instructions: 'Look at it.', agentId: must(await one('select id from agents where team_id = $1 and name = $2', [teamId, 'tester']), 'agent').id })
@@ -321,10 +356,14 @@ try {
   check(badKey.isError && textOf(badKey).includes('not a key name'), 'a key name the screen does not know is refused with a reason')
 
   // While a page in the browser shows a secret the box holds, no screenshot is
-  // saved, since a saved one is never scrubbed. The box gets a secret of the
-  // check's own, and the page shows it without losing what was typed there.
+  // saved, since a saved one is never scrubbed. The box gets secrets of the
+  // check's own, and the page shows each in turn without losing what was typed there.
   const secret = `comp-secret-${randomBytes(8).toString('hex')}`
-  execFileSync('docker', ['exec', '-i', container, 'tee', BOX_SECRETS], { input: JSON.stringify({ COMP_CHECK_SECRET: secret }), stdio: ['pipe', 'ignore', 'inherit'] })
+  const keySecret = `-----BEGIN CHECK KEY-----\n${randomBytes(24).toString('base64')}\n${randomBytes(24).toString('base64')}\n-----END CHECK KEY-----\n`
+  const fieldSecret = `comp-field-${randomBytes(8).toString('hex')}`
+  execFileSync('docker', ['exec', '-i', container, 'tee', BOX_SECRETS], {
+    input: JSON.stringify({ COMP_CHECK_SECRET: secret, COMP_CHECK_KEY: keySecret, COMP_CHECK_FIELD: fieldSecret }), stdio: ['pipe', 'ignore', 'inherit'],
+  })
   await tools.callTool({ name: 'browser_evaluate', arguments: {
     function: `() => { const shown = document.createElement('p'); shown.id = 'shown-secret'; shown.textContent = '${secret}'; document.body.append(shown) }`,
   } })
@@ -333,12 +372,40 @@ try {
   // Playwright's own screenshot tool saves where a file name says, here in the task folder.
   const browserShot = await tools.callTool({ name: 'browser_take_screenshot', arguments: { filename: 'task/checks/secret-page-browser.png' } })
   const browserShotSaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/secret-page-browser.png`) !== null
-  await tools.callTool({ name: 'browser_evaluate', arguments: { function: "() => { document.getElementById('shown-secret')?.remove() }" } })
+  const unshow = () => tools.callTool({ name: 'browser_evaluate', arguments: { function: "() => { document.getElementById('shown-secret')?.remove() }" } })
+  await unshow()
+  // A key over three lines in a div, where the page joins its lines with spaces.
+  await tools.callTool({ name: 'browser_evaluate', arguments: {
+    function: `() => { const shown = document.createElement('div'); shown.id = 'shown-secret'; shown.textContent = ${JSON.stringify(keySecret)}; document.body.append(shown) }`,
+  } })
+  const withKey = await tools.callTool({ name: 'save_screenshot', arguments: { name: 'key-page' } })
+  const keySaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/key-page.png`) !== null
+  await unshow()
+  // A field inside a closed shadow root, which no script of the page's own can reach.
+  await tools.callTool({ name: 'browser_evaluate', arguments: {
+    function: `() => { const host = document.createElement('div'); host.id = 'shown-secret'; const field = document.createElement('input'); `
+      + `field.value = ${JSON.stringify(fieldSecret)}; host.attachShadow({ mode: 'closed' }).append(field); document.body.append(host) }`,
+  } })
+  const withField = await tools.callTool({ name: 'save_screenshot', arguments: { name: 'field-page' } })
+  const fieldSaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/field-page.png`) !== null
+  await unshow()
+  // A page an alert holds can't say what it shows, so nothing is saved once the
+  // box has waited 5 s for it.
+  await tools.callTool({ name: 'browser_evaluate', arguments: { function: "() => { setTimeout(() => { alert('held by the check') }, 0) }" } })
+  const held = await tools.callTool({ name: 'save_screenshot', arguments: { name: 'held-page' } })
+  const heldSaved = tryDocker('exec', container, 'test', '-e', `${workspace}/task/checks/held-page.png`) !== null
+  const dismissed = await tools.callTool({ name: 'browser_handle_dialog', arguments: { accept: true } })
   docker('exec', container, 'rm', '-f', BOX_SECRETS)
   check(withSecret.isError === true && textOf(withSecret).includes('COMP_CHECK_SECRET') && !secretSaved,
     `save_screenshot refuses while a page shows a secret the box holds, and saves nothing (${secretSaved ? 'saved' : 'not saved'})`)
   check(browserShot.isError === true && textOf(browserShot).includes('COMP_CHECK_SECRET') && !browserShotSaved,
     `browser_take_screenshot refuses the same way when given a file in the task folder (${browserShotSaved ? 'saved' : 'not saved'})`)
+  check(withKey.isError === true && textOf(withKey).includes('COMP_CHECK_KEY') && !keySaved,
+    `a secret over several lines is found where the page joins its lines with spaces (${keySaved ? 'saved' : 'not saved'})`)
+  check(withField.isError === true && textOf(withField).includes('COMP_CHECK_FIELD') && !fieldSaved,
+    `a secret in a field inside a closed shadow root is found (${fieldSaved ? 'saved' : 'not saved'})`)
+  check(held.isError === true && textOf(held).includes("could not read what its browser's pages show") && !heldSaved && !dismissed.isError,
+    `no screenshot is saved while a page can't say what it shows, as when an alert holds it (${heldSaved ? 'saved' : 'not saved'})`)
 
   // A screenshot the agent saves becomes an image document on the task when its
   // turn ends. That turn also takes a screenshot through the computer tool.
@@ -474,6 +541,8 @@ try {
     `insert into sessions (team_id, task_id, instance_id, agent_id, status) select $1, $2, $3, id, 'running' from agents where team_id = $1 returning id`,
     [teamId, privateTask, instanceId]), 'private session')
   const cutOff = await within(15, async () => bobView.closed !== null)
+  // Only the sweep sees a session made in the database, so this is when one ran.
+  const sweptAt = bobView.closed?.at ?? Date.now()
   const agentAgain = await within(15, async () => holderOf(aliceView)?.holder === 'agent')
   check(bobTook.status === 200 && aliceSawBob && cutOff && bobView.closed?.code === 4403 && agentAgain,
     `a person watching when private work they can't see starts on the box is cut off, and the screen they held goes back to the agent (${bobView.closed?.code ?? 'still open'})`)
@@ -489,6 +558,27 @@ try {
   await post(bob, `/v1/screens/${instanceId}/hand-back`, { sessionId })
   const watcher = must(await openView(bob, instanceId) as View, "bob's view again")
   closers.push(() => { watcher.ws.close() })
+  // A session's status from the box runs the watch rule at once, not only on the
+  // sweep every 5 s. This private session starts idle and two days old, so no
+  // rule counts it until the box reports it running. The report goes half a
+  // second after a sweep, timed from the one that cut bob off, so a cut-off
+  // within 1.5 s can't be the sweep's.
+  const { id: quietSession } = must(await one(
+    `insert into sessions (team_id, task_id, instance_id, agent_id, status, last_active_at)
+     select $1, $2, $3, id, 'idle', now() - interval '2 days' from agents where team_id = $1 returning id`,
+    [teamId, privateTask, instanceId]), 'quiet private session')
+  await sleep(SCREEN_SWEEP_MS + 500 - ((Date.now() - sweptAt) % SCREEN_SWEEP_MS))
+  const boxToken = docker('exec', container, 'printenv', 'AGENTS_TOKEN')
+  const reported = Date.now()
+  const report = await fetch(`${API}/v1/sessions/${quietSession}/events`, {
+    method: 'POST', headers: { authorization: `Bearer ${boxToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ events: [], status: 'running' }),
+  })
+  await within(3, async () => watcher.closed !== null)
+  const reportCut = watcher.closed === null ? null : watcher.closed.at - reported
+  await db.query('delete from sessions where id = $1', [quietSession])
+  check(report.status === 200 && watcher.closed?.code === 4403 && reportCut !== null && reportCut < 1500,
+    `private work the box reports running cuts off a viewer at once, not at the next sweep (${reportCut === null ? 'not cut off' : `${reportCut} ms`} after the report)`)
 
   // A viewer that stops answering pings, as a laptop that sleeps does, is closed
   // by the API, so a holder's dead view can't keep the screen from the agent.
@@ -628,6 +718,14 @@ try {
   reset.resetAndDestroy()
   const answers = await within(10, async () => (await fetch(`${PEOPLE}/v1/me`, { headers: { 'tailscale-user-login': alice } }).then((res) => res.status, () => 0)) === 200)
   check(answers && api.exitCode === null, 'a connection reset during an upgrade leaves the API answering')
+
+  // A refused viewer's frame that breaks the protocol, here one without the mask
+  // every frame from a client needs, leaves the API answering. ws raises an
+  // error on the socket for it, which stopped the API when nothing heard it.
+  const unmasked = await sendUnmasked(carol, instanceId)
+  const stillAnswers = await fetch(`${PEOPLE}/v1/me`, { headers: { 'tailscale-user-login': alice } }).then((res) => res.status, () => 0)
+  check(unmasked.startsWith('HTTP/1.1 101') && stillAnswers === 200 && api.exitCode === null,
+    `a refused viewer's frame that breaks the protocol leaves the API answering (${unmasked || 'no answer'}, then /v1/me ${stillAnswers})`)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack}`)
