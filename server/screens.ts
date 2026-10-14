@@ -19,7 +19,7 @@ import { VISIBLE_CONVERSATION, VISIBLE_TASK } from './access.ts'
 import { scopedTeams } from './runner.ts'
 import { RfbFilterError, RfbInputFilter } from './rfb-filter.ts'
 import {
-  AGENT_HOLDS, FromBox, handoff, SCREEN_DEAD_MS, SCREEN_GRACE_MS, SCREEN_PING_MS, ScreenClose,
+  AGENT_HOLDS, FromBox, handoff, SCREEN_DEAD_MS, SCREEN_GRACE_MS, SCREEN_PING_MS, SCREEN_SWEEP_MS, ScreenClose,
   type HandoffEvent, type ScreenControl, type ToBox, type ToViewer,
 } from '../shared/screen.ts'
 import { PersonId, ScreenTakeoverId, SessionId, TunnelId } from '../shared/ids.ts'
@@ -31,8 +31,6 @@ import { messageOf } from '../shared/errors.ts'
 // A box dials back within a second on a healthy connection. Ten seconds covers a
 // box under load without leaving a person looking at nothing.
 const TUNNEL_WAIT_MS = 10_000
-// How often the API looks for people who hold a screen with no view open.
-const SWEEP_MS = 5_000
 // A box that showed private work in the last day may still have it on screen,
 // in a tab or a terminal, so only people who can see that work may watch.
 const PRIVATE_WORK_HOURS = 24
@@ -248,7 +246,7 @@ export function startScreenSweep(): () => void {
   const timer = setInterval(() => {
     // A failed sweep is tried again on the next tick, so it is logged, not fatal.
     sweep().catch((error: unknown) => { console.error('screen sweep:', messageOf(error)) })
-  }, SWEEP_MS)
+  }, SCREEN_SWEEP_MS)
   return () => { clearInterval(timer) }
 }
 
@@ -267,7 +265,6 @@ function linkBox(instanceId: InstanceId, ws: WebSocket) {
     }
     send(ws, { type: 'pong' })
   })
-  ws.on('error', (error) => { console.error(`screen control of ${instanceId}:`, error.message) })
   ws.on('close', () => {
     clearInterval(check)
     if (boxes.get(instanceId)?.ws === ws) boxes.delete(instanceId)
@@ -319,7 +316,6 @@ function watch(person: Person, screen: Watchable, ws: WebSocket) {
       ws.close(ScreenClose.badInput, error instanceof RfbFilterError ? `The screen can't take ${error.message}.` : 'The screen failed.')
     }
   })
-  ws.on('error', (error) => { console.error(`screen viewer ${tunnel}:`, error.message) })
   ws.on('close', () => {
     clearTimeout(viewer.waiting)
     viewers.delete(tunnel)
@@ -336,7 +332,6 @@ function joinTunnel(viewer: Viewer, ws: WebSocket) {
   keepAlive(ws)
   for (const bytes of viewer.early.splice(0)) ws.send(bytes)
   ws.on('message', (data) => { viewer.ws.send(bytesOf(data), { binary: true }) })
-  ws.on('error', (error) => { console.error(`screen tunnel ${viewer.tunnel}:`, error.message) })
   ws.on('close', () => { viewer.ws.close(ScreenClose.boxClosed, 'The box closed the screen.') })
 }
 
@@ -367,9 +362,16 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
   // destroyed when this one hears it, so saying so is all there is to do.
   const onError = (error: Error) => { console.error(`screen upgrade for ${req.url ?? '/'}: ${error.message}`) }
   socket.on('error', onError)
-  const accept = (sockets: WebSocketServer, then: (ws: WebSocket) => void) => {
+  // ws raises `error` on a socket for a frame that breaks the protocol, such as
+  // a client's frame without a mask, and an `error` nobody hears stops the API.
+  // So every screen socket, refused ones included, hears its errors before
+  // anything else is done with it. `label` says which socket in the log.
+  const accept = (sockets: WebSocketServer, label: string, then: (ws: WebSocket) => void) => {
     socket.off('error', onError)
-    sockets.handleUpgrade(req, socket, head, then)
+    sockets.handleUpgrade(req, socket, head, (ws) => {
+      ws.on('error', (error) => { console.error(`${label}: ${error.message}`) })
+      then(ws)
+    })
   }
   try {
     checkAudience(side.audience, req)
@@ -379,13 +381,13 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
         const instance = await instanceFrom(req)
         const id = InstanceId.parse(instance.id)
         await loadControl(id)
-        accept(machineSockets, (ws) => { linkBox(id, ws) })
+        accept(machineSockets, `screen control of ${id}`, (ws) => { linkBox(id, ws) })
         return
       }
       const tunnel = TUNNEL_PATH.exec(path)?.[1]
       if (!tunnel) throw new HttpError(404, 'no such route')
       const viewer = waitingViewer(tunnel, await instanceFrom(req))
-      accept(machineSockets, (ws) => { joinTunnel(viewer, ws) })
+      accept(machineSockets, `screen tunnel ${viewer.tunnel}`, (ws) => { joinTunnel(viewer, ws) })
       return
     }
     const screenId = VIEWER_PATH.exec(path)?.[1]
@@ -393,7 +395,13 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
     // A browser sends its page's origin with every WebSocket it opens. A page on
     // another site, open in a teammate's browser, would otherwise watch and take
     // over as them. Host is no help, since the page picks the host it connects to.
-    if (!side.origins.has(req.headers.origin ?? '')) throw new HttpError(403, 'Only the app may open a screen.')
+    const origin = req.headers.origin
+    if (origin === undefined || !side.origins.has(origin)) {
+      console.error(origin === undefined
+        ? `screen view of ${screenId} refused: it sent no origin, and AGENTS_PEOPLE_ORIGINS lists the ones allowed`
+        : `screen view of ${screenId} refused: origin ${origin} is not in AGENTS_PEOPLE_ORIGINS`)
+      throw new HttpError(403, 'Only the app may open a screen.')
+    }
     // A browser can't read the status of a refused upgrade, only a close
     // reason, so a person who may not watch gets the socket closed with why.
     const allowed = await (async () => {
@@ -405,7 +413,7 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
       if (error instanceof HttpError) return { refused: error.message }
       throw error
     })
-    accept(peopleSockets, (ws) => {
+    accept(peopleSockets, `screen view of ${screenId}`, (ws) => {
       if ('refused' in allowed) ws.close(ScreenClose.notAllowed, allowed.refused)
       else watch(allowed.person, allowed.screen, ws)
     })

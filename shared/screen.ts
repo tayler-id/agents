@@ -45,6 +45,9 @@ export type Handoff =
 // back to the agent. It is long enough to reload the page or for a phone to
 // change networks, and short enough that a closed tab doesn't hold an agent up.
 export const SCREEN_GRACE_MS = 30_000
+// How often the API looks for people who hold a screen with no view open, and
+// runs the watch rule again for everyone watching.
+export const SCREEN_SWEEP_MS = 5_000
 
 type Holder = ScreenControl['holder']
 type EventKind = HandoffEvent['kind']
