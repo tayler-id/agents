@@ -25,6 +25,10 @@ const API = `http://127.0.0.1:${PORT}`
 const PEOPLE = `http://127.0.0.1:${PORT + 1}`
 const id = randomBytes(4).toString('hex')
 const team = `step7-${id}`
+// The check builds and runs its own image. agents-box:latest is the image the live
+// server starts boxes from, so a check run from any branch must leave it alone.
+const IMAGE = `agents-box:step7-${id}`
+const LIVE_IMAGE = 'agents-box:latest'
 const login = `step7-${id}@local`
 const org = forgeConfig().org
 const [SHOP, PIPES] = [`shop7-${id}`, `pipes7-${id}`]
@@ -86,7 +90,7 @@ const running = (container: string) => tryDocker('inspect', '-f', '{{.State.Runn
 
 const boxEnv: Record<string, string> = {
   AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(work, 'people', 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 2),
-  AGENTS_BOX_API: `http://host.docker.internal:${PORT}`, AGENTS_MAX_BOXES: '1', AGENTS_BOX_IDLE_MIN: '1',
+  AGENTS_BOX_API: `http://host.docker.internal:${PORT}`, AGENTS_MAX_BOXES: '1', AGENTS_BOX_IDLE_MIN: '1', AGENTS_BOX_IMAGE: IMAGE,
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify([
     '-v', `${join(ROOT, 'test/fake-claude.ts')}:/opt/fake/fake-claude.ts:ro`, '-v', `${join(ROOT, 'test/fake-claude-login.ts')}:/opt/fake/fake-claude-login.ts:ro`,
     '-v', `${join(work, 'scenario.json')}:/opt/fake/scenario.json:ro`,
@@ -126,6 +130,7 @@ try {
     default: { done: [{ outcome: 'done', summary: 'Listed the files.' }] },
   }))
 
+  const liveBefore = tryDocker('image', 'inspect', '-f', '{{.Id}}', LIVE_IMAGE)
   node('server/boxes.ts', 'build')
   await servePeople(PORT + 1, join(work, 'people', 'people.sock'))
   api = spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
@@ -144,7 +149,7 @@ try {
   const online = await within(120, async () => (await box())?.status === 'online')
   const first = await box()
   const container = `agents-box-${first?.id}`
-  check(online && first?.claimed_by_run === a && docker('inspect', '-f', '{{.Config.Image}}', container) === 'agents-box:latest',
+  check(online && first?.claimed_by_run === a && docker('inspect', '-f', '{{.Config.Image}}', container) === IMAGE,
     'the run created a box from the image, its daemon came online, and the run holds it')
   check(await within(30, async () => (await run(b))?.note === 'Waiting for a free box.' && (await run(b))?.status === 'queued'),
     'a second run waits while the only box is taken')
@@ -188,6 +193,7 @@ try {
   const after = tryDocker('inspect', '-f', '{{.Id}}', container)
   check(after && after !== before && await within(60, async () => (await box())?.status === 'online') && kept(container),
     'recreating the box from the image gives a new container that comes online with the same home folder')
+  check(tryDocker('image', 'inspect', '-f', '{{.Id}}', LIVE_IMAGE) === liveBefore, 'the check builds and runs its own image, and leaves the live one as it was')
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack}`)
@@ -200,6 +206,7 @@ try {
     tryDocker('rm', '-f', `agents-box-${boxId}`)
     tryDocker('volume', 'rm', `agents-box-${boxId}-home`)
   }
+  tryDocker('rmi', IMAGE)
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => {})
     for (const repo of [SHOP, PIPES]) await forgeAdmin.call('DELETE', `/repos/${org}/${repo}`).catch(() => {})
