@@ -27,6 +27,7 @@ Tayler went with the coordinator's picks on all of these.
   - The first build's Docker volumes are deleted, with a backup in `~/.agents-app/backups/first-build-volumes`.
   - The UI gets a design system and a new layout, since the current layout is poor. That work starts after every current branch lands.
   - The desktop app becomes one download, with the Mac connection and terminal-session capture built in. It is signed and notarized with Tayler's Apple Developer ID. Only whoever builds the app needs a developer ID, and teammates download it and open it. This also starts after the current branches land.
+  - Terminal sessions from a connected folder are seen by the team by default, and `connect --private` keeps them to the person. The daemon leaves out tool results for files outside the connected folder. It also learns the secret values in the person's login shell at start so it can scrub them, and those values never leave the Mac. Sessions from before a folder was connected stay on the Mac. Images stay on the Mac, with a note in the record that one was there.
 
 ## 2026-10-13, after the code review
 
