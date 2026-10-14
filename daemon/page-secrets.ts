@@ -1,12 +1,14 @@
 // Which of the box's secrets the pages open in its browser show, read over the
 // browser's DevTools port. A saved screenshot is never scrubbed, so the
-// `computer` server saves none while a page shows one. Only text is read, so a
-// secret drawn in an image, on a canvas or outside the browser's pages is not
-// seen. The design is docs/design/computers.md.
+// `computer` server saves none while a page shows one, or while a page can't
+// say what it shows. Only text is read, so a secret drawn in an image, on a
+// canvas or outside the browser's pages is not seen. The design is
+// docs/design/computers.md.
 
 import WebSocket from 'ws'
 import { z } from 'zod'
 import { parseJson } from '../shared/json.ts'
+import { MIN_SECRET_LENGTH } from '../shared/scrub.ts'
 import { bytesOf } from '../shared/websocket.ts'
 
 // How long the browser may take to list its pages, and each page to give its
@@ -19,55 +21,127 @@ const READ_WAIT_MS = 5_000
 const SHOWN_TYPES = new Set(['page', 'iframe'])
 const Target = z.object({ type: z.string(), webSocketDebuggerUrl: z.string().optional() })
 
-// Runs in the page. Its address, title, rendered text and form fields, and the
-// same for each frame from its own origin, since another origin's frame has no
-// document here.
-const PAGE_TEXT = `(() => {
-  const texts = []
-  const read = (doc) => {
-    texts.push(doc.location.href, doc.title, doc.documentElement?.innerText ?? doc.documentElement?.textContent ?? '')
-    for (const field of doc.querySelectorAll('input, textarea')) texts.push(field.value)
-    for (const frame of doc.querySelectorAll('iframe, frame')) if (frame.contentDocument) read(frame.contentDocument)
-  }
-  read(document)
-  return texts.join('\\n')
-})()`
+// A page's DOM as DevTools gives it with `pierce`, which goes into every frame
+// the page's process runs, whatever its origin, and into shadow roots, closed
+// ones included.
+const DOCUMENT_NODE = 9
+const DomNode = z.object({
+  nodeId: z.int(),
+  nodeType: z.int(),
+  get children() { return z.array(DomNode).optional() },
+  get shadowRoots() { return z.array(DomNode).optional() },
+  get contentDocument() { return DomNode.optional() },
+})
+type DomNode = z.infer<typeof DomNode>
 
-// Each connection sends one command, with id 1. Events carry no id.
-const Reply = z.object({ id: z.literal(1) })
-const Answer = z.union([
-  z.object({ id: z.literal(1), result: z.object({ result: z.object({ type: z.literal('string'), value: z.string() }) }) }),
-  z.object({ id: z.literal(1), result: z.object({ exceptionDetails: z.object({ text: z.string() }) }) }),
-  z.object({ id: z.literal(1), error: z.object({ message: z.string() }) }),
+// Every document and shadow root at or under a node. Each holds its own text
+// and fields, which a page's script can't reach in a closed shadow root or a
+// frame from another origin.
+function rootsIn(node: DomNode): number[] {
+  return [
+    ...(node.nodeType === DOCUMENT_NODE ? [node.nodeId] : []),
+    ...(node.shadowRoots ?? []).flatMap((shadow) => [shadow.nodeId, ...rootsIn(shadow)]),
+    ...(node.contentDocument ? rootsIn(node.contentDocument) : []),
+    ...(node.children ?? []).flatMap(rootsIn),
+  ]
+}
+
+// Runs on a document or a shadow root. A document gives its address, title and
+// rendered text, a shadow root the rendered text of what it holds, and both the
+// values of their own fields.
+const ROOT_TEXT = `function () {
+  const texts = this.nodeType === Node.DOCUMENT_NODE
+    ? [this.URL, this.title, this.documentElement ? this.documentElement.innerText ?? this.documentElement.textContent : '']
+    : Array.from(this.children, (child) => child.innerText ?? child.textContent)
+  for (const field of this.querySelectorAll('input, textarea')) texts.push(field.value)
+  return texts
+}`
+
+// A command's reply. Events carry no id.
+const Reply = z.union([
+  z.object({ id: z.int(), error: z.object({ message: z.string() }) }),
+  z.object({ id: z.int(), result: z.unknown() }),
+])
+const DocumentReply = z.object({ root: DomNode })
+const Resolved = z.object({ object: z.object({ objectId: z.string() }) })
+const Called = z.union([
+  z.object({ exceptionDetails: z.object({ text: z.string() }) }),
+  z.object({ result: z.object({ value: z.array(z.string()) }) }),
 ])
 
-function pageText(debuggerUrl: string): Promise<string> {
-  const { promise, resolve, reject } = Promise.withResolvers<string>()
+type Devtools = { send(method: string, params: Record<string, unknown>): Promise<unknown>; close(): void }
+
+// One DevTools connection to a page or a frame, matching each reply to its
+// command by id. When `signal` fires the connection closes, which fails every
+// command still waiting and every one sent after.
+function devtools(debuggerUrl: string, signal: AbortSignal): Promise<Devtools> {
   const ws = new WebSocket(debuggerUrl)
-  const timer = setTimeout(() => { reject(new Error(`a page in the browser gave no text within ${READ_WAIT_MS} ms`)) }, READ_WAIT_MS)
-  ws.on('open', () => {
-    ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: PAGE_TEXT, returnByValue: true } }))
-  })
+  const waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>()
+  let lastId = 0
+  const ended = () => new Error(signal.aborted
+    ? `a page in the browser gave no text within ${READ_WAIT_MS} ms`
+    : 'a page in the browser closed its DevTools connection')
+  const failAll = (error: Error) => {
+    for (const command of waiting.values()) command.reject(error)
+    waiting.clear()
+  }
+  signal.addEventListener('abort', () => { ws.terminate() }, { once: true })
   ws.on('message', (data) => {
-    const text = bytesOf(data).toString('utf8')
-    if (!parseJson(Reply, text).ok) return
-    const answer = parseJson(Answer, text)
-    if (!answer.ok) reject(new Error(`a page in the browser answered something unexpected: ${answer.reason}`))
-    else if ('error' in answer.value) reject(new Error(`a page in the browser gave no text: ${answer.value.error.message}`))
-    else if ('exceptionDetails' in answer.value.result) reject(new Error(`reading a page in the browser failed: ${answer.value.result.exceptionDetails.text}`))
-    else resolve(answer.value.result.result.value)
+    const reply = parseJson(Reply, bytesOf(data).toString('utf8'))
+    if (!reply.ok) return
+    const command = waiting.get(reply.value.id)
+    if (!command) return
+    waiting.delete(reply.value.id)
+    if ('error' in reply.value) command.reject(new Error(`a page in the browser refused a DevTools command: ${reply.value.error.message}`))
+    else command.resolve(reply.value.result)
   })
-  ws.on('error', reject)
-  ws.on('close', () => { reject(new Error('a page in the browser closed its connection before giving its text')) })
-  return promise.finally(() => {
-    clearTimeout(timer)
-    ws.terminate()
+  ws.on('close', () => { failAll(ended()) })
+  const send = (method: string, params: Record<string, unknown>) => new Promise<unknown>((resolve, reject) => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      reject(ended())
+      return
+    }
+    lastId += 1
+    waiting.set(lastId, { resolve, reject })
+    ws.send(JSON.stringify({ id: lastId, method, params }))
+  })
+  return new Promise((resolve, reject) => {
+    ws.once('open', () => { resolve({ send, close: () => { ws.terminate() } }) })
+    ws.on('error', (error) => {
+      reject(signal.aborted ? ended() : error)
+      failAll(error)
+    })
   })
 }
 
+// The address, titles, rendered text and field values of one page or frame,
+// with every frame its process runs and every shadow root in it.
+async function pageText(debuggerUrl: string): Promise<string[]> {
+  const page = await devtools(debuggerUrl, AbortSignal.timeout(READ_WAIT_MS))
+  try {
+    const { root } = DocumentReply.parse(await page.send('DOM.getDocument', { depth: -1, pierce: true }))
+    const read = async (nodeId: number): Promise<string[]> => {
+      const { object } = Resolved.parse(await page.send('DOM.resolveNode', { nodeId }))
+      const called = Called.parse(await page.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: ROOT_TEXT, returnByValue: true }))
+      if ('exceptionDetails' in called) throw new Error(`reading a page in the browser failed: ${called.exceptionDetails.text}`)
+      return called.result.value
+    }
+    return (await Promise.all(rootsIn(root).map(read))).flat()
+  } finally {
+    page.close()
+  }
+}
+
+// Rendered text collapses each run of whitespace, so a value split over lines,
+// such as a key shown in a div, shows with spaces. Both sides collapse the same
+// way before they compare.
+const collapsed = (text: string) => text.replace(/\s+/g, ' ').trim()
+
 // The names of the secrets that any page open in the browser shows now.
 export async function secretsShown(cdpUrl: string, secrets: [name: string, value: string][]): Promise<string[]> {
-  if (secrets.length === 0) return []
+  // A value that is mostly whitespace would match nearly any page once collapsed.
+  const sought = secrets.map(([name, value]) => [name, collapsed(value)] as const).filter(([, value]) => value.length >= MIN_SECRET_LENGTH)
+  if (sought.length === 0) return []
   const listed = await fetch(`${cdpUrl}/json/list`, { signal: AbortSignal.timeout(READ_WAIT_MS) })
   if (!listed.ok) throw new Error(`the browser answered ${listed.status} for its list of pages`)
   // Every address is checked before any connection opens, so a failure here
@@ -76,6 +150,6 @@ export async function secretsShown(cdpUrl: string, secrets: [name: string, value
     if (target.webSocketDebuggerUrl === undefined) throw new Error(`the browser offers no connection to one of its ${target.type}s`)
     return target.webSocketDebuggerUrl
   })
-  const texts = await Promise.all(addresses.map(pageText))
-  return [...new Set(secrets.filter(([, value]) => texts.some((text) => text.includes(value))).map(([name]) => name))]
+  const texts = (await Promise.all(addresses.map(pageText))).flat().map(collapsed)
+  return [...new Set(sought.filter(([, value]) => texts.some((text) => text.includes(value))).map(([name]) => name))]
 }
