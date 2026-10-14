@@ -209,8 +209,9 @@ async function runEngine(engine: string, taskId: string, sessionId: string, inst
     // The screenshot the agent saved, as an image document.
     await page.goto(`/#/t/${taskId}`)
     await page.locator('.artifacts').getByRole('button', { name: 'agents-check-page.png' }).click()
-    check(await visible(page, 'aside.panel img.document-image', 15) && await page.locator('aside.panel img.document-image')
-      .evaluate((img) => img instanceof HTMLImageElement && img.complete && img.naturalWidth === 1280), `${engine}: the saved screenshot opens as an image document`)
+    // The element shows before its bytes arrive, so this waits for the whole image.
+    check(await visible(page, 'aside.panel img.document-image', 15) && await within(15, () => page.locator('aside.panel img.document-image')
+      .evaluate((img) => img instanceof HTMLImageElement && img.complete && img.naturalWidth === 1280)), `${engine}: the saved screenshot opens as an image document`)
     await page.screenshot({ path: join(SHOTS, `${engine}-image-document-light.png`) })
     check(await serious(page) === 0, `${engine}: the image document has no serious accessibility problems`)
 
