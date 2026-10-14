@@ -82,7 +82,8 @@ export async function readShape(state: ReadyState, table: string): Promise<Shape
       handle = res.headers.get('electric-handle')
       continue
     }
-    if (res.status !== 200) return { ok: false, why: `the ${table} shape answered ${String(res.status)}: ${text.slice(0, 200)}` }
+    // The status only: the answer's text is the server's, and a check's detail holds the tool's own words.
+    if (res.status !== 200) return { ok: false, why: `the ${table} shape answered ${String(res.status)}` }
     const messages = z.array(ShapeMessage).safeParse(safeJson(text))
     if (!messages.success) return { ok: false, why: `the ${table} shape is not a list of messages: ${messages.error.message}` }
     for (const message of messages.data) {
