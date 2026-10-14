@@ -75,7 +75,7 @@ async function pollRepo(repo: PolledRepo): Promise<number> {
       console.log(`${path}#${issue.number} no longer has ${event.label}, so no run starts`)
       continue
     }
-    const report = { ...reportFromIssue(issue), issue: issue.number, url: issue.html_url, author: issue.user?.login }
+    const report = { ...(await reportFromIssue(issue)), issue: issue.number, url: issue.html_url, author: issue.user?.login }
     started += (await startIssueRuns(repo, { action: 'label_updated', number: issue.number, labels: [event.label], report, sender: event.actor })).length
   }
   await pool.query('update repos set polled_at = $2 where id = $1', [repo.id, asked])

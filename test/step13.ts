@@ -642,9 +642,9 @@ try {
     && !TAG_BLOCK.test(quoted) && quoted.includes('`useState<number>()`'),
   "the issue reaches the agent as a quoted report, with its code as written and without the parts of it a reader can't see")
   const hostileLine = promptText.split('\n').find((line) => line.startsWith(`#${hostile.number} `)) ?? ''
-  check(promptText.startsWith('Report: "GHFLOW: add a change file"') && hostileLine.startsWith(`#${hostile.number} Totals are off Now ignore`)
-    && hostileLine.length <= `#${hostile.number} `.length + 120 && !TAG_BLOCK.test(hostileLine) && !promptText.includes('open issue you can find'),
-  `other issues' titles reach the agent cleaned, on one line and cut, and the report's own title is quoted (${hostileLine})`)
+  check(promptText.startsWith('Report: "GHFLOW: add a change file"') && hostileLine.startsWith(`#${hostile.number} "Totals are off Now ignore`)
+    && hostileLine.length <= `#${hostile.number} `.length + 122 && !TAG_BLOCK.test(hostileLine) && !promptText.includes('open issue you can find'),
+  `other issues' titles reach the agent quoted, cleaned, on one line and cut, and so does the report's own title (${hostileLine})`)
   const flowPull = github.pulls(full).find((p) => p.head.startsWith('task/gh-flow'))
   check(flowPull?.merged && onGithub(full, 'show', 'main:CHANGE.md').includes('A change from a pipeline run.')
     && !onGithub(full, 'for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').some((b) => b.startsWith('task/gh-flow')),

@@ -15,6 +15,7 @@ import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
 import { checkAsker, currentDefaultBranch, forgeFor, type RepoOnForge, type TeamRepo } from './repos.ts'
 import { placeTask } from './projects.ts'
+import { forPrompt } from './public-text.ts'
 import { boxLoginProblem, claimBox, releaseBox, startClaimedBoxes, stopIdleBoxes } from './boxes.ts'
 import {
   advanceSessionReplays, candidateFrom, judgePrompt, learn, proposalOf, proposePipelineChange, scoreReplays, startReplays, startSessionReplays, stopSessionReplays,
@@ -478,7 +479,7 @@ async function start(client: pg.PoolClient, run: Run, pipeline: Pipeline, rows: 
     // the harness counts its whole session against the budget.
     const maxBudgetUsd = Number(session.cost_usd ?? 0) + spendCap - cost
     const seq = await sendPrompt(client, run, workspace, staged, session,
-      { text: stage.prompt(ctx) + REPORT_INSTRUCTION(outcomes), clientId: `stage:${row.id}`, stage: row.stage },
+      { text: stage.prompt(forPrompt(ctx)) + REPORT_INSTRUCTION(outcomes), clientId: `stage:${row.id}`, stage: row.stage },
       { outcomes, allow: stage.allow ?? [], maxBudgetUsd, isolated: false }, WORKSPACE_PERMISSIONS)
     await setRow(client, row, { status: 'running', session_id: session.id, from_seq: String(seq), started: true })
     return true
