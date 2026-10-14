@@ -72,11 +72,12 @@ export const AgentPlugin = z.discriminatedUnion('kind', [
 ])
 export type AgentPlugin = z.infer<typeof AgentPlugin>
 
-// A pipeline stage's session: the outcomes its report_result tool accepts, and
-// the tools it may use without asking. The server still sends the budget here
-// too, where daemons before the payload's own maxBudgetUsd read it, so none of
-// them runs a stage uncapped. Drop it once every daemon reads the payload's.
-export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number().optional() })
+// A pipeline stage's session: the outcomes its report_result tool accepts, the
+// tools it may use without asking, and the most it may spend. The budget is
+// required, so a stage payload without one fails the daemon's parse instead of
+// starting Claude with no cap. The server sends it here too, where daemons
+// before the payload's own maxBudgetUsd read it.
+export const StageSpec = z.object({ outcomes: z.array(z.string()), allow: z.array(z.string()), maxBudgetUsd: z.number() })
 export type StageSpec = z.infer<typeof StageSpec>
 
 // What a daemon needs to hand a person's message to an agent's harness.

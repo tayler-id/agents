@@ -3,8 +3,10 @@
 // restarts. At the fourth, recovery fails the turn with the reason instead of
 // resuming it again, so a turn can't keep a machine restarting forever. A message
 // an older API queued, with no permissions, fails with the reason the daemon could
-// not read it, and starts no Claude. The person's next message starts a turn that
-// ends. It shares ports with step18c and step18h, which the suite runs before it.
+// not read it, and starts no Claude. So does a stage's message with no budget,
+// which would run Claude with no spend cap. The person's next message starts a
+// turn that ends. It shares ports with step18c and step18h, which the suite runs
+// before it.
 //   node --env-file=.env --env-file=.env.test test/step18l.ts
 
 import { randomBytes } from 'node:crypto'
@@ -90,6 +92,20 @@ try {
   c.check(/could not read the message.*at permissions/s.test(String(unreadable.error)) && shown?.text === unreadable.error
     && fakeLog(folder, 'starts').length === RESUMES + 1,
   'a message with no permissions fails with the reason it could not be read, in its command and the record, and starts no Claude')
+
+  // A stage's message with no budget is refused the same way, since Claude would run
+  // with no spend cap. Its stage is otherwise valid, and the message has no budget of its own.
+  const { id: uncappedId } = await c.row(
+    `insert into commands (team_id, instance_id, session_id, kind, payload)
+     select team_id, instance_id, session_id, kind, (payload - 'maxBudgetUsd') || '{"stage": {"outcomes": ["done"], "allow": []}}'::jsonb
+     from commands where id = $1 returning id`, [loopId])
+  await until('the stage message with no budget to fail or start Claude', 60, async () =>
+    (await c.row('select status from commands where id = $1', [uncappedId]))?.status === 'failed' || fakeLog(folder, 'starts').length > RESUMES + 1)
+  const uncapped = await c.row('select error from commands where id = $1', [uncappedId])
+  const refusal = await c.row(`select text from events where session_id = $1 and kind = 'error' order by seq desc limit 1`, [sessionId])
+  c.check(/could not read the message.*at stage\.maxBudgetUsd/s.test(String(uncapped.error)) && refusal?.text === uncapped.error
+    && fakeLog(folder, 'starts').length === RESUMES + 1,
+  'a stage message with no budget fails with the reason it could not be read, in its command and the record, and starts no Claude')
 
   await say(`/v1/conversations/${conversationId}/messages`, { text: 'GREET me.' })
   await until('the next turn to end', TURN_SECONDS, async () =>
