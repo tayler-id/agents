@@ -221,31 +221,60 @@ async function addedLines(repo: string, commit: Sha): Promise<Added[]> {
 const secretsIn = (text: string) => PATTERNS.filter(([, pattern]) => text.search(pattern) !== -1).map(([kind]) => kind)
 const NO_REPLY = /@users\.noreply\.github\.com$|^noreply@/
 
-// Secrets, personal details and old names in each new commit, by where they are
-// and what they are, never by the value.
-export async function commitProblems(repo: string, main: Sha, commits: readonly Sha[]): Promise<string[]> {
+// What the scan finds in a text, by kind and never by value, and the email git is configured with.
+async function scanner(repo: string) {
   const email = await configuredEmail(repo)
   const personal = [{ kind: 'this Mac\'s home folder', text: homedir() }, ...(email ? [{ kind: 'the email git is configured with here', text: email }] : [])]
-  const problems: string[] = []
-  const look = (commit: Sha, at: string, text: string) => {
-    for (const kind of secretsIn(text)) problems.push(`${short(commit)} ${at}: matches the ${kind} secret pattern`)
-    for (const detail of personal) if (text.includes(detail.text)) problems.push(`${short(commit)} ${at}: holds ${detail.kind}`)
+  return {
+    email,
+    found: (text: string) => [...secretsIn(text).map((kind) => `matches the ${kind} secret pattern`), ...personal.filter((detail) => text.includes(detail.text)).map((detail) => `holds ${detail.kind}`)],
   }
-  for (const commit of commits) {
-    const parts = await commitParts(repo, commit)
-    look(commit, 'its message', parts.message)
-    for (const person of [parts.author, parts.committer]) {
-      if (person.email !== email && !NO_REPLY.test(person.email)) problems.push(`${short(commit)} its author or committer: an email that is neither the one configured here nor a no-reply address`)
-    }
-    for (const added of await addedLines(repo, commit)) look(commit, `${added.path}:${added.line}`, added.text)
-  }
-  return [...problems, ...await namesIn(repo, main, commits)]
 }
 
-// main's name guard, run on each new commit's files and message in a throwaway
-// worktree. It is main's copy of the guard, never the branch's, which an agent could edit.
-async function namesIn(repo: string, main: Sha, commits: readonly Sha[]): Promise<string[]> {
-  const first = commits[0]
+// Text that goes public without being in a commit: the pull request's message,
+// regression line and reviews, and the merge commit's message. at says where the
+// text is, such as "review 2".
+export type PublicText = { at: string, text: string }
+
+// Secrets, personal details and old names in what would go public: each new commit,
+// and the text that becomes the pull request or the merge commit. Each problem says
+// where it is and what it is, never the value.
+export async function publicProblems(repo: string, main: Sha, commits: readonly Sha[], texts: readonly PublicText[]): Promise<string[]> {
+  const scan = await scanner(repo)
+  const problems: string[] = []
+  const probes: Probe[] = []
+  for (const commit of commits) {
+    const parts = await commitParts(repo, commit)
+    for (const what of scan.found(parts.message)) problems.push(`${short(commit)} its message: ${what}`)
+    for (const person of [parts.author, parts.committer]) {
+      if (person.email !== scan.email && !NO_REPLY.test(person.email)) problems.push(`${short(commit)} its author or committer: an email that is neither the one configured here nor a no-reply address`)
+    }
+    for (const added of await addedLines(repo, commit)) {
+      for (const what of scan.found(added.text)) problems.push(`${short(commit)} ${added.path}:${added.line}: ${what}`)
+    }
+    probes.push({ commit, text: `${parts.author.name}\n${parts.committer.name}\n${parts.message}`, textAt: `${short(commit)} its message`, filesAt: short(commit) })
+  }
+  for (const { at, text } of texts) {
+    for (const what of scan.found(text)) problems.push(`${at}: ${what}`)
+    probes.push({ commit: main, text, textAt: at, filesAt: null })
+  }
+  return [...problems, ...await namesIn(repo, main, probes)]
+}
+
+// What main's name guard is run on: the files of a commit, and a text in the message file.
+type Probe = {
+  commit: Sha
+  // The text the guard reads from the message file, and what a hit in it is called.
+  text: string
+  textAt: string
+  // What a hit in one of the commit's files is called, or null when only the text matters.
+  filesAt: string | null
+}
+
+// main's name guard, run on each probe in a throwaway worktree. It is main's copy of
+// the guard, never the branch's, which an agent could edit.
+async function namesIn(repo: string, main: Sha, probes: readonly Probe[]): Promise<string[]> {
+  const first = probes[0]
   if (first === undefined) return []
   const guard = await gitRun(repo, ['show', `${main}:${NAME_GUARD}`])
   if (guard.code !== 0) throw new Error(`main has no ${NAME_GUARD} to run on the commits`)
@@ -253,17 +282,19 @@ async function namesIn(repo: string, main: Sha, commits: readonly Sha[]): Promis
   const tree = join(dir, 'tree')
   const problems: string[] = []
   try {
-    await git(repo, ['worktree', 'add', '--detach', '--quiet', tree, first])
-    for (const commit of commits) {
-      await git(tree, ['checkout', '--detach', '--force', '--quiet', commit])
-      const parts = await commitParts(repo, commit)
+    await git(repo, ['worktree', 'add', '--detach', '--quiet', tree, first.commit])
+    for (const probe of probes) {
+      await git(tree, ['checkout', '--detach', '--force', '--quiet', probe.commit])
       mkdirSync(dirname(join(tree, NAME_GUARD)), { recursive: true })
       writeFileSync(join(tree, NAME_GUARD), guard.stdout)
-      writeFileSync(join(tree, MESSAGE_FILE), `${parts.author.name}\n${parts.committer.name}\n${parts.message}`)
+      writeFileSync(join(tree, MESSAGE_FILE), probe.text)
       const ran = await run(process.execPath, [NAME_GUARD], tree, NAME_GUARD_TIMEOUT_MS, childEnv())
       const hits = [...`${ran.stdout}\n${ran.stderr}`.matchAll(/^(.+?):(\d+) (.+?): /gm)]
-      if (ran.code !== 0 && !hits.length) throw new Error(`main's ${NAME_GUARD} exited ${ran.code} on ${short(commit)}: ${ran.stderr.trim()}`)
-      for (const [, file = '', line = '', what = ''] of hits) problems.push(`${short(commit)} ${file === MESSAGE_FILE ? 'its message' : `${file}:${line}`}: uses ${what}`)
+      if (ran.code !== 0 && !hits.length) throw new Error(`main's ${NAME_GUARD} exited ${ran.code} on ${probe.textAt}: ${ran.stderr.trim()}`)
+      for (const [, file = '', line = '', what = ''] of hits) {
+        if (file === MESSAGE_FILE) problems.push(`${probe.textAt}: uses ${what}`)
+        else if (probe.filesAt !== null) problems.push(`${probe.filesAt} ${file}:${line}: uses ${what}`)
+      }
       rmSync(join(tree, MESSAGE_FILE))
     }
   } finally {
@@ -295,6 +326,14 @@ function bodyOf(entry: { message: string, reviews: readonly string[], regression
     `Checks at ${short(tip)}`, ...(latest.size ? [...latest.values()].map((c) => `- ${c.step}: ${c.passed} passed, ${c.failed} failed, ${c.result}`) : ['- none recorded']),
   ].join('\n')
 }
+
+// The text of the pull request that comes from the ledger: the message, which is also
+// its title, the regression line and each review.
+const textsOf = (notes: { message: string, regression: string | null, reviews: readonly string[] }): PublicText[] => [
+  { at: 'the pull request message', text: notes.message },
+  ...(notes.regression === null ? [] : [{ at: 'the regression line', text: notes.regression }]),
+  ...notes.reviews.map((text, i) => ({ at: `review ${i + 1}`, text })),
+]
 
 export type Notes = { message: string | undefined, reviews: readonly string[], regression: string | undefined, approve: readonly string[] }
 
@@ -331,8 +370,8 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
   if (isReport(plan)) return plan
   const commits = (await git(plan.repo.main, ['rev-list', '--reverse', `${plan.main}..${plan.tip}`])).split('\n').filter((line) => line !== '').map((id) => Sha.parse(id))
   const judged = await gates(plan.repo, plan.policy, plan.main, plan.base, plan.tip, new Set(plan.merged.approved))
-  const problems = [...judged.problems, ...await commitProblems(plan.repo.main, plan.main, commits)]
-  if (problems.length) return { code: 3, lines: [`refused: submit ${name}: ${plural(problems.length, 'problem')} in its ${plural(commits.length, 'new commit')}. Nothing changed.`, ...listed(problems)] }
+  const problems = [...judged.problems, ...await publicProblems(plan.repo.main, plan.main, commits, textsOf(plan.merged))]
+  if (problems.length) return { code: 3, lines: [`refused: submit ${name}: ${plural(problems.length, 'problem')} in what it would publish. Nothing changed.`, ...listed(problems)] }
   if (judged.unapproved.length) return { code: 3, lines: [`refused: submit ${name}: these need Tayler's approval. Nothing changed.`, ...listed(judged.unapproved), `next: once Tayler approves, submit ${name} --approve <path> for each`] }
   const copy = await copyOf(plan.repo.main, plan.tip)
   const pushed = await gitRun(plan.repo.main, ['push', GITHUB, `${copy}:refs/heads/${name}`])

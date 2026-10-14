@@ -13,7 +13,7 @@ import type { Policy } from '../../shared/policy.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRef, Sha, short, uncommitted, worktreeList } from './git.ts'
 import { MAIN_BRANCH, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { BUILD_LIMIT_SEC, describe, envFilesOf, lockWaitOf, logsOf, record, resultOf, runLockOf, runLogged, withRunLock, type Outcome } from './checks.ts'
-import { gates, listed, mirrorMain, withNotes } from './github.ts'
+import { gates, listed, mirrorMain, publicProblems, withNotes } from './github.ts'
 import { failed, findReady, isReport, mainCommit, MAIN, ok, onBranch, openRepo, plural, policyAt, refsOf, refused, replace, worktreeRoot, type Report } from './repo.ts'
 import { npmCi } from './worktrees.ts'
 
@@ -62,6 +62,10 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
   const judged = await gates(await openRepo(cwd), plan.policy, plan.mainSha, plan.base, plan.tip, new Set(plan.approved))
   if (judged.problems.length) return { code: 3, lines: [`refused: land ${name}: the gates found ${plural(judged.problems.length, 'problem')}. Nothing changed.`, ...listed(judged.problems)] }
   if (judged.unapproved.length) return { code: 3, lines: [`refused: land ${name}: these need Tayler's approval. Nothing changed.`, ...listed(judged.unapproved), `next: once Tayler approves, land ${name} --approve <path> for each`] }
+  // submit scanned this text, but the ledger could hold a message it never saw, and the
+  // merge message goes to main, then to GitHub.
+  const wording = await publicProblems(plan.main, plan.mainSha, [], [{ at: 'the merge message', text: plan.message }])
+  if (wording.length) return { code: 3, lines: [`refused: land ${name}: ${plural(wording.length, 'problem')} in the merge message. Nothing changed.`, ...listed(wording)] }
   const verdict = await withRunLock(runLockOf(ledgerFile), lockWaitOf(plan.policy), async (running) => {
     const log = (label: string) => join(logsOf(ledgerFile, name), `${stampOf(new Date())}-land-${label}.log`)
     const keep = (step: string, head: Sha, outcome: Outcome, passed: number, failedCount: number, at: Date) => record(ledgerFile, plan.main, name,

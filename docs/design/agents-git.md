@@ -20,7 +20,7 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 | `save <name>` | Stores the worktree's uncommitted and untracked files as a commit at `refs/agents-git/<name>/save-<time>`, built in a copy of the index, so the branch, the files and the index stay as they are. | |
 | `sync <name>` | Rebases the branch onto local `main` and records the new base. On a conflict it stops and names the files, and leaves the worktree as git left it. | Uncommitted files, a rebase or merge already part way through |
 | `check <name> <step...>` | Runs each `test/step<step>.ts` under the run lock, as the next section says, and records its counts in the ledger. | Uncommitted files, a linked `node_modules`, a missing step, missing env files |
-| `submit <name>` | Scans the new commits, copies them onto GitHub's history, pushes them as branch `<name>` without force, and opens or updates the pull request. | Anything a gate or scan below finds, a protected path Tayler hasn't approved |
+| `submit <name>` | Scans the new commits and the text of the pull request, which is `--message`, `--regression` and each `--review`. Then copies the commits onto GitHub's history, pushes them as branch `<name>` without force, and opens or updates the pull request. | Anything a gate or scan below finds, a protected path Tayler hasn't approved |
 | `land <name>` | Runs every landing gate, merges in a throwaway worktree, runs the full suite there, fast-forwards local `main` and mirrors it to GitHub. Restarts nothing. | A branch never submitted or changed since, no review noted, a gate that fails, a changed check that passes on main, a red suite |
 
 ### How check runs a step
@@ -34,7 +34,7 @@ The first line of every result says how it went: `ok:`, `preview:`, `refused:` o
 ### How land lands
 
 1. It refuses a branch that was never submitted, or that changed since, so every commit it lands was scanned. It refuses until a review is noted with `submit --review`.
-2. It runs the coding framework's static gates again on main as it is now, so a migration number another branch took since submit is refused.
+2. It runs the coding framework's static gates again on main as it is now, so a migration number another branch took since submit is refused. It scans the merge message, the ledger's message with its regression line first, the way submit scans the pull request's text, since the ledger could hold one submit never saw.
 3. Under the run lock it makes a worktree of main at `<main checkout>-worktrees/.land-<name>`, links main's `.env` files into it, runs `npm ci`, and runs each check the branch adds or edits on main's code. One that passes there is refused, since it guards nothing yet.
 4. It merges the branch there, with the ledger's message, its regression line first, and keeps the merge at `refs/agents-git/<name>/land`. Then it runs the policy's suite, `npm run check`, under the policy's two hours.
 5. Only on green, and only if main and the branch haven't moved, it fast-forwards main. The main checkout is where the live app runs from, so its files move with main, as when the coordinator merged there. Nothing running is restarted.
@@ -70,11 +70,11 @@ From `AGENTS.md` on main at `b2aa8b5`.
 |---|---|---|
 | A change that takes something away says so in its first line | `submit --regression` puts it first in the pull request, and `land` first in the merge message | Whether a change is a regression is a judgment no command can make |
 | Read the standards, decisions and parts doc first | | Reading can't be checked |
-| Names: the product is Agents, and no studied or reference names | `submit` runs main's `test/names.ts` on every new commit and its message, and land's suite runs it again | |
+| Names: the product is Agents, and no studied or reference names | `submit` runs main's `test/names.ts` on every new commit and its message and on the pull request's text, `land` runs it on the merge message, and land's suite runs it again | |
 | Don't restart, edit or install the `com.agents.*` services | `land` restarts nothing, and no command runs `launchctl` | An agent's own shell can, until a hook blocks it |
 | Checks use `agents_test` through `.env` then `.env.test` | `check` and `land` run every step with main's two files, in that order, by absolute path | Connecting to the live database another way |
 | Don't change Tailscale, or remove Docker things you didn't make, or publish pipelines to the real forge | | No command does these, so there is nothing to refuse |
-| Never write a secret to a commit | `submit` checks every new commit's added lines and message against the `shared/scrub.ts` patterns, and runs the framework's secrets gate on the diff | Postgres, logs and the record are the scrubber's, not agents-git's |
+| Never write a secret to a commit | `submit` checks every new commit's added lines and message, and the pull request's message, regression line and reviews, against the `shared/scrub.ts` patterns, and runs the framework's secrets gate on the diff. `land` checks the merge message. A finding names its kind and where it is, never the value | Postgres, logs and the record are the scrubber's, not agents-git's |
 | Describe a schema change in `docs/data-model.md`, and never edit a migration | The framework's migrations gate at `submit` and `land` | |
 | Get a migration's number from the coordinator, since numbers follow landing order | `land` runs the gate on main as it is then, so a number taken since submit is refused | |
 | Prefix your teams and delete them | | Teams live in the test database, which agents-git doesn't read |

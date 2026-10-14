@@ -523,6 +523,19 @@ try {
   check(run.out.includes('.gitignore changed, and agents never edit .gitignore') && run.out.includes('adds the check script check:step9'), 'submit refuses an edit to .gitignore and a new check script')
   check(!git(main, 'ls-remote', github).includes('refs/heads/mu') && gh().calls.length === 0, 'a refused submit pushes nothing and opens no pull request')
 
+  // The pull request's text and the merge message go public too, so they are scanned the same way.
+  cli(['start', 'tau', '--note', 'step22 tau'])
+  const tau = join(root, 'tau')
+  commitFile(tau, 'tau.md', 'tau work\n')
+  commitFile(tau, 'docs/build-log.md', '# Build log\n\n## Tau\n\nAdded tau.\n')
+  run = cli(['submit', 'tau', '--message', `Add tau ${token} and the old ${['grokb', 'ot'].join('')}`, '--regression', `drops ${homedir()}/notes`, '--review', 'second model: written up by step22@example.com'])
+  check(run.code === 3 && run.out.includes('the pull request message: matches the github secret pattern'), 'submit refuses a pull request message that holds a secret')
+  check(run.out.includes('the pull request message: uses the studied app'), "submit runs main's name guard on the pull request message")
+  check(run.out.includes(`the regression line: holds this Mac's home folder`), "submit refuses a regression line that names this Mac's home folder")
+  check(run.out.includes('review 1: holds the email git is configured with here'), 'submit refuses a review that holds the personal email')
+  check(!run.out.includes(token) && !run.out.includes(homedir()) && !run.out.includes('step22@example.com'), 'and it names the kind of each finding, never the value')
+  check(!git(main, 'ls-remote', github).includes('refs/heads/tau') && gh().calls.length === 0 && entry('tau').message === null && entry('tau').reviews.length === 0, 'a refused pull request text pushes nothing, opens nothing and is kept nowhere')
+
   // submit, then land, with every gate in the way once.
   run = cli(['land', 'lambda'])
   check(run.code === 3 && run.first.includes('it was never submitted'), 'land refuses a branch that was never submitted, so its commits were never scanned')
@@ -561,6 +574,8 @@ try {
   git(main, 'update-ref', 'refs/mirror/github-pushed', githubRoot)
   run = cli(['submit', 'lambda', '--approve', 'server/migrations/0003_lambda.sql'])
   check(run.code === 0 && isAncestor(firstCopy, git(main, 'ls-remote', github, 'refs/heads/lambda').split('\t')[0] ?? '', github), `submit pushes the new commit on top of the copy before, never forced (${run.first})`)
+  run = cli(['submit', 'tau', '--message', 'Add tau', '--review', 'second model: fine'])
+  check(run.code === 0 && gh().pulls.some((p: any) => p.head === 'tau' && p.title === 'Add tau'), `the same branch submits once its text is clean (${run.first})`)
 
   cli(['start', 'xi', '--note', 'step22 xi'])
   const xi = join(root, 'xi')
@@ -595,6 +610,15 @@ try {
   const mainBefore = commit('refs/heads/main') ?? ''
   const finalTip = commit('refs/heads/lambda') ?? ''
   const finalCopy = git(main, 'ls-remote', github, 'refs/heads/lambda').split('\t')[0] ?? ''
+  // submit scanned the message, but a ledger could hold one it never saw.
+  const untampered = readFileSync(ledgerFile, 'utf8')
+  const tampered = JSON.parse(untampered)
+  tampered.worktrees.find((e: any) => e.name === 'lambda').message = `Add lambda ${token}`
+  writeFileSync(ledgerFile, `${JSON.stringify(tampered, null, 2)}\n`)
+  run = cli(['land', 'lambda'])
+  check(run.code === 3 && run.out.includes('the merge message: matches the github secret pattern') && !run.out.includes(token), 'land refuses a merge message that holds a secret, and never prints it')
+  check(commit('refs/heads/main') === mainBefore && !commit('refs/agents-git/lambda/land') && !existsSync(join(root, '.land-lambda')) && !existsSync(runLock), 'and it refuses before it makes a worktree or a merge')
+  writeFileSync(ledgerFile, untampered)
   run = cli(['land', 'lambda'])
   const merge = commit('refs/heads/main') ?? ''
   check(run.code === 0 && run.first.startsWith('ok: landed lambda as'), `land lands a branch that passes every gate (${run.first})`)
