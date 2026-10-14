@@ -8,7 +8,7 @@ A daemon built before this branch breaks against its API, and a new daemon break
 
 ## Setup
 
-- Worktree `.claude/worktrees/agent-a9a4a2cfdabcacc5b`, branch `worktree-agent-a9a4a2cfdabcacc5b`, rebased onto main at `94cd4b1`.
+- Worktree `.claude/worktrees/agent-a9a4a2cfdabcacc5b`, branch `worktree-agent-a9a4a2cfdabcacc5b`, rebased onto main at `7197f4b`, the work layer merge.
 - `.env` and `.env.test` are copies of main's. Packages come from `npm ci` in the worktree.
 - Run Node from `~/.local/node/bin`. Never start the API without `AGENTS_STREAMS_DIR`, or it opens the live system's streams folder, and give it an `AGENTS_PEOPLE_SOCKET` in a folder only you can write.
 - Checks: `test/step18a.ts` to `test/step18l.ts`, helpers in `test/crash.ts`, teams prefixed `dur-`. People reach each check's API through `servePeople` from `test/people.ts`, which the check closes when it ends. The helpers never import product code, so the checks also run against main.
@@ -20,7 +20,7 @@ A daemon built before this branch breaks against its API, and a new daemon break
 
 ## Proven
 
-The branch runs are on `a22cac0`, rebased onto main at `94cd4b1`, on 2026-10-14. The main runs are on `360c16e`, whose product code `94cd4b1` keeps as it was. The break tests ran on the branch before its last change, which closes a turn's asks only when a batch finishes its messages, apart from the two that guard that change and recovery's limit to the cut-off turn's asks, which ran on it.
+The branch runs are on the code of `783e04b`, rebased onto main at `7197f4b`, on 2026-10-14. The main runs are on `360c16e`, before the work layer merge. The break tests ran on the branch before its last change, which closes a turn's asks only when a batch finishes its messages, apart from the two that guard that change and recovery's limit to the cut-off turn's asks, which ran on it.
 
 | Check | On the branch | On main | Break test, red then green |
 |---|---|---|---|
@@ -28,7 +28,7 @@ The branch runs are on `a22cac0`, rebased onto main at `94cd4b1`, on 2026-10-14.
 | step18b, a tool acts before its result is saved, only the daemon dies, an interrupt during an outage, SIGTERM mid-turn | passes, 33 assertions | times out waiting for the resumed turn | the continuation drops in-flight calls; recovery ignores a waiting interrupt; shutdown stops a busy session |
 | step18c, an approval waits through a restart | passes, 18 | times out waiting for the resumed turn | a new request can't take over an ended ask |
 | step18d, a box replaced on the same volume | passes, 14 | never shows the session lost | the daemon skips resuming |
-| step18e, clients and the app in a browser, for a DM and a task | passes, 20 | never shows the session lost | the watchdog does nothing; the task page has no lost line and shows the continuation |
+| step18e, clients and the app in a browser, for a DM and a task | passes, 21 | never shows the session lost | the watchdog does nothing; the task page has no lost line and shows the continuation; the pull request guard on the working statuses only |
 | step18f, a restart for a new setup fails | passes, 7 | shows the session idle | the restart's detach removed |
 | step18g, real Claude folds a follow-up into the running turn | passes, 7 | the same process keeps answering | a result ends only the first message |
 | step18h, an approval never outlives its turn, including an allow an interrupt left undelivered | passes, 14 | the card stays open, and a late allow gets 200 | a kept decision does not expire with its turn; recovery reads asks from earlier turns |
@@ -39,14 +39,16 @@ The branch runs are on `a22cac0`, rebased onto main at `94cd4b1`, on 2026-10-14.
 
 step18d failed once in 5 runs after the rebase onto `360c16e`, on its last assertion: the replaced box still showed `stale` right after the resumed turn ended, and its new container's heartbeat never reached the record in that run. The cause is not found. The check now waits up to 20 seconds, one heartbeat and a margin, for the box to show online, and passed in the break test's green run.
 
-Main's checks pass on the branch rebased onto `94cd4b1`: step1, step2, step3, step4a, step4b, step4c, step4d, step5, step6, step6b, step7, step8, step9, step9b, step10, step10b, step12, step12b and step19. step9b failed once with its people port 7981 taken by another process, and passed when run again. step12c passed as a copy that builds `agents-box:dur-12c`, since it builds a fixed `agents-box:onboard-check` tag that another workstream uses. step2b checks the live server's ports and was not run.
+Before the work layer merge, main's checks passed on the branch rebased onto `94cd4b1`: step1, step2, step3, step4a, step4b, step4c, step4d, step5, step6, step6b, step7, step8, step9, step9b, step10, step10b, step12, step12b and step19. step9b failed once with its people port 7981 taken by another process, and passed when run again. step12c passed as a copy that builds `agents-box:dur-12c`, since it builds a fixed `agents-box:onboard-check` tag that another workstream uses. step2b checks the live server's ports and was not run.
 
 Main's daemon at `360c16e`, run against this branch's API with the fake Claude, looped on the requeue route while its machine showed online, and, already running when the API restarted onto this branch, failed its message with the 400. This branch's daemon looped on recover against main's API.
 
 ## Not done
 
 - The gaps in `docs/design/durability.md` under "Not covered": tool commands that outlive a killed Claude on the Mac, lines lost between Claude and the record, a missing conversation, and a session whose machine is gone for good.
-- No check covers a fence that can't stop the last run's Claude, or a resumed session the daemon can't read.
+- No check covers a fence that can't stop the last run's Claude, a resumed session the daemon can't read, or a resumed task session that waits for its workspace's setup.
+- A push the runner fails after 15 minutes keeps its command queued or claimed, so a machine that comes back later runs it, and the branch reaches the forge with no pull request. Main's requeue did the same. Failing the command with the push would close it.
+- A message queued or claimed under an API from before the work layer has no `permissions`, so the new daemon fails it with the reason instead of running or resuming it.
 - An exit batch that arrives late, after a newer process for the same session raised a card, still expires that card. Only a batch sent again is handled.
 - Box images must be rebuilt when this lands, in the order the design doc gives.
 
