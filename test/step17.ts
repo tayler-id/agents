@@ -41,6 +41,8 @@ const ROOT = new URL('..', import.meta.url).pathname
 const exec = promisify(execFile)
 const name = InstanceName.parse(`s17-${randomBytes(3).toString('hex')}`)
 const failures: string[] = []
+// How much of a failed command's own account the log keeps.
+const DETAIL_LINES = 8
 // Processes that must stop with down, gathered just before it.
 let started: Owned[] = []
 
@@ -62,7 +64,11 @@ async function ctl(args: string[], options: { instance?: boolean; env?: Record<s
     })
   const out = OUTPUT.safeParse(JSON.parse(result.stdout || 'null'))
   if (!out.success) throw new Error(`agentsctl ${args.join(' ')} printed no envelope (exit ${String(result.code)}): ${result.stdout.slice(0, 500)}`)
-  if (!out.data.ok) console.log(`      ${args.slice(0, 2).join(' ')}: ${out.data.head}`)
+  if (!out.data.ok) {
+    console.log(`      ${args.slice(0, 2).join(' ')}: ${out.data.head}`)
+    // The tool's own account of why, so a red check shows its cause without a rerun.
+    for (const line of out.data.detail.split('\n').filter(Boolean).slice(0, DETAIL_LINES)) console.log(`        ${line}`)
+  }
   return { code: result.code, out: out.data }
 }
 
