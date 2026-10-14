@@ -17,6 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { forgeAdmin, forgeConfig } from '../server/forge.ts'
 import { must } from './must.ts'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7851
@@ -133,8 +134,9 @@ try {
   writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
   children.push(spawn(process.execPath, ['--env-file=.env', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
-    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams'), AGENTS_REPLAYS: '2' },
+    env: { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: String(PORT + 1), AGENTS_STREAMS_DIR: join(home, 'streams'), AGENTS_REPLAYS: '2' },
   }))
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   await within(20, () => fetch(API).then(() => true, () => false))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],

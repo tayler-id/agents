@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
+import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 7805
@@ -49,7 +50,8 @@ try {
   const { agentId } = JSON.parse(node('server/admin.ts', 'add-agent', team, `res-agent-${id}`, `mac-${id}`, 'haiku', 'Reply in one word.'))
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step4d-')))
   mkdirSync(join(home, 'agents', agentId), { recursive: true })
-  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 100), AGENTS_STREAMS_PORT: '7806', AGENTS_STREAMS_DIR: join(home, 'streams') }
+  const env = { ...process.env, AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'), AGENTS_STREAMS_PORT: '7806', AGENTS_STREAMS_DIR: join(home, 'streams') }
+  await servePeople(PORT + 100, join(home, 'people.sock'))
   const startApi = () => {
     const api = spawn(process.execPath, ['server/api.ts'], { cwd: ROOT, env, stdio: ['ignore', 'ignore', 'inherit'] })
     children.push(api)

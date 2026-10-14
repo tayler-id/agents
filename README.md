@@ -17,8 +17,8 @@ On the server Mac, with Node 24 at `~/.local/node/bin` first on the PATH, colima
 ```sh
 colima start
 P=$(openssl rand -hex 16); S=$(openssl rand -hex 32)
-printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents\nELECTRIC_SECRET=%s\nAGENTS_API_PORT=7700\nAGENTS_HOOK_SECRET=%s\n' "$P" "$P" "$(openssl rand -hex 16)" "$S" > .env
-printf 'DATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents_test\nELECTRIC_URL=http://127.0.0.1:3002\n' "$P" > .env.test
+printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents\nELECTRIC_SECRET=%s\nAGENTS_API_PORT=7700\nAGENTS_PEOPLE_SOCKET=%s\nAGENTS_HOOK_SECRET=%s\n' "$P" "$P" "$(openssl rand -hex 16)" "$HOME/.agents-app/people.sock" "$S" > .env
+printf 'DATABASE_URL=postgres://agents:%s@127.0.0.1:5433/agents_test\nELECTRIC_URL=http://127.0.0.1:3002\nAGENTS_PEOPLE_SOCKET=\n' "$P" > .env.test
 docker compose up -d --wait postgres
 docker compose exec -T postgres createdb -U agents agents_test
 docker compose up -d --wait
@@ -48,10 +48,14 @@ Put it in place of the `provision: []` line in `~/.colima/default/colima.yaml`, 
 The server Mac is `agents-server` on the tailnet. The API is published to it with:
 
 ```sh
-tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 http://127.0.0.1:7710
+sudo /opt/homebrew/opt/tailscale/bin/tailscale --socket="$HOME/.agents-app/tailscale/tailscaled.sock" serve --bg --http=80 "unix:$HOME/.agents-app/people.sock"
 ```
 
-The API listens on two ports. People use 7710, which only tailscale serve points at, so a person's identity always comes from Tailscale. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
+Pointing serve at a Unix socket needs root, so `sudo` asks for your password.
+
+People reach the API only on the Unix socket in `AGENTS_PEOPLE_SOCKET`, which only tailscale serve points at. In userspace mode tailscaled hands a tailnet peer's connection for any other port to the same port on this Mac's loopback, where a TCP people port would let the peer name anyone, and a socket file is out of its reach. Machines use 7700 with their tokens, and that port refuses any person's identity. Docker containers can reach this Mac only on 7700, and on 7701 where checks run, because of the box firewall.
+
+The same forwarding makes every service on this Mac's loopback a tailnet service, so the tailnet policy must let peers reach the server only on TCP 80 and 7700. That includes tailscaled's own proxy on 1055, through which a peer would reach serve as this Mac and be taken for its owner, so a person's identity also rests on the policy. `docs/design/people-port.md` gives the rule, and `test/live-tailnet.ts` checks the filter the server enforces. It runs on its own, not in `npm run check`.
 
 A teammate installs Tailscale, accepts an invite to the tailnet, and opens `http://agents-server.<your-tailnet>.ts.net`, or the desktop app (`npm run desktop`, configured by `~/.agents-app/app.json`). Each teammate needs a row in `people` (`admin.ts add-person`).
 
@@ -86,4 +90,4 @@ npm run check            # typecheck, lint, then every check in test/
 npm run check -- 6 9     # typecheck, lint, then only those steps
 ```
 
-Checks run against their own database and Electric (`.env.test`), each with its own team, and remove what they made when they pass. Several use real Claude sessions. `test/step0.ts` checks that the coding standards are enforced.
+Checks run against their own database and Electric (`.env.test`), each with its own team, and remove what they made when they pass. `.env.test` empties `AGENTS_PEOPLE_SOCKET`, so an API a check starts without its own socket stops at once instead of taking the live one. Several use real Claude sessions. `test/step0.ts` checks that the coding standards are enforced.

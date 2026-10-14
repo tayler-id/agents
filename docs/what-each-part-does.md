@@ -68,6 +68,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 - **Solves now.** Teammates' machines and future boxes can reach the server Mac privately, without opening it to the internet. Serve tells the API the real login of each caller, so there is no login system to build.
 - **Helps later.** The access proxy uses the same login to decide what each person may read. Boxes join as tagged devices that use instance tokens.
+- **Watch for.** Tailscale runs in userspace mode here, and in that mode a tailnet connection to any port serve does not claim reaches the same port on this Mac's loopback. Every loopback service is a tailnet service unless the tailnet policy says otherwise, so the policy must let peers reach the server only on TCP 80 and 7700. The policy on 2026-10-13 still allows everything. `test/live-tailnet.ts` reads the filter the server enforces, and fails until the policy changes. No real peer has been tried, since no other device is on the tailnet.
 
 ### Launch agents (`ops/install-launch-agents.sh`)
 
@@ -87,7 +88,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### Two front doors (`server/api.ts`)
 
-- **Solves now.** People use port 7710, which only `tailscale serve` points at, so a person's identity always comes from Tailscale. Machines use 7700 with their tokens, and that port refuses any person's identity. A container on this Mac cannot pose as you.
+- **Solves now.** People reach the API only on a Unix socket, `AGENTS_PEOPLE_SOCKET`, which only `tailscale serve` points at. Tailscale in userspace mode hands a tailnet peer's connection for any port to the same port on this Mac's loopback, so a TCP people port would let any peer name anyone. A socket file is out of its reach, so a direct connection can never name a person. Tailscale's own proxy on 1055 still needs the tailnet policy to keep peers off it, since through it a peer would reach serve as this Mac and be taken for its owner. Machines use 7700 with their tokens, and that port refuses any person's identity. A container on this Mac cannot pose as you. `docs/design/people-port.md` has the reasons, `test/step19.ts` proves the API's side, and `test/live-tailnet.ts` checks the live server.
 - **Helps later.** Boxes, the forge's webhooks and other machines all come in through 7700.
 
 ### Asks (`asks` table, `server/record.ts`)

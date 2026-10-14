@@ -1,12 +1,16 @@
 // The server's one door. Writes go to Postgres through the record module, and
-// reads go through the sync proxy to Electric. It listens on loopback. Teammates
-// and boxes reach it through tailscale serve, which sets Tailscale-User-Login for
-// people. Instances send a bearer token instead.
+// reads go through the sync proxy to Electric. People reach it through tailscale
+// serve, which proxies to a Unix socket and sets Tailscale-User-Login. Machines,
+// boxes included, reach it on a loopback port with a bearer token instead.
 
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
-import { extname, normalize } from 'node:path'
+import { once } from 'node:events'
+import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
+import { connect, type Server } from 'node:net'
+import { userInfo } from 'node:os'
+import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { z } from 'zod'
 import { instanceFrom, personFrom } from './auth.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
@@ -115,9 +119,9 @@ function paramsOf(path: RegExp, pathname: string): Params {
   return [groups[0] ?? '', groups[1] ?? '', groups[2] ?? '']
 }
 
-// People reach the API through tailscale serve on one port. Machines, boxes
-// included, reach it on another with their tokens. Containers can reach this
-// Mac's loopback, so the machine port never accepts a person's identity.
+// People reach the API only through tailscale serve, on a Unix socket. Machines,
+// boxes included, reach it on a loopback port with their tokens. Containers and
+// tailnet peers can reach that port, so it never accepts a person's identity.
 export type Audience = 'people' | 'machines'
 
 // An agent reads the record from inside one of its sessions, which must be
@@ -514,9 +518,62 @@ async function migrateWhenReady(): Promise<string[]> {
 // How long a stopping API waits for the stream server to close before it exits anyway.
 const STOP_GRACE_MS = 5000
 
+// In userspace mode tailscaled hands a tailnet peer's connection to the same TCP
+// port on 127.0.0.1, but never to a socket file. So the one listener that trusts
+// Tailscale-User-Login is a socket, which only tailscale serve is pointed at.
+const PeopleSocket = z.string().startsWith('/')
+
+const hasCode = (error: unknown, code: string) => error instanceof Error && 'code' in error && error.code === code
+
+// Whether something accepts connections on the socket at this path.
+function accepts(path: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const probe = connect(path)
+    probe.once('connect', () => { probe.destroy(); resolve(true) })
+    probe.once('error', (error) => { if (hasCode(error, 'ECONNREFUSED')) resolve(false); else reject(error) })
+  })
+}
+
+// An API that stops without closing its socket leaves the file behind, and it
+// refuses connections. A socket that accepts them belongs to a running API, and
+// taking it over would send people to this one instead, so that stops this one.
+async function listenForPeople(server: Server, path: string) {
+  // On a new server the folder may not exist yet. Made here, only its owner can open it.
+  const folder = dirname(path)
+  await mkdir(folder, { recursive: true, mode: 0o700 })
+  // Another user who could write to the folder could put their own socket in its place.
+  const owner = await stat(folder)
+  if (owner.uid !== userInfo().uid || (owner.mode & 0o022) !== 0) {
+    throw new Error(`${folder} must belong to this user and be writable by no one else, since the people socket lives in it`)
+  }
+  const existing = await lstat(path).catch((error: unknown) => {
+    if (hasCode(error, 'ENOENT')) return null
+    throw error
+  })
+  if (existing && !existing.isSocket()) throw new Error(`${path} is not a socket, so the API will not replace it`)
+  if (existing && await accepts(path)) throw new Error(`another API already serves people on ${path}`)
+  if (existing) await rm(path)
+  // The socket file appears when listen binds, which it does before returning, so
+  // the umask keeps it private from its first moment. tailscaled runs as this user.
+  const umask = process.umask(0o077)
+  try {
+    server.listen(path)
+  } finally {
+    process.umask(umask)
+  }
+  await once(server, 'listening')
+  await chmod(path, 0o600)
+}
+
 if (import.meta.main) {
+  const people = PeopleSocket.safeParse(process.env.AGENTS_PEOPLE_SOCKET)
+  if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
+  // handle() catches every error itself, so its promise never rejects.
+  const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
+  await listenForPeople(createServer(serve('people')), people.data)
+  console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
@@ -527,10 +584,6 @@ if (import.meta.main) {
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   const machines = Number(process.env.AGENTS_API_PORT ?? 7700)
-  const people = Number(process.env.AGENTS_PEOPLE_PORT ?? 7710)
-  // handle() catches every error itself, so its promise never rejects.
-  const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
   createServer(serve('machines')).listen(machines, '127.0.0.1', () => { console.log(`machines on 127.0.0.1:${machines}`) })
-  createServer(serve('people')).listen(people, '127.0.0.1', () => { console.log(`people on 127.0.0.1:${people}`) })
   if (process.env.AGENTS_RUNNER !== 'off') runner = startRunner()
 }
