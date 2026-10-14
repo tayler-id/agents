@@ -10,7 +10,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { Policy } from '../../shared/policy.ts'
-import { run, short, uncommitted } from './git.ts'
+import { commitOf, run, short, uncommitted, type Sha } from './git.ts'
 import { childEnv, runGroup, stoppable, Stopped, type Group, type Running } from './group.ts'
 import { appHome, errorCode, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, quote, refused, replace, stampOf, type Report } from './repo.ts'
@@ -144,6 +144,16 @@ export async function record(ledgerFile: string, repo: string, name: Name, entry
   })
 }
 
+// What changed in the worktree since check read its commit and files, or null when nothing did.
+// A result is recorded against a commit, so it must belong to the commit the step ran on.
+// Files are read only before the first step, since a step may leave files of its own.
+async function changedSince(path: string, head: Sha, files: boolean): Promise<string | null> {
+  const now = await commitOf(path, 'HEAD')
+  if (now !== head) return `its commit moved from ${short(head)} to ${now ? short(now) : 'nothing'}`
+  const dirty = files ? await uncommitted(path) : 0
+  return dirty ? `it has ${plural(dirty, 'uncommitted file')} now` : null
+}
+
 export async function check(ledgerFile: string, cwd: string, name: Name, steps: readonly StepId[], limitSec: number | undefined, buildLimitSec: number | undefined): Promise<Report> {
   const plan = await withLedger(ledgerFile, `check ${name}`, async (ledger) => {
     const repo = await openRepo(cwd)
@@ -166,17 +176,24 @@ export async function check(ledgerFile: string, cwd: string, name: Name, steps: 
   })
   if (isReport(plan)) return plan
   const builds = buildLimitSec ?? BUILD_LIMIT_SEC
-  const lines = await withRunLock(runLockOf(ledgerFile), plan.waitMs, async (running) => {
+  const ran = await withRunLock(runLockOf(ledgerFile), plan.waitMs, async (running): Promise<Report | { id: StepId, outcome: Outcome }[]> => {
+    // The wait for the lock can be long, and the worktree is an agent's to change meanwhile.
+    const moved = await changedSince(plan.entry.path, plan.head, true)
+    if (moved) return refused(`check ${name}: ${moved} since check read it, so no step ran`, 'commit or set aside what changed, then check again')
     const out: { id: StepId, outcome: Outcome }[] = []
     for (const id of steps) {
       const at = new Date()
       const argv = [process.execPath, ...plan.envFiles.map((file) => `--env-file=${file}`), stepFile(id)]
       const outcome = await runLogged(running, ledgerFile, plan.entry.path, argv, plan.limitSec, builds, join(logsOf(ledgerFile, name), `${stampOf(at)}-step${id}.log`))
+      const after = await changedSince(plan.entry.path, plan.head, false)
+      if (after) return failed(`check ${name}: ${after} while step${id} ran, so its result was not recorded`, `  log ${outcome.log}`)
       await record(ledgerFile, plan.repo, name, { step: id, head: plan.head, passed: outcome.passed, failed: outcome.failed, result: resultOf(outcome), at: at.toISOString(), seconds: outcome.seconds, log: outcome.log })
       out.push({ id, outcome })
     }
     return out
   })
+  if (isReport(ran)) return ran
+  const lines = ran
   const bad = lines.filter(({ outcome }) => resultOf(outcome) !== 'pass' || (outcome.pruned !== null && !outcome.pruned.startsWith('pruned')))
   const detail = [...lines.map(({ id, outcome }) => describe(`step${id}`, outcome, plan.limitSec)), `  logs in ${logsOf(ledgerFile, name)}`]
   if (bad.length) return failed(`${name} failed ${bad.map(({ id }) => `step${id}`).join(', ')} at ${short(plan.head)}`, ...detail)

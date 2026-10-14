@@ -104,7 +104,8 @@ async function until(condition: () => boolean): Promise<boolean> {
 }
 function launch(args: string[], extra: Record<string, string> = {}) {
   const child = spawn(process.execPath, [CLI, ...args], { cwd: main, env: { ...env, ...extra } })
-  const seen = { stderr: '' }
+  const seen = { stdout: '', stderr: '' }
+  child.stdout.on('data', (chunk: Buffer) => { seen.stdout += chunk.toString() })
   child.stderr.on('data', (chunk: Buffer) => { seen.stderr += chunk.toString() })
   const exited = new Promise<number | null>((resolve) => child.on('exit', resolve))
   return { child, seen, exited: () => Promise.race([exited, new Promise<'still running'>((resolve) => setTimeout(() => resolve('still running'), WAIT_LIMIT_MS))]) }
@@ -138,7 +139,7 @@ const launcher = (name: string, script: string) => {
 
 // Steps of the temp repo. step1 reports what it can see, and hangs with a child when
 // asked to. step2 fails while red.md exists. step3 calls docker when asked to.
-const STEP1 = `import { spawn } from 'node:child_process'
+const STEP1 = `import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 const seen = [
   [process.env.STEP22_FROM_ENV === 'yes' && process.env.STEP22_FROM_ENV_TEST === 'yes', 'env from .env and .env.test'],
@@ -153,6 +154,8 @@ if (process.env.STEP22_PROBE_ENV) {
   )
 }
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
+// A step that commits moves the commit it was run on.
+if (process.env.STEP22_COMMIT) execFileSync('git', ['commit', '--allow-empty', '-qm', 'moved by a step'])
 if (process.env.STEP22_HANG) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
   // A step told to stop leaves a mark, then exits, or stays as if it never heard.
@@ -631,6 +634,27 @@ try {
   run = cli(['check', 'lambda', '3', '--build-limit', '1'], { STEP22_DOCKER: '1', STEP22_FAKE_DOCKER_HANG: '1' })
   const buildLog = entry('lambda').checks.at(-1)?.log
   check(run.code === 1 && buildLog && readFileSync(buildLog, 'utf8').includes('docker build ran past 1 seconds, so it was stopped'), 'check stops a docker build that runs past its limit')
+
+  // A result is recorded against a commit, so the worktree must still hold that commit, as committed, when the step runs and when it ends.
+  const broken = join(root, 'broken')
+  mkdirSync(runLock, { recursive: true })
+  const movedWhileWaiting = launch(['check', 'broken', '2'])
+  await until(() => movedWhileWaiting.seen.stderr.includes('waiting for'))
+  commitFile(broken, 'late.md', 'committed while check waited\n')
+  rmdirSync(runLock)
+  check(await ended(movedWhileWaiting) === 3 && movedWhileWaiting.seen.stdout.includes('its commit moved from') && movedWhileWaiting.seen.stdout.includes('so no step ran'), 'check refuses when the commit moved while it waited for the run lock')
+  check(entry('broken').checks.length === 0 && !existsSync(join(logs, 'broken')), 'and it ran no step and recorded nothing')
+  mkdirSync(runLock, { recursive: true })
+  const dirtiedWhileWaiting = launch(['check', 'broken', '2'])
+  await until(() => dirtiedWhileWaiting.seen.stderr.includes('waiting for'))
+  writeFileSync(join(broken, 'draft.md'), 'written while check waited\n')
+  rmdirSync(runLock)
+  check(await ended(dirtiedWhileWaiting) === 3 && dirtiedWhileWaiting.seen.stdout.includes('it has 1 uncommitted file now') && entry('broken').checks.length === 0, 'check refuses when files changed while it waited for the run lock')
+  rmSync(join(broken, 'draft.md'))
+  run = cli(['check', 'broken', '1'], { STEP22_COMMIT: '1' })
+  check(run.code === 1 && run.first.includes('its commit moved from') && run.first.includes('while step1 ran') && entry('broken').checks.length === 0, 'check does not record a result when the step moved the commit it ran on')
+  run = cli(['check', 'broken', '2'])
+  check(run.code === 0 && entry('broken').checks.length === 1 && entry('broken').checks[0].head === commit('refs/heads/broken'), 'and the same worktree checks once nothing moves, recorded against the commit it ran on')
 
   // submit refuses what breaks the rules, by where it is and what it is, never by its value.
   cli(['start', 'mu', '--note', 'step22 mu'])
