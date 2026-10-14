@@ -42,8 +42,9 @@ The branch's commits, oldest first, by subject:
 29. A transcript whose start line isn't written yet is searched on from where the last read ended. Reading it again from byte 0 on every read cost its whole size a second. A first read of only 64 KB would have lost the 18% of transcripts here whose start ends after 64 KB, so a start in a longer first line is found by reading on.
 30. A session's subagents are found by listing its own `subagents` folder, where each read had walked every entry in the daemon's state for every transcript, and looked at the file of each entry under the session's prefix, gone or not. The walk by itself is cheap. With 60,000 entries for files that never existed, the daemon used 287 ms of CPU in eight seconds with the old loop and 210 ms without, so step21b's line uses 40,000 entries for files that are gone, which the old loop looked at on every read. It measured 2,432 ms of CPU in eight seconds with the old loop and 96 ms with the fix.
 31. A transcript's first uuid is looked for as far in as its start line, 1 MiB, where it had a window of 64 KB. A first line past 64 KB left 18% of the transcripts here with no uuid saved, so a rewrite of one in place was not seen.
+32. Three comments say their rule without a colon, `Block` in `daemon/claude.ts` is private, and `daemon/folders.ts`'s header says the home folder can't be connected.
 
-Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
+Every step21b line added in 20 to 31 was seen red under a break of what it guards. The types in 26 have no runtime change to fail a line, so each was broken at the compiler, and the `parseJson` change in 24 has no input that behaves differently. The lines for the nine fixes before them were broken too, in 20 breaks. The build log has them all. Every one of step21's 50 lines was seen red under a break, in four rounds run by `ls/breaks.ts` in this session's scratchpad, not in the repo. Its results are `ls/breaks-result.json` and `ls/breaks-r2.json` to `ls/breaks-r4.json`.
 
 ## The rebase onto durability
 
@@ -55,7 +56,7 @@ Every one of step21's 50 lines was seen red under a break, in four rounds run by
 ## How to work here
 
 - `export PATH="$HOME/.local/node/bin:$PATH"` first.
-- Run the fast check first, `node --env-file=.env --env-file=.env.test test/step21b.ts`. It takes about 10 s and needs no Claude.
-- Run the check with `node --env-file=.env --env-file=.env.test test/step21.ts`. It needs the test Postgres and the test Electric on 3002, builds the app, and runs the real `claude` with `haiku` about ten times, so it spends a little of the subscription. It takes about three minutes.
-- A red run keeps its teams and folders for inspection. `ls/cleanup.ts` in the scratchpad removes the `local-` teams, the `agents-step21-` temp folders and their transcript folders under `~/.claude/projects`.
+- Run the fast check first, `node --env-file=.env --env-file=.env.test test/step21b.ts`. It takes about a minute and a half and needs no Claude. `test/read-meter.ts` is loaded into the daemon it starts.
+- Run the check with `node --env-file=.env --env-file=.env.test test/step21.ts`. It needs the test Postgres and the test Electric on 3002, builds the app, and runs the real `claude` with `haiku` about ten times, so it spends a little of the subscription. It took 35 s on 2026-10-14, and about three minutes on earlier days.
+- A red step21b run keeps its `local-b-<id>` team and its `agents-step21b-` temp folder, about 63 MB, so remove them when you are done. A red run keeps its teams and folders for inspection. `ls/cleanup.ts` in the scratchpad removes the `local-` teams, the `agents-step21-` temp folders and their transcript folders under `~/.claude/projects`.
 - Never touch port 7701 without `mkdir ~/.agents-app/checks/run.lock` first. step21 doesn't use it. Main's step18d does.

@@ -354,6 +354,11 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 - **Solves now.** It runs the real `claude` CLI with `haiku`, headless, through the real daemon, API and Electric. It connects a folder and runs sessions in it, in a folder inside it, beside it, before it was connected and after it was disconnected, and in a private folder. Then it checks what the record holds and what it doesn't, the scrubbing, the picture that stayed on the Mac, the subagent, what each person sees in the API and in Chromium, a daemon restart, and what the API refuses.
 - **Helps later.** A Claude Code release that changes its transcripts fails this check instead of going quiet.
 
+### The step 21b check (`test/step21b.ts`, `test/read-meter.ts`)
+
+- **Solves now.** It writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, and runs the real daemon, folders command, API and Electric on them, with no Claude. It takes about a minute and a half, on ports 8110 to 8113. It holds the review's fixes for terminal sessions, each as a line that went red under a break of what it guards. `test/read-meter.ts` is loaded into the daemon it starts and counts the bytes the daemon reads from each file, the biggest buffer a read was given and the CPU time it used, so the check can say how much a read cost and not only that it landed.
+- **Helps later.** A change to how the daemon reads, scrubs, sends or withholds a transcript gets its answer in about a minute and a half, where step 21 takes about three and spends a little of the subscription.
+
 ## Coding standards (`.claude/skills/coding-standards/`, `eslint.config.js`, `test/step0.ts`)
 
 - **Solves now.** A skill that lists the bugs to avoid in this codebase, each with where we know it from (hit here, or documented by the tool makers) and what enforces it. Strict compiler flags and type-aware lint enforce most of them, and `npm run check` stops on any error before the checks run. `test/step0.ts` writes code that breaks each enforced rule and fails if anything gets through.

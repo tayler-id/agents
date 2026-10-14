@@ -174,7 +174,7 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 
 ### The fast check
 
-`test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about 10 s, on ports 8110 to 8112, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
+`test/step21b.ts` writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, so it needs no Claude. It runs in about a minute and a half, on ports 8110 to 8113, with teams named `local-b-<id>`. The transcript file is where Claude Code hands its sessions over, and everything past it is real: the daemon, the folders command, the API and Electric. It covers:
 
 - A session that lands, with the person's prompt, the tool call, its result, the reply and the turn's end. A result for a path outside the connected folder is a note, whether the path is absolute, climbs out with `..`, starts with `~`, is relative to the session's own folder or runs through a link inside the folder, and one that arrives after the daemon restarted is a note too. A result for a path inside lands. A turn stopped with Esc is a notice with the subtype the terminal page draws as Interrupted, and the session is idle.
 - What a machine may write into a terminal session: its `user` event is authored as the person and its `notice` is not, and an `ask` or an `answer` is refused with 400.
@@ -206,4 +206,7 @@ Tayler made these on 2026-10-14. `docs/decisions.md` has them.
 - Telling a closed terminal from a running session.
 - The cost of a terminal session. Claude Code writes it in `cost-state` lines, which aren't read.
 - Connected folders aren't listed in the app. The command lists them on the Mac.
+- A Bash command's output from a file outside the connected folder, a tool that names its path in a field other than `file_path`, `path` or `notebook_path`, and the input of a call that writes a file outside the folder aren't held back.
+- The API takes the home folder, or one above it, from anything holding the machine token, since it can't tell where a Mac's home is. `connect` and the daemon refuse it.
+- The daemon's state file keeps an entry for every transcript it has taken, including ones Claude Code has since removed, and writes all of them whenever one changes.
 - A connected folder whose transcript folder name would pass 200 characters. Claude Code shortens such names, and the reader would miss them. `connect` warns, and no check covers the warning.
