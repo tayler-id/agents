@@ -140,9 +140,9 @@ const ANSWER_LOST = 'The machine restarted before this answer reached the reques
 // A tool call the record shows with no result. `text` is the call's readable
 // part, such as the tool's name and its command.
 type OpenCall = { toolUseId: string; text: string }
-// An approval the resumed session has to ask for again, with the decision a
-// person made, or null while it waits for one.
-type AskAgain = { toolName: string; input: unknown; decision: Decision | null }
+// An approval the resumed session has to ask for again, still waiting for a
+// person or allowed by one. A denial is never asked for again.
+type AskAgain = { toolName: string; input: unknown; state: 'waiting' | 'allowed' }
 type Denied = { toolName: string; input: unknown; message: string | null }
 
 const requestLine = (ask: { toolName: string; input: unknown }) => `- ${ask.toolName} with input ${JSON.stringify(ask.input)}.`
@@ -158,7 +158,7 @@ export function continuation(messages: string[], open: { calls: OpenCall[]; askA
   }
   if (open.askAgain.length) {
     parts.push(`These requests for approval ended when the machine stopped, before they ran. Call the tool again with exactly the same input, and the answer reaches you then.\n${
-      open.askAgain.map((ask) => `${requestLine(ask)} ${ask.decision === null ? 'It is still waiting for a person.' : 'A person allowed it.'}`).join('\n')}`)
+      open.askAgain.map((ask) => `${requestLine(ask)} ${ask.state === 'waiting' ? 'It is still waiting for a person.' : 'A person allowed it.'}`).join('\n')}`)
   }
   if (open.denied.length) {
     parts.push(`A person denied these while the machine was stopped. Do not run them.\n${
@@ -181,28 +181,36 @@ async function openThreads(client: pg.PoolClient, sessionId: string, from: numbe
   }>(client,
     `select a.id, a.status, a.tool_use_id, a.payload, a.answer, a.request_ended_at,
        exists (select 1 from commands c where c.session_id = a.session_id and c.kind = 'answer'
-               and c.payload->>'requestId' = a.payload->>'requestId' and c.status in ('claimed', 'done')) as reached
+               and c.payload->>'requestId' = a.payload->>'requestId' and c.claimed_at is not null) as reached
      from asks a
      where a.session_id = $1 and a.kind = 'tool_approval' and a.status in ('open', 'answered')
        and a.created_at >= (select created_at from events where session_id = $1 and seq = $2)
        and not exists (select 1 from events r where r.session_id = a.session_id and r.kind = 'tool_result' and r.tool_use_id = a.tool_use_id)
      order by a.created_at for update of a`, [sessionId, from])
-  const carried = asks.filter((ask) => ask.status === 'open' || ask.request_ended_at !== null
-    || (!ask.reached && ask.answer !== null && ['allow', 'always'].includes(ask.answer.decision)))
-  const denied = asks.filter((ask) => !carried.includes(ask) && ask.request_ended_at === null && !ask.reached && ask.answer !== null)
-  await client.query(`update asks set request_ended_at = coalesce(request_ended_at, now()) where id = any($1)`, [carried.map((ask) => ask.id)])
+  // A decision is still to deliver when its request ended before it arrived, or
+  // when no daemon ever claimed the answer. A claimed one may have reached Claude.
+  const undelivered = (ask: (typeof asks)[number]) => ask.request_ended_at !== null || !ask.reached
+  const allows = (answer: Answer) => answer.decision === 'allow' || answer.decision === 'always'
+  const askAgain = asks.flatMap((ask): (typeof asks[number] & { state: AskAgain['state'] })[] => {
+    if (ask.answer === null) return [{ ...ask, state: 'waiting' }]
+    return undelivered(ask) && allows(ask.answer) ? [{ ...ask, state: 'allowed' }] : []
+  })
+  const denied = asks.filter((ask) => ask.answer !== null && undelivered(ask) && !allows(ask.answer))
+  // A denial stays tied to the turn too, so a request for the same thing in it gets the same answer.
+  await client.query(`update asks set request_ended_at = coalesce(request_ended_at, now()) where id = any($1)`,
+    [[...askAgain, ...denied].map((ask) => ask.id)])
   // A call's text is how a person reads it. The tool's name stands in, for display, when a harness wrote none.
   const calls = await many<OpenCall>(client,
     `select c.tool_use_id as "toolUseId", coalesce(c.text, c.tool_name) as text from events c
      where c.session_id = $1 and c.seq > $2 and c.kind = 'tool_call' and c.tool_use_id is not null
        and not exists (select 1 from events r where r.session_id = c.session_id and r.kind = 'tool_result' and r.tool_use_id = c.tool_use_id)
      order by c.seq`, [sessionId, from])
-  const asked = new Set([...carried, ...denied].map((ask) => ask.tool_use_id))
+  const asked = new Set([...askAgain, ...denied].map((ask) => ask.tool_use_id))
   return {
     calls: calls.filter((call) => !asked.has(call.toolUseId)),
-    askAgain: carried.map((ask): AskAgain => ({ toolName: ask.payload.toolName ?? 'a tool', input: ask.payload.input ?? {}, decision: ask.answer?.decision ?? null })),
+    askAgain: askAgain.map((ask): AskAgain => ({ toolName: ask.payload.toolName ?? 'a tool', input: ask.payload.input ?? {}, state: ask.state })),
     denied: denied.map((ask): Denied => ({ toolName: ask.payload.toolName ?? 'a tool', input: ask.payload.input ?? {}, message: ask.answer?.message ?? null })),
-    askIds: [...carried, ...denied].map((ask) => ask.id),
+    askIds: [...askAgain, ...denied].map((ask) => ask.id),
   }
 }
 
