@@ -53,19 +53,23 @@ let stopping = false
 
 type Deploy = { id: string; commit: string; status: DeployStatus; log: string[] }
 
-// Moves a deploy to its next status, refusing any move the lifecycle does not
-// allow. The row moves only from the status this deployer last gave it. When
-// another process moved it first, such as the runner failing a deploy past its
-// hour, nothing is written and the deployer stops, since the deploy is no
-// longer its to finish.
-async function move(deploy: Deploy, to: DeployStatus, note: string | null = null) {
-  if (!DEPLOY_NEXT[deploy.status].includes(to)) throw new Error(`a deploy cannot go from ${deploy.status} to ${to}`)
+// Writes the deploy's log, and its new status, only while the row still has the
+// status this deployer last gave it. When another process moved it first, such
+// as the runner failing a deploy past its hour, nothing is written and the
+// deployer stops, since the deploy is no longer its to finish.
+async function save(deploy: Deploy, to: DeployStatus, note: string | null) {
   const done = DEPLOY_NEXT[to].length === 0
   const { rowCount } = await pool.query(
     `update deploys set status = $2, log = $3, note = coalesce($4, note), ended_at = case when $5 then now() else ended_at end where id = $1 and status = $6`,
     [deploy.id, to, scrub(deploy.log.join('\n')), note, done, deploy.status])
   if (!rowCount) throw new Error(`deploy ${deploy.id} is no longer ${deploy.status}, since another process moved it, so this deployer stops`)
   deploy.status = to
+}
+
+// Moves a deploy to its next status, refusing any move the lifecycle does not allow.
+async function move(deploy: Deploy, to: DeployStatus, note: string | null = null) {
+  if (!DEPLOY_NEXT[deploy.status].includes(to)) throw new Error(`a deploy cannot go from ${deploy.status} to ${to}`)
+  await save(deploy, to, note)
   console.log(`deploy ${deploy.id}: ${to}${note ? `, ${note}` : ''}`)
 }
 
@@ -138,6 +142,10 @@ async function handle(deploy: Deploy) {
   const dir = await release(deploy)
   if (!dir) return move(deploy, 'failed', 'The release did not install. Nothing changed on the server.')
   if (!(await step(deploy, 'backup', target.backup, dir))) return move(deploy, 'failed', 'The database backup failed. Nothing changed on the server.')
+  // The install and the backup can run long, and the runner fails a deploy past
+  // its hour. Migrating changes the live database, and the first move after it
+  // would notice a failed deploy too late, so the row is checked here.
+  await save(deploy, deploy.status, null)
   if (!(await step(deploy, 'migrate', target.migrate, dir))) return move(deploy, 'failed', 'The migrations failed. The server still runs the release before.')
   const previous = existsSync(current) ? realpathSync(current) : null
   await move(deploy, 'switching')

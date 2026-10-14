@@ -286,14 +286,15 @@ try {
   check(lostRow.status === 'failed' && String(lostRow.note).includes('did not finish within'),
     `the runner fails a deploy whose deployer started it and never finished: ${lostRow.status} ${lostRow.note ?? ''}`)
   // The runner fails a deploy while its deployer still works on it. The
-  // deployer's next move finds the row moved, writes nothing and stops, so
-  // the deploy never switches.
+  // deployer finds the row moved before it migrates, writes nothing and stops,
+  // so the deploy neither migrates nor switches.
   const movedId = await spareDeploy()
-  const [backingUp, goOn] = [join(home, 'moved.started'), join(home, 'moved.go')]
+  const [backingUp, goOn, migrated] = [join(home, 'moved.started'), join(home, 'moved.go'), join(home, 'moved.migrated')]
   const waitToGoOn = [process.execPath, '-e',
     "const fs = process.getBuiltinModule('node:fs'); fs.writeFileSync(process.argv[1], ''); const t = setInterval(() => { if (fs.existsSync(process.argv[2])) clearInterval(t) }, 100)",
     backingUp, goOn]
-  const moving = once('moved', { backup: waitToGoOn })
+  const markMigrated = [process.execPath, '-e', "process.getBuiltinModule('node:fs').writeFileSync(process.argv[1], '')", migrated]
+  const moving = once('moved', { backup: waitToGoOn, migrate: markMigrated })
   const reachedBackup = await within(90, async () => existsSync(backingUp))
   await db.query(`update deploys set started_at = now() - interval '2 hours' where id = $1`, [movedId])
   await expireDeploy(db, movedId)
@@ -302,6 +303,8 @@ try {
   const movedRow = await spareRow(movedId)
   check(reachedBackup && moved.exit === 1 && movedRow.status === 'failed' && String(movedRow.note).includes('did not finish within') && !existsSync(join(moved.releases, 'current')),
     `a deployer whose deploy the runner failed meanwhile writes nothing more and stops before the switch: exit ${moved.exit ?? 'none'}, ${movedRow.status} ${movedRow.note ?? ''}`)
+  check(reachedBackup && movedRow.status === 'failed' && !existsSync(migrated),
+    `a deploy the runner failed while it was preparing never migrates the database: ${existsSync(migrated) ? 'it migrated' : 'no migrate'}, ${movedRow.status}`)
   garbage.close()
   silent.close()
 

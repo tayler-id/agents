@@ -392,7 +392,7 @@ The design is `docs/design/self-improve.md`. None of this holds changes to the A
 
 ### The deployer (`ops/deploy.ts`)
 
-- **Solves now.** It releases an approved commit from the repo's mirror into a release folder, backs up, migrates, switches the `current` link, restarts, and checks the health answer names the new commit. When it does not, it goes back to the release before by itself. It runs as its own process because a deploy restarts the API.
+- **Solves now.** It releases an approved commit from the repo's mirror into a release folder, backs up, migrates unless the runner has failed the deploy meanwhile, switches the `current` link, restarts, and checks the health answer names the new commit. When it does not, it goes back to the release before by itself. It runs as its own process because a deploy restarts the API.
 - **Helps later.** Once installed as a launch agent, deploys of Agents itself go through the owner's approval and this rollback.
 
 ### The verification skill (`.claude/skills/verify/SKILL.md`, `.claude/skills/verify/features.json`)
