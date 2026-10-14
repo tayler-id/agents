@@ -109,13 +109,17 @@ const GH_BUG = `export default {
 `
 
 // A pipeline that starts from an agent: label and needs no agent, for the
-// checks of who may ask for a run and when.
+// checks of who may ask for a run and when, and of the action that asks the
+// reporter a question on the repo's own forge.
 const GH_CHECK = `export default {
   description: 'Starts from the agent:check label.',
   agent: 'fixer', runsOn: 'home', spendCapUsd: 1,
   triggers: [{ kind: 'forge', event: 'issues', action: 'opened', label: 'agent:check' }],
   start: 'look',
-  stages: { look: { kind: 'check', command: () => 'true', next: { passes: { done: 'succeeded', note: 'Looked.' }, fails: { done: 'failed', note: 'Could not look.' } } } },
+  stages: {
+    look: { kind: 'check', command: () => 'true', next: { passes: 'ask', fails: { done: 'failed', note: 'Could not look.' } } },
+    ask: { kind: 'action', action: 'ask_reporter', text: () => 'Which page shows the wrong total?', next: { done: { done: 'succeeded', note: 'Looked and asked.' }, failed: { done: 'failed', note: 'Could not ask.' } } },
+  },
 }
 `
 
@@ -633,6 +637,9 @@ try {
     && apiOutput.includes(`${full}#${unlabelled.number} no longer has agent:check, so no run starts`) && apiOutput.includes(`${full}#${closed.number} is closed, so no run starts`),
   'a label taken off before the poll, or an issue closed before it, starts nothing, and the API says why')
   check(pollDone && await within(10, async () => await runsFor(byOwner.number) === 1), 'an agent: label from someone with admin access starts a run')
+  const questionPosted = await within(30, async () => github.issue(full, byOwner.number)?.comments.includes('Which page shows the wrong total?') === true)
+  check(questionPosted && await within(30, async () => (await one(`select status from runs r where r.team_id = $1 and r.trigger_payload->'report'->>'issue' = $2`, [teamId, String(byOwner.number)]))?.status === 'done'),
+    'a pipeline that asks the reporter a question comments on the GitHub issue through GitHub, and its run finishes')
   check(pollDone && await runsFor(byCustom.number) === 0
     && apiOutput.includes(`${gh.custom} put agent:check on ${full}#${byCustom.number} without write access, so no run starts`),
   'an agent: label from someone with a custom role starts nothing, since its name says nothing of what it allows')
