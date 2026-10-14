@@ -48,19 +48,21 @@ export async function moveMessages(
   return moved
 }
 
-// Finishes the messages a batch names. They are done when the batch ends the
-// turn that took them in, and failed when their harness exited first. A retried
-// batch finds them finished already and changes nothing.
-export async function endMessages(client: pg.PoolClient, sessionId: string, finished: EndedMessages) {
+// Finishes the messages a batch names, and returns how many it finished. They
+// are done when the batch ends the turn that took them in, and failed when their
+// harness exited first. A retried batch finds them finished already and changes
+// nothing.
+export async function endMessages(client: pg.PoolClient, sessionId: string, finished: EndedMessages): Promise<number> {
   const ended = finished.ids
   const rows = await many<{ id: string; status: CommandStatus }>(client,
     `select id, status from commands where id = any($1) and session_id = $2 and kind = 'message' for update`, [ended, sessionId])
   const unknown = ended.filter((id) => !rows.some((row) => row.id === id))
   if (unknown.length) console.error(`a batch for session ${sessionId} finished messages it does not have: ${unknown.join(', ')}`)
   const open = rows.filter((row) => row.status === 'claimed').map((row) => row.id)
-  if (!open.length) return
+  if (!open.length) return 0
   if (finished.how === 'answered') await moveMessages(client, open, 'done')
   else await moveMessages(client, open, 'failed', { error: scrub(finished.reason) })
+  return open.length
 }
 
 // When a turn ends, an ask still open has no request waiting on it, and a

@@ -3,7 +3,9 @@
 // and the card expires with the turn, so nobody can allow it later. Second, a
 // resumed session never asks again for an approval a person answered while it
 // ran. The answer is kept without a command for a dead request, and when the
-// turn ends the decision expires for good. Each time, a later turn is cut off, and its
+// turn ends the decision expires for good. Third, while the machine is down a
+// person allows an approval and then interrupts, so the restart ends that turn
+// with the allow never delivered. Each time, a later turn is cut off, and its
 // recovery must not offer the old approval again. It shares ports with step18c,
 // which the suite never runs right before it.
 //   node --env-file=.env --env-file=.env.test test/step18h.ts
@@ -45,8 +47,10 @@ async function say(path: string, body: unknown = {}): Promise<any> {
 const RULES = [
   { match: 'die-1', append: { file: 'die.txt', line: 'die-1', ask: true, dieAsking: true }, reply: 'Appended die-1.' },
   { match: 'once-1', append: { file: 'once.txt', line: 'once-1', ask: true, askOnce: true }, reply: 'Appended once-1.' },
+  { match: 'gate-1', append: { file: 'gate.txt', line: 'gate-1', ask: true }, reply: 'Appended gate-1.' },
   { match: 'HOLD', append: { id: 'toolu_hold', file: 'hold.txt', line: 'hold-1', hangOnce: true, checkNamed: true }, reply: 'Appended hold-1.' },
   { match: 'KEEP', append: { id: 'toolu_keep', file: 'keep.txt', line: 'keep-1', hangOnce: true, checkNamed: true }, reply: 'Appended keep-1.' },
+  { match: 'LAST', append: { id: 'toolu_last', file: 'last.txt', line: 'last-1', hangOnce: true, checkNamed: true }, reply: 'Appended last-1.' },
 ]
 
 try {
@@ -125,7 +129,25 @@ try {
   const afterKeep = await continuation()
   c.check(afterKeep.includes('toolu_keep') && !afterKeep.includes('once.txt'), 'the next recovery named the cut-off call and not the decision from the earlier turn')
   c.check((await askFor('once.txt'))?.payload.requestId === once.payload.requestId, 'no later request took over the old card')
-  await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after both turns' })
+
+  // Third, an allow and an interrupt while the machine is down.
+  await say(`/v1/conversations/${conversationId}/messages`, { text: 'Append gate-1 to gate.txt.' })
+  await until('the gate card', 60, async () => (await askFor('gate.txt'))?.status === 'open')
+  const { id: gateMessage } = await c.row(`select id from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [sessionId])
+  await killMachine(machine)
+  await say(`/v1/asks/${(await askFor('gate.txt')).id}/answer`, { decision: 'allow' })
+  await say(`/v1/sessions/${sessionId}/interrupt`, {})
+  machine = daemon('scenario.json')
+  await until('the interrupted gate turn to end', 60, async () => (await c.row('select status from commands where id = $1', [gateMessage]))?.status === 'done')
+  await say(`/v1/conversations/${conversationId}/messages`, { text: 'Do the LAST task.' })
+  await until('the last line and its call in the record', 60, async () =>
+    lines(join(folder, 'last.txt')).length === 1 && (await c.count(`select count(*) from events where session_id = $1 and tool_use_id = 'toolu_last'`, [sessionId])) === 1)
+  await restart('scenario.json')
+  await until('the LAST turn to end', TURN_SECONDS, async () => (await turnsEnded()) >= 4)
+  const afterLast = await continuation()
+  c.check(afterLast.includes('toolu_last') && !afterLast.includes('gate.txt'), 'the next recovery named the cut-off call and not the allow an interrupt left undelivered')
+  c.check(!existsSync(join(folder, 'gate.txt')), 'the allowed command from the interrupted turn never ran')
+  await clientsMatchRecord(c, { people: PEOPLE, login, conversationId, sessionId, when: 'after the three parts' })
 } catch (error) {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

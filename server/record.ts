@@ -77,9 +77,10 @@ export async function appendEvents(
        cost_usd = case when $6::numeric > 0 then greatest(coalesce(cost_usd, 0), $6::numeric) else cost_usd end
      where id = $1`,
     [sessionId, seq, turnsEnded.length, batch.status ?? null, batch.harnessSessionId ?? null, cost])
-  if (batch.ended) await endMessages(client, sessionId, batch.ended)
-  // A turn ends with its result, or with its harness exiting before one.
-  if (turnsEnded.length || batch.ended?.how === 'exited') await closeTurnAsks(client, sessionId)
+  // A turn ends with its result, or with its harness exiting before one. Its asks
+  // close only when this batch finished its messages, so a batch sent again can't
+  // expire a card a newer process has raised since.
+  if (batch.ended && await endMessages(client, sessionId, batch.ended)) await closeTurnAsks(client, sessionId)
   if (session.conversation_id && (turnsEnded.length || batch.status === 'failed')) {
     const conversationId = session.conversation_id
     const room = await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [conversationId])

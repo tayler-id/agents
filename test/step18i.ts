@@ -1,8 +1,9 @@
 // Durability check 10, on the server's own code. A message command's status
 // changes only through the one writer, which moves all the commands it is given
-// or none, and only along the lifecycle table. A transaction whose connection
-// Postgres drops fails to its caller without stopping the process. And an API
-// given a watchdog threshold under two heartbeats refuses to start.
+// or none, and only along the lifecycle table. A harness's exit batch, sent again,
+// leaves alone a card a newer process raised since. A transaction whose
+// connection Postgres drops fails to its caller without stopping the process.
+// And an API given a watchdog threshold under two heartbeats refuses to start.
 //   node --env-file=.env --env-file=.env.test test/step18i.ts
 
 import { spawn } from 'node:child_process'
@@ -12,7 +13,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { commandSources } from '../shared/lifecycle.ts'
 import { MessageMoveRefused, moveMessages } from '../server/durability.ts'
-import { claimCommand } from '../server/record.ts'
+import { appendEvents, claimCommand } from '../server/record.ts'
+import type { EventBatch } from '../shared/types.ts'
 import { pool, tx } from '../server/db.ts'
 import { Check, ROOT, until } from './crash.ts'
 
@@ -78,6 +80,23 @@ try {
   c.check(claim?.kind === 'message' && await statusOf(queued) === 'claimed', 'a machine claims a queued message, and it is handed over')
   c.check(await claimCommand(pool, instanceId, queued) === null && await claimCommand(pool, instanceId, done) === null,
     'a second claim of the message, or a claim of a finished one, gets nothing')
+
+  // A harness's exit batch, sent once and then again.
+  const card = async (requestId: string) => (await c.row(
+    `insert into asks (team_id, kind, session_id, conversation_id, tool_use_id, payload) values ($1, 'tool_approval', $2, $3, $4, $5) returning id`,
+    [teamId, sessionId, conversationId, `toolu_${requestId}`, JSON.stringify({ requestId, toolName: 'Bash', input: { command: `echo ${requestId}` } })])).id
+  const cardStatus = async (askId: string) => (await c.row('select status from asks where id = $1', [askId])).status
+  const exiting = await message('claimed')
+  const left = await card(`left-${id}`)
+  const exit: EventBatch = {
+    events: [{ clientId: `exit:${id}`, kind: 'error', text: 'the harness exited', body: { reason: 'the harness exited' } }],
+    status: 'failed', ended: { how: 'exited', ids: [exiting], reason: 'the harness exited' },
+  }
+  await tx((client) => appendEvents(client, sessionId, exit))
+  c.check(await statusOf(exiting) === 'failed' && await cardStatus(left) === 'expired', 'an exit batch fails its messages and expires the card its turn left open')
+  const newer = await card(`newer-${id}`)
+  await tx((client) => appendEvents(client, sessionId, exit))
+  c.check(await cardStatus(newer) === 'open', 'the same exit batch sent again leaves open a card a newer process raised since')
 
   // A transaction whose connection Postgres drops.
   const sleeping = tx(async (client) => { await client.query(`select pg_sleep(30), 'durability-check-${id}'`) })
