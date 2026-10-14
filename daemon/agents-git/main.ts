@@ -1,71 +1,107 @@
-// agents-git sets up, tracks and removes the git worktrees agents work in. Run it
-// from anywhere inside the repo, with Node from ~/.local/node/bin:
-//   node daemon/agents-git/main.ts                      the same as list
-//   node daemon/agents-git/main.ts start <name> --note <who works there, on what>
-//   node daemon/agents-git/main.ts list
-//   node daemon/agents-git/main.ts adopt <path> [--name <name>] [--note <text>]
-//   node daemon/agents-git/main.ts done <name> [--yes]
-//   node daemon/agents-git/main.ts prune [--yes]
-// done and prune only preview without --yes. The first line says how it went, and
-// the exit code says it too: 0 done, 1 failed and safe to retry, 2 a usage error,
-// 3 refused with nothing changed.
+// agents-git runs the git side of an agent's work on this repo: it sets up and
+// tracks worktrees, keeps work safe, runs checks, submits pull requests and lands
+// them, each step a command that does what AGENTS.md asks or refuses. Run it from
+// anywhere inside the repo, with Node from ~/.local/node/bin:
+//   node daemon/agents-git/main.ts <command>
+// With no command it lists. done and prune only preview without --yes. The first
+// line says how it went, and the exit code says it too: 0 done, 1 failed and safe
+// to retry, 2 a usage error, 3 refused with nothing changed.
 
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { messageOf } from '../../shared/errors.ts'
+import { check, StepId } from './checks.ts'
 import { ledgerFile, Name } from './ledger.ts'
-import { adopt, done, list, prune, start, type Report } from './worktrees.ts'
+import type { Report } from './repo.ts'
+import { save, sync } from './work.ts'
+import { adopt, done, list, prune, start } from './worktrees.ts'
 
 const USAGE = {
   start: 'start <name> --note <text>   a branch from local main and a worktree beside the repo, with its own npm ci',
-  list: 'list                         every worktree, tracked or not, with what the ledger and git each say',
+  list: 'list   every worktree, tracked or not, and where the ledger and git disagree',
   adopt: 'adopt <path> [--name <name>] [--note <text>]   track a worktree that exists, without changing it',
-  done: 'done <name> [--yes]          save its last commit, remove the worktree, and delete its branch once main has it',
-  prune: 'prune [--yes]                done for each tracked worktree that is merged and clean, or whose folder is gone',
+  done: 'done <name> [--yes]   save its last commit, remove the worktree, and delete its branch once main has it',
+  prune: 'prune [--yes]   done for each tracked worktree that is merged and clean, or whose folder is gone',
+  save: 'save <name>   keep its uncommitted work in a ref, and leave the worktree as it is',
+  sync: 'sync <name>   rebase its branch onto local main',
+  check: 'check <name> <step...> [--limit <seconds>] [--build-limit <seconds>]   run test/step<step>.ts under the run lock, and record it',
+  submit: 'submit <name> [--message <text>] [--review <text>]... [--regression <text>] [--approve <path>]...   scan, push to GitHub and open the pull request',
+  land: 'land <name> [--approve <path>]...   run every landing gate, then fast-forward main and mirror it to GitHub',
 }
+type CommandName = keyof typeof USAGE
+const isCommand = (name: string): name is CommandName => Object.keys(USAGE).includes(name)
+
 const NOTE = 'start needs --note, saying who works there and on what'
+const named = (command: CommandName) => z.string({ error: `${command} needs a name` }).pipe(Name)
+const Text = z.string().trim().min(1)
+const Seconds = z.coerce.number().int('a limit is a whole number of seconds').positive('a limit is a whole number of seconds above 0')
+const Paths = z.array(z.string().min(1)).default([])
 
 const Command = z.discriminatedUnion('command', [
-  z.strictObject({ command: z.literal('start'), target: z.string({ error: 'start needs a name' }).pipe(Name), note: z.string({ error: NOTE }).trim().min(1, NOTE) }),
-  z.strictObject({ command: z.literal('list') }),
-  z.strictObject({ command: z.literal('adopt'), target: z.string({ error: 'adopt needs the path of a worktree' }).min(1), name: Name.optional(), note: z.string().trim().min(1).optional() }),
-  z.strictObject({ command: z.literal('done'), target: z.string({ error: 'done needs a name' }).pipe(Name), yes: z.boolean().default(false) }),
-  z.strictObject({ command: z.literal('prune'), yes: z.boolean().default(false) }),
+  z.strictObject({ command: z.literal('start'), args: z.tuple([named('start')]), note: z.string({ error: NOTE }).trim().min(1, NOTE) }),
+  z.strictObject({ command: z.literal('list'), args: z.tuple([]) }),
+  z.strictObject({ command: z.literal('adopt'), args: z.tuple([z.string({ error: 'adopt needs the path of a worktree' }).min(1)]), name: Name.optional(), note: Text.optional() }),
+  z.strictObject({ command: z.literal('done'), args: z.tuple([named('done')]), yes: z.boolean().default(false) }),
+  z.strictObject({ command: z.literal('prune'), args: z.tuple([]), yes: z.boolean().default(false) }),
+  z.strictObject({ command: z.literal('save'), args: z.tuple([named('save')]) }),
+  z.strictObject({ command: z.literal('sync'), args: z.tuple([named('sync')]) }),
+  z.strictObject({ command: z.literal('check'), args: z.tuple([named('check'), z.string({ error: 'check needs at least one step, such as 22' }).pipe(StepId)], StepId), limit: Seconds.optional(), 'build-limit': Seconds.optional() }),
+  z.strictObject({ command: z.literal('submit'), args: z.tuple([named('submit')]), message: Text.optional(), review: z.array(Text).default([]), regression: Text.optional(), approve: Paths }),
+  z.strictObject({ command: z.literal('land'), args: z.tuple([named('land')]), approve: Paths }),
 ])
 
 // The problem, then how to use the command it was about, or every command.
-function usage(problem: string, command?: string): Report {
-  const known = Object.entries(USAGE).find(([name]) => name === command)
-  return { code: 2, lines: [`usage: ${problem}`, ...(known ? [known[1]] : Object.values(USAGE)).map((line) => `  ${line}`)] }
+function usage(problem: string, command?: CommandName): Report {
+  return { code: 2, lines: [`usage: ${problem}`, ...(command ? [USAGE[command]] : Object.values(USAGE)).map((line) => `  ${line}`)] }
 }
 
 async function main(argv: string[]): Promise<Report> {
-  let input: Record<string, unknown>
+  let input: { command: string } & Record<string, unknown>
   try {
-    const { values, positionals } = parseArgs({ args: argv, options: { note: { type: 'string' }, name: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: true, strict: true })
-    const [command = 'list', target, ...extra] = positionals
-    if (extra.length) return usage(`unexpected ${extra.join(' ')}`, command)
-    input = { command, ...(target === undefined ? {} : { target }), ...values }
+    const { values, positionals } = parseArgs({
+      args: argv,
+      options: {
+        note: { type: 'string' }, name: { type: 'string' }, yes: { type: 'boolean' }, limit: { type: 'string' }, 'build-limit': { type: 'string' },
+        message: { type: 'string' }, review: { type: 'string', multiple: true }, regression: { type: 'string' }, approve: { type: 'string', multiple: true },
+      },
+      allowPositionals: true,
+      strict: true,
+    })
+    const [command = 'list', ...args] = positionals
+    input = { ...values, command, args }
   } catch (error) {
     return usage(messageOf(error))
   }
+  const name = input.command
+  if (!isCommand(name)) return usage(`there is no command ${name}`)
   const parsed = Command.safeParse(input)
   if (!parsed.success) {
-    const command = String(input.command)
-    if (!Object.keys(USAGE).includes(command)) return usage(`there is no command ${command}`)
-    // The positional argument is parsed as target, so it is named for what it is.
-    const named = (key: string) => (key === 'target' ? 'argument' : `--${key}`)
-    return usage(parsed.error.issues.map((issue) => (issue.code === 'unrecognized_keys' ? `${command} takes no ${issue.keys.map(named).join(' or ')}` : issue.message)).join('; '), command)
+    // The positional arguments are parsed as args, so they are named for what they are.
+    const option = (key: string) => (key === 'args' ? 'arguments' : `--${key}`)
+    return usage(parsed.error.issues.map((issue) => {
+      if (issue.code === 'unrecognized_keys') return `${name} takes no ${issue.keys.map(option).join(' or ')}`
+      if (issue.path[0] === 'args' && (issue.code === 'too_big' || issue.code === 'too_small')) {
+        const shape = (USAGE[name].split('   ')[0] ?? '').slice(name.length).trim()
+        return shape ? `${name} takes ${shape}` : `${name} takes no arguments`
+      }
+      return issue.message
+    }).join('; '), name)
   }
   const ledger = ledgerFile(process.env)
   const cwd = process.cwd()
   const command = parsed.data
   switch (command.command) {
-    case 'start': return start(ledger, cwd, command.target, command.note)
+    case 'start': return start(ledger, cwd, command.args[0], command.note)
     case 'list': return list(ledger, cwd)
-    case 'adopt': return adopt(ledger, cwd, command.target, command.name, command.note)
-    case 'done': return done(ledger, cwd, command.target, command.yes)
+    case 'adopt': return adopt(ledger, cwd, command.args[0], command.name, command.note)
+    case 'done': return done(ledger, cwd, command.args[0], command.yes)
     case 'prune': return prune(ledger, cwd, command.yes)
+    case 'save': return save(ledger, cwd, command.args[0])
+    case 'sync': return sync(ledger, cwd, command.args[0])
+    case 'check': return check(ledger, cwd, command.args[0], command.args.slice(1), command.limit, command['build-limit'])
+    // These two load the coding framework's gates, which load the TypeScript compiler, so only they wait for it.
+    case 'submit': return (await import('./github.ts')).submit(ledger, cwd, command.args[0], { message: command.message, reviews: command.review, regression: command.regression, approve: command.approve })
+    case 'land': return (await import('./land.ts')).land(ledger, cwd, command.args[0], command.approve)
   }
 }
 

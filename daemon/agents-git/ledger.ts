@@ -19,11 +19,30 @@ export function ledgerFile(env: NodeJS.ProcessEnv): string {
   return moved ?? join(homedir(), '.agents-app', 'worktrees.json')
 }
 
+// The folder the ledger is in, ~/.agents-app. The checks' run lock and agents-git's
+// logs live there too, so the check's AGENTS_GIT_LEDGER moves them with the ledger.
+export const appHome = (ledger: string) => dirname(ledger)
+
 // A name is a branch, a folder and a ref, so it keeps to characters all three accept.
 export const Name = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'a name is 1 to 63 lowercase letters, digits and dashes, starting with a letter or digit').brand<'WorktreeName'>()
 export type Name = z.infer<typeof Name>
 const Time = z.iso.datetime()
 const Path = z.string().startsWith('/')
+
+// One run of a check on one commit. The step is a step's id, such as 18d, or
+// "suite" for land's full suite, or "main: <file>" for a changed check land ran
+// on main's code, where it must fail.
+export const CheckRun = z.strictObject({
+  step: z.string().min(1),
+  head: Sha,
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  result: z.enum(['pass', 'fail', 'timeout']),
+  at: Time,
+  seconds: z.number().nonnegative(),
+  log: Path,
+})
+export type CheckRun = z.infer<typeof CheckRun>
 
 const Tracked = {
   name: Name,
@@ -38,7 +57,23 @@ const Tracked = {
   // For an adopted worktree, when it was adopted.
   createdAt: Time,
   note: z.string().min(1).nullable(),
+  // Every check and suite run on its commits, oldest first.
+  checks: z.array(CheckRun).default([]),
+  // What submit records and land reuses: the change's message, the reviews noted,
+  // and the regression it carries, which goes first wherever the message goes.
+  message: z.string().min(1).nullable().default(null),
+  reviews: z.array(z.string().min(1)).default([]),
+  regression: z.string().min(1).nullable().default(null),
+  // Protected paths Tayler approved changing, as named with --approve.
+  approved: z.array(z.string().min(1)).default([]),
+  // The branch tip submit scanned and pushed, its copy on GitHub, and the pull request.
+  submitted: z.strictObject({ head: Sha, copy: Sha, pr: z.string().min(1), at: Time }).nullable().default(null),
+  // The merge commit land put on main, and its copy on GitHub once mirrored.
+  landed: z.strictObject({ merge: Sha, copy: Sha.nullable(), at: Time }).nullable().default(null),
 }
+
+// What a worktree has before any of save, check, submit or land has run.
+export const UNTOUCHED = { checks: [], message: null, reviews: [], regression: null, approved: [], submitted: null, landed: null }
 
 export const Entry = z.discriminatedUnion('state', [
   // start writes this before npm ci and moves it on after. The pid is start's own, so
@@ -185,6 +220,6 @@ export function alive(pid: number): boolean {
   }
 }
 
-function errorCode(error: unknown): string | undefined {
+export function errorCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined
 }

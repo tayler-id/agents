@@ -4,6 +4,9 @@
 // worktree an agent is using never takes its index lock.
 
 import { execFile } from 'node:child_process'
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { z } from 'zod'
 
 // A git call that runs this long is stuck on a lock or a network. Removing a worktree
@@ -23,26 +26,35 @@ export const short = (sha: Sha) => sha.slice(0, 7)
 export type Ran = { code: number, stdout: string, stderr: string }
 
 // Resolves with the exit code, so a caller can read a 1 as an answer. A command that
-// could not start, ran past its limit or printed too much rejects.
-export function run(file: string, args: readonly string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<Ran> {
+// could not start, ran past its limit or printed too much rejects. Its stdin gets
+// the input, or ends at once, so nothing waits on a terminal.
+export function run(file: string, args: readonly string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv, input = ''): Promise<Ran> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { cwd, env, timeout: timeoutMs, maxBuffer: OUTPUT_LIMIT, encoding: 'utf8' }, (error, stdout, stderr) => {
+    const child = execFile(file, args, { cwd, env, timeout: timeoutMs, maxBuffer: OUTPUT_LIMIT, encoding: 'utf8' }, (error, stdout, stderr) => {
       if (!error) resolve({ code: 0, stdout, stderr })
       else if (typeof error.code === 'number') resolve({ code: error.code, stdout, stderr })
       else reject(new Error(`${[file, ...args].join(' ')} in ${cwd} ${error.killed ? `was stopped after ${timeoutMs} ms` : `failed: ${error.message}`}`))
     })
+    child.stdin?.end(input)
   })
 }
 
-export function gitRun(cwd: string, args: readonly string[]): Promise<Ran> {
-  return run('git', [...PINNED, ...args], cwd, GIT_TIMEOUT_MS, GIT_ENV)
+// Extra environment for one call, and what to write to its stdin.
+export type GitCall = { env?: Record<string, string>, input?: string }
+
+export function gitRun(cwd: string, args: readonly string[], call: GitCall = {}): Promise<Ran> {
+  return run('git', [...PINNED, ...args], cwd, GIT_TIMEOUT_MS, { ...GIT_ENV, ...call.env }, call.input)
 }
 
-export async function git(cwd: string, args: readonly string[]): Promise<string> {
-  const ran = await gitRun(cwd, args)
+export async function git(cwd: string, args: readonly string[], call: GitCall = {}): Promise<string> {
+  const ran = await gitRun(cwd, args, call)
   if (ran.code !== 0) throw new Error(`git ${args.join(' ')} in ${cwd} exited ${ran.code}: ${ran.stderr.trim()}`)
   return ran.stdout
 }
+
+export const Tree = z.string().regex(/^[0-9a-f]{40}$/, 'a full tree id').brand<'Tree'>()
+export type Tree = z.infer<typeof Tree>
+export const treeOf = async (cwd: string, commit: Sha) => Tree.parse((await git(cwd, ['rev-parse', `${commit}^{tree}`])).trim())
 
 export type GitWorktree = { path: string, head: Sha | null, branch: string | null, locked: string | null, prunable: boolean, bare: boolean }
 
@@ -132,4 +144,32 @@ export async function moveRef(cwd: string, ref: string, commit: Sha, expected: S
 // Deletes ref only if it still holds expected.
 export async function deleteRef(cwd: string, ref: string, expected: Sha): Promise<void> {
   await git(cwd, ['update-ref', '-d', ref, expected])
+}
+
+// The tree the worktree's files would make if all of them were committed now:
+// changes, staged or not, and untracked files, but no ignored ones. It is built in
+// a copy of the index, so the worktree's own index and files stay as they are.
+export async function snapshotTree(path: string): Promise<Tree> {
+  const index = (await git(path, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim()
+  const dir = mkdtempSync(join(tmpdir(), 'agents-git-index-'))
+  const env = { GIT_INDEX_FILE: join(dir, 'index') }
+  try {
+    if (existsSync(index)) copyFileSync(index, env.GIT_INDEX_FILE)
+    else await git(path, ['read-tree', 'HEAD'], { env })
+    await git(path, ['add', '--all'], { env })
+    return Tree.parse((await git(path, ['write-tree'], { env })).trim())
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const Latest = z.string().regex(/^\S+ [0-9a-f]{40} [0-9a-f]{40}$/, 'a ref, its commit and its tree').transform((line) => {
+  const [ref = '', commit, tree] = line.split(' ')
+  return { ref, commit: Sha.parse(commit), tree: Tree.parse(tree) }
+})
+
+// The ref under prefix whose name sorts last, with its commit and tree, or null.
+export async function latestRef(cwd: string, prefix: string): Promise<{ ref: string, commit: Sha, tree: Tree } | null> {
+  const line = (await git(cwd, ['for-each-ref', '--sort=-refname', '--count=1', '--format=%(refname) %(objectname) %(tree)', `${prefix}*`])).trim()
+  return line ? Latest.parse(line) : null
 }

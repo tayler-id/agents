@@ -2,50 +2,17 @@
 // acts on from git while it holds the ledger's lock, right before it acts, and
 // refuses rather than guess when it can't prove one.
 
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync } from 'node:fs'
+import { basename, delimiter, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
-import { aheadOf, commitOf, deleteRef, git, isAncestor, mergeBase, moveRef, run, short, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
-import { alive, Name, withLedger, type Entry, type Ledger, type LiveEntry } from './ledger.ts'
+import { aheadOf, commitOf, deleteRef, git, isAncestor, latestRef, mergeBase, moveRef, run, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
+import { alive, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
+import { doneRef, isLive, mainCommit, MAIN, ok, openRepo, plural, refsOf, refsUnder, refused, replace, savesOf, tracked, worktreeRoot, type Repo, type Report } from './repo.ts'
 
-// Worktrees live beside the main checkout, never inside it, in a folder named after
-// it: ~/Projects/agents gets ~/Projects/agents-worktrees.
-export const worktreeRoot = (main: string) => `${main}-worktrees`
-// Every ref agents-git keeps for a worktree sits under this prefix.
-export const refsOf = (name: Name) => `refs/agents-git/${name}`
-// Where done keeps a worktree's last commit. Removing a worktree deletes its HEAD, the
-// only thing that keeps a commit made on a detached HEAD, and gc later deletes the commit.
-export const doneRef = (name: Name) => `${refsOf(name)}/done`
-const MAIN = 'refs/heads/main'
 // npm ci downloads Electron's binary when its cache is cold, which can take minutes.
 const NPM_CI_TIMEOUT_MS = 15 * 60_000
 // How much of a failed npm ci's output start repeats.
 const NPM_TAIL_LINES = 20
-
-export type Report = { code: 0 | 1 | 2 | 3, lines: string[] }
-export const ok = (...lines: string[]): Report => ({ code: 0, lines })
-export const refused = (reason: string, next?: string): Report => ({ code: 3, lines: [`refused: ${reason}. Nothing changed.`, ...(next === undefined ? [] : [`next: ${next}`])] })
-export const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
-
-type Repo = { main: string, others: GitWorktree[] }
-
-async function openRepo(cwd: string): Promise<Repo> {
-  const [main, ...others] = await worktreeList(cwd)
-  if (!main || main.bare) throw new Error(`agents-git needs a repo with a main checkout, and ${cwd} is in a bare one`)
-  return { main: main.path, others }
-}
-
-async function mainCommit(repo: string): Promise<Sha> {
-  const sha = await commitOf(repo, MAIN)
-  if (!sha) throw new Error(`${repo} has no local main branch`)
-  return sha
-}
-
-async function refsUnder(repo: string, prefix: string): Promise<string[]> {
-  return (await git(repo, ['for-each-ref', '--format=%(refname)', prefix])).split('\n').filter((ref) => ref !== '')
-}
-
-const isLive = (entry: Entry): entry is LiveEntry => entry.state !== 'done'
 
 type Facts = {
   // Git's record of a worktree at the entry's path.
@@ -55,25 +22,33 @@ type Facts = {
   head: Sha | null
   // Uncommitted files, or null when git can't reach a worktree to count them in.
   changed: number | null
+  // Whether the newest save holds exactly the uncommitted files.
+  held: boolean
   // Commits in head that main doesn't have.
   ahead: number | null
   saved: Sha | null
   // done may point its ref at head: the ref doesn't exist, or holds head or an older commit of it.
   savable: boolean
+  // Where node_modules links to, when it is a link instead of the worktree's own.
+  linkedModules: string | null
 }
 
-async function inspect(repo: Repo, mainSha: Sha, entry: LiveEntry): Promise<Facts> {
+export async function inspect(repo: Repo, mainSha: Sha, entry: LiveEntry): Promise<Facts> {
   const registered = repo.others.find((w) => w.path === entry.path)
   const saved = await commitOf(repo.main, doneRef(entry.name))
   const head = registered?.head ?? (entry.branch === null ? null : await commitOf(repo.main, `refs/heads/${entry.branch}`)) ?? saved
+  const changed = registered && !registered.prunable ? await uncommitted(entry.path) : null
+  const modules = join(entry.path, 'node_modules')
   return {
     git: registered,
     folder: existsSync(entry.path),
     head,
-    changed: registered && !registered.prunable ? await uncommitted(entry.path) : null,
+    changed,
+    held: changed ? (await latestRef(repo.main, savesOf(entry.name)))?.tree === await snapshotTree(entry.path) : false,
     ahead: head ? await aheadOf(repo.main, head, mainSha) : null,
     saved,
     savable: saved === null || head === null || saved === head || await isAncestor(repo.main, saved, head),
+    linkedModules: existsSync(entry.path) && lstatSync(modules, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(modules) : null,
   }
 }
 
@@ -85,7 +60,7 @@ function blockers(entry: LiveEntry, facts: Facts): string[] {
   if (facts.folder && (!facts.git || facts.git.prunable)) reasons.push(`${entry.path} exists, but git has no worktree there`)
   if (facts.git && !facts.git.prunable && facts.git.branch !== entry.branch) reasons.push(`it is on ${facts.git.branch ? `branch ${facts.git.branch}` : 'a detached HEAD'}, and the ledger says ${entry.branch ?? 'a detached HEAD'}`)
   if (entry.branch === 'main') reasons.push('its branch is main')
-  if (facts.changed) reasons.push(plural(facts.changed, 'uncommitted file'))
+  if (facts.changed && !facts.held) reasons.push(`${plural(facts.changed, 'uncommitted file')} that no save holds`)
   if (facts.ahead) reasons.push(`${plural(facts.ahead, 'commit')} not in main`)
   if (!facts.head) reasons.push(`no commit is left to keep: no worktree, no branch and no ${doneRef(entry.name)}`)
   if (!facts.savable && facts.saved) reasons.push(`${doneRef(entry.name)} holds ${short(facts.saved)}, which isn't part of this worktree`)
@@ -112,7 +87,7 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
     await git(repo.main, ['worktree', 'add', '-b', name, path, base])
     const added = (await worktreeList(repo.main)).find((w) => w.path === path)
     if (added?.branch !== name || added.head !== base) throw new Error(`git worktree add left ${path} on ${added?.branch ?? 'no branch'} at ${added?.head ?? 'no commit'}, not on ${name} at ${base}`)
-    const entry: LiveEntry = { name, repo: repo.main, path, branch: name, base, origin: 'started', createdAt: new Date().toISOString(), note, state: 'starting', pid: process.pid }
+    const entry: LiveEntry = { name, repo: repo.main, path, branch: name, base, origin: 'started', createdAt: new Date().toISOString(), note, ...UNTOUCHED, state: 'starting', pid: process.pid }
     write({ ...ledger, worktrees: [...ledger.worktrees, entry] })
     return entry
   })
@@ -140,22 +115,23 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
   })
 }
 
+// The environment for a program agents-git starts. npm's script and a step's own
+// children start node from the PATH, so the node running agents-git goes first,
+// after any folders the caller puts in front of it.
+export function childEnv(extra: Record<string, string> = {}, first: readonly string[] = []): NodeJS.ProcessEnv {
+  const path = [...first, dirname(process.execPath), ...(process.env.PATH ? [process.env.PATH] : [])].join(delimiter)
+  return { ...process.env, ...extra, PATH: path }
+}
+
 // Returns why the install failed, or null when it worked.
-async function npmCi(path: string): Promise<string | null> {
-  // npm's script starts node from the PATH, so the node running agents-git goes first.
-  const node = dirname(process.execPath)
-  const env = { ...process.env, PATH: process.env.PATH ? `${node}:${process.env.PATH}` : node }
+export async function npmCi(path: string): Promise<string | null> {
   try {
-    const ran = await run('npm', ['ci'], path, NPM_CI_TIMEOUT_MS, env)
+    const ran = await run('npm', ['ci'], path, NPM_CI_TIMEOUT_MS, childEnv())
     if (ran.code === 0) return null
     return [`npm ci exited ${ran.code}:`, ...`${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '').slice(-NPM_TAIL_LINES)].join('\n')
   } catch (error) {
     return messageOf(error)
   }
-}
-
-function replace(ledger: Ledger, entry: Entry): Ledger {
-  return { ...ledger, worktrees: ledger.worktrees.map((e) => (e.repo === entry.repo && e.name === entry.name ? entry : e)) }
 }
 
 export async function list(ledgerFile: string, cwd: string): Promise<Report> {
@@ -186,7 +162,7 @@ function describe(entry: LiveEntry, facts: Facts): string[] {
   const merged = facts.ahead === null ? 'no commit found'
     : facts.ahead > 0 ? `${plural(facts.ahead, 'commit')} not in main`
       : facts.head === entry.base ? 'no new commits' : 'merged'
-  const changed = facts.changed === null ? 'no worktree to look in' : plural(facts.changed, 'uncommitted file')
+  const changed = facts.changed === null ? 'no worktree to look in' : `${plural(facts.changed, 'uncommitted file')}${facts.held ? ', saved' : ''}`
   return [
     `${entry.name}  ${entry.state}  ${merged}  ${changed}`,
     `  branch ${entry.branch ?? '(detached)'}  base ${short(entry.base)}  head ${facts.head ? short(facts.head) : 'none'}`,
@@ -203,6 +179,7 @@ function flagsOf(entry: LiveEntry, facts: Facts): string[] {
   if (facts.git && facts.git.locked !== null) flags.push(`locked by git${facts.git.locked ? `: ${facts.git.locked}` : ''}`)
   if (facts.git && !facts.git.prunable && facts.git.branch !== entry.branch) flags.push(`git has it on ${facts.git.branch ?? 'a detached HEAD'}, and the ledger says ${entry.branch ?? 'a detached HEAD'}`)
   if (entry.state === 'starting') flags.push(alive(entry.pid) ? `start is installing its packages as pid ${entry.pid}` : `start stopped before it finished (pid ${entry.pid} is gone)`)
+  if (facts.linkedModules !== null) flags.push(`node_modules links to ${facts.linkedModules}, so an install there changes another copy. Run npm ci in the worktree`)
   return flags
 }
 
@@ -217,14 +194,14 @@ export async function adopt(ledgerFile: string, cwd: string, target: string, nam
     if (found.branch === 'main') return refused(`${path} has main checked out, and done would delete a branch it finishes`)
     const chosen = Name.safeParse(name ?? basename(path))
     if (!chosen.success) return { code: 2, lines: [`usage: ${basename(path)} can't be a name, so pass --name: ${chosen.error.issues.map((i) => i.message).join('; ')}`] }
-    const tracked = ledger.worktrees.find((e) => isLive(e) && e.path === path)
-    if (tracked) return refused(`${path} is already tracked as ${tracked.name}`)
+    const known = ledger.worktrees.find((e) => isLive(e) && e.path === path)
+    if (known) return refused(`${path} is already tracked as ${known.name}`)
     if (ledger.worktrees.some((e) => e.name === chosen.data)) return refused(`the ledger already has ${chosen.data}`, 'pass another --name')
     const refs = await refsUnder(repo.main, refsOf(chosen.data))
     if (refs.length) return refused(`${refs.join(', ')} exists`, 'pass another --name')
     const base = await mergeBase(repo.main, found.head, await mainCommit(repo.main))
     if (!base) return refused(`${path} shares no history with main`)
-    write({ ...ledger, worktrees: [...ledger.worktrees, { name: chosen.data, repo: repo.main, path, branch: found.branch, base, origin: 'adopted', createdAt: new Date().toISOString(), note: note ?? null, state: 'active' }] })
+    write({ ...ledger, worktrees: [...ledger.worktrees, { name: chosen.data, repo: repo.main, path, branch: found.branch, base, origin: 'adopted', createdAt: new Date().toISOString(), note: note ?? null, ...UNTOUCHED, state: 'active' }] })
     return ok(`ok: adopted ${chosen.data} at ${path}, on ${found.branch ? `branch ${found.branch}` : 'a detached HEAD'} at ${short(found.head)}`)
   })
 }
@@ -240,10 +217,13 @@ export async function done(ledgerFile: string, cwd: string, name: Name, yes: boo
     if (reasons.length || !facts.head) return refused(`done ${name}: ${reasons.join('; ')}`)
     const head = facts.head
     const branch = entry.branch !== null && await commitOf(repo.main, `refs/heads/${entry.branch}`) ? entry.branch : null
-    const plan = [`save ${short(head)} as ${doneRef(name)}`, facts.git ? `remove ${entry.path}` : `drop ${entry.path}, which git no longer lists`, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
+    const removal = !facts.git ? `drop ${entry.path}, which git no longer lists` : facts.changed ? `remove ${entry.path} with its ${plural(facts.changed, 'uncommitted file')}, which the newest save holds` : `remove ${entry.path}`
+    const plan = [`save ${short(head)} as ${doneRef(name)}`, removal, branch ? `delete branch ${branch} if main has it` : 'leave branches alone']
     if (!yes) return { code: 0, lines: [`preview: done ${name} would ${plan.join(', ')}`, `next: done ${name} --yes`] }
     if (facts.saved !== head) await moveRef(repo.main, doneRef(name), head, facts.saved)
-    if (facts.git) await git(repo.main, ['worktree', 'remove', entry.path])
+    // git refuses a worktree with uncommitted files unless forced, and the files
+    // are forced away only when the newest save holds every one of them.
+    if (facts.git) await git(repo.main, ['worktree', 'remove', ...(facts.changed ? ['--force'] : []), entry.path])
     const kept = branch === null ? null : await deleteIfMerged(repo.main, branch)
     write(replace(ledger, { ...tracked(entry), state: 'done', doneAt: new Date().toISOString(), finalHead: head, branchDeleted: branch !== null && kept === null }))
     const left = branch === null ? 'no branch to delete' : kept === null ? `deleted branch ${branch}` : `kept branch ${branch}, since ${kept}`
@@ -263,16 +243,6 @@ async function deleteIfMerged(repo: string, branch: string): Promise<string | nu
   if (!(await isAncestor(repo, tip, MAIN))) return 'main lacks some of its commits'
   await deleteRef(repo, ref, tip)
   return null
-}
-
-// The fields every state shares.
-function tracked(entry: LiveEntry) {
-  if (entry.state === 'active') {
-    const { state, ...rest } = entry
-    return rest
-  }
-  const { state, pid, ...rest } = entry
-  return rest
 }
 
 export async function prune(ledgerFile: string, cwd: string, yes: boolean): Promise<Report> {
