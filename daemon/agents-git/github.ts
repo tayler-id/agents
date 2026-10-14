@@ -18,7 +18,7 @@ import { PATTERNS } from '../../shared/scrub.ts'
 import { aheadOf, commitOf, git, gitRun, mergeBase, moveRefs, run, Sha, short, Tree, uncommitted } from './git.ts'
 import { MAIN_BRANCH, withLedger, type CheckRun, type LiveEntry, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, refused, replace, type Repo, type Report } from './repo.ts'
-import { childEnv } from './worktrees.ts'
+import { childEnv } from './group.ts'
 
 // The remote that is GitHub.
 export const GITHUB = 'origin'

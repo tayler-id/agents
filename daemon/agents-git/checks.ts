@@ -5,20 +5,16 @@
 // images a docker build leaves, and lets go of the lock however it ends. land runs
 // its full suite through the same pieces.
 
-import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
-import { constants as os } from 'node:os'
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { Policy } from '../../shared/policy.ts'
 import { run, short, uncommitted } from './git.ts'
+import { childEnv, runGroup, stoppable, Stopped, type Group, type Running } from './group.ts'
 import { appHome, errorCode, withLedger, type CheckRun, type Name } from './ledger.ts'
 import { failed, findReady, isReport, mainCommit, ok, onBranch, openRepo, plural, policyAt, quote, refused, replace, stampOf, type Report } from './repo.ts'
-import { childEnv } from './worktrees.ts'
 
-// A step told to stop gets this long to stop its own children before it is killed.
-const KILL_GRACE_MS = 5_000
 // How often a check looks again for the run lock, which changes hands once a check at most.
 const RUN_LOCK_POLL_MS = 1_000
 // A docker build that runs this long is stuck. A warm build of the box image takes minutes.
@@ -36,11 +32,10 @@ export const envFilesOf = (main: string) => [join(main, '.env'), join(main, '.en
 // The longest anyone may hold the run lock under the policy, which is how long a check waits for it.
 export const lockWaitOf = (policy: Policy) => Math.max(policy.checks.timeoutSec, ...policy.suite.commands.map((c) => c.timeoutSec)) * 1000
 
-// What is running under the run lock, so a signal can stop it before the lock goes.
-export type Running = { child: ChildProcess | null }
-
 // Takes the run lock AGENTS.md names, a folder made with mkdir, waiting until the
-// deadline. A return, a throw or a signal all remove it. Only SIGKILL can't.
+// deadline. A return, a throw or a signal all remove it. Only SIGKILL can't. A signal
+// stops the program work is running and ends work through its finally blocks, and the
+// lock goes after them.
 export async function withRunLock<T>(path: string, waitMs: number, work: (running: Running) => Promise<T>): Promise<T> {
   mkdirSync(dirname(path), { recursive: true })
   const deadline = Date.now() + waitMs
@@ -65,31 +60,12 @@ export async function withRunLock<T>(path: string, waitMs: number, work: (runnin
     held.now = false
     rmdirSync(path)
   }
-  const running: Running = { child: null }
-  const stop = (signal: NodeJS.Signals) => {
-    if (running.child?.pid !== undefined) killGroup(running.child.pid, 'SIGKILL')
-    release()
-    process.exit(128 + os.signals[signal])
-  }
-  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
-  for (const signal of signals) process.on(signal, stop)
   process.on('exit', release)
   try {
-    return await work(running)
+    return await stoppable(work)
   } finally {
-    for (const signal of signals) process.off(signal, stop)
     process.off('exit', release)
     release()
-  }
-}
-
-// Signals a step and every process it started, which share its process group.
-function killGroup(pid: number, signal: NodeJS.Signals) {
-  try {
-    process.kill(-pid, signal)
-  } catch (error) {
-    // The group has no process left, which is what stopping it wants.
-    if (errorCode(error) !== 'ESRCH') throw error
   }
 }
 
@@ -122,41 +98,24 @@ export async function runLogged(running: Running, ledgerFile: string, cwd: strin
   const docker = dockerFor(ledgerFile)
   if (docker) writeFileSync(docker.builds, '')
   const env = childEnv(docker ? { AGENTS_GIT_DOCKER: docker.real, AGENTS_GIT_BUILDS: docker.builds, AGENTS_GIT_BUILD_LIMIT_SEC: String(buildLimitSec) } : {}, docker ? [docker.folder] : [])
-  mkdirSync(dirname(log), { recursive: true })
-  const fd = openSync(log, 'w', 0o600)
-  const started = Date.now()
-  const [program = '', ...args] = argv
-  const child = spawn(program, args, { cwd, env, stdio: ['ignore', fd, fd], detached: true })
-  closeSync(fd)
-  running.child = child
-  const timedOut = { now: false }
-  const timers: NodeJS.Timeout[] = []
-  const code = await new Promise<number | null>((resolve, reject) => {
-    child.once('error', reject)
-    child.once('spawn', () => {
-      const pid = child.pid
-      if (pid === undefined) return
-      timers.push(setTimeout(() => {
-        timedOut.now = true
-        killGroup(pid, 'SIGTERM')
-        timers.push(setTimeout(() => { killGroup(pid, 'SIGKILL') }, KILL_GRACE_MS))
-      }, limitSec * 1000))
-    })
-    child.once('exit', (exit) => { resolve(exit) })
-  })
-  for (const timer of timers) clearTimeout(timer)
-  // Whatever the program started and left running goes with it.
-  if (child.pid !== undefined) killGroup(child.pid, 'SIGKILL')
-  running.child = null
+  const built = () => docker !== null && statSync(docker.builds).size > 0
+  let group: Group
+  try {
+    group = await runGroup(running, argv, cwd, env, limitSec, log)
+  } catch (error) {
+    // A stop leaves the images a build had made, as a finished step does.
+    if (error instanceof Stopped && docker && built()) await prune(docker.real, cwd)
+    throw error
+  }
   const output = readFileSync(log, 'utf8')
   return {
-    code,
-    timedOut: timedOut.now,
-    seconds: Math.round((Date.now() - started) / 100) / 10,
+    code: group.code,
+    timedOut: group.timedOut,
+    seconds: group.seconds,
     passed: (output.match(/^pass {2}/gm) ?? []).length,
     failed: (output.match(/^FAIL {2}/gm) ?? []).length,
     log,
-    pruned: docker && statSync(docker.builds).size > 0 ? await prune(docker.real, cwd) : null,
+    pruned: docker && built() ? await prune(docker.real, cwd) : null,
   }
 }
 
@@ -223,4 +182,3 @@ export async function check(ledgerFile: string, cwd: string, name: Name, steps: 
   if (bad.length) return failed(`${name} failed ${bad.map(({ id }) => `step${id}`).join(', ')} at ${short(plan.head)}`, ...detail)
   return ok(`ok: ${name} passed ${plural(lines.length, 'step')} at ${short(plan.head)}`, ...detail)
 }
-

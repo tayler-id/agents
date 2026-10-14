@@ -109,6 +109,28 @@ function launch(args: string[], extra: Record<string, string> = {}) {
   const exited = new Promise<number | null>((resolve) => child.on('exit', resolve))
   return { child, seen, exited: () => Promise.race([exited, new Promise<'still running'>((resolve) => setTimeout(() => resolve('still running'), WAIT_LIMIT_MS))]) }
 }
+// Waits for the programs a check started to be gone. Any still alive after the limit are killed, so a
+// failed run leaves nothing hanging. A program that was gone is never signalled, since its pid may be another's now.
+async function allGone(pids: number[]): Promise<boolean> {
+  const gone = await until(() => pids.every((pid) => !alive(pid)))
+  if (!gone) {
+    for (const pid of pids.filter(alive)) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // It died between the look and the kill, which is what the check wanted.
+      }
+    }
+  }
+  return gone
+}
+// How a launched command ended, killing it if it is still running after the limit.
+async function ended(command: ReturnType<typeof launch>) {
+  const code = await command.exited()
+  if (code === 'still running') command.child.kill('SIGKILL')
+  return code
+}
+const pidsIn = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').split(' ').map(Number) : [])
 const launcher = (name: string, script: string) => {
   writeFileSync(join(bin, name), `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`)
   chmodSync(join(bin, name), 0o755)
@@ -133,6 +155,11 @@ if (process.env.STEP22_PROBE_ENV) {
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
 if (process.env.STEP22_HANG) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  // A step told to stop leaves a mark, then exits, or stays as if it never heard.
+  if (process.env.STEP22_TERM_MARK) process.on('SIGTERM', () => {
+    writeFileSync(process.env.STEP22_TERM_MARK ?? '', 'got TERM')
+    if (!process.env.STEP22_IGNORE_TERM) process.exit(0)
+  })
   writeFileSync(process.env.STEP22_PIDS ?? '', process.pid + ' ' + child.pid)
   setInterval(() => {}, 1000)
 } else if (seen.some(([ok]) => !ok)) process.exit(1)
@@ -154,6 +181,14 @@ if (process.env.STEP22_DOCKER) {
 console.log('pass  no docker asked for')
 `
 
+// npm ci runs the project's preinstall script, which hangs when asked to, as a stuck install would.
+const NPM_HANG = `import { writeFileSync } from 'node:fs'
+if (process.env.STEP22_NPM_HANG) {
+  writeFileSync(process.env.STEP22_PIDS ?? '', process.pid + ' ' + process.ppid)
+  setInterval(() => {}, 1000)
+}
+`
+
 const realBefore = fingerprint(realLedger)
 const started = new Date().toISOString()
 try {
@@ -170,7 +205,9 @@ try {
   mkdirSync(main)
   git(main, 'init', '-q', '-b', 'main')
   execFileSync('npm', ['pack', '--silent', '--pack-destination', main], { cwd: join(tmp, 'tiny'), env })
-  writeFileSync(join(main, 'package.json'), `${JSON.stringify({ name: 'step22', private: true, type: 'module', scripts: { check: 'node test/names.ts && node test/all.ts' }, dependencies: { tiny: 'file:tiny-1.0.0.tgz' } }, null, 2)}\n`)
+  mkdirSync(join(main, 'test'))
+  writeFileSync(join(main, 'test', 'npm-hang.ts'), NPM_HANG)
+  writeFileSync(join(main, 'package.json'), `${JSON.stringify({ name: 'step22', private: true, type: 'module', scripts: { check: 'node test/names.ts && node test/all.ts', preinstall: 'node test/npm-hang.ts' }, dependencies: { tiny: 'file:tiny-1.0.0.tgz' } }, null, 2)}\n`)
   execFileSync('npm', ['install', '--package-lock-only'], { cwd: main, env })
   writeFileSync(join(main, '.gitignore'), 'node_modules/\n.env\n.env.test\n.scratch/\nresearch/\ndocs/evidence/\ntest/ui-shots/\napp/dist/\n')
   writeFileSync(join(main, 'README.md'), 'step22\n')
@@ -541,7 +578,7 @@ try {
   const pids = join(tmp, 'step1.pids')
   run = cli(['check', 'lambda', '1', '--limit', '1'], { STEP22_HANG: '1', STEP22_PIDS: pids })
   const hung = readFileSync(pids, 'utf8').split(' ').map(Number)
-  check(run.code === 1 && run.out.includes('step1  ran past 1s and was stopped') && entry('lambda').checks.at(-1)?.result === 'timeout', 'check stops a step that runs past its limit, and records the timeout')
+  check(run.code === 1 && run.out.includes('step1  ran past 1s and was stopped') && entry('lambda').checks.at(-1)?.result === 'timeout', `check stops a step that runs past its limit, and records the timeout (${run.first})`)
   check(await until(() => hung.every((pid) => !alive(pid))) && hung.length === 2, 'and stops everything the step started, not only the step')
   unlinkSync(pids)
   mkdirSync(runLock, { recursive: true })
@@ -555,7 +592,34 @@ try {
   await until(() => existsSync(pids))
   const running = readFileSync(pids, 'utf8').split(' ').map(Number)
   stopped.child.kill('SIGTERM')
-  check(await stopped.exited() !== 'still running' && !existsSync(runLock) && await until(() => running.every((pid) => !alive(pid))), 'a check stopped by a signal lets go of the run lock and stops its step')
+  check(await stopped.exited() !== 'still running' && !existsSync(runLock) && await allGone(running), 'a check stopped by a signal lets go of the run lock and stops its step')
+  rmSync(pids, { force: true })
+  // The step is told to stop before it is killed, so it can clean up, and is killed only if it ignores that.
+  const mark = join(tmp, 'term-mark')
+  const runsBefore = entry('lambda').checks.length
+  const tidy = launch(['check', 'lambda', '1'], { STEP22_HANG: '1', STEP22_PIDS: pids, STEP22_TERM_MARK: mark })
+  await until(() => existsSync(pids))
+  const tidyPids = pidsIn(pids)
+  tidy.child.kill('SIGTERM')
+  check(await ended(tidy) === 143 && existsSync(mark), 'a check stopped by a signal sends its step SIGTERM first, so the step can clean up, and exits with 143')
+  check(!existsSync(runLock) && await allGone(tidyPids) && entry('lambda').checks.length === runsBefore, 'and it lets go of the run lock, stops what the step started and records no result')
+  rmSync(pids, { force: true })
+  rmSync(mark, { force: true })
+  const stubborn = launch(['check', 'lambda', '1'], { STEP22_HANG: '1', STEP22_PIDS: pids, STEP22_TERM_MARK: mark, STEP22_IGNORE_TERM: '1' })
+  await until(() => existsSync(pids))
+  const stubbornPids = pidsIn(pids)
+  const asked = Date.now()
+  stubborn.child.kill('SIGTERM')
+  const stubbornEnd = await ended(stubborn)
+  // agents-git waits 5 seconds after SIGTERM before it sends SIGKILL, and a little less allows for timer rounding.
+  check(stubbornEnd === 143 && existsSync(mark) && Date.now() - asked >= 4_500, 'a step that ignores SIGTERM is killed only after the grace, not at once')
+  check(!existsSync(runLock) && await allGone(stubbornPids), 'and then the run lock is gone and so is everything the step started')
+  rmSync(pids, { force: true })
+  writeFileSync(dockerLog, '')
+  const building = launch(['check', 'lambda', '3'], { STEP22_DOCKER: '1', STEP22_FAKE_DOCKER_HANG: '1' })
+  await until(() => readFileSync(dockerLog, 'utf8').includes('build -t step22-image'))
+  building.child.kill('SIGTERM')
+  check(await ended(building) === 143 && readFileSync(dockerLog, 'utf8').includes('image prune -f') && !existsSync(runLock), 'a check stopped in the middle of a docker build still prunes the images the build left')
   chmodSync(join(logs, 'lambda'), 0o500)
   run = cli(['check', 'lambda', '1'])
   chmodSync(join(logs, 'lambda'), 0o700)
@@ -675,6 +739,33 @@ try {
   const suiteRun = entry('omicron').checks.find((r: any) => r.step === 'suite')
   check(run.code === 3 && run.first.includes('the suite failed on the merge') && suiteRun?.result === 'fail' && suiteRun.failed === 1, `land runs the full suite on the merge, and refuses a red one (${run.first})`)
   check(commit('refs/heads/main') === mainBeforeRed && git(github, 'rev-parse', 'refs/heads/main') === githubBeforeRed && !existsSync(join(root, '.land-omicron')) && !existsSync(runLock), "a red suite leaves main and GitHub's main alone, removes its worktree and lets go of the run lock")
+
+  // A signal in the middle of a land stops what it started and puts back what it made.
+  const scratch = join(root, '.land-tau')
+  const suiteStopped = launch(['land', 'tau'], { STEP22_HANG: '1', STEP22_PIDS: pids })
+  await until(() => existsSync(pids))
+  const suitePids = pidsIn(pids)
+  check(existsSync(scratch) && existsSync(runLock), 'land runs its suite in a scratch worktree, under the run lock')
+  suiteStopped.child.kill('SIGTERM')
+  check(await ended(suiteStopped) === 143, 'a land stopped by a signal exits with 143')
+  check(!existsSync(scratch) && !registered(scratch) && !existsSync(runLock) && await allGone(suitePids) && commit('refs/heads/main') === mainBeforeRed, 'and it removes its scratch worktree, lets go of the run lock, stops the suite and leaves main alone')
+  rmSync(pids, { force: true })
+  const installStopped = launch(['land', 'tau'], { STEP22_NPM_HANG: '1', STEP22_PIDS: pids })
+  await until(() => existsSync(pids))
+  const installPids = pidsIn(pids)
+  installStopped.child.kill('SIGTERM')
+  check(await ended(installStopped) === 143 && await allGone(installPids), 'a land stopped during npm ci stops npm and everything it started')
+  check(!existsSync(scratch) && !registered(scratch) && !existsSync(runLock), 'and it removes its scratch worktree and lets go of the run lock')
+  rmSync(pids, { force: true })
+  const startStopped = launch(['start', 'sigma', '--note', 'step22 sigma'], { STEP22_NPM_HANG: '1', STEP22_PIDS: pids })
+  await until(() => existsSync(pids))
+  const startPids = pidsIn(pids)
+  startStopped.child.kill('SIGTERM')
+  check(await ended(startStopped) === 143 && await allGone(startPids), 'a start stopped by a signal stops its npm ci')
+  check(entry('sigma')?.state === 'starting' && cli(['list']).out.includes('start stopped before it finished'), 'and leaves its entry as starting, which list says stopped')
+  rmSync(pids, { force: true })
+  run = cli(['done', 'sigma', '--yes'])
+  check(run.code === 0 && !existsSync(join(root, 'sigma')) && commit('refs/heads/sigma') === null, 'and done finishes it')
 
   writeFileSync(join(main, 'stray.txt'), 'not committed\n')
   run = cli(['land', 'lambda'])

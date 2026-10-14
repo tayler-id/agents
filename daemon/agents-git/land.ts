@@ -75,7 +75,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       // The suite loads .env and .env.test from its own folder, and these links
       // point at main's, so they are never read here or copied.
       for (const file of plan.envFiles) symlinkSync(file, join(plan.scratch, basename(file)))
-      const install = await npmCi(plan.scratch)
+      const install = await npmCi(running, plan.scratch)
       if (install !== null) return failed(`land ${name}: npm ci in ${plan.scratch} failed`, install)
       const envFlags = plan.envFiles.map((file) => `--env-file=${file}`)
       const passing: string[] = []
@@ -98,7 +98,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       const merge = Sha.parse((await git(plan.scratch, ['rev-parse', 'HEAD'])).trim())
       await moveRef(plan.main, landRef(name), merge, await commitOf(plan.main, landRef(name)))
       if ((await gitRun(plan.scratch, ['diff', '--quiet', plan.mainSha, merge, '--', 'package.json', 'package-lock.json'])).code !== 0) {
-        const again = await npmCi(plan.scratch)
+        const again = await npmCi(running, plan.scratch)
         if (again !== null) return failed(`land ${name}: npm ci after the merge failed`, again)
       }
       const outcomes: { label: string, outcome: Outcome, limitSec: number }[] = []

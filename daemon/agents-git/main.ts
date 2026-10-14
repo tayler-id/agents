@@ -11,6 +11,7 @@ import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { messageOf } from '../../shared/errors.ts'
 import { check, StepId } from './checks.ts'
+import { exitCodeOf, Stopped } from './group.ts'
 import { ledgerFile, Name } from './ledger.ts'
 import type { Report } from './repo.ts'
 import { save, sync } from './work.ts'
@@ -105,6 +106,13 @@ async function main(argv: string[]): Promise<Report> {
   }
 }
 
-const report = await main(process.argv.slice(2)).catch((error: unknown): Report => ({ code: 1, lines: [`failed: ${messageOf(error)}`] }))
-for (const line of report.lines) console.log(line)
-process.exitCode = report.code
+const finished = await main(process.argv.slice(2)).then(
+  (report) => ({ report, exit: report.code }),
+  (error: unknown): { report: Report, exit: number } => {
+    // A signal ends a command with the code a shell reports for a process a signal killed.
+    if (error instanceof Stopped) return { report: { code: 1, lines: [`stopped: ${error.message}`] }, exit: exitCodeOf(error.signal) }
+    return { report: { code: 1, lines: [`failed: ${messageOf(error)}`] }, exit: 1 }
+  },
+)
+for (const line of finished.report.lines) console.log(line)
+process.exitCode = finished.exit

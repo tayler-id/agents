@@ -2,15 +2,17 @@
 // acts on from git while it holds the ledger's lock, right before it acts, and
 // refuses rather than guess when it can't prove one.
 
-import { constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync } from 'node:fs'
-import { basename, delimiter, dirname, join } from 'node:path'
+import { constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
-import { aheadOf, commitOf, deleteRef, git, ignoredPaths, isAncestor, latestRef, mergeBase, moveRef, run, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
+import { aheadOf, commitOf, deleteRef, git, ignoredPaths, isAncestor, latestRef, mergeBase, moveRef, short, snapshotTree, uncommitted, worktreeList, type GitWorktree, type Sha } from './git.ts'
+import { childEnv, runGroup, stoppable, Stopped, type Running } from './group.ts'
 import { alive, appHome, MAIN_BRANCH, Name, UNTOUCHED, withLedger, type LiveEntry } from './ledger.ts'
 import { doneRef, isLive, mainCommit, MAIN, ok, openRepo, plural, quote, refsOf, refsUnder, refused, replace, savesOf, stampOf, tracked, worktreeRoot, type Repo, type Report } from './repo.ts'
 
 // npm ci downloads Electron's binary when its cache is cold, which can take minutes.
-const NPM_CI_TIMEOUT_MS = 15 * 60_000
+const NPM_CI_LIMIT_SEC = 15 * 60
 // How much of a failed npm ci's output start repeats.
 const NPM_TAIL_LINES = 20
 // Ignored paths that npm ci or the build make again. done removes these with the worktree
@@ -155,7 +157,8 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
     return entry
   })
   if ('code' in made) return made
-  const failure = await npmCi(made.path)
+  // A signal stops npm with the rest of start, and leaves the entry starting, as a person's Ctrl-C always did.
+  const failure = await stoppable((running) => npmCi(running, made.path))
   return withLedger(ledgerFile, `start ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.name === name)
     if (entry?.state !== 'starting' || entry.pid !== process.pid) throw new Error(`the ledger's entry for ${name} changed while npm ci ran`)
@@ -178,30 +181,21 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
   })
 }
 
-// Settings that say which database, or which Agents, a program talks to. Node's
-// --env-file never overrides a variable that is already set, so one left in the caller's
-// shell would beat main's .env.test, and a check could run against the live database.
-// A step is not given them, so the env files decide.
-const decidedByEnvFiles = (name: string) => name === 'DATABASE_URL' || name.startsWith('PG') || name.startsWith('AGENTS_')
-
-// The environment for a program agents-git starts. npm's script and a step's own
-// children start node from the PATH, so the node running agents-git goes first,
-// after any folders the caller puts in front of it. extra is added after the
-// settings above are left out, so a caller of this function can still pass one on.
-export function childEnv(extra: Record<string, string> = {}, first: readonly string[] = []): NodeJS.ProcessEnv {
-  const path = [...first, dirname(process.execPath), ...(process.env.PATH ? [process.env.PATH] : [])].join(delimiter)
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !decidedByEnvFiles(name)))
-  return { ...inherited, ...extra, PATH: path }
-}
-
-// Returns why the install failed, or null when it worked.
-export async function npmCi(path: string): Promise<string | null> {
+// Returns why the install failed, or null when it worked. The install runs in a process
+// group of its own that running holds, so a signal can stop it with everything it started.
+export async function npmCi(running: Running, path: string): Promise<string | null> {
+  const dir = mkdtempSync(join(tmpdir(), 'agents-git-npm-'))
+  const log = join(dir, 'npm-ci.log')
   try {
-    const ran = await run('npm', ['ci'], path, NPM_CI_TIMEOUT_MS, childEnv())
-    if (ran.code === 0) return null
-    return [`npm ci exited ${ran.code}:`, ...`${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '').slice(-NPM_TAIL_LINES)].join('\n')
+    const ran = await runGroup(running, ['npm', 'ci'], path, childEnv(), NPM_CI_LIMIT_SEC, log)
+    if (ran.code === 0 && !ran.timedOut) return null
+    const tail = readFileSync(log, 'utf8').split('\n').filter((line) => line.trim() !== '').slice(-NPM_TAIL_LINES)
+    return [ran.timedOut ? `npm ci ran past ${NPM_CI_LIMIT_SEC}s and was stopped:` : `npm ci exited ${ran.code ?? 'by a signal'}:`, ...tail].join('\n')
   } catch (error) {
+    if (error instanceof Stopped) throw error
     return messageOf(error)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 
