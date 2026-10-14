@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream } from '@electric-sql/client'
 import type pg from 'pg'
+import { servePeople } from './people.ts'
 
 export const ROOT = new URL('..', import.meta.url).pathname
 
@@ -32,11 +33,14 @@ export async function within(seconds: number, test: () => Promise<unknown>): Pro
 
 // An API process with its own ports and settings. A setting given as undefined
 // is removed, so nothing from .env reaches it. Everything it prints is kept in
-// `log`, so a check can show that a secret never reached it.
-export function startApi(ports: { machines: number; people: number; streams: number }, env: Record<string, string | undefined>, streamsDir: string) {
+// `log`, so a check can show that a secret never reached it. It serves people
+// on a socket beside its streams folder, in the check's own folder, and the
+// people port forwards to it as tailscale serve would.
+export async function startApi(ports: { machines: number; people: number; streams: number }, env: Record<string, string | undefined>, streamsDir: string) {
   const log: string[] = []
+  const socket = `${streamsDir}.sock`
   const merged: Record<string, string | undefined> = {
-    ...process.env, AGENTS_API_PORT: String(ports.machines), AGENTS_PEOPLE_PORT: String(ports.people),
+    ...process.env, AGENTS_API_PORT: String(ports.machines), AGENTS_PEOPLE_SOCKET: socket,
     AGENTS_STREAMS_PORT: String(ports.streams), AGENTS_STREAMS_DIR: streamsDir, ...env,
   }
   for (const name of Object.keys(merged)) if (merged[name] === undefined) delete merged[name]
@@ -44,7 +48,18 @@ export function startApi(ports: { machines: number; people: number; streams: num
   child.stdout?.on('data', (chunk: Buffer) => log.push(chunk.toString()))
   child.stderr?.on('data', (chunk: Buffer) => log.push(chunk.toString()))
   const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => { resolve(code) }))
-  return { child, log, exited, text: () => log.join('') }
+  const people = await servePeople(ports.people, socket)
+  let stopping: Promise<void> | null = null
+  // Stops the API and frees its people port, so another API can take it. Safe to call twice.
+  const stop = () => {
+    stopping ??= (async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+      await exited
+      await new Promise<void>((resolve, reject) => { people.close((error) => { if (error) reject(error); else resolve() }) })
+    })()
+    return stopping
+  }
+  return { child, log, exited, stop, text: () => log.join('') }
 }
 
 export type Answer = { status: number; json: any; text: string }

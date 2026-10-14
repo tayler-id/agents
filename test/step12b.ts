@@ -50,7 +50,7 @@ const { failures, check } = results()
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const tailscale = fakeTailscale({ key, keyExpiresInDays: 60, domain: 'example.com' })
 const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', ...args], { cwd: ROOT, encoding: 'utf8' })
-const api = startApi(PORTS, {
+const api = await startApi(PORTS, {
   AGENTS_RUNNER_TEAMS: team,
   AGENTS_TAILSCALE_API: tailscale.url(TAILSCALE_PORT),
   AGENTS_TAILSCALE_KEY_FILE: join(home, 'tailscale-api.json'),
@@ -338,7 +338,7 @@ try {
   failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
 } finally {
-  api.child.kill('SIGTERM')
+  await api.stop()
   await tailscale.close()
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)

@@ -88,7 +88,7 @@ const doorway = createServer((socket) => {
   socket.pipe(upstream).pipe(socket)
 })
 const row = async (sql: string, params: unknown[]) => (await db.query(sql, params)).rows[0]
-let api: ReturnType<typeof startApi> | null = null
+let api: Awaited<ReturnType<typeof startApi>> | null = null
 // Everything the browsers were sent, to show the token was never in it.
 const sent: string[] = []
 
@@ -233,7 +233,7 @@ try {
   node({}, 'server/admin.ts', 'add-team', team, owner)
   node({ AGENTS_BOX_IMAGE: IMAGE }, 'server/boxes.ts', 'build')
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
-  api = startApi(PORTS, {
+  api = await startApi(PORTS, {
     AGENTS_RUNNER_TEAMS: team,
     AGENTS_BOX_IMAGE: IMAGE,
     AGENTS_BOX_API: `http://${MAC_FROM_VM}:${DOOR_PORT}`,
@@ -254,7 +254,7 @@ try {
   failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
 } finally {
-  api?.child.kill('SIGTERM')
+  await api?.stop()
   doorway.close()
   for (const end of through) end.destroy()
   // Boxes are removed whatever happened, or they would keep calling a closed port.

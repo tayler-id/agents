@@ -50,7 +50,7 @@ const apiEnv = {
   AGENTS_BOX_IMAGE: `agents-box:onboard-absent-${id}`,
   AGENTS_BOX_DOCKER_ARGS: JSON.stringify(['--pull', 'never']),
 }
-const api = startApi(PORTS, apiEnv, join(home, 'streams'))
+const api = await startApi(PORTS, apiEnv, join(home, 'streams'))
 const apis = [api]
 
 try {
@@ -316,7 +316,7 @@ try {
   if (keyBack.status !== 200) throw new Error(`could not put the long-lived key back: ${keyBack.text}`)
 
   // Tailscale off, and set by halves.
-  const off = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: undefined, AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-off'))
+  const off = await startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: undefined, AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-off'))
   apis.push(off)
   await within(20, () => fetch(OFF_PEOPLE).then(() => true, () => false))
   const offStatus = await asPerson(OFF_PEOPLE, owner, 'GET', '/v1/tailscale')
@@ -329,8 +329,7 @@ try {
   // The Claude sign-in relay, with the check as the box's daemon. It runs against
   // the API whose runner is off, once the main API has stopped, since a runner
   // gives a box it tries to start a new token.
-  api.child.kill('SIGTERM')
-  await api.exited
+  await api.stop()
   const boxToken = `machine_${randomBytes(24).toString('base64url')}`
   await db.query('update instances set token_sha256 = $2 where id = $1', [ownBoxId, createHash('sha256').update(boxToken).digest('hex')])
   const { token: otherToken } = z.object({ token: z.string() }).parse(JSON.parse(node('server/admin.ts', 'add-instance', team, `other-${id}`, 'mac', owner)))
@@ -389,8 +388,8 @@ try {
   const codeInDb = await foundInDatabase(db, code)
   check(codeInDb.length === 0 && !off.text().includes(code), `the code is in no table and no log${codeInDb.length ? ` (found in ${codeInDb.join(', ')})` : ''}`)
 
-  off.child.kill('SIGTERM')
-  const half = startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: tailscale.url(TAILSCALE_PORT), AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-half'))
+  await off.stop()
+  const half = await startApi(OFF_PORTS, { AGENTS_RUNNER: 'off', AGENTS_TAILSCALE_API: tailscale.url(TAILSCALE_PORT), AGENTS_TAILSCALE_KEY_FILE: undefined }, join(home, 'streams-half'))
   apis.push(half)
   const halfCode = await Promise.race([half.exited, new Promise<'running'>((resolve) => setTimeout(() => { resolve('running') }, 15_000))])
   check(halfCode !== 'running' && halfCode !== 0 && /AGENTS_TAILSCALE_API and AGENTS_TAILSCALE_KEY_FILE together/.test(half.text()),
@@ -404,7 +403,7 @@ try {
   failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
 } finally {
-  for (const { child } of apis) child.kill('SIGTERM')
+  for (const started of apis) await started.stop()
   await tailscale.close()
   if (!failures.length) {
     await db.query('delete from teams where name = any($1)', [[team, `onboard-12x-${id}`]]).catch(() => undefined)
