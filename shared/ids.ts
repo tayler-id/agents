@@ -36,8 +36,6 @@ export type ProposalId = z.infer<typeof ProposalId>
 // events.id is a bigint, which Postgres sends as text.
 export const EventId = z.string().regex(/^\d+$/).brand<'EventId'>()
 export type EventId = z.infer<typeof EventId>
-export const InstanceId = z.uuid().brand<'InstanceId'>()
-export type InstanceId = z.infer<typeof InstanceId>
 export const ScreenTakeoverId = z.uuid().brand<'ScreenTakeoverId'>()
 export type ScreenTakeoverId = z.infer<typeof ScreenTakeoverId>
 export const BlobId = z.uuid().brand<'BlobId'>()

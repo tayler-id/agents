@@ -21,7 +21,8 @@ import {
   AGENT_HOLDS, FromBox, handoff, SCREEN_DEAD_MS, SCREEN_GRACE_MS, SCREEN_PING_MS, ScreenClose,
   type HandoffEvent, type ScreenControl, type ToBox, type ToViewer,
 } from '../shared/screen.ts'
-import { InstanceId, PersonId, ScreenTakeoverId, SessionId, TunnelId } from '../shared/ids.ts'
+import { PersonId, ScreenTakeoverId, SessionId, TunnelId } from '../shared/ids.ts'
+import { InstanceId } from '../shared/onboarding.ts'
 import { parseJson } from '../shared/json.ts'
 import { bytesOf } from '../shared/websocket.ts'
 import { messageOf } from '../shared/errors.ts'
