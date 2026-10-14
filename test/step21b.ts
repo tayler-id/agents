@@ -138,7 +138,10 @@ try {
   const shop = join(root, `shop-${id}`)
   const zdot = join(root, 'zdot')
   const diary = join(root, 'diary')
-  for (const dir of [claudeDir, home, zdot, diary, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
+  const journal = join(root, 'journal')
+  // The shortest connected path, so the daemon reads this folder last in each read.
+  const last = join(root, 'z')
+  for (const dir of [claudeDir, home, zdot, diary, journal, last, join(shop, 'apps', 'api'), join(shop, 'data'), join(shop, folderWord)]) mkdirSync(dir, { recursive: true })
   // The person's login shell exports a value the daemon's own environment lacks, as ~/.zshrc does.
   writeFileSync(join(zdot, '.zshrc'), `export DEPLOY_PHRASE=${phrase}\necho this line is what a .zshrc prints\n`)
   // Secrets under names no name filter catches, beside values that are not secrets: the folder's own name and a path.
@@ -159,9 +162,12 @@ try {
   if (!await until('the API', 30, async () => api.exitCode === null && await fetch(API).then(() => true, () => false))) throw new Error('the API did not start')
   const daemonEnv = { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home, CLAUDE_CONFIG_DIR: claudeDir, SHELL: '/bin/zsh', ZDOTDIR: zdot }
   let daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
-  const restart = async (env: Record<string, string> = daemonEnv) => {
+  const stopDaemon = async () => {
     daemon.kill('SIGTERM')
     if (!await until('the daemon to stop', STOP_SEC, async () => daemon.exitCode !== null || daemon.signalCode !== null)) throw new Error('the daemon did not stop')
+  }
+  const restart = async (env: Record<string, string> = daemonEnv) => {
+    await stopDaemon()
     daemon = run('daemon', 'daemon/agentsd.ts', env)
   }
 
@@ -259,6 +265,41 @@ try {
   const widened = folders(token, root, ['connect', diary, '--team'])
   check(widened.code === 0 && widened.out.includes('The team now sees the 1 session already in the record from it.') && await visibilityOf(diary) === 'team',
     `--team makes the folder the team's, and says how many sessions in the record that shows: ${widened.out.split('\n')[0] ?? ''}`)
+
+  // What a session writes while its folder is disconnected stays on the Mac, even when the daemon misses the disconnect.
+  check(folders(token, root, ['connect', journal]).code === 0 && folders(token, root, ['connect', last]).code === 0, 'two more folders connect')
+  const connectedAt = async (path: string) => Date.parse(String((await db.query('select connected_at from connected_folders where path = $1', [path])).rows[0]?.connected_at))
+  const sentinel = transcript(claudeDir, last, new Date(await connectedAt(last) + 1000))
+  let settled = 0
+  // A line in the folder the daemon reads last lands only after a read went past
+  // every other folder. The second line's read began after the first's ended, so
+  // it read everything written before this was called.
+  const settle = async () => {
+    for (let i = 0; i < 2; i++) {
+      settled += 1
+      const want = settled
+      sentinel.turn({ prompt: `Settle ${want}.`, reply: 'Settled.' })
+      if (!await until(`settle ${want}`, LANDS_SEC, async () => (await turnsEnded(sentinel.session)) === want)) throw new Error('the daemon stopped reading')
+    }
+  }
+  const journalRun = transcript(claudeDir, journal, new Date(await connectedAt(journal) + 1000))
+  journalRun.turn({ prompt: 'First entry.', reply: 'Noted.' })
+  await until('the journal session', LANDS_SEC, async () => (await turnsEnded(journalRun.session)) === 1)
+  const journalId = String((await sessionOf(journalRun.session))?.id)
+  await stopDaemon()
+  const loggedBefore = logs.length
+  folders(token, root, ['disconnect', journal])
+  journalRun.turn({ prompt: 'Written while the folder was disconnected.', reply: 'Noted again.' })
+  folders(token, root, ['connect', journal])
+  daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
+  await settle()
+  check(await turnsEnded(journalRun.session) === 1,
+    'what a session wrote while its folder was disconnected stays on the Mac after the folder is connected again, though the daemon missed the disconnect')
+  const late = await machine(token, 'POST', `/v1/sessions/${String((await sessionOf(journalRun.session))?.id)}/events`,
+    { events: [{ clientId: `late-${id}`, kind: 'notice', body: {} }] })
+  check(late.status === 409, `the API refuses events for a session that started before its folder was connected again (${late.status})`)
+  // The API would refuse the post, so only the daemon's log shows whether it tried.
+  check(!logs.slice(loggedBefore).filter((l) => l.startsWith('daemon: ')).join('').includes(journalId), "and the daemon doesn't try to send it")
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)

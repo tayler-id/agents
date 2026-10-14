@@ -97,11 +97,13 @@ const APP_KINDS = EVENT_KINDS.filter((kind) => kind !== 'user' && kind !== 'answ
 const TERMINAL_KINDS = EVENT_KINDS.filter((kind) => kind !== 'ask' && kind !== 'answer')
 
 export async function sessionWriter(instance: Instance, sessionId: string): Promise<SessionWriter> {
-  const session = await maybe<{ folder_id: string | null; connected_by: string | null; disconnected: boolean | null }>(pool,
-    `select s.folder_id, f.connected_by, f.disconnected_at is not null as disconnected
+  // A folder connected again starts over, so a session made under its earlier
+  // connection is closed like one whose folder is disconnected now.
+  const session = await maybe<{ folder_id: string | null; connected_by: string | null; closed: boolean | null }>(pool,
+    `select s.folder_id, f.connected_by, (f.disconnected_at is not null or s.created_at < f.connected_at) as closed
      from sessions s left join connected_folders f on f.id = s.folder_id where s.id = $1 and s.instance_id = $2`, [sessionId, instance.id])
   if (!session) throw new HttpError(404, 'no such session on this instance')
   if (session.folder_id === null) return { kind: 'app', kinds: APP_KINDS }
-  if (session.disconnected) throw new HttpError(409, "this session's folder is disconnected, so its sessions stay on the Mac")
+  if (session.closed) throw new HttpError(409, "this session's folder was disconnected since the session started, so the rest of it stays on the Mac")
   return { kind: 'terminal', kinds: TERMINAL_KINDS, author: session.connected_by }
 }

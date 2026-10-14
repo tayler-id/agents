@@ -42,8 +42,10 @@ const projectName = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-')
 
 // How far each transcript has been sent, so a restart goes on from there. Losing
 // this file costs only a reread, since the record skips lines it already has.
+// `connectedAt` is when the folder was connected as the session was taken, since a
+// folder connected again starts over.
 const Sent = z.record(z.string(), z.object({
-  sessionId: SessionId, folderId: FolderId, cwd: z.string(), offset: z.number().int().min(0), parentToolUseId: z.string().nullable(),
+  sessionId: SessionId, folderId: FolderId, connectedAt: z.string(), cwd: z.string(), offset: z.number().int().min(0), parentToolUseId: z.string().nullable(),
 }))
 type Sent = z.infer<typeof Sent>
 type Tracked = Sent[string]
@@ -129,10 +131,12 @@ export async function followTerminalSessions(options: {
   })
   new Shape(stream).subscribe(({ rows }) => {
     folders = rows.map((row) => FolderRow.parse(row)).sort((a, b) => b.path.length - a.path.length)
-    // A disconnected folder's sessions stop at once, and one connected again starts over.
-    const connected = new Set<string>(folders.map((f) => f.id))
+    // A disconnected folder's sessions stop at once. One connected again starts
+    // over, so a session taken under its earlier connection stops too, even when
+    // this daemon missed the disconnect, as it does when stopped through it.
+    const connectedAt = new Map(folders.map((f) => [f.id, Date.parse(f.connected_at)]))
     for (const [file, tracked] of sent) {
-      if (!connected.has(tracked.folderId)) {
+      if (connectedAt.get(tracked.folderId) !== Date.parse(tracked.connectedAt)) {
         sent.delete(file)
         changed = true
       }
@@ -203,7 +207,7 @@ export async function followTerminalSessions(options: {
       const scrub = scrubFor(folder)
       const { sessionId } = TerminalSessionAnswer.parse(await api('POST', '/v1/instance/terminal-sessions',
         { folderId: folder.id, harnessSessionId: scrub(start.sessionId), cwd: scrub(start.cwd) }))
-      const tracked: Tracked = { sessionId, folderId: folder.id, cwd: start.cwd, offset: 0, parentToolUseId: null }
+      const tracked: Tracked = { sessionId, folderId: folder.id, connectedAt: folder.connected_at, cwd: start.cwd, offset: 0, parentToolUseId: null }
       sent.set(file, tracked)
       changed = true
       return tracked
