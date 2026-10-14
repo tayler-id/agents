@@ -401,6 +401,8 @@ try {
       && starts.filter((s: any) => s.model === MODELS.reviewer).every((s: any) => !s.allowedTools.includes('Bash') && !s.allowedTools.includes('Edit')),
     'the reviewer and the verifier ran without team-record tools, so they could not read the author\'s session, and the reviewer could only read')
     check(authors.every((s: any) => s.instructions.includes('watched it fail')), 'every agent got the team\'s lessons and the policy\'s principles with its instructions')
+    check(judges.every((s: any) => s.permissionMode === null) && authors.length > 0 && authors.every((s: any) => s.permissionMode === 'acceptEdits'),
+      `the judges start with no permission mode, so an edit asks a person, and the authors with acceptEdits: ${[...new Set(starts.map((s: any) => `${s.model} ${s.permissionMode}`))].join(', ')}`)
     // A person's message would start a judge with a workspace's permissions,
     // the team-record tools and no budget, so the API refuses one.
     const judgeSessions = [...new Set(happyStages.filter((s: any) => s.stage === 'review' || s.stage === 'confirm').flatMap((s: any) => s.data.reviewers.map((r: any) => r.sessionId)))]

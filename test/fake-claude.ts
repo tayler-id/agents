@@ -80,7 +80,7 @@ const token = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const tokenSha = token === undefined ? null : createHash('sha256').update(token).digest('hex')
 appendFileSync(join(state, 'starts.jsonl'), JSON.stringify({
   sessionId, resumed: args.includes('--resume'), instructions: flag('--append-system-prompt') ?? '', tokenSha, pid: process.pid, maxBudgetUsd: flag('--max-budget-usd') ?? null,
-  model: flag('--model') ?? null, allowedTools: flag('--allowedTools') ?? '', mcpServers,
+  model: flag('--model') ?? null, allowedTools: flag('--allowedTools') ?? '', mcpServers, permissionMode: flag('--permission-mode') ?? null,
 }) + '\n')
 type Append = {
   // The call's tool_use id. Random when unset.

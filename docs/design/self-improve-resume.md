@@ -20,7 +20,7 @@ Blocking:
 1. A script passed the opaque gate by starting with image bytes. An image now needs its extension to name the format its first bytes show. Done.
 2. Two files could share one path, since git's output is read as UTF-8. A path holding U+FFFD, or one git lists twice, now fails closed. Done.
 3. A person's message to a judge's session started it without its limits. `sendToSession` now refuses a message to any session a review or confirm row lists among its reviewers, with a 409. No column was added: the reviewers list is the mark, and a schema change to `agents_test` was refused by the permission system. Done.
-4. `JUDGE_PERMISSIONS` had no check. Not started.
+4. `JUDGE_PERMISSIONS` had no check. The fake harness logs `--permission-mode`, and step16 HAPPY checks judges start with none and authors with `acceptEdits`. Done.
 5. The obligation backoff overflowed at 31 tries. Not started.
 
 Not blocking:
