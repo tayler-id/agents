@@ -58,14 +58,21 @@ export async function sync(ledgerFile: string, cwd: string, name: Name): Promise
       if (entry.base !== main) write(replace(ledger, { ...entry, base: main }))
       return ok(`ok: ${name} already has every commit on main ${short(main)}`)
     }
-    const ran = await gitRun(entry.path, ['rebase', '--no-autostash', '--no-autosquash', '--no-update-refs', main])
+    // A submitted branch's commits are on GitHub, and submit never forces a push, so a rebase would
+    // rewrite them and the branch could not be pushed again. Merging main in keeps them.
+    const merging = entry.submitted !== null
+    const how = merging ? 'merge' : 'rebase'
+    const ran = merging
+      ? await gitRun(entry.path, ['merge', '--no-edit', '--no-gpg-sign', '-m', `Merge main ${short(main)} into ${name}`, main])
+      : await gitRun(entry.path, ['rebase', '--no-autostash', '--no-autosquash', '--no-update-refs', main])
     if (ran.code !== 0) {
       const conflicts = (await git(entry.path, ['diff', '--name-only', '--diff-filter=U'])).split('\n').filter((file) => file !== '')
-      if (!conflicts.length) throw new Error(`git rebase in ${entry.path} exited ${ran.code}: ${ran.stderr.trim()}`)
-      return failed(`sync ${name} stopped on a conflict in ${conflicts.join(', ')}, and the worktree is as git left it, part way through the rebase`, `next: resolve them, git add them and git rebase --continue in ${entry.path}, or git rebase --abort, then sync again`)
+      if (!conflicts.length) throw new Error(`git ${how} in ${entry.path} exited ${ran.code}: ${ran.stderr.trim()}`)
+      return failed(`sync ${name} stopped on a conflict in ${conflicts.join(', ')}, and the worktree is as git left it, part way through the ${how}`, `next: resolve them, git add them and git ${merging ? 'commit' : 'rebase --continue'} in ${entry.path}, or git ${how} --abort, then sync again`)
     }
     const head = Sha.parse((await git(entry.path, ['rev-parse', 'HEAD'])).trim())
     write(replace(ledger, { ...entry, base: main }))
+    if (merging) return ok(`ok: merged main ${short(main)} into ${name} as ${short(head)}, since ${name} was submitted and a rebase would rewrite commits GitHub has`, `next: submit ${name}`)
     return ok(`ok: rebased ${name} onto main ${short(main)}, with ${plural(await aheadOf(repo.main, head, main), 'commit')} on top`)
   })
 }

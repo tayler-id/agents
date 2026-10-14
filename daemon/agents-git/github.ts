@@ -236,10 +236,19 @@ function addedIn(diff: string): Added[] {
   return out
 }
 
-// Each line a commit adds, with its file and line number.
+// Each line a commit adds, with its file and line number. A merge adds only the lines
+// that none of its parents had, since what it brings from one side is already on that
+// side and was read there, and a conflict resolved by hand is the part no parent has.
 async function addedLines(repo: string, commit: Sha): Promise<Added[]> {
-  const diff = await git(repo, ['show', '--format=', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent', '--src-prefix=a/', '--dst-prefix=b/', commit])
-  return addedIn(diff)
+  const parents = (await git(repo, ['rev-list', '--parents', '-n', '1', commit])).trim().split(' ').slice(1)
+  const diffs: Added[][] = []
+  for (const parent of parents) {
+    diffs.push(addedIn(await git(repo, ['diff', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', parent, commit])))
+  }
+  const [first, ...others] = diffs
+  if (!first) throw new Error(`${short(commit)} has no parent to compare with`)
+  const seen = others.map((lines) => new Set(lines.map((added) => `${added.path}\0${added.line}`)))
+  return first.filter((added) => seen.every((lines) => lines.has(`${added.path}\0${added.line}`)))
 }
 
 const secretsIn = (text: string) => PATTERNS.filter(([, pattern]) => text.search(pattern) !== -1).map(([kind]) => kind)
@@ -399,7 +408,11 @@ export async function submit(ledgerFile: string, cwd: string, name: Name, notes:
   if (judged.unapproved.length) return { code: 3, lines: [`refused: submit ${name}: these need Tayler's approval. Nothing changed.`, ...listed(judged.unapproved), `next: once Tayler approves, submit ${name} --approve <path> for each`] }
   const copy = await copyOf(plan.repo.main, plan.tip)
   const pushed = await gitRun(plan.repo.main, ['push', GITHUB, `${copy}:refs/heads/${name}`])
-  if (pushed.code !== 0) return failed(`git push of ${short(copy)} to ${GITHUB}'s ${name} exited ${pushed.code}, and nothing was forced`, pushed.stderr.trim())
+  if (pushed.code !== 0) {
+    // A push is refused as non-fast-forward when GitHub has commits this branch lacks, as when it was rebased or amended after a submit.
+    const behind = /\((?:non-fast-forward|fetch first)\)/.test(pushed.stderr)
+    return failed(`git push of ${short(copy)} to ${GITHUB}'s ${name} exited ${pushed.code}, and nothing was forced`, pushed.stderr.trim(), ...(behind ? [`next: GitHub's ${name} has commits this branch lacks, as when a branch is rebased or amended after a submit. agents-git never forces a push, so ask Tayler. sync merges main in rather than rebasing once a branch is submitted`] : []))
+  }
   const body = bodyOf({ ...plan.merged, checks: plan.entry.checks }, plan.tip)
   const open = Pulls.parse(JSON.parse(await gh(plan.repo.main, ['pr', 'list', '--head', name, '--state', 'open', '--json', 'url,number', '--limit', '1'])))
   let pr: string

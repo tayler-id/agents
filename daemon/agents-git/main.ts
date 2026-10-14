@@ -24,7 +24,7 @@ const USAGE = {
   done: 'done <name> [--yes] [--backup <path>]...   save its last commit, copy the ignored paths named by --backup to ~/.agents-app/backups, remove the worktree, and delete its branch once main has it',
   prune: 'prune [--yes]   done for each tracked worktree that is merged and clean, or whose folder is gone',
   save: 'save <name>   keep its uncommitted work in a ref, and leave the worktree as it is',
-  sync: 'sync <name>   rebase its branch onto local main',
+  sync: 'sync <name>   bring local main into its branch: a rebase, or a merge once the branch is submitted',
   check: 'check <name> <step...> [--limit <seconds>] [--build-limit <seconds>]   run test/step<step>.ts under the run lock, and record it',
   submit: 'submit <name> [--message <text>] [--review <text>]... [--regression <text>] [--approve <path>]...   scan, push to GitHub and open the pull request',
   land: 'land <name> [--approve <path>]...   run every landing gate, then fast-forward main and mirror it to GitHub',

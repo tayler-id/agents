@@ -93,7 +93,7 @@ export async function land(ledgerFile: string, cwd: string, name: Name, approve:
       const merging = await gitRun(plan.scratch, ['merge', '--no-ff', '--no-edit', '-m', plan.message, plan.tip])
       if (merging.code !== 0) {
         const conflicts = (await git(plan.scratch, ['diff', '--name-only', '--diff-filter=U'])).split('\n').filter((file) => file !== '')
-        return refused(`land ${name}: merging into main ${conflicts.length ? `conflicts in ${conflicts.join(', ')}` : `failed: ${merging.stderr.trim()}`}`, `sync ${name}, resolve, and submit again`)
+        return refused(`land ${name}: merging into main ${conflicts.length ? `conflicts in ${conflicts.join(', ')}` : `failed: ${merging.stderr.trim()}`}`, `sync ${name}, which merges main into the branch since it was submitted, resolve what it stops on and commit, then submit ${name} and land ${name} again`)
       }
       const merge = Sha.parse((await git(plan.scratch, ['rev-parse', 'HEAD'])).trim())
       await moveRef(plan.main, landRef(name), merge, await commitOf(plan.main, landRef(name)))

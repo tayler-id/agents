@@ -751,6 +751,7 @@ try {
   git(xi, 'commit', '-q', '--amend', '-m', 'add the xi build log, reworded')
   run = cli(['submit', 'xi'])
   check(run.code === 1 && run.first.includes('nothing was forced') && git(main, 'ls-remote', github, 'refs/heads/xi').startsWith(xiCopy), `submit never forces a push over a copy the branch no longer has (${run.first})`)
+  check(run.out.includes("GitHub's xi has commits this branch lacks") && run.out.includes('ask Tayler'), 'and it says why, and who decides, when a branch was rewritten after a submit')
 
   cli(['start', 'omicron', '--note', 'step22 omicron'])
   const omicron = join(root, 'omicron')
@@ -834,14 +835,47 @@ try {
   run = cli(['done', 'lambda', '--yes'])
   check(run.code === 0 && commit('refs/heads/lambda') === null, 'done finishes the landed worktree')
 
-  // A push publishes every commit GitHub lacks, so the scan covers all of them, not only the branch's own.
+  // After a submit, sync merges main in, so the commits GitHub has stay and the branch can be pushed again.
   const logWith = (cwd: string, entry: string) => `${readFileSync(join(cwd, 'docs/build-log.md'), 'utf8')}\n## ${entry}\n\nAdded ${entry.toLowerCase()}.\n`
+  cli(['start', 'upsilon', '--note', 'step22 upsilon'])
+  const upsilon = join(root, 'upsilon')
+  commitFile(upsilon, 'README.md', 'upsilon says\n')
+  commitFile(upsilon, 'docs/build-log.md', logWith(upsilon, 'Upsilon'))
+  run = cli(['submit', 'upsilon', '--message', 'Add upsilon', '--review', 'second model: fine'])
+  const upsilonCopy = git(main, 'ls-remote', github, 'refs/heads/upsilon').split('\t')[0] ?? ''
+  const upsilonTip = commit('refs/heads/upsilon') ?? ''
+  commitFile(main, 'README.md', 'main says again\n')
+  run = cli(['land', 'upsilon'])
+  check(run.code === 3 && run.first.includes('conflicts in README.md') && run.out.includes('sync upsilon, which merges main into the branch since it was submitted'), 'land names the conflict, and says sync merges main in once a branch is submitted')
+  run = cli(['sync', 'upsilon'])
+  check(run.code === 1 && run.first.includes('conflict in README.md') && run.first.includes('part way through the merge') && existsSync(git(upsilon, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD')) && commit('refs/heads/upsilon') === upsilonTip, 'sync of a submitted branch merges main in, and stops on a conflict part way through the merge')
+  writeFileSync(join(upsilon, 'README.md'), `resolved ${token}\n`)
+  git(upsilon, 'add', 'README.md')
+  git(upsilon, 'commit', '-q', '--no-edit')
+  const mergeTip = commit('refs/heads/upsilon') ?? ''
+  check(git(main, 'rev-parse', 'refs/heads/upsilon^1') === upsilonTip && git(main, 'rev-parse', 'refs/heads/upsilon^2') === commit('refs/heads/main'), "the merge keeps the branch's commits as its history, with main as its second parent")
+  run = cli(['submit', 'upsilon'])
+  check(run.code === 3 && run.out.includes(`${short(mergeTip)} README.md:1: matches the github secret pattern`) && !run.out.includes(token) && git(main, 'ls-remote', github, 'refs/heads/upsilon').startsWith(upsilonCopy), 'submit reads the lines a merge adds that neither parent had, here a conflict resolved with a secret')
+  writeFileSync(join(upsilon, 'README.md'), 'resolved\n')
+  git(upsilon, 'commit', '-q', '--amend', '--no-edit', '-a')
+  run = cli(['submit', 'upsilon'])
+  const upsilonNext = git(main, 'ls-remote', github, 'refs/heads/upsilon').split('\t')[0] ?? ''
+  check(run.code === 0 && upsilonNext !== upsilonCopy && isAncestor(upsilonCopy, upsilonNext, github), `submit pushes the merged branch on top of the copy GitHub has, never forced (${run.first})`)
+  run = cli(['land', 'upsilon'])
+  check(run.code === 0 && run.first.startsWith('ok: landed upsilon'), `and land takes it, so the advice it gave works (${run.first})`)
+
+  // A push publishes every commit GitHub lacks, so the scan covers all of them, not only the branch's own.
   cli(['start', 'pi', '--note', 'step22 pi'])
   const pi = join(root, 'pi')
   commitFile(pi, 'pi.md', 'pi work\n')
   commitFile(pi, 'docs/build-log.md', logWith(pi, 'Pi'))
   run = cli(['submit', 'pi', '--message', 'Add pi', '--review', 'second model: fine'])
   check(run.code === 0, `pi submits while GitHub lacks nothing but its own commits (${run.first})`)
+  cli(['start', 'chi', '--note', 'step22 chi'])
+  const chi = join(root, 'chi')
+  commitFile(chi, 'chi.md', 'chi work\n')
+  commitFile(chi, 'docs/build-log.md', logWith(chi, 'Chi'))
+  run = cli(['submit', 'chi', '--message', 'Add chi', '--review', 'second model: fine'])
   commitFile(main, 'leak.md', `token ${token}\n`)
   cli(['start', 'rho', '--note', 'step22 rho'])
   const rho = join(root, 'rho')
@@ -850,6 +884,10 @@ try {
   run = cli(['submit', 'rho', '--message', 'Add rho', '--review', 'second model: fine'])
   check(run.code === 3 && run.out.includes('leak.md:1: matches the github secret pattern') && !run.out.includes(token), "submit scans a commit on main that GitHub lacks, since the push publishes it with the branch, and never prints the secret")
   check(!git(main, 'ls-remote', github).includes('refs/heads/rho'), 'and it pushes nothing')
+  run = cli(['sync', 'chi'])
+  check(run.code === 0 && run.first.includes('merged main'), `chi, submitted before that commit, merges main in (${run.first})`)
+  run = cli(['submit', 'chi'])
+  check(run.code === 3 && run.out.split('leak.md:1: matches the github secret pattern').length === 2, "and submit reads that commit once, not again as part of the merge that brought it in")
   const githubBeforePi = git(github, 'rev-parse', 'refs/heads/main')
   const pushedBeforePi = commit('refs/mirror/local-pushed')
   run = cli(['land', 'pi'])
