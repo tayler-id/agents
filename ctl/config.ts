@@ -23,7 +23,10 @@ export const INSTANCES_DIR = join(VERIFY_DIR, 'instances')
 export const EVIDENCE_DIR = join(VERIFY_DIR, 'evidence')
 export const SKILL_DIR = join(ROOT, '.claude', 'skills', 'verify-agents')
 export const FEATURES_DIR = join(SKILL_DIR, 'features')
-export const BASELINES_DIR = join(SKILL_DIR, 'baselines')
+// Baselines stay in the ignored scratch folder until the name guard skips image
+// files: it reads every tracked file as text, and a PNG's bytes can spell a
+// banned name. --baselines points anywhere else, such as the skill's folder.
+export const BASELINES_DIR = join(VERIFY_DIR, 'baselines')
 // The latest run's evidence.json, at the one path the check host reads after a suite.
 export const LATEST_MANIFEST = join(VERIFY_DIR, EVIDENCE_MANIFEST_FILE)
 

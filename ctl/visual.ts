@@ -36,6 +36,14 @@ export const VOLATILE: Rule[] = [
   { why: "the machine's home is a scratch folder with a random name, which notices quote", scope: 'body', pattern: '/\\S*/agentsctl-[a-z0-9-]+-[A-Za-z0-9]{6}', replace: '/scratch/agentsctl-instance' },
 ]
 
+// An instance's name shows in its team, its forge org and its people's logins.
+// Captures write each as one fixed name, so captures from instances with
+// different names compare. Names are lowercase letters, digits and dashes.
+export const instanceRules = (name: string): Rule[] => [
+  { why: 'the team and the forge org are named after the instance', scope: 'body', pattern: `verify-${name}\\b`, replace: 'verify-instance' },
+  { why: "people's logins carry the instance's name", scope: 'body', pattern: `-${name}@verify\\.local`, replace: '@verify.local' },
+]
+
 // How often a capture looks again while the page settles, and for how long.
 const STEADY_POLL_MS = 300
 const STEADY_MS = 15_000
@@ -193,7 +201,9 @@ export function compare(evidence: string, baselines = BASELINES_DIR): CompareRes
   return { ok, tolerance: { channel: CHANNEL_THRESHOLD, share: MAX_CHANGED }, results, notCaptured }
 }
 
-export const BaselineUpdate = z.object({ at: z.iso.datetime(), reason: z.string().min(10), from: z.string(), files: z.array(z.string()) })
+// A reason short enough to be a shrug says nothing about why a view changed.
+export const BaselineReason = z.string().min(10, 'a baseline reason says why the view changed on purpose, in at least ten characters')
+export const BaselineUpdate = z.object({ at: z.iso.datetime(), reason: BaselineReason, from: z.string(), files: z.array(z.string()) })
 export type BaselineUpdate = z.infer<typeof BaselineUpdate>
 export const UPDATES_FILE = 'updates.jsonl'
 
