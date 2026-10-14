@@ -8,8 +8,15 @@ import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { z } from 'zod'
 import type { ScreenSize } from '../shared/screen.ts'
 import { messageOf } from '../shared/errors.ts'
+
+// What the desktop's programs need from the daemon's environment: where programs
+// are and the home folder. Never the rest of it, which holds the machine's token
+// and the Claude token. The browser can show any file it can read, such as
+// file:///proc/self/environ, and screenshots aren't scrubbed.
+const DesktopProcessEnv = z.object({ PATH: z.string().min(1), HOME: z.string().min(1) })
 
 export type DesktopConfig = {
   size: ScreenSize
@@ -150,7 +157,8 @@ export function startDesktop(config: DesktopConfig): Desktop {
   const vncSocket = join(config.runDir, 'vnc.sock')
   const cdpUrl = `http://127.0.0.1:${CDP_PORT}`
   const chromium = findChromium(config.browsersPath)
-  const env = { ...process.env, DISPLAY }
+  const { PATH, HOME } = DesktopProcessEnv.parse(process.env)
+  const env = { PATH, HOME, DISPLAY }
   const { width, height } = config.size
 
   const xvnc = supervise('Xvnc', 'Xvnc', [
