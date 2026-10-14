@@ -50,9 +50,10 @@ try {
 
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   c.start('server/api.ts', {
-    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 1),
+    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'),
     AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams'), AGENTS_MACHINE_LOST_SEC: String(LOST_SEC),
   })
+  await c.servePeople(PORT + 1, join(home, 'people.sock'))
   await until('the API', 20, async () => fetch(API).then(() => true, () => false))
   const daemonEnv = {
     AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home,
@@ -102,6 +103,7 @@ try {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
 } finally {
+  c.closePeople()
   live?.close()
   await browser?.close()
   for (const child of c.children) child.kill('SIGTERM')

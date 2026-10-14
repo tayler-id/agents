@@ -42,7 +42,7 @@ const tryDocker = (...args: string[]) => {
   }
 }
 const boxEnv: Record<string, string> = {
-  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PEOPLE_PORT), AGENTS_STREAMS_PORT: String(PEOPLE_PORT + 1),
+  AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(work, 'people.sock'), AGENTS_STREAMS_PORT: String(PEOPLE_PORT + 1),
   AGENTS_BOX_IMAGE: image, AGENTS_BOX_API: `http://host.docker.internal:${PORT}`,
   // The box gets no Claude login, since it runs the fake.
   AGENTS_BOX_TOKEN_FILE: join(work, 'no-token'),
@@ -82,6 +82,7 @@ try {
   c.node(boxEnv, 'server/admin.ts', 'add-team', team, login)
   c.node(boxEnv, 'server/boxes.ts', 'build')
   c.start('server/api.ts', { ...boxEnv, AGENTS_STREAMS_DIR: join(work, 'streams'), AGENTS_MACHINE_LOST_SEC: String(LOST_SEC) })
+  await c.servePeople(PEOPLE_PORT, join(work, 'people.sock'))
   await until('the API', 20, async () => fetch(API).then(() => true, () => false))
   instanceId = JSON.parse(c.node(boxEnv, 'server/boxes.ts', 'create', team, boxName)).instanceId
   const { agentId } = JSON.parse(c.node(boxEnv, 'server/admin.ts', 'add-agent', team, `writer-${id}`, boxName))
@@ -126,6 +127,7 @@ try {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? String(error)}`)
 } finally {
+  c.closePeople()
   for (const child of c.children) child.kill('SIGTERM')
   await sleep(1000)
   // The box, its volume and its image are removed whatever happened, or the box

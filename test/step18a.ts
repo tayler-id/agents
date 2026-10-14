@@ -44,9 +44,10 @@ try {
   c.node({}, 'server/admin.ts', 'add-agent', team, `poet-${id}`, `mac-${id}`, 'haiku')
 
   c.start('server/api.ts', {
-    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 1),
+    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'),
     AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams'),
   })
+  await c.servePeople(PORT + 1, join(home, 'people.sock'))
   await until('the API', 20, async () => fetch(API).then(() => true, () => false))
   const daemonEnv = { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home }
   const daemon = c.start('daemon/agentsd.ts', daemonEnv)
@@ -104,6 +105,7 @@ try {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
 } finally {
+  c.closePeople()
   for (const child of c.children) child.kill('SIGTERM')
   if (!c.failures.length) {
     await c.db.query('delete from teams where name = $1', [team]).catch(() => {})

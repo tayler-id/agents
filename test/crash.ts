@@ -1,13 +1,15 @@
-// What the crash checks (step18a to step18e) share: starting an API and a
+// What the durability checks (step18a onwards) share: starting an API and a
 // daemon, killing a machine the way a crash does, and comparing what a person's
 // client reads through the sync proxy with the record in Postgres.
 
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import type { Server } from 'node:net'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Shape, ShapeStream, type Row } from '@electric-sql/client'
 import pg from 'pg'
+import { servePeople } from './people.ts'
 export const ROOT = new URL('..', import.meta.url).pathname
 // How long a check waits for a turn to finish, with real Claude or the fake.
 export const TURN_SECONDS = 240
@@ -18,6 +20,17 @@ export class Check {
   readonly failures: string[] = []
   readonly children: ChildProcess[] = []
   readonly db = new pg.Client({ connectionString: process.env.DATABASE_URL })
+  // The API serves people only on a Unix socket. This stands in for tailscale
+  // serve, on a loopback port that fetch and a browser can reach.
+  private people: Server | undefined
+
+  async servePeople(port: number, socket: string) {
+    this.people = await servePeople(port, socket)
+  }
+
+  closePeople() {
+    this.people?.close()
+  }
 
   check(ok: unknown, label: string) {
     console.log(`${ok ? 'pass' : 'FAIL'}  ${label}`)

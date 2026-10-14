@@ -4,7 +4,8 @@
 // that start fails. The session must show as failed, with the machine's reason,
 // and stay that way. The process stopped for the restart no longer speaks for
 // the session, so its clean exit can't set the session idle over the failure.
-// It shares ports with step18e, so the two run one after the other.
+// It shares ports with step18b, which the suite never runs right before it,
+// since an API can take 5 seconds to let go of its ports.
 //   node --env-file=.env --env-file=.env.test test/step18f.ts
 
 import { randomBytes } from 'node:crypto'
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { alive, Check, clientsMatchRecord, fakeLog, killFakes, person, ROOT, TURN_SECONDS, until } from './crash.ts'
 
-const PORT = 8057
+const PORT = 8049
 const API = `http://127.0.0.1:${PORT}`
 const PEOPLE = `http://127.0.0.1:${PORT + 1}`
 const id = randomBytes(4).toString('hex')
@@ -37,9 +38,10 @@ try {
   writeFileSync(join(home, 'scenario.json'), JSON.stringify({ turns: [] }))
 
   c.start('server/api.ts', {
-    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_PORT: String(PORT + 1),
+    AGENTS_RUNNER_TEAMS: team, AGENTS_API_PORT: String(PORT), AGENTS_PEOPLE_SOCKET: join(home, 'people.sock'),
     AGENTS_STREAMS_PORT: String(PORT + 2), AGENTS_STREAMS_DIR: join(home, 'streams'),
   })
+  await c.servePeople(PORT + 1, join(home, 'people.sock'))
   await until('the API', 20, async () => fetch(API).then(() => true, () => false))
   const daemon = c.start('daemon/agentsd.ts', {
     AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: home,
@@ -76,6 +78,7 @@ try {
   c.failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).message}`)
 } finally {
+  c.closePeople()
   for (const child of c.children) child.kill('SIGTERM')
   if (folder) killFakes(folder)
   if (!c.failures.length) {
