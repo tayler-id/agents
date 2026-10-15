@@ -80,6 +80,8 @@ const agentPosts = async (conversationId: string) =>
 // What a person reads of a conversation's waiting and stuck turns, as the app reads it.
 const waitsOf = async (conversationId: string) => (await shapeRows(PEOPLE, alice, 'turn_waits', { conversation: conversationId })).rows
 const seconds = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / 100) / 10
+// Rows as a label shows them. A shape's bigint columns have no JSON form of their own.
+const shownRows = (rows: unknown) => JSON.stringify(rows, (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value))
 // What the app's line says for a conversation's waiting and stuck turns, read from the
 // rows a page reads, its turns, their machines and the people, by the function the app calls.
 const linesOf = async (conversationId: string, viewer: string) => {
@@ -164,7 +166,7 @@ try {
   check(woken?.status === 'waiting' && woken.wait === 'computer_starting' && woken.instance_id === boxId,
     `a DM to an agent whose computer is asleep waits for the computer to start (${woken?.status} ${woken?.wait})`)
   check(waits.length === 1 && waits[0].id === woken?.id && waits[0].wait === 'computer_starting' && waits[0].instance_id === boxId && !('payload' in waits[0]),
-    `the conversation reads that its computer is starting, and never the turn's prompt (${JSON.stringify(waits)})`)
+    `the conversation reads that its computer is starting, and never the turn's prompt (${shownRows(waits)})`)
   const [mine, theirs] = [await linesOf(dm, aliceId), await linesOf(dm, randomBytes(16).toString('hex'))]
   check(mine.length === 1 && mine[0] === 'Starting your computer' && theirs[0] === `Starting ${alice}'s computer`,
     `the line says "Starting your computer" to its owner and names the owner to a teammate (${JSON.stringify([mine, theirs])})`)
