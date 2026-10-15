@@ -918,7 +918,8 @@ An agent on a different model reviewed the terminal-sessions branch on 2026-10-1
   - step23's two new lines both failed, 14 passed and 2 failed, with `waitFor` broken to always answer `computer_starting` and the scheduler otherwise as it was. The box nobody holds line read `computer_starting` where it expects `machine_offline`, and the Mac line failed because the Mac's turn waited. The break was a commit of its own, dropped with `git reset --hard`, and `server/scheduler.ts` matched the commit before by sha256.
   - step15 and step15b failed at 44c061a on the docker's ZodError. Starting the MCP client's transport against `docker version` through that docker shows the same error with the default environment and none with the check's environment passed on.
 - **Checks.**
-  - The coordinator's batch and step7 passed, 29 of 29. Under agents-git, 22 steps passed at 15bf4d3 and 5 at c33f88c. step15 and step15b passed by hand under the run lock, with main's env files, no agents-git docker on the PATH and `test/computers.ts` untouched, 53 of 53 and 51 of 51 at c33f88c. Their logs are in `.scratch/` in the worktree. The one commit after c33f88c is this entry.
+  - The coordinator's batch and step7 passed, 29 of 29. Under agents-git, 22 steps passed at 15bf4d3 and 5 at c33f88c. step15 and step15b passed by hand under the run lock, with main's env files, no agents-git docker on the PATH and `test/computers.ts` untouched, 53 of 53 and 51 of 51 at c33f88c. Their logs are in `.scratch/` in the worktree. The commits after c33f88c change only this entry.
+  - step6, step9, step13, step16 and step21b are outside the batch and use the stand-in for Claude. They also pass at 2838e23, 29, 14, 69, 96 and 59 lines. They cover pipeline stages, reminders and terminal sessions on Macs.
   - step20a passes 69 of 69, step2 22 of 22 and step12 76 of 76, as they were before the door.
   - step23 passes 16 of 16. On this Mac with the stand-in for Claude, a sleeping computer woke and took the turn 2.3 s after the message, and the reply came 2.5 s after it, against the 30 s the check allows. A real Claude adds its own time to the reply.
   - Typecheck, lint, the name guard and the style check pass.
@@ -928,4 +929,5 @@ An agent on a different model reviewed the terminal-sessions branch on 2026-10-1
   - The Screen view does not wake an asleep box. Waits for a seat, a budget, a plan's limit and a missing engine are later steps.
   - Nothing was tried on the live system, as instructed. The earlier agent drove an isolated instance with agentsctl at 14:32 and looked at the starting, offline and asleep views in three browsers at two widths. The app has not changed since.
   - agents-git's docker should not depend on inherited variables. Its launcher can carry the three values in the script it writes.
+  - 30 steps of the suite are not run by me. Some of them use real Claude, which spends Tayler's usage. The full suite is the landing gate.
   - step12c builds `agents-box:onboard-check` and never removes it, as before the door.
