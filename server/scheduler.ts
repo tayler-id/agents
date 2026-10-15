@@ -184,6 +184,18 @@ export async function cancelTurn(client: pg.PoolClient, turnId: string) {
   await moveTurn(client, turnId, { to: 'cancelled' })
 }
 
+// A person cancels a turn that waits for its machine. A room's turn is left to
+// its deadline, which ends its place in the room's line, and a turn its machine has
+// is stopped with an interrupt. Says what became of the request.
+export async function cancelWaitingTurn(client: pg.PoolClient, turnId: TurnId): Promise<'cancelled' | 'not waiting' | 'room' | 'missing'> {
+  const turn = await maybe<{ status: string; source: string }>(client, 'select status, source from turns where id = $1 for update', [turnId])
+  if (!turn) return 'missing'
+  if (turn.source === 'room') return 'room'
+  if (turn.status !== 'waiting') return 'not waiting'
+  await moveTurn(client, turnId, { to: 'cancelled' })
+  return 'cancelled'
+}
+
 // Cancels the turns of a session that have not reached its machine. A turn that
 // waits has no message command yet, so a stop or an interrupt written now would
 // queue ahead of the message the scheduler writes later, find nothing to stop, and

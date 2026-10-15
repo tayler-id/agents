@@ -41,11 +41,17 @@ export const TURN_OF_COMMAND = {
   claimed: 'running', done: 'done', failed: 'failed',
 } as const satisfies Record<Exclude<CommandStatus, 'queued'>, TurnStatus>
 
+// Who or what asked for a turn, as the turns table keeps it.
+export const TurnSource = z.enum(['person', 'room', 'routine', 'pipeline'])
+export type TurnSource = z.infer<typeof TurnSource>
+
 // What the app reads of a turn that waits, or that runs and has gone quiet, for
-// the line its conversation shows. stuck_since is when it was last heard from.
-export const TURN_WAIT_COLUMNS = ['id', 'agent_id', 'status', 'wait', 'instance_id', 'stuck_since']
+// the line its conversation or task shows. stuck_since is when it was last heard
+// from, and source says whether a person may cancel it, which they may not for a
+// room's turn.
+export const TURN_WAIT_COLUMNS = ['id', 'agent_id', 'status', 'wait', 'instance_id', 'stuck_since', 'source']
 export const TurnWaitRow = z.discriminatedUnion('status', [
-  z.object({ id: TurnId, agent_id: AgentId, status: z.literal('waiting'), wait: WaitReason, instance_id: InstanceId, stuck_since: z.null() }),
-  z.object({ id: TurnId, agent_id: AgentId, status: z.literal('running'), wait: z.null(), instance_id: InstanceId, stuck_since: z.string().min(1) }),
+  z.object({ id: TurnId, agent_id: AgentId, status: z.literal('waiting'), wait: WaitReason, instance_id: InstanceId, stuck_since: z.null(), source: TurnSource }),
+  z.object({ id: TurnId, agent_id: AgentId, status: z.literal('running'), wait: z.null(), instance_id: InstanceId, stuck_since: z.string().min(1), source: TurnSource }),
 ])
 export type TurnWaitRow = z.infer<typeof TurnWaitRow>

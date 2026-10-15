@@ -311,6 +311,7 @@ export const api = {
   answer: (askId: string, decision: string, message?: string) =>
     request('POST', `/v1/asks/${askId}/answer`, { decision, message }),
   interrupt: (sessionId: string) => request('POST', `/v1/sessions/${sessionId}/interrupt`, {}),
+  cancelTurn: (turnId: string) => request('POST', `/v1/turns/${turnId}/cancel`, {}),
   startRun: (pipelineId: string, title: string, body: string, repoId: string) =>
     request<{ runId: string }>('POST', `/v1/pipelines/${pipelineId}/runs`, { title, body, repoId }),
   cancelRun: (runId: string) => request('POST', `/v1/runs/${runId}/cancel`, {}),

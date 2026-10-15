@@ -145,7 +145,7 @@ function Workspace({ me }: { me: Me }) {
           : route.page === 'repos' ? <ReposView me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
-            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
+            : route.task ? <TaskView key={route.task} me={me} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />

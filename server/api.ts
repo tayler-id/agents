@@ -29,6 +29,7 @@ import {
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
 import { MessageMoveRefused, moveMessages, recoverMachine } from './durability.ts'
+import { cancelWaitingTurn } from './scheduler.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
@@ -52,7 +53,7 @@ import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
-import { ArtifactId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
+import { ArtifactId, SessionId, TaskId, TurnId, WorkspaceId } from '../shared/ids.ts'
 import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
@@ -598,6 +599,18 @@ const routes: Route[] = [
     const person = await personFrom(req)
     if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, 'no such session')
     await tx((client) => interruptSession(client, sessionId))
+    return { ok: true }
+  }],
+
+  // A person cancels a turn that waits for its machine, as they could interrupt one that runs.
+  ['people', 'POST', new RegExp(`^/v1/turns/${UUID}/cancel$`), async (req, [turnId]) => {
+    const person = await personFrom(req)
+    const found = await maybe<{ session_id: string | null }>(pool, 'select session_id from turns where id = $1 and team_id = $2', [turnId, person.team_id])
+    if (!found?.session_id || !(await canSeeSession(person, found.session_id))) throw new HttpError(404, 'no such turn')
+    const result = await tx((client) => cancelWaitingTurn(client, TurnId.parse(turnId)))
+    if (result === 'missing') throw new HttpError(404, 'no such turn')
+    if (result === 'room') throw new HttpError(409, "A room's turn ends at its deadline.")
+    if (result === 'not waiting') throw new HttpError(409, 'The turn is no longer waiting. Interrupt stops one that is running.')
     return { ok: true }
   }],
 

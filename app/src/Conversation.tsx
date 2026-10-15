@@ -108,7 +108,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
         ))}
         {failed.map((s) => <Stopped key={s.id} session={s} agentName={agents.find((a) => a.id === s.agent_id)?.name ?? 'Agent'} />)}
         {lost.map((s) => <Interrupted key={s.id} session={s} agentName={agents.find((a) => a.id === s.agent_id)?.name ?? 'Agent'} />)}
-        <TurnWaits me={me} conversationId={conversationId} agents={agents} people={people} />
+        <TurnWaits me={me} of={{ conversation: conversationId }} agents={agents} people={people} />
         {session && working && <Typing session={session} agentName={agents.find((a) => a.id === session.agent_id)?.name ?? 'Agent'} asking={openAsks.length > 0} />}
       </ol>
 

@@ -1,5 +1,5 @@
 import { TurnWaitRow } from '../../shared/turns.ts'
-import { clock, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me, type Person } from './data.ts'
+import { act, api, clock, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me, type Person } from './data.ts'
 
 // How often an open conversation looks again for turns that wait. A computer
 // takes tens of seconds to start, so a line two seconds late is still in time.
@@ -17,10 +17,11 @@ function lineOf(turn: TurnWaitRow, machine: Instance | undefined, me: Me, people
   return owner ? `Starting ${owner.name ?? owner.login}'s computer` : `Starting ${machine.name}`
 }
 
-// What a conversation says while an agent's turn waits for its machine, and while
-// a running turn has gone quiet. The reply arrives in its place.
-export function TurnWaits({ me, conversationId, agents, people }: { me: Me; conversationId: string; agents: Agent[]; people: Person[] }) {
-  const { rows: turns, error } = useSnapshotOf(TurnWaitRow, 'turn_waits', { conversation: conversationId }, WAITS_POLL_MS)
+// What a conversation or a task says while an agent's turn waits for its machine,
+// and while a running turn has gone quiet, with a way to cancel a turn that waits.
+// The reply arrives in its place.
+export function TurnWaits({ me, of, agents, people }: { me: Me; of: { conversation: string } | { task: string }; agents: Agent[]; people: Person[] }) {
+  const { rows: turns, error } = useSnapshotOf(TurnWaitRow, 'turn_waits', of, WAITS_POLL_MS)
   // Machines are read only while a turn waits on one.
   const { rows: machines } = useSnapshot<Instance>('instances', turns.length ? {} : null, WAITS_POLL_MS)
   if (error) return <li className="message waiting error small" role="alert">{error}</li>
@@ -31,6 +32,7 @@ export function TurnWaits({ me, conversationId, agents, people }: { me: Me; conv
         <div className="meta">
           <strong>{agents.find((a) => a.id === turn.agent_id)?.name ?? 'Agent'}</strong>
           <span className="small working"><span className="dot waiting" aria-hidden="true" />{lineOf(turn, machine, me, people)}</span>
+          {turn.status === 'waiting' && turn.source !== 'room' && <button type="button" className="link small" onClick={act(() => api.cancelTurn(turn.id))}>Cancel</button>}
         </div>
         {turn.status === 'waiting' && machine?.start_error && <p className="text muted small">It has not started yet. Docker said: {machine.start_error}</p>}
       </li>

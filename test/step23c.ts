@@ -19,9 +19,9 @@ import { moveMessages } from '../server/durability.ts'
 import { lostMachine } from '../server/framework.ts'
 import { recordVersion } from '../server/pipelines.ts'
 import { interruptSession, openDm, Person, reportUnplaceableTurn, sendPersonMessage } from '../server/record.ts'
-import { markStuckTurns, placeWaitingTurns, signalSession } from '../server/scheduler.ts'
+import { cancelWaitingTurn, markStuckTurns, placeWaitingTurns, queueRoomTurn, signalSession } from '../server/scheduler.ts'
 import { InstanceId } from '../shared/onboarding.ts'
-import { SessionId } from '../shared/ids.ts'
+import { AgentId, ConversationId, SessionId, TurnId } from '../shared/ids.ts'
 import { messageOf } from '../shared/errors.ts'
 import { must } from './must.ts'
 
@@ -94,6 +94,8 @@ async function world(label: string, kind: 'box' | 'mac' = 'box'): Promise<World>
 const up = (w: World) => pool.query(`update instances set status = 'online', ready = true, last_seen_at = now() where id = $1`, [w.boxId])
 const turnsOf = (w: World) => all(
   `select status, wait, command_id is not null as has_command from turns where conversation_id = $1 order by requested_at, id`, [w.conversationId])
+const commandsOfConversation = (w: World) => all(
+  `select c.kind from commands c join sessions s on s.id = c.session_id where s.conversation_id = $1 and c.kind = 'message'`, [w.conversationId])
 const asleep = async (w: World) => Boolean((await one('select stopped_at is not null as asleep from instances where id = $1', [w.boxId])).asleep)
 const shown = (turns: { status: string; wait: string | null; has_command: boolean }[]) =>
   turns.map((t) => `${t.status}${t.wait ? ` ${t.wait}` : ''}${t.has_command ? ' with a command' : ''}`).join(', ') || 'no turns'
@@ -266,6 +268,34 @@ try {
     const sent = await all(`select kind from commands where session_id = $1 order by created_at, id`, [await w.sessionId()])
     check(turns[0]?.status === 'placed' && turns[0].has_command && sent.map((c) => String(c.kind)).join() === 'message,interrupt',
       `an interrupt leaves a turn that already has its command, with the interrupt queued behind the message (${shown(turns)}; commands ${sent.map((c) => String(c.kind)).join(', ')})`)
+  }
+
+  // A person cancels a turn that waits for its machine, and nothing is sent when
+  // the box comes up. A turn its machine has is refused, since an interrupt stops
+  // that one, and so is a room's, which ends at its deadline.
+  {
+    const w = await world('cancelled')
+    await w.ask('Never mind.')
+    const waiting = String(must(await one('select id from turns where conversation_id = $1', [w.conversationId]), 'its turn').id)
+    const result = await tx((client) => cancelWaitingTurn(client, TurnId.parse(waiting)))
+    await up(w)
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
+    const turns = await turnsOf(w)
+    check(result === 'cancelled' && turns[0]?.status === 'cancelled' && !turns[0].has_command && (await commandsOfConversation(w)).length === 0,
+      `a person cancels a turn that waits, and no message follows it when the box comes up (${result}; ${shown(turns)})`)
+
+    const started = await world('started', 'mac')
+    await started.ask('Go.')
+    const startedTurn = String(must(await one('select id from turns where conversation_id = $1', [started.conversationId]), 'its turn').id)
+    const refused = await tx((client) => cancelWaitingTurn(client, TurnId.parse(startedTurn))).then((r) => r, (error: unknown) => `threw ${messageOf(error)}`)
+    check(refused === 'not waiting' && (await turnsOf(started))[0]?.status === 'placed',
+      `a turn whose message is already with its machine is refused, and goes on (${refused}; ${shown(await turnsOf(started))})`)
+
+    const room = String(must(await one(`insert into conversations (team_id, kind, name) values ($1, 'room', $2) returning id`, [teamId, `room-${id}`]), 'the room').id)
+    const agent = String(must(await one('select agent_id from conversations where id = $1', [w.conversationId]), 'the agent').agent_id)
+    const roomTurn = await tx((client) => queueRoomTurn(client, { teamId, agentId: AgentId.parse(agent), conversationId: ConversationId.parse(room), askedBy: w.person.id, deadlineSec: 60 }))
+    const roomResult = await tx((client) => cancelWaitingTurn(client, roomTurn))
+    check(roomResult === 'room', `a room's turn is left to its deadline (${roomResult})`)
   }
 
   // A governed stage whose machine went silent fails, and what it held ends with
