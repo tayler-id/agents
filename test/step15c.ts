@@ -394,7 +394,7 @@ try {
   const readerSeat = await seatFor('reader')
   const reader = await startTask('reader')
   const readerSays = await siteSays(reader.tools, '/whoami')
-  check(n(readerSeat) === '3 free' && reader.seat === 3 && readerSays === `signed in as ${second}`,
+  check(n(readerSeat) === '3 free' && reader.seat === 3 && reader.cdp.endsWith(':9224') && readerSays === `signed in as ${second}`,
     `a third agent takes seat 3, whose new browser starts with the shared login (${n(readerSeat)}, session on seat ${reader.seat} at ${reader.cdp}, ${readerSays})`)
 
   // Private work on seat 2 hides seat 2's screen from bob, and only seat 2's.
