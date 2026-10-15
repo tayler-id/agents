@@ -144,8 +144,9 @@ async function runEngine(engine: string, instanceId: string, writerTask: string)
     check(named && live && isBlue(shows), `${engine}: seat 2's Screen names seat 2 and shows seat 2's own page (${shows.join(',')})`)
     await page.screenshot({ path: join(SHOTS, `${engine}-seat-screen-light.png`) })
     check(await serious(page) === 0, `${engine}: a seat's Screen view on the box page has no serious accessibility problems`)
-    await page.getByRole('button', { name: 'Close' }).click()
-    check(await within(10, async () => new URL(page.url()).hash === '#/box'), `${engine}: closing the Screen goes back to the box page`)
+    // A view that never opened has no Close, which fails this line and lets the rest run.
+    const closed = await page.getByRole('button', { name: 'Close' }).click({ timeout: 10_000 }).then(() => true, () => false)
+    check(closed && await within(10, async () => new URL(page.url()).hash === '#/box'), `${engine}: closing the Screen goes back to the box page`)
 
     // A task's Screen opens the seat its session runs on.
     await page.goto(`/#/t/${writerTask}`)
