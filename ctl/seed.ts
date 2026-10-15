@@ -192,13 +192,13 @@ export async function startTask(state: ReadyState, task: { title: string; instru
   return started ? { kind: 'started', taskId: started.id, already: had !== null } : { kind: 'missing' }
 }
 
-// What a team with no task has to look at in the app: the sample repo, when it has no repo, and a task for fixer.
-// `up` has already given the team a teammate and agents. Each step finds what a run cut short left, and adds
-// only what is missing. Says what it added.
 const SAMPLE_REPO = 'shop'
 const SAMPLE_TASK = { title: 'Fix the checkout discount', instructions: 'TENOFF should never take an order below zero.' }
 const Held = z.object({ repos: z.number(), tasks: z.number() })
 
+// What a team with no task has to look at in the app, the sample repo when it has no repo, and a task for fixer.
+// `up` has already given the team a teammate and agents. Each step finds what a run cut short left, and adds
+// only what is missing. Says what it added.
 export async function seedSample(state: ReadyState): Promise<string[]> {
   const held = await withClient(async (client) => Held.parse((await client.query(
     'select (select count(*)::int from repos where team_id = $1) as repos, (select count(*)::int from tasks where team_id = $1) as tasks', [state.seed.teamId])).rows[0]))

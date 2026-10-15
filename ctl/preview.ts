@@ -74,7 +74,7 @@ function policyPlugin(nonce: string): Plugin {
 }
 
 // Whether a request, or a WebSocket upgrade, may go on to the instance. Everything that passes is signed in
-// as the person the preview was started for, so a page of any other origin is refused: it could otherwise act
+// as the person the preview was started for, so a page of any other origin is refused. It could otherwise act
 // as that person from a tab open on this Mac. The origin is also what the API checks for a screen's
 // WebSocket, which is why the proxy replaces it with one the API accepts. Like tailscale serve, this drops
 // any identity header the caller sent, so the caller can't name someone else.
@@ -183,7 +183,7 @@ export async function startPreview({ state, login }: { state: ReadyState; login:
     const page = await fetch(url, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(ANSWER_MS) })
     if (page.status !== 200) throw new Error(`GET / through the preview answered ${String(page.status)}. Its log, ${log}, says why`)
     const reply = await fetch(`${url}v1/me`, { signal: AbortSignal.timeout(ANSWER_MS) })
-    if (reply.status !== 200) throw new Error(`GET /v1/me through the preview answered ${String(reply.status)}, so the instance's people door did not take ${login}`)
+    if (reply.status !== 200) throw new Error(`GET /v1/me through the preview answered ${String(reply.status)}. The instance's people door, 127.0.0.1:${String(state.ports.people)}, did not take ${login}`)
     return { url, me: MeView.parse(await reply.json()), log, stop }
   } catch (error) {
     await stop()

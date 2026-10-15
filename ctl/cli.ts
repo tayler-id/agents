@@ -9,7 +9,7 @@ import { join, relative } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row, type Say, type Shown } from '../shared/cli/command.ts'
-import { JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
+import { CliError, EXIT, JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
 import { ENGINE, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, FEATURE_MAP, WIDTH } from '../shared/verification.ts'
 import { BASELINES_DIR, EVIDENCE_DIR, ROOT, scrubber } from './config.ts'
 import { bind, readOnly, withClient, type Rows } from './db.ts'
@@ -770,7 +770,10 @@ const PreviewArgs = Common.extend({ as: Who.optional(), 'no-seed': z.boolean().o
 // Brings the instance up if it is not, serves the app on it, says where, and serves until it is stopped.
 async function servePreview(values: z.infer<typeof PreviewArgs>, say: Say): Promise<Result> {
   const { state, already } = await previewInstance(values.instance)
-  const added = values['no-seed'] ? null : await seedSample(state)
+  // The sample's repo is made on the forge, so a forge that is down stops it. The screens do not need either.
+  const added = values['no-seed'] ? null : await seedSample(state).catch((error: unknown) => {
+    throw new CliError(EXIT.failed, `the sample repo and task were not added, so no preview started: ${messageOf(error)}`, ['Add `--no-seed` to preview the screens without them'])
+  })
   const login = loginFor(state, values.as)
   const preview = await startPreview({ state, login })
   const stopped = stopRequested()
@@ -799,7 +802,7 @@ async function servePreview(values: z.infer<typeof PreviewArgs>, say: Say): Prom
 
 const previewCommand = command({
   name: 'preview', args: '',
-  about: "serve this checkout's app on 127.0.0.1 with live updates, signed in to the instance, until Ctrl+C. Starts the instance if none runs",
+  about: "serve this checkout's app on 127.0.0.1 with live updates, signed in to the instance, until Ctrl+C. Starts the instance if none runs. With --json it prints one envelope when it is up and one when it ends",
   flags: {
     as: { kind: 'string', about: 'who is signed in: ada (by default), ben, a name given to seed person, or a full login' },
     'no-seed': { kind: 'boolean', about: 'leave a team with no tasks as it is, with no sample repo or task' },
