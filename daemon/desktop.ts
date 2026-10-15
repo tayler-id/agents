@@ -1,7 +1,8 @@
-// The box's computer: TigerVNC's Xvnc, which is both the X display and the VNC
-// server, matchbox as the window manager, and the box's Chromium. The daemon
-// starts all three, restarts any that exits, and stops them when it stops.
-// The design is docs/design/computers.md.
+// One seat's computer: TigerVNC's Xvnc, which is both the X display and the VNC
+// server, matchbox as the window manager, and the seat's Chromium. The daemon
+// starts all three for each seat (daemon/seats.ts), restarts any that exits,
+// and stops them when the seat or the daemon stops. The design is
+// docs/design/computers.md.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
@@ -20,6 +21,10 @@ const DesktopProcessEnv = z.object({ PATH: z.string().min(1), HOME: z.string().m
 
 export type DesktopConfig = {
   size: ScreenSize
+  // The X display's number, which names its lock files too.
+  display: number
+  // The browser's DevTools port, on the computer's loopback only.
+  cdpPort: number
   // Where the daemon keeps the screen's sockets, readable only by this user.
   runDir: string
   // The browser's profile, in the home volume so logins outlive the container.
@@ -36,6 +41,9 @@ export type Desktop = {
   ready: Promise<void>
   // Puts text on the screen's clipboard, as copying it in any app would.
   offerClipboard(text: string): Promise<ClipboardOffer>
+  // How many times the browser has started, so a reader can tell a browser
+  // that started again, with only what its profile kept.
+  browserStarts(): number
   stop(): Promise<void>
 }
 
@@ -48,9 +56,6 @@ export type ClipboardOffer = {
   taken(): Promise<boolean>
 }
 
-const DISPLAY = ':1'
-// Chrome's usual DevTools port, on the box's loopback only.
-const CDP_PORT = 9222
 // A process that ran this long was healthy, so its next crash restarts it at once.
 const HEALTHY_MS = 60_000
 const RESTART_FIRST_MS = 1_000
@@ -155,19 +160,20 @@ export function startDesktop(config: DesktopConfig): Desktop {
   mkdirSync(config.runDir, { recursive: true, mode: 0o700 })
   mkdirSync(config.profileDir, { recursive: true, mode: 0o700 })
   const vncSocket = join(config.runDir, 'vnc.sock')
-  const cdpUrl = `http://127.0.0.1:${CDP_PORT}`
+  const cdpUrl = `http://127.0.0.1:${config.cdpPort}`
   const chromium = findChromium(config.browsersPath)
   const { PATH, HOME } = DesktopProcessEnv.parse(process.env)
-  const env = { PATH, HOME, DISPLAY }
+  const display = `:${config.display}`
+  const env = { PATH, HOME, DISPLAY: display }
   const { width, height } = config.size
 
   const xvnc = supervise('Xvnc', 'Xvnc', [
-    DISPLAY, '-geometry', `${width}x${height}`, '-depth', '24', '-desktop', 'Agents box',
+    display, '-geometry', `${width}x${height}`, '-depth', '24', '-desktop', 'Agents box',
     // Viewers come only through the daemon's tunnels, over this socket. No TCP at all.
     '-rfbunixpath', vncSocket, '-rfbunixmode', '0600', '-rfbport', '-1', '-nolisten', 'tcp',
     // X clients reach the display only through its socket file in this container's
     // /tmp. Xvnc's abstract socket belongs to the network namespace, so boxes on
-    // the host's network, as step 12c runs them, would fight over display :1.
+    // the host's network, as step 12c runs them, would fight over their displays.
     '-nolisten', 'local',
     // The daemon's own connection and every viewer's share the screen. None is a
     // reason to drop another, and nobody resizes it under the agent's coordinates.
@@ -178,9 +184,9 @@ export function startDesktop(config: DesktopConfig): Desktop {
     '-extension', 'GLX',
   ], env, () => {
     // A container restart leaves the last run's lock and socket behind, and Xvnc
-    // refuses to start while they exist. Only this daemon runs an X server here.
-    rmSync('/tmp/.X1-lock', { force: true })
-    rmSync('/tmp/.X11-unix/X1', { force: true })
+    // refuses to start while they exist. Only this daemon runs X servers here.
+    rmSync(`/tmp/.X${config.display}-lock`, { force: true })
+    rmSync(`/tmp/.X11-unix/X${config.display}`, { force: true })
     rmSync(vncSocket, { force: true })
     mkdirSync('/tmp/.X11-unix', { recursive: true, mode: 0o1777 })
   })
@@ -198,16 +204,19 @@ export function startDesktop(config: DesktopConfig): Desktop {
       '--disable-background-networking', '--disable-component-update', '--disable-sync',
       // No GPU in a box. SwiftShader renders, rather than Chromium retrying EGL.
       '--use-angle=swiftshader', '--disable-dev-shm-usage',
-      `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${config.profileDir}`,
+      `--remote-debugging-port=${config.cdpPort}`, `--user-data-dir=${config.profileDir}`,
       '--window-position=0,0', `--window-size=${width},${height}`, '--start-maximized', 'about:blank',
     ], env, () => {
       // A recreated container has a new hostname, and Chromium won't open a profile
       // its old self still seems to hold.
       for (const lock of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) rmSync(join(config.profileDir, lock), { force: true })
+      state.browserStarts += 1
     }),
   ]
 
-  const state: { apps: Supervised[]; stopped: boolean; clipboard: ChildProcess | null } = { apps: [], stopped: false, clipboard: null }
+  const state: { apps: Supervised[]; stopped: boolean; clipboard: ChildProcess | null; browserStarts: number } = {
+    apps: [], stopped: false, clipboard: null, browserStarts: 0,
+  }
 
   // What the clipboard holds now, as an app pasting would get it. Empty when it
   // holds nothing, which xclip reports by failing.
@@ -285,7 +294,7 @@ export function startDesktop(config: DesktopConfig): Desktop {
     })
   })()
   return {
-    size: config.size, vncSocket, cdpUrl, ready, offerClipboard,
+    size: config.size, vncSocket, cdpUrl, ready, offerClipboard, browserStarts: () => state.browserStarts,
     async stop() {
       state.stopped = true
       state.clipboard?.kill()

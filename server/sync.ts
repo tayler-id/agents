@@ -61,6 +61,8 @@ const personShapes: Record<string, PersonShape> = {
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
       'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height', 'stopped_at'],
   }),
+  // The seats of the team's computers, and the agent holding each.
+  seats: async (p) => ({ table: 'seats', where: 'team_id = $1', params: [p.team_id] }),
   invites: async (p) => {
     requireAdmin(p)
     return { table: 'invites', where: 'team_id = $1', params: [p.team_id] }
@@ -235,6 +237,8 @@ const instanceShapes: Record<string, InstanceShape> = {
   claude_logins: async (i) => ({
     table: 'claude_logins', where: `instance_id = $1 and status in ('starting', 'waiting_for_code', 'checking')`, params: [i.id],
   }),
+  // This box's seats, which say which of them run and for which agent.
+  seats: async (i) => ({ table: 'seats', where: 'instance_id = $1', params: [i.id] }),
 }
 
 // Streams one shape request through to Electric with the server's own filter.

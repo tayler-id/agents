@@ -56,7 +56,8 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
-import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { handBackScreen, recheckViewers, screenUpgrades, seatInPath, startScreenSweep, takeScreen } from './screens.ts'
+import { seatRoutes } from './seat-routes.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
@@ -677,14 +678,15 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // A person takes over a box's screen, or hands it back to the agents. The body
+  // A person takes over the screen of a seat on a box, or hands it back to the
+  // agents. A screen named without a seat is the box's first seat. The body
   // names the session they were looking at, for the notice in its record.
-  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}/(take|hand-back)$`), async (req, [instanceId, action]) => {
+  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}(?:/seats/([0-9]+))?/(take|hand-back)$`), async (req, [instanceId, seat, action]) => {
     const person = await personFrom(req)
     const body = ScreenMove.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
     const move = action === 'take' ? takeScreen : handBackScreen
-    const moved: ScreenMoved = { control: await move(person, instanceId, body.data.sessionId) }
+    const moved: ScreenMoved = { control: await move(person, instanceId, seatInPath(seat), body.data.sessionId) }
     return moved
   }],
 
@@ -712,6 +714,7 @@ const routes: Route[] = [
 
   ...onboardingRoutes,
   ...boxRoutes,
+  ...seatRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
