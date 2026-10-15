@@ -378,8 +378,8 @@ try {
   const intoArchived = await addTo(member, quiet, invitee)
   check(intoArchived.status === 404 && !(await inRoom(quiet, inviteeId)), `an archived room takes no one, even from someone in it (${intoArchived.status})`)
   const posted = await asPerson(PEOPLE, member, 'POST', `/v1/conversations/${roomId}/messages`, { text: 'Who is here?', clientId: `room12-${id}` })
-  const prompt = await row(`select c.payload->>'text' as text from commands c join sessions s on s.id = c.session_id
-    where s.conversation_id = $1 and c.kind = 'message' order by c.created_at desc limit 1`, [roomId])
+  // The room's agent is on a Mac that never reports in, so its turn waits there with its prompt.
+  const prompt = await row(`select payload->>'text' as text from turns where conversation_id = $1 and status = 'waiting' order by requested_at desc limit 1`, [roomId])
   check(posted.status === 200 && [member, invitee, github].every((login) => String(prompt?.text).includes(login)) && !String(prompt?.text).includes(owner),
     `the room's agent is told who is in the room, the added teammates among them (${posted.status})`)
 

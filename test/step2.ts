@@ -157,6 +157,17 @@ try {
   check(JSON.stringify(bodies(after.inserts)) === JSON.stringify(['third, while away', 'fourth, while away']),
     'a reconnecting viewer gets exactly the two messages it missed, in order')
 
+  // Turns wait for a machine that has not reported in, so none reaches its queue
+  // before. It reports in as its daemon does, and the four turns go to it.
+  const waited = await db.query<{ waiting: number; queued: number }>(
+    `select (select count(*)::int from turns where conversation_id = $1 and status = 'waiting' and wait = 'machine_offline') as waiting,
+       (select count(*)::int from commands where instance_id = (select id from instances where name = $2)) as queued`, [conversationId, `mac-${id}`])
+  check(waited.rows[0]?.waiting === 4 && waited.rows[0].queued === 0, 'messages to a machine that has not reported in wait for it, and none reaches its queue')
+  for (const [path, body] of [['/v1/instance/heartbeat', { status: 'online' }], ['/v1/instance/recover', {}]] as const) {
+    const reported = await fetch(`${API}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    await reported.body?.cancel()
+  }
+
   // A machine sees its own queue, and a claimed command leaves it.
   const queue = follow('commands', { authorization: `Bearer ${token}` })
   await queue.until('four queued commands', () => queue.rows.size === 4)
