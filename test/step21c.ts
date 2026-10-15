@@ -23,13 +23,14 @@ import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
-// Ports 8120 to 8123 are this check's: machines, people, streams, and a page on another site.
+// Ports 8120 to 8124 are this check's: machines, people, streams, a page on another site, and a recorder in front of the API.
 const PORT = 8120
 const API = `http://127.0.0.1:${PORT}`
 const PEOPLE_PORT = PORT + 1
 const PEOPLE = `http://127.0.0.1:${PEOPLE_PORT}`
 const STREAMS_PORT = PORT + 2
 const ELSEWHERE_PORT = PORT + 3
+const RECORDER_PORT = PORT + 4
 // Over the tailnet the app is plain HTTP on a name that is not localhost. WebKit can't map a name, so it uses the address.
 const INSECURE_HOST = 'agents.test'
 const INSECURE = `http://${INSECURE_HOST}:${PEOPLE_PORT}`
@@ -54,6 +55,26 @@ const servers: { close: () => unknown }[] = []
 const failures: string[] = []
 const logs: string[] = []
 const made: string[] = []
+
+// Everything this Mac sent the server, as text: each request the daemon made, through a pass-through in front of the
+// API, and each request the desktop app's page made. A folder's name in any of them left the Mac, whether or not the
+// API kept or logged it.
+const sent: string[] = []
+const recorder = createServer((req, res) => {
+  const chunks: Buffer[] = []
+  req.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+  req.on('end', () => {
+    const body = Buffer.concat(chunks)
+    sent.push(`daemon ${req.method ?? ''} ${req.url ?? ''} ${body.toString('utf8')}`)
+    const onward = request({ host: '127.0.0.1', port: PORT, method: req.method, path: req.url, headers: req.headers }, (back) => {
+      res.writeHead(back.statusCode ?? 502, back.headers)
+      back.pipe(res)
+    })
+    onward.on('error', () => { res.writeHead(502).end() })
+    res.on('close', () => { onward.destroy() })
+    onward.end(body)
+  })
+})
 
 function check(ok: unknown, label: string) {
   console.log(`${ok ? 'pass' : 'FAIL'}  ${label}`)
@@ -147,7 +168,13 @@ try {
   const projects = join(home, 'Projects')
   const shop = join(projects, 'shop')
   const inner = join(shop, 'apps', 'api')
+  // A folder inside shop that is never connected, and that the person turns Off. Its name must never leave the Mac either.
+  const keptName = `kept-${randomBytes(6).toString('hex')}`
+  const keptFolder = join(shop, keptName)
   const diary = join(projects, 'diary')
+  // Two folders the page's code tries to connect after one click.
+  const first = join(projects, 'first')
+  const second = join(projects, 'second')
   // Folders that are never connected. Their names must never leave the Mac.
   const hiddenName = `hidden-${randomBytes(6).toString('hex')}`
   const hidden = join(projects, hiddenName)
@@ -157,16 +184,17 @@ try {
   made.push(temp)
   const tempName = must(temp.split('/').pop(), 'the temporary folder name')
   const ownSessions = join(agentsHome, 'agents', 'agent-one')
-  for (const dir of [shop, inner, diary, hidden, ownSessions]) mkdirSync(dir, { recursive: true })
+  for (const dir of [shop, inner, keptFolder, diary, hidden, first, second, ownSessions]) mkdirSync(dir, { recursive: true })
 
   // Claude Code ran in each of these, newest first: the temporary folder, the unconnected folder, a folder that is gone
-  // since, shop, a folder inside shop, diary and the home folder. The daemon's own session is newer than all of them.
+  // since, shop, two folders inside shop, diary and the home folder. The daemon's own session is newer than all of them.
   const ago = (ms: number) => new Date(Date.now() - ms)
   const MINUTE = 60_000
   transcript(claudeDir, temp, ago(MINUTE), 'In a temporary folder.', ago(MINUTE))
   transcript(claudeDir, hidden, ago(2 * MINUTE), 'In a folder never connected.', ago(2 * MINUTE))
   transcript(claudeDir, gone, ago(3 * MINUTE), 'In a folder removed since.', ago(3 * MINUTE))
   const early = transcript(claudeDir, shop, ago(60 * MINUTE), 'Before shop was connected.', ago(60 * MINUTE))
+  transcript(claudeDir, keptFolder, ago(90 * MINUTE), 'In a folder inside shop, never connected.', ago(90 * MINUTE))
   transcript(claudeDir, inner, ago(120 * MINUTE), 'In a folder inside shop.', ago(120 * MINUTE))
   transcript(claudeDir, diary, ago(1440 * MINUTE), 'In the diary.', ago(1440 * MINUTE))
   transcript(claudeDir, home, ago(2880 * MINUTE), 'In the home folder.', ago(2880 * MINUTE))
@@ -181,7 +209,9 @@ try {
   // Another run's API still on the port would answer too, so this one must also be alive.
   if (!await until('the API', 30, async () => api.exitCode === null && await fetch(API).then(() => true, () => false))) throw new Error('the API did not start')
   servers.push(await servePeople(PEOPLE_PORT, peopleSocket))
-  const daemonEnv = { AGENTS_API: API, AGENTS_TOKEN: token, AGENTS_HOME: agentsHome, HOME: home, CLAUDE_CONFIG_DIR: claudeDir, SHELL: '/bin/zsh', ZDOTDIR: home }
+  await new Promise<void>((resolve, reject) => { recorder.once('error', reject).listen(RECORDER_PORT, '127.0.0.1', () => { resolve() }) })
+  servers.push(recorder)
+  const daemonEnv = { AGENTS_API: `http://127.0.0.1:${RECORDER_PORT}`, AGENTS_TOKEN: token, AGENTS_HOME: agentsHome, HOME: home, CLAUDE_CONFIG_DIR: claudeDir, SHELL: '/bin/zsh', ZDOTDIR: home }
   let daemon = run('daemon', 'daemon/agentsd.ts', daemonEnv)
   const socket = join(agentsHome, 'run', 'app.sock')
 
@@ -225,13 +255,14 @@ try {
   })
   const app = desktop
   const desk = await app.firstWindow()
+  desk.on('request', (outgoing) => { sent.push(`page ${outgoing.method()} ${outgoing.url()} ${outgoing.postData() ?? ''}`) })
   await desk.locator('.team strong', { hasText: team }).waitFor({ timeout: 30_000 })
   await desk.getByRole('navigation', { name: 'Workspace' }).getByRole('button', { name: 'Terminal folders', exact: true }).click()
   const list = desk.getByRole('list', { name: 'Folders on this Mac' })
   const opened = await list.waitFor({ timeout: SHOWS_MS }).then(() => true, () => false)
   check(opened && desk.url().endsWith('#/folders'), `the sidebar's Terminal folders link opens the page: ${desk.url()}`)
   const names = await list.locator(':scope > li > .folder-place > strong').allTextContents()
-  check(names.join(', ') === [hiddenName, 'shop', 'api', 'diary', 'home'].join(', '),
+  check(names.join(', ') === [hiddenName, 'shop', keptName, 'api', 'diary', 'home'].join(', '),
     `it lists the folders Claude Code ran in on this Mac, newest first: ${names.join(', ')}`)
   // The group shows only when it holds a folder, and opens with a click.
   const groupSummary = desk.locator('main details.temporary > summary')
@@ -274,6 +305,9 @@ try {
   `Team connects the folder as the team's, and the page says so: ${toTeam}`)
   check(await until('the note on the folder inside shop', SHOWS_MS / 1000, async () => (await item('api').innerText()).includes('Its sessions land through shop, which the team sees.')),
     'a folder inside it says its sessions land through it')
+  // Off is what keeps a folder's sessions on this Mac, so a folder whose sessions land through shop doesn't show Off.
+  const throughPressed = `${await pressed('api')}, ${await pressed(keptName)}`
+  check(throughPressed === 'Off Team* Just me, Off Team* Just me', `the folders inside it show the choice their sessions land with, not Off: ${throughPressed}`)
 
   // A session started there afterwards lands. The one from before stays on the Mac.
   const sessionOf = async (harness: string) => (await db.query('select * from sessions where harness_session_id = $1', [harness])).rows[0]
@@ -317,12 +351,49 @@ try {
   check(keptClick && kept === "Nothing changed. Only you see shop's sessions." && await question('shop').count() === 0
     && (await folderRow(shop))?.visibility === 'private' && await pressed('shop') === 'Off Team Just me*' && !await canSee(mate, freshId),
   `Keep it to me leaves the folder as it was, and the page says so: ${kept}`)
+  // The daemon holds the same rule, so no page code can skip the question: Team on that folder needs the count the person said yes to.
+  const unconfirmed = await askSocket(socket, 'POST', '/folders/connect', { path: shop, visibility: 'team' })
+  const misconfirmed = await askSocket(socket, 'POST', '/folders/connect', { path: shop, visibility: 'team', confirmed: 2 })
+  check(unconfirmed.status === 409 && unconfirmed.body?.hiddenSessions === 1 && misconfirmed.status === 409 && misconfirmed.body?.hiddenSessions === 1
+    && (await folderRow(shop))?.visibility === 'private' && !await canSee(mate, freshId),
+  `the daemon refuses Team for that folder unless the ask carries the count the person said yes to, and changes nothing (${unconfirmed.status}, ${misconfirmed.status})`)
   const yesClick = await clicked(group('shop').getByRole('button', { name: 'Team', exact: true }))
     && await clicked(question('shop').getByRole('button', { name: 'Yes, show the team', exact: true }))
   const shown = await said('shop')
   check(yesClick && shown === "The team sees shop's sessions now, and the 1 session already in the record from it."
     && (await folderRow(shop))?.visibility === 'team' && await showsPressed('shop', 'Off Team* Just me') && await canSee(mate, freshId),
   `once the person says yes the folder is the team's, the page says how many sessions that showed, and the teammate sees its session again: ${shown}`)
+
+  // A folder's own choice wins over the folder it is in. Off on a folder inside shop keeps its sessions on this Mac, and
+  // the daemon keeps that Off on the Mac, so the name of a folder never connected doesn't reach the server.
+  const keptOffClick = await clicked(group(keptName).getByRole('button', { name: 'Off', exact: true }))
+  const keptOff = await said(keptName)
+  const keptPressed = await showsPressed(keptName, 'Off* Team Just me')
+  const keptNoted = (await item(keptName).innerText()).includes('Its sessions stay on this Mac, though it is inside shop, which the team sees.')
+  const keptRun = transcript(claudeDir, keptFolder, new Date(), 'In the folder turned Off inside shop.')
+  const shopSentinel = transcript(claudeDir, shop, new Date(), 'A sentinel in shop.')
+  const shopSentinelLanded = await until('the sentinel in shop', LANDS_SEC, async () => (await turnsEnded(shopSentinel.session)) === 1)
+  const keptLanded = await until('the session in the folder turned Off, which must not land', 3, async () => Boolean(await sessionOf(keptRun.session)))
+  check(keptOffClick && keptOff === `${keptName} is off. Sessions you start in it from now on stay on this Mac, though it is inside shop, which the team sees. The ones already in the record stay there.`
+    && keptPressed && keptNoted && shopSentinelLanded && !keptLanded,
+  `Off on a folder inside a connected one keeps its sessions on this Mac, and the row says so: ${keptOff}`)
+  // A folder inside shop that is Just me, turned Off, keeps its next sessions on this Mac too, rather than sending them to the team through shop.
+  await group('api').getByRole('button', { name: 'Just me', exact: true }).click()
+  const apiPrivate = await said('api')
+  const apiRow = must(await folderRow(inner), 'the api folder')
+  const apiRun = transcript(claudeDir, inner, new Date(apiRow.connected_at), 'In api while it is Just me.')
+  const apiLanded = await until('the session in api', LANDS_SEC, async () => (await turnsEnded(apiRun.session)) === 1)
+  const apiSession = await sessionOf(apiRun.session)
+  const apiOffClick = await clicked(group('api').getByRole('button', { name: 'Off', exact: true }))
+  const apiOff = await said('api')
+  const apiAfterOff = transcript(claudeDir, inner, new Date(), 'In api after Off.')
+  const apiSentinel = transcript(claudeDir, shop, new Date(), 'Another sentinel in shop.')
+  const apiSentinelLanded = await until('the second sentinel in shop', LANDS_SEC, async () => (await turnsEnded(apiSentinel.session)) === 1)
+  const apiAfterOffLanded = await until('the session in api after Off, which must not land', 3, async () => Boolean(await sessionOf(apiAfterOff.session)))
+  check(apiPrivate.startsWith('Connected api.') && apiLanded && apiSession?.folder_id === apiRow.id && !await canSee(mate, String(apiSession?.id)) && apiOffClick
+    && apiOff === 'Disconnected api. Sessions you start in it from now on stay on this Mac, though it is inside shop, which the team sees. The ones already in the record stay there.'
+    && await showsPressed('api', 'Off* Team Just me') && apiSentinelLanded && !apiAfterOffLanded,
+  `Off on a Just me folder inside a Team folder keeps its next sessions on this Mac, as the row says: ${apiOff}`)
   // A folder that is Just me with nothing in the record changes without a question, and changes back.
   await group('diary').getByRole('button', { name: 'Team', exact: true }).click()
   const diaryTeam = await said('diary')
@@ -416,6 +487,14 @@ try {
   const unasked: unknown = await inPage(`window.agentsMac.connect(${JSON.stringify(hidden)}, 'team')`)
   check(noClick && JSON.stringify(unasked).includes('"status":403') && await count('select count(*) from connected_folders where path = $1', [hidden]) === 0,
     `the page's code can't connect a folder without the person's click: ${JSON.stringify(unasked)}`)
+  // One click lets the page's code make one change, not one for every folder on the list. Playwright's click is trusted input.
+  await desk.getByRole('heading', { name: 'Terminal folders', level: 1 }).click()
+  const twice: unknown = await inPage(`Promise.all([window.agentsMac.connect(${JSON.stringify(first)}, 'private'), window.agentsMac.connect(${JSON.stringify(second)}, 'private')])`)
+  const twiceStatuses = Array.isArray(twice) ? twice.map((answer) => /"status":(\d+)/.exec(JSON.stringify(answer))?.[1] ?? 'none').join(', ') : 'no answers'
+  const firstStored = await count('select count(*) from connected_folders where path = $1 and disconnected_at is null', [first])
+  const secondStored = await count('select count(*) from connected_folders where path = $1', [second])
+  check(twiceStatuses === '200, 403' && firstStored === 1 && secondStored === 0,
+    `one click lets the page's code make one change, and refuses the next (${twiceStatuses})`)
   const asPerson = async (login: string) => (await fetch(`${PEOPLE}/v1/instance/folders`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'tailscale-user-login': login }, body: JSON.stringify({ path: hidden }),
   })).status
@@ -471,6 +550,27 @@ try {
     }
   }
 
+  // A Claude Code session started in /, as one from an app opened in Finder is, leaves only / out of the list, and the
+  // page says why. The daemon refuses to connect /, and says why.
+  transcript(claudeDir, '/', new Date(), 'In the root folder.')
+  await desk.reload()
+  const listedWithRoot = await list.waitFor({ timeout: SHOWS_MS }).then(() => true, () => false)
+  const rootNote = await desk.locator('main').getByText("/ isn't listed").innerText({ timeout: SHOWS_MS }).catch(() => '')
+  const rootAsk = await askSocket(socket, 'POST', '/folders/connect', { path: '/', visibility: 'team' })
+  check(listedWithRoot && await item('shop').count() === 1 && rootNote === "/ isn't listed, since the root folder holds every folder on the Mac and can't be connected."
+    && rootAsk.status === 400 && String(rootAsk.body?.error).includes("the root folder holds every folder on the Mac and can't be connected"),
+  `a session started in / leaves only / out of the list, the page says why, and the daemon refuses / by name: ${rootNote}`)
+
+  // A second daemon on the same home, such as one started by hand beside launchd's, leaves the running daemon's socket alone.
+  const secondDaemon = run('second-daemon', 'daemon/agentsd.ts', daemonEnv)
+  const secondSaid = await until('the second daemon to say the socket is taken', 15, async () =>
+    logs.filter((l) => l.startsWith('second-daemon: ')).join('').includes('already accepts connections'))
+  secondDaemon.kill('SIGTERM')
+  const secondStopped = await until('the second daemon to stop', STOP_SEC, async () => secondDaemon.exitCode !== null || secondDaemon.signalCode !== null)
+  const firstAnswers = (await askSocket(socket, 'GET', '/folders')).status === 200
+  check(secondSaid && secondStopped && firstAnswers,
+    "a second daemon on the same home leaves the running daemon's socket alone, and the app still reaches the first once the second stops")
+
   // A daemon that crashes leaves its socket's file behind. The page says it can't reach the daemon, and a daemon
   // started again replaces the file and answers.
   daemon.kill('SIGKILL')
@@ -503,8 +603,12 @@ try {
     (await desk.locator('main').getByRole('alert').innerText({ timeout: 1000 }).catch(() => '')).includes("The team's server did not answer"))
   check(stale && await list.isVisible(), "with the team's server down the page keeps its list and says the server did not answer")
 
-  // Nothing about a folder that was never connected left the Mac: no table in Postgres holds its name, and neither does the API's log.
-  const unconnected = [hiddenName, goneName, tempName]
+  // Nothing about a folder that was never connected left the Mac: no request to the server named it, no table in
+  // Postgres holds its name, and neither does the API's log.
+  const unconnected = [hiddenName, goneName, tempName, keptName]
+  const named = unconnected.filter((name) => sent.some((line) => line.includes(name)))
+  check(sent.length > 100 && !named.length,
+    `no request the daemon or the page sent the server names a folder never connected (${sent.length} requests${named.length ? `, named: ${named.join(', ')}` : ''})`)
   const tables: string[] = (await db.query(`select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'`)).rows.map((r) => r.table_name)
   const holding: string[] = []
   for (const table of tables) {
