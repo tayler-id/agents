@@ -2,7 +2,9 @@
 // an instance with its own token, and a volume for its home folder, so its
 // workspaces survive a restart and a rebuild of the image. A run claims a box
 // and releases it when it ends; a person can claim one to keep it. A box nobody
-// holds is stopped once it has been idle for AGENTS_BOX_IDLE_MIN minutes.
+// holds is stopped once it has been idle for AGENTS_BOX_IDLE_MIN minutes. A
+// person's own box sleeps once it has had nothing to do for as long, and wakes
+// when something needs it, such as a turn for one of its agents.
 //
 // Claims are rows, written inside the run's transaction. Containers start only
 // after that commits, in startClaimedBoxes, so a claim that rolls back never
@@ -31,13 +33,17 @@ import { HttpError, scrub } from './record.ts'
 import { messageOf } from '../shared/errors.ts'
 import { BOX_LABEL, BOX_STATE_FORMAT, BoxLine, boxContainer, boxHomeVolume, type ContainerState } from '../shared/boxes.ts'
 import { MACHINE_PORT, Port } from '../shared/listen.ts'
-import { InstanceId, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
+import { InstanceId, OPEN_CLAUDE_LOGIN, START_ERROR_MAX, type PersonId, type TeamId } from '../shared/onboarding.ts'
 
 const run = promisify(execFile)
 const ROOT = new URL('..', import.meta.url).pathname
 const IMAGE = process.env.AGENTS_BOX_IMAGE ?? 'agents-box:latest'
 const MAX_BOXES = Number(process.env.AGENTS_MAX_BOXES ?? 2)
-const IDLE_MIN = Number(process.env.AGENTS_BOX_IDLE_MIN ?? 30)
+// Minutes a box may go with nothing to do before it stops. Checks set a fraction of one.
+const IdleMinutes = z.coerce.number().positive().default(30)
+const idleMinutes = IdleMinutes.safeParse(process.env.AGENTS_BOX_IDLE_MIN)
+if (!idleMinutes.success) throw new Error('AGENTS_BOX_IDLE_MIN must be a number of minutes above 0')
+const IDLE_SEC = idleMinutes.data * 60
 // A Claude token from `claude setup-token`, so agents in boxes run on the team's subscription.
 const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '.agents-app', 'box-claude-token')
 // Browsers keep their rendering buffers in /dev/shm. Docker's default of 64 MB
@@ -187,8 +193,8 @@ export async function addPersonalBox(client: pg.PoolClient, teamId: TeamId, owne
   const names = [base, ...Array.from({ length: NAME_TRIES - 1 }, (_, i) => `${base}-${i + 2}`), `${base}-${randomBytes(3).toString('hex')}`]
   for (const name of names) {
     const box = await maybe(client,
-      `insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal)
-       values ($1, $2, 'box', $3, $4, $3, now(), true)
+      `insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal, idle_since)
+       values ($1, $2, 'box', $3, $4, $3, now(), true, now())
        on conflict (team_id, name) do nothing returning id`,
       [teamId, name, owner, placeholderToken()])
     if (box) return InstanceId.parse(box.id)
@@ -229,16 +235,27 @@ export async function claimBox(client: pg.PoolClient, teamId: string, runId: str
   return addBox(client, teamId, `box-${randomBytes(3).toString('hex')}`, { run: runId })
 }
 
-const HeldBox = z.object({ id: InstanceId, start_error: z.string().nullable() })
+// What keeps a box running: a turn waiting for it, a command queued for it or in
+// hand, its owner signing in to Claude on it, or a person holding its screen.
+// Queries that use it pass the open sign-in statuses as $1.
+const WANTED = `(exists (select 1 from turns t where t.instance_id = i.id and t.status = 'waiting')
+  or exists (select 1 from commands c where c.instance_id = i.id and c.status in ('queued', 'claimed'))
+  or exists (select 1 from claude_logins l where l.instance_id = i.id and l.status = any($1))
+  or exists (select 1 from screen_takeovers s where s.instance_id = i.id and s.ended_at is null))`
+const OPEN_LOGINS = [...OPEN_CLAUDE_LOGIN]
+
+const HeldBox = z.object({ id: InstanceId, start_error: z.string().nullable(), asleep: z.boolean() })
 
 // Starts the container of every box a person or an active run holds, if it is
-// not running. Runs outside any run's transaction, after claims have committed.
-// When the box host cannot be reached this throws before touching any box.
+// not running, except a person's own box asleep with nothing wanting it. Runs
+// outside any run's transaction, after claims have committed. When the box host
+// cannot be reached this throws before touching any box.
 export async function startClaimedBoxes(teamIds: string[] | null) {
   const rows = (await many(pool,
-    `select i.id, i.start_error from instances i left join runs r on r.id = i.claimed_by_run
-     where i.kind = 'box' and ($1::uuid[] is null or i.team_id = any($1))
-       and (i.claimed_by is not null or r.status in ('queued', 'running', 'waiting'))`, [teamIds])).map((row) => HeldBox.parse(row))
+    `select i.id, i.start_error, i.stopped_at is not null as asleep from instances i left join runs r on r.id = i.claimed_by_run
+     where i.kind = 'box' and ($2::uuid[] is null or i.team_id = any($2))
+       and (i.claimed_by is not null or r.status in ('queued', 'running', 'waiting'))
+       and (i.stopped_at is null or ${WANTED})`, [OPEN_LOGINS, teamIds])).map((row) => HeldBox.parse(row))
   if (!rows.length) return
   const states = await boxStates()
   for (const box of rows) {
@@ -247,6 +264,8 @@ export async function startClaimedBoxes(teamIds: string[] | null) {
     try {
       if (action === 'start') await docker(['start', boxContainer(box.id)])
       if (action === 'replace') await runContainer(pool, box.id)
+      // A box woken from sleep gets its whole idle stretch again.
+      if (box.asleep) await pool.query('update instances set stopped_at = null, idle_since = now() where id = $1', [box.id])
       if (box.start_error !== null) await pool.query('update instances set start_error = null where id = $1', [box.id])
     } catch (error) {
       // One box that cannot start, such as from a missing image, must not keep the
@@ -266,14 +285,31 @@ export async function releaseBox(client: pg.Pool | pg.PoolClient, runId: string)
     `update instances set claimed_by_run = null, claimed_at = null, idle_since = now() where claimed_by_run = $1`, [runId])
 }
 
-// Stops boxes nobody has held for a while. Their volumes stay, so the next claim
-// starts them again with their workspaces in place.
+const IdleBox = z.object({ id: InstanceId, personal: z.boolean() })
+
+// Stops boxes with nothing to do. A box nobody holds stops once it has been idle
+// for AGENTS_BOX_IDLE_MIN. A person's own box stops once that long has passed
+// since it was made or woken and since its last turn ended. It is marked asleep
+// first, so the runner leaves it stopped until something wants it, and one marked
+// asleep whose container still runs, such as after a stop that failed, is stopped
+// again. Their volumes stay, so they start again with their workspaces in place.
 export async function stopIdleBoxes(teamIds: string[] | null) {
-  const { rows } = await pool.query<{ id: string }>(
-    `select id from instances where kind = 'box' and claimed_by is null and claimed_by_run is null
-     and ($2::uuid[] is null or team_id = any($2))
-     and status <> 'offline' and idle_since < now() - make_interval(mins => $1)`, [IDLE_MIN, teamIds])
+  const rows = (await many(pool,
+    `select i.id, i.personal from instances i
+     where i.kind = 'box' and i.claimed_by_run is null and i.status <> 'offline' and ($3::uuid[] is null or i.team_id = any($3))
+       and not ${WANTED} and case when i.personal
+         then i.stopped_at is not null
+           or greatest(i.idle_since, (select max(t.finished_at) from turns t where t.instance_id = i.id)) < now() - make_interval(secs => $2)
+         else i.claimed_by is null and i.idle_since < now() - make_interval(secs => $2) end`,
+    [OPEN_LOGINS, IDLE_SEC, teamIds])).map((row) => IdleBox.parse(row))
+  // Docker says which of the people's boxes still run, read once and only when one may.
+  const states = rows.some((box) => box.personal) ? await boxStates() : new Map<string, ContainerState>()
   for (const box of rows) {
+    if (box.personal) {
+      const asleep = await maybe(pool,
+        `update instances i set stopped_at = coalesce(stopped_at, now()) where id = $2 and not ${WANTED} returning id`, [OPEN_LOGINS, box.id])
+      if (!asleep || states.get(box.id) !== 'running') continue
+    }
     await docker(['stop', boxContainer(box.id)]).catch((error: unknown) => { console.error(`stopping box ${box.id}:`, messageOf(error)) })
   }
 }
