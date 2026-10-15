@@ -26,10 +26,9 @@ import pg from 'pg'
 import WebSocket from 'ws'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { must } from './must.ts'
-import {
-  ROOT, IMAGE, MACHINE_PORT, SCREEN, within, docker, tryDocker, boxCheckEnv, peopleSocket, computerTools, textOf, imageOf, stopAll,
-} from './computers.ts'
+import { ROOT, IMAGE, MACHINE_PORT, SCREEN, within, docker, tryDocker, boxCheckEnv, peopleSocket, textOf, imageOf, stopAll } from './computers.ts'
 import { servePeople } from './people.ts'
+import { IN_PAGE, isBlue, isRed, seatPage, seatTools } from './seats.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -161,14 +160,6 @@ function pixelOf(base64: string, x: number, y: number): [number, number, number]
   }
   return [rows.readUInt8(y * stride + x * 3), rows.readUInt8(y * stride + x * 3 + 1), rows.readUInt8(y * stride + x * 3 + 2)]
 }
-
-// A page that fills the browser with one color, named for its seat.
-const seatPage = (title: string, color: string) => `data:text/html;charset=utf-8,${encodeURIComponent(
-  `<!doctype html><title>${title}</title><style>html,body{margin:0;height:100%;background:${color}}</style><h1>${title}</h1>`)}`
-// A point well inside the page, below the browser's toolbar.
-const IN_PAGE = { x: SCREEN.width / 2, y: SCREEN.height - 100 }
-const isRed = ([r, g, b]: number[]) => (r ?? 0) > 200 && (g ?? 255) < 60 && (b ?? 255) < 60
-const isBlue = ([r, g, b]: number[]) => (r ?? 255) < 60 && (g ?? 255) < 60 && (b ?? 0) > 200
 
 // A site on the box's loopback that signs in with an HttpOnly cookie and says who is signed in.
 const LOGIN_SITE = `require('node:http').createServer((req, res) => {
@@ -314,10 +305,10 @@ try {
     const sessionId: string = must(task.json?.sessionId, `${name}'s session`)
     await within(120, async () => (await one('select status from sessions where id = $1', [sessionId]))?.status === 'idle')
     const workspace = String(must(await one('select w.path from workspaces w join sessions s on s.workspace_id = w.id where s.id = $1', [sessionId]), 'workspace').path)
-    const { client, server } = await computerTools(container, sessionId, workspace)
+    const { client, env } = await seatTools(container, sessionId, workspace)
     closers.push(() => client.close())
     const seat = await one('select n from seats where id = (select seat_id from sessions where id = $1)', [sessionId])
-    return { sessionId, tools: client, cdp: String(server.env.AGENTS_BROWSER_CDP), socket: String(server.env.AGENTS_SCREEN_SOCKET), seat: Number(seat?.n) }
+    return { sessionId, tools: client, cdp: String(env.AGENTS_BROWSER_CDP), socket: String(env.AGENTS_SCREEN_SOCKET), seat: Number(seat?.n) }
   }
   const [scout, writer] = await Promise.all([startTask('scout'), startTask('writer')])
   check(scout.seat === 1 && writer.seat === 2 && scout.cdp.endsWith(':9222') && writer.cdp.endsWith(':9223') && scout.socket !== writer.socket,
