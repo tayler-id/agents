@@ -97,6 +97,10 @@ async function placeSession(client: pg.PoolClient, sessionId: string) {
      order by requested_at, id for update`, [sessionId])
   if (!turns.length) return
   const machine = await whereTurnsRun(client, sessionId)
+  // Nothing starts a session while its turns wait. A new one would otherwise
+  // read as starting, which the app shows as the agent thinking, and which the
+  // watchdog marks lost once the machine stays silent, so it reads as idle.
+  if (!machine.takes_work) await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
   for (const turn of turns) {
     if (machine.takes_work) {
       const command = await one<{ id: string }>(client, 'the message command',
