@@ -49,19 +49,21 @@ export type FolderAnswer = z.infer<typeof FolderAnswer>
 // Connecting also says how many sessions already in the record a widening to the team showed it.
 export const ConnectAnswer = FolderAnswer.extend({ exposed: z.number().int().min(0) })
 export type ConnectAnswer = z.infer<typeof ConnectAnswer>
-// The Mac's own id, so the app can tell its folders from those on the person's other machines, and its connected folders.
-export const FolderList = z.object({ instanceId: InstanceId, folders: z.array(FolderRow) })
+// The Mac's own id, so the app can tell its folders from those on the person's other machines, its connected
+// folders, and how many sessions in the record each holds, by the folder's id.
+export const FolderList = z.object({ instanceId: InstanceId, folders: z.array(FolderRow), sessions: z.record(z.string(), z.number().int().min(0)) })
 export type FolderList = z.infer<typeof FolderList>
 
 // What this Mac's daemon tells the Agents app on the same Mac, through the socket
 // in daemon/app-socket.ts. Each folder is one Claude Code ran in, with when its
-// newest transcript changed, or one connected here that it hasn't run in since,
-// or both. A temporary one is inside the system's temporary folders, where tools
-// start Claude Code by the hundred. A folder that isn't connected never leaves the Mac.
+// newest transcript changed, or one connected here, with how many sessions in the
+// record it holds, or both. A temporary one is inside the system's temporary
+// folders, where tools start Claude Code by the hundred. A folder that isn't
+// connected never leaves the Mac.
 const MacFolderPlace = { path: FolderPath, temporary: z.boolean() }
 export const MacFolder = z.union([
-  z.object({ ...MacFolderPlace, usedAt: Time, folder: FolderRow.nullable() }),
-  z.object({ ...MacFolderPlace, usedAt: z.null(), folder: FolderRow }),
+  z.object({ ...MacFolderPlace, usedAt: Time, folder: z.null(), sessions: z.null() }),
+  z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: FolderRow, sessions: z.number().int().min(0) }),
 ])
 export type MacFolder = z.infer<typeof MacFolder>
 // This Mac's id, its person's home folder, which can't be connected, and its folders, newest first.

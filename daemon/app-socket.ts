@@ -93,19 +93,22 @@ export function serveAppSocket({ home, api, signal }: { home: string; api: Api; 
   }
 }
 
-// This Mac's folders: the ones Claude Code ran in, and the ones connected here,
-// newest first. Two used at the same moment go in order of their paths.
+// This Mac's folders: the ones Claude Code ran in, and the ones connected here
+// with how many sessions in the record each holds, newest first. Two used at the
+// same moment go in order of their paths.
 async function listFolders(home: string, api: Api): Promise<MacFolders> {
-  const { instanceId, folders: connected } = await connectedFolders(api)
+  const { instanceId, folders: connected, sessions } = await connectedFolders(api)
   const rows = new Map<string, MacFolder>()
   for (const used of claudeFolders(realpathSync.native(home))) {
-    rows.set(used.path, { path: used.path, temporary: temporary(used.path), usedAt: used.usedAt.toISOString(), folder: null })
+    rows.set(used.path, { path: used.path, temporary: temporary(used.path), usedAt: used.usedAt.toISOString(), folder: null, sessions: null })
   }
   for (const folder of connected) {
+    const count = sessions[folder.id]
+    if (count === undefined) throw new Error(`the team's server listed ${folder.path} with no count of its sessions`)
     const used = rows.get(folder.path)
-    rows.set(folder.path, used ? { ...used, folder } : { path: folder.path, temporary: temporary(folder.path), usedAt: null, folder })
+    rows.set(folder.path, { path: folder.path, temporary: temporary(folder.path), usedAt: used?.usedAt ?? null, folder, sessions: count })
   }
-  const newest = (row: MacFolder) => Date.parse(row.usedAt === null ? row.folder.connected_at : row.usedAt)
+  const newest = (row: MacFolder) => Date.parse(row.folder === null ? row.usedAt : row.usedAt ?? row.folder.connected_at)
   const folders = [...rows.values()].sort((a, b) => newest(b) - newest(a) || a.path.localeCompare(b.path))
   return { instanceId, home: realpathSync.native(homedir()), folders }
 }

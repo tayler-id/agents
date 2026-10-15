@@ -5,16 +5,19 @@
 // record's session for it. The design is docs/design/local-sessions.md.
 
 import type pg from 'pg'
+import { z } from 'zod'
 import { many, maybe, one, pool } from './db.ts'
 import { HttpError, scrub } from './record.ts'
 import type { Instance } from './auth.ts'
 import { PersonId, SessionId } from '../shared/ids.ts'
 import { EVENT_KINDS, PERSON_KINDS, type EventKind } from '../shared/types.ts'
 import {
-  FolderRow, insideFolder, type ConnectAnswer, type ConnectFolder, type DisconnectFolder, type FolderAnswer, type TerminalSessionAsk,
+  FolderRow, insideFolder, type ConnectAnswer, type ConnectFolder, type DisconnectFolder, type FolderAnswer, type FolderList, type TerminalSessionAsk,
 } from '../shared/terminal.ts'
 
 const FOLDER = `id, team_id, instance_id, path, visibility, connected_by, connected_at::text, disconnected_at::text`
+// How many sessions in the record a folder holds, every one of which the team sees once a private folder is the team's.
+const SESSIONS_OF = (folderId: string) => `(select count(*)::int from sessions where folder_id = ${folderId})`
 
 // The person whose terminal this Mac is. Their sessions are the ones a connected folder sends.
 async function macOwner(client: pg.PoolClient, instance: Instance): Promise<PersonId> {
@@ -35,7 +38,7 @@ export async function connectFolder(client: pg.PoolClient, instance: Instance, a
     if (folder.disconnected_at === null && folder.visibility === visibility) return { folder, already: true, exposed: 0 }
     // Widening a private folder shows the team every session of it already in the record.
     const exposed = folder.visibility === 'private' && visibility === 'team'
-      ? (await one<{ count: number }>(client, 'the count of the folder\'s sessions', 'select count(*)::int as count from sessions where folder_id = $1', [folder.id])).count
+      ? (await one<{ count: number }>(client, 'the count of the folder\'s sessions', `select ${SESSIONS_OF('$1')} as count`, [folder.id])).count
       : 0
     // A folder connected again starts over: only sessions started from now on land.
     const again = await one(client, 'the folder connected again',
@@ -60,9 +63,13 @@ export async function disconnectFolder(client: pg.PoolClient, instance: Instance
   return { folder: FolderRow.parse(gone), already: false }
 }
 
-export async function connectedFolders(instance: Instance): Promise<FolderRow[]> {
-  const rows = await many(pool, `select ${FOLDER} from connected_folders where instance_id = $1 and disconnected_at is null order by path`, [instance.id])
-  return rows.map((row) => FolderRow.parse(row))
+// This Mac's connected folders, and how many sessions in the record each holds, so the app can ask before a private one becomes the team's.
+const CountedFolder = FolderRow.extend({ sessions: z.number().int().min(0) })
+export async function connectedFolders(instance: Instance): Promise<Omit<FolderList, 'instanceId'>> {
+  const rows = await many(pool, `select ${FOLDER}, ${SESSIONS_OF('connected_folders.id')} as sessions
+    from connected_folders where instance_id = $1 and disconnected_at is null order by path`, [instance.id])
+  const counted = rows.map((row) => CountedFolder.parse(row))
+  return { folders: counted.map(({ sessions, ...folder }) => folder), sessions: Object.fromEntries(counted.map((folder) => [folder.id, folder.sessions])) }
 }
 
 // The record's session for a Claude Code session the Mac found in one of its

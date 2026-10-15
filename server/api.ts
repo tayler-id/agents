@@ -313,11 +313,12 @@ const routes: Route[] = [
     return { ok: true, commit: BUILD.commit, build: BUILD }
   }],
 
-  // The folders on this Mac whose terminal sessions land in the record, and the
-  // Mac's own id. Only the Mac itself connects or disconnects one, so nobody in the app can.
+  // The folders on this Mac whose terminal sessions land in the record, how many
+  // sessions each holds, and the Mac's own id. Only the Mac itself connects or
+  // disconnects one, so nobody in the app can.
   ['machines', 'GET', /^\/v1\/instance\/folders$/, async (req) => {
     const instance = await instanceFrom(req)
-    const answer: FolderList = { instanceId: InstanceId.parse(instance.id), folders: await connectedFolders(instance) }
+    const answer: FolderList = { instanceId: InstanceId.parse(instance.id), ...await connectedFolders(instance) }
     return answer
   }],
 

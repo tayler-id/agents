@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useId, useState } from 'react'
 import { z } from 'zod'
 import {
   AppConnected, AppRefusal, FolderAnswer, FolderRow, holdsHome, insideFolder, MacFolders, type FolderVisibility, type MacFolder,
@@ -41,10 +41,10 @@ async function asked<S extends z.ZodType>(schema: S, answer: Promise<unknown>): 
 const nameOf = (path: string) => path.split('/').pop() ?? path
 const shortPath = (path: string, home: string) => (insideFolder(home, path) ? `~${path.slice(home.length)}` : path)
 const whoSees = (visibility: FolderVisibility) => (visibility === 'team' ? 'the team sees' : 'only you see')
+const sessions = (n: number) => `${n} session${n === 1 ? '' : 's'}`
 
 // What the page says after a folder was connected or changed.
 function connectedText(name: string, before: Choice, done: AppConnected): string {
-  const sessions = (n: number) => `${n} session${n === 1 ? '' : 's'}`
   const text = done.already ? `${name} was already connected, and ${whoSees(done.folder.visibility)} its sessions.`
     : before === 'off' ? `Connected ${name}. Claude Code sessions you start in it from now on land in the record, and ${whoSees(done.folder.visibility)} them.`
         + (done.exposed ? ` The team also sees the ${sessions(done.exposed)} already in the record from it.` : '')
@@ -80,21 +80,34 @@ export function FoldersPage({ me }: { me: Me }) {
 
 // What a folder's row last said, after its person chose something on it.
 type Said = { path: string; text: string; failed: boolean }
+// A folder whose person chose Team while it is Just me and has sessions in the record, which the page asks about first.
+type Asking = { path: string; sessions: number }
 
 function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const read = useCallback(() => asked(MacFolders, bridge.list()), [bridge])
   const { value, error, refresh } = usePolled(read, () => LIST_EVERY_MS)
   const [busy, setBusy] = useState<string | null>(null)
   const [said, setSaid] = useState<Said | null>(null)
+  const [asking, setAsking] = useState<Asking | null>(null)
 
-  // The bridge is called before anything is awaited, while the click still counts as the person's.
-  const choose = act(async (row: MacFolder, choice: Choice) => {
+  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team on a folder
+  // that is Just me asks first when the team would then see sessions already in the record, counted afresh, unless
+  // the person just said yes to that.
+  const choose = act(async (row: MacFolder, choice: Choice, confirmed: boolean) => {
     const before = chosen(row)
     if (choice === before) return
     const name = nameOf(row.path)
     setBusy(row.path)
     setSaid(null)
+    setAsking(null)
     try {
+      if (before === 'private' && choice === 'team' && !confirmed) {
+        const now = (await asked(MacFolders, bridge.list())).folders.find((r) => r.path === row.path)
+        if (now?.folder && now.folder.visibility === 'private' && now.sessions > 0) {
+          setAsking({ path: row.path, sessions: now.sessions })
+          return
+        }
+      }
       const text = choice === 'off'
         ? disconnectedText(name, await asked(FolderAnswer, bridge.disconnect(row.path)))
         : connectedText(name, before, await asked(AppConnected, bridge.connect(row.path, choice)))
@@ -112,10 +125,15 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
       ? <p className="error small" role="alert">This Mac's folders can't be listed. {error}</p>
       : <p className="muted">Asking this Mac's daemon for its folders…</p>
   }
+  const keep = (row: MacFolder) => {
+    setAsking(null)
+    setSaid({ path: row.path, text: `Nothing changed. Only you see ${nameOf(row.path)}'s sessions.`, failed: false })
+  }
   const connected = value.folders.flatMap((row) => (row.folder ? [row.folder] : []))
   const item = (row: MacFolder) => (
     <FolderItem key={row.path} row={row} home={value.home} connected={connected} busy={busy !== null} working={busy === row.path}
-      said={said?.path === row.path ? said : null} onChoose={(choice) => { choose(row, choice) }} />
+      said={said?.path === row.path ? said : null} asking={asking?.path === row.path && chosen(row) === 'private' ? asking.sessions : null}
+      onChoose={(choice) => { choose(row, choice, false) }} onConfirm={() => { choose(row, 'team', true) }} onKeep={() => { keep(row) }} />
   )
   const recent = value.folders.filter((row) => !row.temporary)
   const temporary = value.folders.filter((row) => row.temporary)
@@ -138,9 +156,11 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   )
 }
 
-function FolderItem({ row, home, connected, busy, working, said, onChoose }: {
-  row: MacFolder; home: string; connected: FolderRow[]; busy: boolean; working: boolean; said: Said | null; onChoose: (choice: Choice) => void
+function FolderItem({ row, home, connected, busy, working, said, asking, onChoose, onConfirm, onKeep }: {
+  row: MacFolder; home: string; connected: FolderRow[]; busy: boolean; working: boolean; said: Said | null
+  asking: number | null; onChoose: (choice: Choice) => void; onConfirm: () => void; onKeep: () => void
 }) {
+  const questionId = useId()
   const name = nameOf(row.path)
   const current = chosen(row)
   const isHome = holdsHome(row.path, home)
@@ -168,6 +188,14 @@ function FolderItem({ row, home, connected, busy, working, said, onChoose }: {
         </p>
       )}
       {through && <p className="folder-note muted small">Its sessions land through {nameOf(through.path)}, which {whoSees(through.visibility)}.</p>}
+      {asking !== null && (
+        <div className="folder-note confirm" role="group" aria-labelledby={questionId}>
+          <span className="small" id={questionId}>Show the team the {sessions(asking)} already in the record from {name}?</span>
+          <button type="button" className="link small" disabled={busy} onClick={onConfirm}>Yes, show the team</button>
+          {/* The safe answer takes the focus, so a key press can't show the team by accident. */}
+          <button type="button" className="link small" autoFocus onClick={onKeep}>Keep it to me</button>
+        </div>
+      )}
       {said && <p className={`folder-note small${said.failed ? ' error' : ''}`} role={said.failed ? 'alert' : 'status'}>{said.text}</p>}
     </li>
   )
