@@ -34,7 +34,7 @@ import { messageOf } from '../shared/errors.ts'
 import { PLAYBOOK_NAMES, PLAYBOOKS } from '../shared/framework.ts'
 import type { AgentStage, Next, Pipeline, Report, RouteStage, RunComment, RunContext, Stage } from '../shared/pipeline.ts'
 import type { ExecResult, MessagePayload, Permissions, PushPayload, PushResult, SetupWorkspacePayload, StageSpec } from '../shared/types.ts'
-import { ProposalId, RunId, SessionId, TeamId } from '../shared/ids.ts'
+import { AgentId, ProposalId, RunId, SessionId, TeamId } from '../shared/ids.ts'
 
 const CHANNEL = 'agents_runner'
 const TICK_MS = 2000
@@ -114,7 +114,8 @@ export async function sendPrompt(client: pg.PoolClient, run: Run, workspace: Wor
     instructions: guidance ? `${agent.instructions}\n\n${guidance}` : agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: workspace.id, stage: spec, maxBudgetUsd: spec.maxBudgetUsd,
   }
-  await requestTurn(client, { source: 'pipeline', teamId: run.team_id, agentId: agent.id, runId: run.id }, { sessionId: session.id, seq, payload })
+  await requestTurn(client, { source: 'pipeline', teamId: TeamId.parse(run.team_id), agentId: AgentId.parse(agent.id), runId: RunId.parse(run.id) },
+    { sessionId: SessionId.parse(session.id), seq, payload })
   return seq
 }
 
@@ -736,8 +737,8 @@ export async function readTurn(client: pg.PoolClient, run: Run, turn: { sessionI
     events: [{ clientId: turn.key, kind: 'user', text, body: { text, runId: run.id, stage: turn.stage } }],
   })
   if (seq === undefined) throw new Error(`the reminder for ${turn.stage} was not recorded`)
-  await requestTurn(client, { source: 'pipeline', teamId: run.team_id, agentId: sent.payload.agentId, runId: run.id },
-    { sessionId, seq, payload: { ...sent.payload, text, harnessSessionId: session.harness_session_id } })
+  await requestTurn(client, { source: 'pipeline', teamId: TeamId.parse(run.team_id), agentId: AgentId.parse(sent.payload.agentId), runId: RunId.parse(run.id) },
+    { sessionId: SessionId.parse(sessionId), seq, payload: { ...sent.payload, text, harnessSessionId: session.harness_session_id } })
   return { state: 'reminded', fromSeq: String(seq) }
 }
 
@@ -1035,10 +1036,10 @@ async function fireRoutines(teamIds: string[] | null) {
 // The teams this server runs pipelines, routines, boxes and screens for. AGENTS_RUNNER_TEAMS
 // names them, comma separated, so a check's server leaves other teams' work alone.
 // Unset, it is every team.
-export async function scopedTeams(): Promise<string[] | null> {
+export async function scopedTeams(): Promise<TeamId[] | null> {
   const names = process.env.AGENTS_RUNNER_TEAMS?.split(',').map((n) => n.trim()).filter(Boolean)
   if (!names?.length) return null
-  return (await many<{ id: string }>(pool, 'select id from teams where name = any($1)', [names])).map((r) => r.id)
+  return (await many<{ id: string }>(pool, 'select id from teams where name = any($1)', [names])).map((r) => TeamId.parse(r.id))
 }
 
 const logged = (what: string) => (error: unknown) => { console.error(`${what}:`, messageOf(error)) }

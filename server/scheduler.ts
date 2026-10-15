@@ -15,7 +15,7 @@ import { InstanceId, movesInto } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
 import { WAITING_ON_PERSON } from '../shared/lifecycle.ts'
 import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
-import { TurnId, type SessionId } from '../shared/ids.ts'
+import { SessionId, TurnId, type AgentId, type ConversationId, type PersonId, type RoutineId, type RunId, type TaskId, type TeamId } from '../shared/ids.ts'
 import { MessagePayload } from '../shared/types.ts'
 
 // How long a running turn may go without a new event before it is marked stuck,
@@ -34,19 +34,19 @@ const STUCK_AFTER_SEC = stuckAfterSec(process.env.AGENTS_TURN_STUCK_MIN)
 // it was posted in, or the task whose session it went to. A routine's firing is
 // for its agent's main conversation, and a pipeline's stage, reminder or replay
 // for its run.
-type Asker = { teamId: string; agentId: string }
+type Asker = { teamId: TeamId; agentId: AgentId }
 export type TurnAsk = Asker & (
-  | { source: 'person'; askedBy: string; conversationId: string }
-  | { source: 'person'; askedBy: string; taskId: string }
-  | { source: 'routine'; askedBy: string | null; conversationId: string; routineId: string }
-  | { source: 'pipeline'; runId: string }
+  | { source: 'person'; askedBy: PersonId; conversationId: ConversationId }
+  | { source: 'person'; askedBy: PersonId; taskId: TaskId }
+  | { source: 'routine'; askedBy: PersonId | null; conversationId: ConversationId; routineId: RoutineId }
+  | { source: 'pipeline'; runId: RunId }
 )
 // A room's turn waits in the room's line, without a prompt, until the room gives
 // it its go. The deadline is how long it may take once it has the go.
-export type RoomTurnAsk = Asker & { conversationId: string; askedBy: string; deadlineSec: number }
+export type RoomTurnAsk = Asker & { conversationId: ConversationId; askedBy: PersonId; deadlineSec: number }
 // What the engine runs: the session the turn's record goes to, the place in it of
 // the user event that holds the prompt, and what the engine is handed.
-export type Prompt = { sessionId: string; seq: number; payload: MessagePayload }
+export type Prompt = { sessionId: SessionId; seq: number; payload: MessagePayload }
 
 // The machine a session's turns run on, and whether it takes work now. A box takes
 // none until it is online and its daemon has reported in since it last went
@@ -99,7 +99,7 @@ async function moveTurn(client: pg.PoolClient, turnId: string, move: Move) {
 
 // What the runner does for a turn it gives up on, because the request it stored no
 // longer reads. The turn is failed first, and this tells the person why.
-export type GiveUp = (client: pg.PoolClient, turn: { turnId: TurnId; sessionId: string; reason: string }) => Promise<void>
+export type GiveUp = (client: pg.PoolClient, turn: { turnId: TurnId; sessionId: SessionId; reason: string }) => Promise<void>
 
 // Places a session's unplaced turns, oldest first, on the machine its turns run
 // on, when that machine takes work. Until then each one waits, with the reason.
@@ -107,7 +107,7 @@ export type GiveUp = (client: pg.PoolClient, turn: { turnId: TurnId; sessionId: 
 // A turn whose stored request no longer reads, as after a release that added a
 // field to it, is failed and reported through `giveUp`, so it does not hold up the
 // turns behind it. A request, which has just built its own, has no one to give up to.
-async function placeSession(client: pg.PoolClient, sessionId: string, giveUp?: GiveUp) {
+async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?: GiveUp) {
   const turns = await many<{ id: string; team_id: string; status: 'queued' | 'waiting'; event_id: string; payload: unknown }>(client,
     `select id, team_id, status, event_id, payload from turns
      where session_id = $1 and status in ('queued', 'waiting') and payload is not null
@@ -180,7 +180,7 @@ export async function queueRoomTurn(client: pg.PoolClient, turn: RoomTurnAsk): P
 }
 
 // A turn that never reached its machine and no longer should.
-export async function cancelTurn(client: pg.PoolClient, turnId: string) {
+export async function cancelTurn(client: pg.PoolClient, turnId: TurnId) {
   await moveTurn(client, turnId, { to: 'cancelled' })
 }
 
@@ -224,7 +224,7 @@ export async function signalSession(client: pg.PoolClient, sessionId: SessionId,
 // decides again, under the lock. One session that cannot be placed, for a reason
 // of its own, must not keep the sessions behind it waiting, so its error is
 // logged and the next tick tries it again.
-export async function placeWaitingTurns(teamIds: string[] | null, giveUp: GiveUp) {
+export async function placeWaitingTurns(teamIds: TeamId[] | null, giveUp: GiveUp) {
   const sessions = await many<{ session_id: string }>(pool,
     `select t.session_id from turns t join instances i on i.id = t.instance_id
      where t.status = 'waiting' and ${TAKES_WORK} and ($1::uuid[] is null or t.team_id = any($1))
@@ -232,7 +232,7 @@ export async function placeWaitingTurns(teamIds: string[] | null, giveUp: GiveUp
   for (const { session_id: sessionId } of sessions) {
     try {
       await tx(async (client) => {
-        if (await maybe(client, 'select 1 from sessions where id = $1 for update skip locked', [sessionId])) await placeSession(client, sessionId, giveUp)
+        if (await maybe(client, 'select 1 from sessions where id = $1 for update skip locked', [sessionId])) await placeSession(client, SessionId.parse(sessionId), giveUp)
       })
     } catch (error) {
       console.error(`placing the turns of session ${sessionId}: ${messageOf(error)}`)
@@ -248,7 +248,7 @@ const LAST_HEARD = `greatest(t.started_at, (select e.created_at from events e wh
 // AGENTS_TURN_STUCK_MIN, 10 minutes by default, with when it was last heard
 // from, and clears the mark when an event comes. A session that waits for a
 // person to answer is quiet because of them, so it is not marked. Nothing is stopped.
-export async function markStuckTurns(teamIds: string[] | null) {
+export async function markStuckTurns(teamIds: TeamId[] | null) {
   await pool.query(
     `update turns t set stuck_since = ${LAST_HEARD}
      where t.status = 'running' and t.stuck_since is null and ($2::uuid[] is null or t.team_id = any($2))

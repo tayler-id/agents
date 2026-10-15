@@ -21,7 +21,7 @@ import { recordVersion } from '../server/pipelines.ts'
 import { interruptSession, openDm, Person, reportUnplaceableTurn, sendPersonMessage } from '../server/record.ts'
 import { cancelWaitingTurn, markStuckTurns, placeWaitingTurns, queueRoomTurn, signalSession } from '../server/scheduler.ts'
 import { InstanceId } from '../shared/onboarding.ts'
-import { AgentId, ConversationId, SessionId, TurnId } from '../shared/ids.ts'
+import { AgentId, ConversationId, SessionId, TeamId, TurnId } from '../shared/ids.ts'
 import { messageOf } from '../shared/errors.ts'
 import { must } from './must.ts'
 
@@ -103,7 +103,7 @@ const shown = (turns: { status: string; wait: string | null; has_command: boolea
 try {
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, `admin-${id}@local`)
-  const teamId = String(must(await one('select id from teams where name = $1', [team]), 'the team').id)
+  const teamId = TeamId.parse(must(await one('select id from teams where name = $1', [team]), 'the team').id)
 
   // A box marked asleep takes no work. The runner is about to stop it, so a turn
   // asked for now waits, and its waiting is what makes the runner start the box again.

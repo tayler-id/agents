@@ -7,7 +7,7 @@ import { basename } from 'node:path'
 import type pg from 'pg'
 import { z } from 'zod'
 import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
-import { SessionId, type BlobId } from '../shared/ids.ts'
+import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
@@ -377,8 +377,9 @@ export async function sendPersonMessage(
     permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await requestTurn(client, { source: 'person', teamId: person.team_id, agentId: agent.id, askedBy: person.id, conversationId },
-    { sessionId: session.id, seq, payload })
+  await requestTurn(client, {
+    source: 'person', teamId: person.team_id, agentId: AgentId.parse(agent.id), askedBy: person.id, conversationId: ConversationId.parse(conversationId),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
   return { messageId: message.id, seq: message.seq }
 }
 

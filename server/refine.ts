@@ -399,7 +399,7 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
       permissions: CONVERSATION_PERMISSIONS, text, agentId, harness: agent.harness, model: agent.model, instructions: setup.instructions, harnessSessionId: null,
       workspaceId: workspace.id, skills: setup.skills, plugins: [], memory: await replayMemory(client, agentId, people, setup.added), maxBudgetUsd: REPLAY_BUDGET_USD,
     }
-    await requestTurn(client, { source: 'pipeline', teamId, agentId, runId }, { sessionId: session.id, seq, payload })
+    await requestTurn(client, { source: 'pipeline', teamId, agentId, runId }, { sessionId: SessionId.parse(session.id), seq, payload })
   }
   return runs.length
 }

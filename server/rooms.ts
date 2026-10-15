@@ -10,8 +10,8 @@ import { agentKit, appendEvents, conversationSession, HttpError, type Person } f
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { cancelTurn, queueRoomTurn, requestTurn, signalSession } from './scheduler.ts'
 import type { MessagePayload } from '../shared/types.ts'
-import { SessionId, TurnId } from '../shared/ids.ts'
-import { PersonId, type ConversationId, type Login } from '../shared/onboarding.ts'
+import { AgentId, SessionId, TurnId } from '../shared/ids.ts'
+import { ConversationId, PersonId, type Login } from '../shared/onboarding.ts'
 import type { ProjectId } from '../shared/projects.ts'
 
 const TURN_SECONDS = Number(process.env.AGENTS_TURN_SECONDS ?? 180)
@@ -77,7 +77,9 @@ export async function queueTurns(client: pg.PoolClient, person: Person, roomId: 
      where m.conversation_id = $1 and a.archived_at is null order by m.id`, [roomId])
   const mentioned = agents.filter((a) => new RegExp(`@${a.name}\\b`).test(text))
   for (const agent of mentioned.length ? mentioned : agents) {
-    await queueRoomTurn(client, { teamId: person.team_id, agentId: agent.id, conversationId: roomId, askedBy: person.id, deadlineSec: TURN_SECONDS })
+    await queueRoomTurn(client, {
+      teamId: person.team_id, agentId: AgentId.parse(agent.id), conversationId: ConversationId.parse(roomId), askedBy: person.id, deadlineSec: TURN_SECONDS,
+    })
   }
   await nextTurn(client, roomId)
 }
@@ -128,7 +130,7 @@ export async function nextTurn(client: pg.PoolClient, roomId: string) {
     permissions: CONVERSATION_PERMISSIONS, text, agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, people)),
   }
-  await requestTurn(client, { queued: turn.id }, { sessionId: session.id, seq, payload })
+  await requestTurn(client, { queued: turn.id }, { sessionId: SessionId.parse(session.id), seq, payload })
   await client.query('update turns set deadline = now() + make_interval(secs => $2) where id = $1', [turn.id, TURN_SECONDS])
 }
 
@@ -149,7 +151,7 @@ export async function expireTurns(client: pg.PoolClient, teamIds: string[] | nul
      where status <> 'queued' and outcome is null and deadline < now() and ($1::uuid[] is null or team_id = any($1))
      returning id, conversation_id, session_id, status`, [teamIds])
   for (const turn of rows) {
-    if (turn.status === 'waiting') await cancelTurn(client, turn.id)
+    if (turn.status === 'waiting') await cancelTurn(client, TurnId.parse(turn.id))
     if (turn.status === 'placed' || turn.status === 'running') await signalSession(client, SessionId.parse(turn.session_id), 'interrupt')
     await nextTurn(client, turn.conversation_id)
   }

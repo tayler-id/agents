@@ -9,10 +9,11 @@ import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, appendMessage, conversationSession, HttpError } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { requestTurn } from './scheduler.ts'
+import { AgentId, ConversationId, RoutineId, SessionId, TeamId, type PersonId } from '../shared/ids.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 // `askedBy` is the person who ran it from the app, or null when it came due.
-export async function sendRoutine(client: pg.PoolClient, routineId: string, askedBy: string | null) {
+export async function sendRoutine(client: pg.PoolClient, routineId: string, askedBy: PersonId | null) {
   const routine = await maybe<{
     id: string; name: string; prompt: string; agent_id: string; team_id: string; home_instance_id: string | null
     harness: 'claude' | 'codex'; model: string | null; instructions: string
@@ -41,8 +42,9 @@ export async function sendRoutine(client: pg.PoolClient, routineId: string, aske
     harnessSessionId: session.harness_session_id, ...(await agentKit(client, routine.agent_id, [])),
   }
   await requestTurn(client, {
-    source: 'routine', teamId: routine.team_id, agentId: routine.agent_id, askedBy, conversationId: main.id, routineId: routine.id,
-  }, { sessionId: session.id, seq, payload })
+    source: 'routine', teamId: TeamId.parse(routine.team_id), agentId: AgentId.parse(routine.agent_id), askedBy,
+    conversationId: ConversationId.parse(main.id), routineId: RoutineId.parse(routine.id),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
   await client.query('update routines set last_fired_at = now() where id = $1', [routine.id])
   return main.id
 }
