@@ -11,8 +11,9 @@ import { InstanceId } from './onboarding.ts'
 
 export type TurnStatus = 'queued' | 'waiting' | 'placed' | 'running' | 'done' | 'failed' | 'cancelled'
 
-// Why a turn can't go to its machine yet. A box the server starts is starting.
-// Any other machine that isn't taking work is offline until its daemon reports in.
+// Why a turn can't go to its machine yet. Only a box holds a turn, since a box takes
+// no work until its desktop is up. One a person or a run holds is starting, which
+// the runner does. One nobody holds is offline until someone holds it.
 export const WaitReason = z.enum(['computer_starting', 'machine_offline'])
 export type WaitReason = z.infer<typeof WaitReason>
 

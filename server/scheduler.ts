@@ -46,11 +46,14 @@ export type RoomTurnAsk = Asker & { conversationId: string; askedBy: string; dea
 // the user event that holds the prompt, and what the engine is handed.
 export type Prompt = { sessionId: string; seq: number; payload: MessagePayload }
 
-// The machine a session's turns run on, and whether it takes work now: online,
-// and its daemon has reported in since it last went offline. A box is held when
-// a person or a run holds it, which is when the runner starts it.
-const TAKES_WORK = `i.status = 'online' and i.ready`
-const Machine = z.object({ id: InstanceId, kind: z.enum(['mac', 'box', 'check']), held: z.boolean(), takes_work: z.boolean() })
+// The machine a session's turns run on, and whether it takes work now. A box takes
+// none until it is online and its daemon has reported in since it last went
+// offline, which is once its desktop is up. A Mac takes commands whenever its
+// daemon comes, so a turn for one goes to its queue at once, even while the Mac is
+// offline, as it did before the door. A box is held when a person or a run holds
+// it, which is when the runner starts it.
+const TAKES_WORK = `(i.kind <> 'box' or (i.status = 'online' and i.ready))`
+const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean() })
 type Machine = z.infer<typeof Machine>
 
 // Where a session's turns run. Each runs on the machine its session started on,
@@ -60,12 +63,13 @@ type Machine = z.infer<typeof Machine>
 // answer here, not a change to any caller.
 async function whereTurnsRun(client: pg.PoolClient, sessionId: string): Promise<Machine> {
   return Machine.parse(await one(client, `the machine of session ${sessionId}`,
-    `select i.id, i.kind, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
+    `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
      from sessions s join instances i on i.id = s.instance_id where s.id = $1`, [sessionId]))
 }
 
-// The runner starts a box a person or a run holds. Any other machine starts on its own.
-const waitFor = (machine: Machine): WaitReason => (machine.kind === 'box' && machine.held ? 'computer_starting' : 'machine_offline')
+// Only a box waits. The runner starts a box a person or a run holds, and one nobody
+// holds stays offline until someone does.
+const waitFor = (machine: Machine): WaitReason => (machine.held ? 'computer_starting' : 'machine_offline')
 
 // Each move a turn can make before its machine takes it, with what that state holds.
 type Move =
