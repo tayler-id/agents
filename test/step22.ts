@@ -155,9 +155,13 @@ if (process.env.STEP22_PROBE_ENV) {
     [process.env.DATABASE_URL === 'postgres://step22-test/agents_test', 'DATABASE_URL is the one in .env.test'],
     [process.env.PGHOST === undefined && process.env.PGDATABASE === undefined, 'no PG variable from the caller'],
     [process.env.AGENTS_PROBE === undefined, 'no AGENTS_ variable from the caller'],
+    [process.env.ELECTRIC_URL === 'http://step22-test.invalid/electric', 'ELECTRIC_URL is the one in .env.test'],
+    [process.env.ELECTRIC_SECRET === 'step22-env-secret' && process.env.POSTGRES_PASSWORD === 'step22-env-password', 'ELECTRIC_SECRET and POSTGRES_PASSWORD are the ones in .env'],
   )
 }
 for (const [ok, label] of seen) console.log((ok ? 'pass' : 'FAIL') + '  ' + label)
+// A step can leave the ledger locked in step22's name, so land is still busy once its last program ends.
+if (process.env.STEP22_HOLD_LEDGER) writeFileSync(process.env.STEP22_HOLD_LEDGER, JSON.stringify({ pid: Number(process.env.STEP22_HOLDER_PID), command: 'step22, holding it', since: new Date().toISOString() }))
 // A step that commits moves the commit it was run on.
 if (process.env.STEP22_COMMIT) execFileSync('git', ['commit', '--allow-empty', '-qm', 'moved by a step'])
 if (process.env.STEP22_HANG) {
@@ -188,6 +192,15 @@ if (process.env.STEP22_DOCKER) {
 console.log('pass  no docker asked for')
 `
 
+// git signs a commit by running gpg.program on it, and takes the signature from its stdout
+// once its status output says SIG_CREATED. This one signs anything, with nothing.
+const FAKE_GPG = `process.stdin.resume()
+process.stdin.on('end', () => {
+  process.stderr.write('\\n[GNUPG:] SIG_CREATED D 1 8 00 1700000000 step22\\n')
+  process.stdout.write('-----BEGIN PGP SIGNATURE-----\\n\\nc3RlcDIy\\n-----END PGP SIGNATURE-----\\n')
+})
+`
+
 // npm ci runs the project's preinstall script, which hangs when asked to, as a stuck install would.
 const NPM_HANG = `import { writeFileSync } from 'node:fs'
 if (process.env.STEP22_NPM_HANG) {
@@ -206,6 +219,8 @@ try {
   mkdirSync(bin)
   launcher('gh', join(ROOT, 'test/fake-gh.ts'))
   launcher('docker', join(ROOT, 'test/fake-docker.ts'))
+  writeFileSync(join(tmp, 'fake-gpg.ts'), FAKE_GPG)
+  launcher('fake-gpg', join(tmp, 'fake-gpg.ts'))
   mkdirSync(join(tmp, 'tiny'))
   writeFileSync(join(tmp, 'tiny', 'package.json'), '{ "name": "tiny", "version": "1.0.0" }\n')
   writeFileSync(join(tmp, 'tiny', 'index.js'), 'export const tiny = 1\n')
@@ -226,8 +241,8 @@ try {
     mkdirSync(join(main, file, '..'), { recursive: true })
     copyFileSync(join(ROOT, file), join(main, file))
   }
-  writeFileSync(join(main, '.env'), 'STEP22_FROM_ENV=yes\n')
-  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\nDATABASE_URL=postgres://step22-test/agents_test\n')
+  writeFileSync(join(main, '.env'), 'STEP22_FROM_ENV=yes\nELECTRIC_URL=http://step22-env.invalid/electric\nELECTRIC_SECRET=step22-env-secret\nPOSTGRES_PASSWORD=step22-env-password\n')
+  writeFileSync(join(main, '.env.test'), 'STEP22_FROM_ENV_TEST=yes\nDATABASE_URL=postgres://step22-test/agents_test\nELECTRIC_URL=http://step22-test.invalid/electric\n')
   git(main, 'add', '-A')
   git(main, 'commit', '-qm', 'start')
   const localRoot = commit('refs/heads/main') ?? ''
@@ -477,6 +492,16 @@ try {
   check(run.code === 1 && run.first.startsWith('failed: done iota') && run.first.includes('the worktree was not touched') && existsSync(join(iota, '.scratch', 'mine.md')) && entry('iota').state === 'active' && !folders().some((folder) => folder.startsWith('iota-')), 'a backup that cannot be made removes nothing, and leaves no half of one behind')
   run = cli(['done', 'iota', '--yes', '--backup', '.scratch/'])
   check(run.code === 0 && !existsSync(iota) && contents(join(backupOf('iota'), '.scratch', 'mine.md')) === 'mine\n', 'once it can be made, done backs up and removes')
+  // A link whose target is gone, such as an .env link to a file since moved, is still a link to keep.
+  cli(['start', 'phi', '--note', 'step22 phi'])
+  const phi = join(root, 'phi')
+  commitFile(phi, 'phi.md', 'phi work\n')
+  git(main, 'merge', '-q', '--no-ff', 'phi', '-m', 'merge phi')
+  const nowhere = join(tmp, 'moved-away.env')
+  symlinkSync(nowhere, join(phi, '.env'))
+  run = cli(['done', 'phi', '--yes', '--backup', '.env'])
+  const phiEnv = join(backupOf('phi'), '.env')
+  check(run.code === 0 && run.first.includes('backed up 1 ignored path') && !existsSync(phi) && lstatSync(phiEnv, { throwIfNoEntry: false })?.isSymbolicLink() === true && readlinkSync(phiEnv) === nowhere, `done backs up a link whose target is gone as the same link, then removes the worktree (${run.first})`)
   git(main, 'worktree', 'unlock', zeta)
 
   // The ledger's lock
@@ -568,11 +593,13 @@ try {
   check(stepLog.includes("pass  env from .env and .env.test") && !existsSync(join(lambda, '.env')) && !existsSync(join(lambda, '.env.test')), "a step gets main's .env and .env.test, and the worktree holds neither")
   check(stepLog.includes('pass  the run lock is held') && !existsSync(runLock), 'a step runs while check holds the run lock, and check lets go of it after')
   // Node's --env-file never overrides a variable that is already set, so the caller's must not reach the step.
-  run = cli(['check', 'lambda', '1'], { STEP22_PROBE_ENV: '1', DATABASE_URL: 'postgres://live/agents', PGHOST: 'live.example', PGDATABASE: 'agents', AGENTS_PROBE: 'live' })
+  run = cli(['check', 'lambda', '1'], { STEP22_PROBE_ENV: '1', DATABASE_URL: 'postgres://live/agents', PGHOST: 'live.example', PGDATABASE: 'agents', AGENTS_PROBE: 'live', ELECTRIC_URL: 'http://live.invalid/electric', ELECTRIC_SECRET: 'live-secret', POSTGRES_PASSWORD: 'live-password' })
   const probeLog = readFileSync(entry('lambda').checks.at(-1).log, 'utf8')
   check(probeLog.includes('pass  DATABASE_URL is the one in .env.test'), "a step gets DATABASE_URL from main's .env.test even when the caller has one set")
   check(probeLog.includes('pass  no PG variable from the caller'), "a step gets none of the caller's PG variables")
   check(probeLog.includes('pass  no AGENTS_ variable from the caller'), "a step gets none of the caller's AGENTS_ variables")
+  check(probeLog.includes('pass  ELECTRIC_URL is the one in .env.test'), "a step gets ELECTRIC_URL from main's .env.test even when the caller has one set")
+  check(probeLog.includes('pass  ELECTRIC_SECRET and POSTGRES_PASSWORD are the ones in .env'), "a step gets ELECTRIC_SECRET and POSTGRES_PASSWORD from main's .env even when the caller has them set")
   check(run.code === 0, 'and the step passes with all of them set in the caller')
   writeFileSync(join(lambda, 'dirty.md'), 'not committed\n')
   run = cli(['check', 'lambda', '1'])
@@ -691,6 +718,19 @@ try {
   check(run.out.includes('name.md:1: uses the studied app'), "submit runs main's name guard on each new commit")
   check(run.out.includes('.gitignore changed, and agents never edit .gitignore') && run.out.includes('adds the check script check:step9'), 'submit refuses an edit to .gitignore and a new check script')
   check(!git(main, 'ls-remote', github).includes('refs/heads/mu') && gh().calls.length === 0, 'a refused submit pushes nothing and opens no pull request')
+  // A secret goes public whatever git calls the file that holds it, and a private key spans lines.
+  cli(['start', 'nu', '--note', 'step22 nu'])
+  const nu = join(root, 'nu')
+  // Built here, so this file never holds the lines the private-key pattern looks for.
+  const armor = (edge: string) => `-----${edge} OPENSSH PRIVATE KEY-----`
+  const keyBody = 'c3RlcDIyIG5vdCBhIHJlYWwga2V5'
+  commitFile(nu, 'id_rsa', `${armor('BEGIN')}\n${keyBody}\n${armor('END')}\n`)
+  commitFile(nu, 'nul.txt', `token ${token}\0\n`)
+  commitFile(nu, 'blob.db', `SQLite format 3\0${'\0'.repeat(64)}${token}${'\0'.repeat(64)}`)
+  run = cli(['submit', 'nu', '--message', 'nu work'])
+  check(run.code === 3 && run.out.includes('id_rsa: matches the private-key secret pattern') && !run.out.includes(keyBody), 'submit refuses a commit that adds a private key over several lines, and never prints it')
+  check(run.out.includes('nul.txt:1: matches the github secret pattern') && !run.out.includes(token), 'submit reads a file git calls binary, here text with one NUL byte, and never prints the secret')
+  check(run.out.includes('blob.db:1: matches the github secret pattern'), 'submit reads a binary blob and finds the token inside it')
 
   // The pull request's text and the merge message go public too, so they are scanned the same way.
   cli(['start', 'tau', '--note', 'step22 tau'])
@@ -796,6 +836,12 @@ try {
   check(await ended(installStopped) === 143 && await allGone(installPids), 'a land stopped during npm ci stops npm and everything it started')
   check(!existsSync(scratch) && !registered(scratch) && !existsSync(runLock), 'and it removes its scratch worktree and lets go of the run lock')
   rmSync(pids, { force: true })
+  // A signal can come after the suite's last program, here while land waits to record the suite's result.
+  const lateStop = launch(['land', 'tau'], { STEP22_HOLD_LEDGER: lockFile, STEP22_HOLDER_PID: String(process.pid) })
+  await until(() => lateStop.seen.stderr.includes(`waiting for ${lockFile}`) || lateStop.child.exitCode !== null)
+  lateStop.child.kill('SIGTERM')
+  rmSync(lockFile, { force: true })
+  check(await ended(lateStop) === 143 && commit('refs/heads/main') === mainBeforeRed && git(github, 'rev-parse', 'refs/heads/main') === githubBeforeRed && !existsSync(scratch) && !existsSync(runLock), "a signal that comes after the suite ends still stops land with 143, leaves main and GitHub's main alone, and cleans up")
   const startStopped = launch(['start', 'sigma', '--note', 'step22 sigma'], { STEP22_NPM_HANG: '1', STEP22_PIDS: pids })
   await until(() => existsSync(pids))
   const startPids = pidsIn(pids)
@@ -881,8 +927,11 @@ try {
   run = cli(['submit', 'upsilon'])
   const upsilonNext = git(main, 'ls-remote', github, 'refs/heads/upsilon').split('\t')[0] ?? ''
   check(run.code === 0 && upsilonNext !== upsilonCopy && isAncestor(upsilonCopy, upsilonNext, github), `submit pushes the merged branch on top of the copy GitHub has, never forced (${run.first})`)
-  run = cli(['land', 'upsilon'])
+  // The mirror refuses a signed commit, so the merge land makes must stay unsigned whatever git is set to do.
+  const signing = { GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'commit.gpgsign', GIT_CONFIG_VALUE_0: 'true', GIT_CONFIG_KEY_1: 'gpg.program', GIT_CONFIG_VALUE_1: join(bin, 'fake-gpg') }
+  run = cli(['land', 'upsilon'], signing)
   check(run.code === 0 && run.first.startsWith('ok: landed upsilon'), `and land takes it, so the advice it gave works (${run.first})`)
+  check(run.code === 0 && !git(main, 'cat-file', 'commit', 'refs/heads/main').includes('\ngpgsig '), "with git set to sign every commit, land's merge on main carries no signature, and GitHub's main gets its copy")
 
   // A push publishes every commit GitHub lacks, so the scan covers all of them, not only the branch's own.
   cli(['start', 'pi', '--note', 'step22 pi'])

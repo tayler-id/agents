@@ -2,7 +2,7 @@
 // acts on from git while it holds the ledger's lock, right before it acts, and
 // refuses rather than guess when it can't prove one.
 
-import { constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync } from 'node:fs'
+import { constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { messageOf } from '../../shared/errors.ts'
@@ -102,7 +102,10 @@ function backUp(root: string, paths: readonly string[], dest: string): { bytes: 
       const from = join(root, bare(path))
       const to = join(dest, bare(path))
       mkdirSync(dirname(to), { recursive: true })
-      cpSync(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE })
+      // cpSync fails on a link it is given whose target is gone, so a link is made again
+      // with the same target. Links inside a copied folder stay links through verbatimSymlinks.
+      if (lstatSync(from).isSymbolicLink()) symlinkSync(readlinkSync(from), to)
+      else cpSync(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE })
       const [was, now] = [measure(from), measure(to)]
       if (was.files !== now.files || was.folders !== now.folders || was.links !== now.links || was.bytes !== now.bytes) {
         throw new Error(`the copy of ${path} holds ${plural(now.files, 'file')}, ${plural(now.folders, 'folder')}, ${plural(now.links, 'link')} and ${now.bytes} bytes, and the original holds ${plural(was.files, 'file')}, ${plural(was.folders, 'folder')}, ${plural(was.links, 'link')} and ${was.bytes} bytes`)
@@ -158,7 +161,7 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
   })
   if ('code' in made) return made
   // A signal stops npm with the rest of start, and leaves the entry starting, as a person's Ctrl-C always did.
-  const failure = await stoppable((running) => npmCi(running, made.path))
+  const failure = await stoppable((running) => npmCi(running, made.repo, made.path))
   return withLedger(ledgerFile, `start ${name}`, async (ledger, write) => {
     const entry = ledger.worktrees.find((e) => e.name === name)
     if (entry?.state !== 'starting' || entry.pid !== process.pid) throw new Error(`the ledger's entry for ${name} changed while npm ci ran`)
@@ -183,11 +186,11 @@ export async function start(ledgerFile: string, cwd: string, name: Name, note: s
 
 // Returns why the install failed, or null when it worked. The install runs in a process
 // group of its own that running holds, so a signal can stop it with everything it started.
-export async function npmCi(running: Running, path: string): Promise<string | null> {
+export async function npmCi(running: Running, main: string, path: string): Promise<string | null> {
   const dir = mkdtempSync(join(tmpdir(), 'agents-git-npm-'))
   const log = join(dir, 'npm-ci.log')
   try {
-    const ran = await runGroup(running, ['npm', 'ci'], path, childEnv(), NPM_CI_LIMIT_SEC, log)
+    const ran = await runGroup(running, ['npm', 'ci'], path, childEnv(main), NPM_CI_LIMIT_SEC, log)
     if (ran.code === 0 && !ran.timedOut) return null
     const tail = readFileSync(log, 'utf8').split('\n').filter((line) => line.trim() !== '').slice(-NPM_TAIL_LINES)
     return [ran.timedOut ? `npm ci ran past ${NPM_CI_LIMIT_SEC}s and was stopped:` : `npm ci exited ${ran.code ?? 'by a signal'}:`, ...tail].join('\n')

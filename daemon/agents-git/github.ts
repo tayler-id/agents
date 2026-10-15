@@ -247,14 +247,16 @@ function addedIn(diff: string): Added[] {
   return out
 }
 
-// Each line a commit adds, with its file and line number. A merge adds only the lines
-// that none of its parents had, since what it brings from one side is already on that
-// side and was read there, and a conflict resolved by hand is the part no parent has.
+// Each line a commit adds, with its file and line number. --text gives the lines of a
+// file git takes for binary too, such as one with a NUL byte, since a secret in it goes
+// public all the same. A merge adds only the lines that none of its parents had, since
+// what it brings from one side is already on that side and was read there, and a
+// conflict resolved by hand is the part no parent has.
 async function addedLines(repo: string, commit: Sha): Promise<Added[]> {
   const parents = (await git(repo, ['rev-list', '--parents', '-n', '1', commit])).trim().split(' ').slice(1)
   const diffs: Added[][] = []
   for (const parent of parents) {
-    diffs.push(addedIn(await git(repo, ['diff', '--unified=0', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', parent, commit])))
+    diffs.push(addedIn(await git(repo, ['diff', '--unified=0', '--text', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', parent, commit])))
   }
   const [first, ...others] = diffs
   if (!first) throw new Error(`${short(commit)} has no parent to compare with`)
@@ -293,8 +295,18 @@ export async function publicProblems(repo: string, main: Sha, commits: readonly 
     for (const person of [parts.author, parts.committer]) {
       if (person.email !== scan.email && !NO_REPLY.test(person.email)) problems.push(`${short(commit)} its author or committer: an email that is neither the one configured here nor a no-reply address`)
     }
-    for (const added of await addedLines(repo, commit)) {
-      for (const what of scan.found(added.text)) problems.push(`${short(commit)} ${added.path}:${added.line}: ${what}`)
+    for (const [path, lines] of Map.groupBy(await addedLines(repo, commit), (added) => added.path)) {
+      const alone = new Set<string>()
+      for (const { line, text } of lines) {
+        for (const what of scan.found(text)) {
+          alone.add(what)
+          problems.push(`${short(commit)} ${path}:${line}: ${what}`)
+        }
+      }
+      // A private key spans lines, so the file's added lines are also read as one text, for what no one line holds.
+      for (const what of scan.found(lines.map((added) => added.text).join('\n'))) {
+        if (!alone.has(what)) problems.push(`${short(commit)} ${path}: ${what}`)
+      }
     }
     probes.push({ commit, text: `${parts.author.name}\n${parts.committer.name}\n${parts.message}`, textAt: `${short(commit)} its message`, filesAt: short(commit) })
   }
@@ -332,7 +344,7 @@ async function namesIn(repo: string, main: Sha, probes: readonly Probe[]): Promi
       mkdirSync(dirname(join(tree, NAME_GUARD)), { recursive: true })
       writeFileSync(join(tree, NAME_GUARD), guard.stdout)
       writeFileSync(join(tree, MESSAGE_FILE), probe.text)
-      const ran = await run(process.execPath, [NAME_GUARD], tree, NAME_GUARD_TIMEOUT_MS, childEnv())
+      const ran = await run(process.execPath, [NAME_GUARD], tree, NAME_GUARD_TIMEOUT_MS, childEnv(repo))
       const hits = [...`${ran.stdout}\n${ran.stderr}`.matchAll(/^(.+?):(\d+) (.+?): /gm)]
       if (ran.code !== 0 && !hits.length) throw new Error(`main's ${NAME_GUARD} exited ${ran.code} on ${probe.textAt}: ${ran.stderr.trim()}`)
       for (const [, file = '', line = '', what = ''] of hits) {
@@ -354,8 +366,8 @@ export function listed(problems: readonly string[]): string[] {
 
 const Pulls = z.array(z.object({ url: z.url(), number: z.number().int().positive() }))
 
-async function gh(cwd: string, args: readonly string[]): Promise<string> {
-  const ran = await run('gh', args, cwd, GH_TIMEOUT_MS, childEnv())
+async function gh(main: string, args: readonly string[]): Promise<string> {
+  const ran = await run('gh', args, main, GH_TIMEOUT_MS, childEnv(main))
   if (ran.code !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')} exited ${ran.code}: ${ran.stderr.trim()}`)
   return ran.stdout
 }
