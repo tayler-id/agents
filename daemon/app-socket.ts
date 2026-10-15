@@ -115,8 +115,10 @@ function refusal(error: unknown): [number, AppRefusal] {
   if (error instanceof BadAsk) return [error.status, { error: error.message }]
   if (error instanceof z.ZodError) return [400, { error: z.prettifyError(error) }]
   if (error instanceof FolderRefused) return [error.kind === 'usage' ? 400 : 409, { error: error.message }]
-  // The team's server failed, or fetch could not reach it, which it reports as a TypeError.
-  if (error instanceof ApiError || error instanceof TypeError) return [502, { error: `The team's server did not answer: ${messageOf(error)}` }]
+  // The team's server failed, or Node's fetch could not reach it, which it reports as a TypeError of this message.
+  if (error instanceof ApiError || (error instanceof TypeError && error.message === 'fetch failed')) {
+    return [502, { error: `The team's server did not answer: ${messageOf(error)}` }]
+  }
   console.error(`app socket: ${messageOf(error)}`)
   return [500, { error: messageOf(error) }]
 }
