@@ -53,6 +53,12 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 **Where the team already works**
 - GitHub, Slack and email.
 
+**Connectors and MCP**, added by Tayler on 2026-10-15
+- Agents reach the team's knowledge and tools through connectors, starting with Jira, Confluence and Slack. A person connects one from the app by signing in, with no token pasted onto a machine, and picks which agents may use it.
+- Any MCP server can be added, run on the agent's computer or hosted, including hosted ones that sign in with OAuth.
+- Agents answer with visuals and interactive components in the conversation through MCP apps, and a person uses them there.
+- WebMCP. Agents use the tools a web page offers through WebMCP, and the Agents app offers its own actions the same way.
+
 **Joining**
 - A new teammate goes from invite to first message in under 10 minutes: install Tailscale, download the signed Agents app, open it.
 
