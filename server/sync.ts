@@ -7,7 +7,6 @@
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { ELECTRIC_PROTOCOL_QUERY_PARAMS } from '@electric-sql/client'
 import { instanceFrom, personFrom, type Instance } from './auth.ts'
 import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VISIBLE_FOLDER, VISIBLE_TASK } from './access.ts'
 import { maybe, pool } from './db.ts'
@@ -16,6 +15,13 @@ import { HttpError, type Person } from './record.ts'
 import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
+
+// The keys of a client's read that reach Electric, each one Electric 1.8.1 reads.
+// offset and handle say where the reader is, and live holds the read open for the
+// next change. Electric answers each live read with a cursor that differs from
+// the one sent, so no live URL repeats and no browser answers one from its cache.
+// Every other key is dropped, including any a later Electric client adds.
+const CLIENT_KEYS = ['offset', 'handle', 'live', 'cursor']
 
 type Shape = { table: string; where: string; params: string[]; columns?: string[] }
 type PersonShape = (person: Person, args: URLSearchParams) => Promise<Shape>
@@ -233,12 +239,19 @@ export async function proxyShape(req: IncomingMessage, res: ServerResponse, name
 
   const origin = new URL('/v1/shape', ELECTRIC_URL)
   for (const [key, value] of url.searchParams) {
-    if (ELECTRIC_PROTOCOL_QUERY_PARAMS.includes(key)) origin.searchParams.set(key, value)
+    // Electric serves a subset of any shape, and a subset's filter may name a
+    // column the shape hides, which answers yes-or-no questions about its values.
+    if (key.startsWith('subset')) throw new HttpError(400, 'subset reads are not served')
+    if (CLIENT_KEYS.includes(key)) origin.searchParams.set(key, value)
   }
   origin.searchParams.set('table', shape.table)
   origin.searchParams.set('where', shape.where.replace(/\s+/g, ' '))
   shape.params.forEach((value, i) => origin.searchParams.set(`params[${i + 1}]`, value))
-  if (shape.columns) origin.searchParams.set('columns', shape.columns.join(','))
+  if (shape.columns) {
+    origin.searchParams.set('columns', shape.columns.join(','))
+    // Should a subset ever reach Electric, its filter and order may name only these.
+    origin.searchParams.set('queryable_columns', shape.columns.join(','))
+  }
   origin.searchParams.set('secret', process.env.ELECTRIC_SECRET ?? '')
 
   const abort = new AbortController()
