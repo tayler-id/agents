@@ -958,6 +958,8 @@ In the desktop app (`ThisMac`) the heading `On this Mac` and the line `Folders w
 | `Team` | Connects the folder, or changes it, so the team sees its sessions | none | The daemon's words under the row in red, `role="alert"` | `choose` in `ThisMac`, `desktop/preload.cjs`, `daemon/app-socket.ts` |
 | `Just me` | Connects the folder, or changes it, so only you see its sessions, the ones in the record too | none | Same | Same |
 | `Off` | Disconnects the folder | none | Same | Same |
+| `Yes, show the team`, under the row while it asks | Makes the folder the team's, as `Team` would have | It is the confirmation | Same | `choose` in `ThisMac` |
+| `Keep it to me`, beside it, which takes the focus when the question appears | Closes the question and changes nothing | none | none | `keep` in `ThisMac` |
 | `Temporary folders, {n}` disclosure | Opens a list named `Temporary folders on this Mac`, of folders in the system's temporary folders, under the line `Folders in the system's temporary space, where tools and checks start Claude Code.` | none | none | `ThisMac` |
 
 While a change runs, every row's buttons are disabled. A change goes through only right after a click or key press on the page, and otherwise the row shows `A folder is connected or disconnected only when you choose it on the page.`
@@ -969,7 +971,9 @@ While a change runs, every row's buttons are disabled. A change goes through onl
 | Out of date | A later list failed | `The list may be out of date. {reason}` in red above the list, which keeps its rows | `ThisMac` |
 | Empty | Claude Code has not run on this Mac | `Claude Code hasn't run on this Mac yet. Start a session in a project folder, and the folder shows here.` | `ThisMac` |
 | Connected | After `Team` or `Just me` on a folder that was off | `Connected {name}. Claude Code sessions you start in it from now on land in the record, and the team sees them.`, or `only you see them`, with ` The team also sees the {n} sessions already in the record from it.` when the folder was private before | `connectedText` |
-| Widened | After `Team` on a folder that was `Just me` | `The team sees {name}'s sessions now.`, with `, and the {n} sessions already in the record from it` before the full stop when there are any | `connectedText` |
+| Asking | `Team` on a folder that is `Just me` and has sessions in the record, counted afresh through the daemon | Under the row, a group named by its question, `Show the team the {n} sessions already in the record from {name}?`, with `Yes, show the team` and `Keep it to me`. `Just me` stays pressed and nothing changes | `choose` in `ThisMac`, `FolderItem` |
+| Kept | After `Keep it to me` | `Nothing changed. Only you see {name}'s sessions.` | `keep` in `ThisMac` |
+| Widened | After `Team` on a folder that was `Just me`, at once when it has nothing in the record, or after `Yes, show the team` | `The team sees {name}'s sessions now.`, with `, and the {n} sessions already in the record from it` before the full stop when there are any | `connectedText` |
 | Narrowed | After `Just me` on a folder that was `Team` | `Only you see {name}'s sessions now, the ones already in the record too.` | `connectedText` |
 | Disconnected | After `Off` | `Disconnected {name}. Sessions you start in it from now on stay on this Mac, and the ones already in the record stay there.` | `disconnectedText` |
 | Already | Nothing was left to change | `{name} was already connected, and the team sees its sessions.` (or `only you see`), or `{name} was already disconnected.` | `connectedText`, `disconnectedText` |
