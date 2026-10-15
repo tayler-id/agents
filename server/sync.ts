@@ -14,6 +14,7 @@ import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
 import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
+import { TURN_WAIT_COLUMNS } from '../shared/turns.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -52,7 +53,7 @@ const personShapes: Record<string, PersonShape> = {
   instances: async (p) => ({
     table: 'instances', where: 'team_id = $1', params: [p.team_id],
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
-      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height'],
+      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height', 'stopped_at'],
   }),
   invites: async (p) => {
     requireAdmin(p)
@@ -129,7 +130,12 @@ const personShapes: Record<string, PersonShape> = {
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
   secrets: async (p) => ({ table: 'secrets', where: 'team_id = $1', params: [p.team_id] }),
-  turns: async (p, args) => ({ table: 'turns', where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
+  // A conversation's turns that wait for their machine, or that run and have gone
+  // quiet, for the line it shows. Never the prompt each turn carries.
+  turn_waits: async (p, args) => ({
+    table: 'turns', where: `conversation_id = $1 and (status = 'waiting' or (status = 'running' and stuck_since is not null))`,
+    params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS,
+  }),
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
