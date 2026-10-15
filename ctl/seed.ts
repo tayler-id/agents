@@ -192,6 +192,28 @@ export async function startTask(state: ReadyState, task: { title: string; instru
   return started ? { kind: 'started', taskId: started.id, already: had !== null } : { kind: 'missing' }
 }
 
+// What a team with no task has to look at in the app: the sample repo, when it has no repo, and a task for fixer.
+// `up` has already given the team a teammate and agents. Each step finds what a run cut short left, and adds
+// only what is missing. Says what it added.
+const SAMPLE_REPO = 'shop'
+const SAMPLE_TASK = { title: 'Fix the checkout discount', instructions: 'TENOFF should never take an order below zero.' }
+const Held = z.object({ repos: z.number(), tasks: z.number() })
+
+export async function seedSample(state: ReadyState): Promise<string[]> {
+  const held = await withClient(async (client) => Held.parse((await client.query(
+    'select (select count(*)::int from repos where team_id = $1) as repos, (select count(*)::int from tasks where team_id = $1) as tasks', [state.seed.teamId])).rows[0]))
+  if (held.tasks > 0) return []
+  const fixer = state.seed.agents.fixer
+  if (!fixer) throw new Error('the instance has no agent named fixer to give the sample task to')
+  const added: string[] = []
+  if (held.repos === 0) added.push(`the repo ${(await seedExtraRepo(state, SAMPLE_REPO)).repo.path}`)
+  const started = await startTask(state, { ...SAMPLE_TASK, agentId: fixer })
+  if (started.kind === 'refused') throw new Error(`POST /v1/tasks answered ${String(started.reply.status)} for the sample task`)
+  if (started.kind === 'missing') throw new Error(`no task titled "${SAMPLE_TASK.title}" after starting it`)
+  if (!started.already) added.push(`the task "${SAMPLE_TASK.title}" for fixer`)
+  return added
+}
+
 // The team's repos on the forge: shop, a small app with a known bug, and
 // pipelines, the team's pipeline files, run on the agents' home machine.
 export async function seedForge(name: InstanceName, teamId: string): Promise<ForgeRepo[]> {

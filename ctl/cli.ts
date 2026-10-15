@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, relative } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
-import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row, type Shown } from '../shared/cli/command.ts'
+import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row, type Say, type Shown } from '../shared/cli/command.ts'
 import { JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
 import { ENGINE, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, FEATURE_MAP, WIDTH } from '../shared/verification.ts'
 import { BASELINES_DIR, EVIDENCE_DIR, ROOT, scrubber } from './config.ts'
@@ -19,7 +19,8 @@ import { doctor, down, list, ready, resolve, up, type DoctorReport } from './ins
 import { isOurs } from './procs.ts'
 import { Role, type Found, type Handle, type Op, type SessionReply, type Target } from './protocol.ts'
 import { sessionCall, stopSessionServer } from './session-client.ts'
-import { addAgent, addBox, addPerson, loginOf, PERSON_RULE, PersonName, seedExtraRepo, startTask } from './seed.ts'
+import { startPreview, signedInAs } from './preview.ts'
+import { addAgent, addBox, addPerson, loginOf, PERSON_RULE, PersonName, seedExtraRepo, seedSample, startTask } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
 import { baseline, BaselineReason, compare } from './visual.ts'
 import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
@@ -745,6 +746,72 @@ const upCommand = command({
   },
 })
 
+// --- Working on the screens ---
+
+// A person as a command line names them: a short name, or a full login.
+const Who = z.union([PersonName, z.string().includes('@')], { error: PERSON_RULE })
+
+// The instance a preview serves: the one named, or the only one here, or a new one made as `up` makes it.
+async function previewInstance(name: InstanceName | undefined): Promise<{ state: ReadyState; already: boolean }> {
+  const exists = name ? readState(name) !== null : list().length > 0
+  if (!exists) return up({ name, harness: 'fake', pipelines: false, build: true })
+  // Names the one instance, or refuses when several are here. up then gives it back, or says why it can't.
+  const there = resolve(name)
+  return up({ name: there.name, harness: there.harness, pipelines: there.pipelines, build: true })
+}
+
+// Resolves when the person presses Ctrl+C, or whatever started the command ends it.
+const stopRequested = () => new Promise<NodeJS.Signals>((done) => {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, done)
+})
+
+const PreviewArgs = Common.extend({ as: Who.optional(), 'no-seed': z.boolean().optional() })
+
+// Brings the instance up if it is not, serves the app on it, says where, and serves until it is stopped.
+async function servePreview(values: z.infer<typeof PreviewArgs>, say: Say): Promise<Result> {
+  const { state, already } = await previewInstance(values.instance)
+  const added = values['no-seed'] ? null : await seedSample(state)
+  const login = loginFor(state, values.as)
+  const preview = await startPreview({ state, login })
+  const stopped = stopRequested()
+  const sample = added === null ? 'left alone, as --no-seed says' : added.length ? `added ${added.join(' and ')}` : 'none added, the team already has tasks'
+  const data = { url: preview.url, instance: state.name, started: !already, login, log: preview.log, added }
+  say({
+    kind: 'write', did: `preview ${state.name}`, state: `serving the app at ${preview.url}`, already: false,
+    detail: [
+      `open: ${preview.url}`,
+      `signed in as: ${signedInAs(preview.me)}`,
+      `instance: ${state.name}, ${already ? 'already running' : 'started now'}, its people door on 127.0.0.1:${String(state.ports.people)}`,
+      `sample data: ${sample}`,
+      'live: a file saved under app/src shows in the open page within a second or two, with no build. A change to app/vite.config.ts waits for the next preview',
+      `log: ${relative(ROOT, preview.log)}`,
+    ].join('\n'),
+    help: ['Press Ctrl+C to stop the preview. The instance keeps running', run(`down${at(state)}`, 'when you are done with the instance, which removes its team and keeps its evidence')],
+    data, log: state.evidence,
+  })
+  const ended = await stopped
+  await preview.stop()
+  return {
+    kind: 'write', did: `preview ${state.name}`, state: `stopped by ${ended === 'SIGINT' ? 'Ctrl+C' : ended}, and the instance ${state.name} keeps running`, already: false,
+    help: [run(`down${at(state)}`, 'to stop the instance and remove its team, keeping its evidence')], data, log: state.evidence,
+  }
+}
+
+const previewCommand = command({
+  name: 'preview', args: '',
+  about: "serve this checkout's app on 127.0.0.1 with live updates, signed in to the instance, until Ctrl+C. Starts the instance if none runs",
+  flags: {
+    as: { kind: 'string', about: 'who is signed in: ada (by default), ben, a name given to seed person, or a full login' },
+    'no-seed': { kind: 'boolean', about: 'leave a team with no tasks as it is, with no sample repo or task' },
+  },
+  schema: PreviewArgs,
+  prepare: (values, positionals, say) => {
+    // A word where a flag belongs, such as `preview ben` for --as ben, would otherwise start serving as someone else.
+    if (positionals.length) throw new UsageError(`preview takes no arguments, and got ${positionals.join(' ')}`, ['To sign in as someone else, add `--as <who>`'])
+    return () => servePreview(values, say)
+  },
+})
+
 // What doctor prints: a line per check in the tool's own words, and fenced, the
 // words any check read from a server.
 export function doctorParts(report: DoctorReport) {
@@ -853,8 +920,8 @@ async function dashboard(): Promise<Result> {
     return `${relative(ROOT, join(EVIDENCE_DIR, folder))} (${String(done.length)} actions, ${String(done.filter((a) => !a.ok).length)} failed)`
   })
   const [first] = states
-  const help = !first ? [run('up --pipelines', 'to start an instance with everything'), run('help', 'for every command')]
-    : first.phase === 'ready' ? [run(`doctor${states.length > 1 ? at(first) : ''}`, 'to check it is usable'), run('map list', 'to pick a feature to drive'), run('help', 'for every command')]
+  const help = !first ? [run('up --pipelines', 'to start an instance with everything'), run('preview', 'to work on the screens, with the app served live from its source'), run('help', 'for every command')]
+    : first.phase === 'ready' ? [run(`doctor${states.length > 1 ? at(first) : ''}`, 'to check it is usable'), run('map list', 'to pick a feature to drive'), run('preview', 'to work on the screens, with the app served live from its source'), run('help', 'for every command')]
       : [run(`down${at(first)}`, `to clear ${first.name}, which is ${first.phase}`)]
   const detail = [
     rows.length ? `instances[${String(rows.length)}]{name,phase,ports,claude,forge,health}:\n${rows.map((r) => `  ${r}`).join('\n')}` : 'instances: none in this checkout',
@@ -864,7 +931,7 @@ async function dashboard(): Promise<Result> {
 }
 
 // Commands that act on no instance.
-const NO_INSTANCE = new Set(['up', 'list', 'map list', 'map check', 'map export', 'map guard', 'visual compare', 'visual baseline'])
+const NO_INSTANCE = new Set(['up', 'preview', 'list', 'map list', 'map check', 'map export', 'map guard', 'visual compare', 'visual baseline'])
 
 // What a command would do, once its arguments have parsed. Runs nothing.
 function dryRun(target: Command, argv: string[], values: Record<string, unknown>): Result {
@@ -891,7 +958,7 @@ export const CLI: Cli = {
   about: 'run and drive Agents for verification. Run it from the repo root with ~/.local/node/bin first on PATH.',
   global: GLOBAL,
   commands: [
-    upCommand, doctorCommand, downCommand, listCommand, evidenceCommand,
+    upCommand, previewCommand, doctorCommand, downCommand, listCommand, evidenceCommand,
     ...OPS.map((op) => driveCommand('browser', op)), resetCommand('browser'),
     ...OPS.map((op) => driveCommand('desktop', op)), resetCommand('desktop'),
     apiCommand, dbCommand, seedPerson, seedAgent, seedBox, seedRepo, seedTask, secretCommand('set'), secretCommand('unset'), machineRead,
