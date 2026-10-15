@@ -108,7 +108,11 @@ export async function computerTools(container: string, sessionId: string, cwd: s
   const server = config.mcpServers.computer
   const env = Object.entries(server.env as Record<string, string>).flatMap(([key, value]) => ['-e', `${key}=${value}`])
   const client = new Client({ name: 'computer-check', version: '1.0.0' })
-  await client.connect(new StdioClientTransport({ command: 'docker', args: ['exec', '-i', '-w', cwd, ...env, container, server.command, ...server.args] }))
+  // The client gives its child only HOME, PATH and a few more variables unless it
+  // is told more. The docker that agents-git puts first on a check's PATH reads
+  // where the real one is from the environment, and exits without it.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
+  await client.connect(new StdioClientTransport({ command: 'docker', args: ['exec', '-i', '-w', cwd, ...env, container, server.command, ...server.args], env: inherited }))
   return { client, server }
 }
 
