@@ -31,6 +31,7 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 - Every person on the team has agents, and anyone can create a new one from the app.
 - Every person gets their own computer in the cloud, on a home server or AWS. Each person's agents share it, and each agent has its own seat in it: a screen, a browser and a workspace. Parallel coding jobs get computers of their own, so many agents work at once.
 - Agents create new agents, message other agents directly, hand work to them, and work together in rooms.
+- In a conversation, an agent works on its screen where everyone sees it, added by Tayler on 2026-10-15. It might draw a flow diagram of the software being discussed, open a whiteboard, or show the team's Jira board in its browser. Anyone in the conversation watches it live there, takes over, and hands it back.
 - A teammate's agent setup can be copied, or started from a template.
 - Agents run on more than one engine. Each agent picks its engine and model, such as Claude, Codex or Gemini, behind `daemon/harness.ts`, and every engine's work lands in the same record.
 
