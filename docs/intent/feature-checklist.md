@@ -213,6 +213,8 @@ Sources are `docs/intent/multiplayer.md`, including its "Definition of done".
 - `docs/design/verification.md` describes the pipelines verify-create and verify-maintain. The verification branch has no such files.
 - The schema and types hold options that no code carries out. They are `routines.trigger` values other than cron, the codex value of `agents.harness`, `agents.avatar`, `agents.voice`, `agents.visibility`, `agent_managers`, `tasks.phase`, `sessions.started_by_session`, five ask kinds, the pr and slack_thread conversation kinds, the limited and needs_input session statuses, and public templates.
 - `docs/design/workflow.md` says the research, plan and implement pipeline has not run for real. The checklist counts it as Partly for that reason.
+- `docs/intent/multiplayer.md` says agents use the tools a web page offers through WebMCP. `daemon/computer-mcp.ts` starts Playwright's MCP server with `--no-webmcp` on purpose, so a site's tools stay out of the agent's tool list. It also lists that server's tools once, at start, so a page's tools could not reach the agent even with the flag off.
+- `docs/intent/multiplayer.md` says any MCP server can be added, run on the agent's computer or hosted, including hosted ones that sign in with OAuth. A plugin of kind http is called by Claude Code on the agent's computer, with headers filled from that machine's secrets. Nothing signs in with OAuth, a value can't be set from the app, and every tool of a plugin runs without asking (`daemon/agentsd.ts:316-319`).
 
 ## Biggest gaps
 
@@ -221,10 +223,11 @@ In order of how central each is to the goal.
 1. Agents cannot work with other agents. No tool lets an agent create an agent, message one or start a task or run. Its team-record tools only read and remember.
 2. There is no seat for each agent, and the desktop, browser and take-over are not on main. Boxes on main have no screen. On the computers branch all sessions on a box share one desktop.
 3. Nobody is told when an agent needs them. There are no notifications on desktop or phone, so approval cards and review gates wait until someone opens the app.
-4. The research, plan and implement pipeline has never run with real Claude and is not published. It needs an agent named builder on a box.
-5. Only Claude runs. The harness interface is there, `createAgent` cannot pick an engine, and the daemon refuses any other.
-6. Spend has no meter and no limit per agent or person. Only pipeline runs have a cap, so a chat, routine or room can spend without one.
-7. Work starts only from cron, this Mac's Gitea and a signed webhook. Slack, email, Linear and the rest are not built, and GitHub is on a branch. Voice, meetings, phone calls, 1Password, payments and a plugin marketplace are not started, and Tayler's intent files voice and meetings under later phases.
-8. People cannot search the record or read summaries of it. Only agents can search.
-9. A person cannot be removed from the team, and "only the owner drives agents on their box" is decided and not enforced.
-10. The cloud half and joining are not ready. AWS is switched off, a team gets 2 job boxes by default, and there is no warm start. There is no signed one-download app, an admin adds each Mac by hand, and the invite flow has never run against the real Tailscale API.
+4. Agents cannot reach the team's knowledge or sign in to MCP servers. A plugin takes a token pasted onto a machine, nothing signs in with OAuth, and Jira, Confluence, Slack and Drive have no connector. A person can't set a secret from the app. An agent can't show a choice, a form or an MCP app, and WebMCP is off in agents' browsers and not offered by the app. Tayler added these to the definition of done on 2026-10-15, and "Connectors, MCP apps and WebMCP" in `docs/design/target-architecture.md` designs them.
+5. The research, plan and implement pipeline has never run with real Claude and is not published. It needs an agent named builder on a box.
+6. Only Claude runs. The harness interface is there, `createAgent` cannot pick an engine, and the daemon refuses any other.
+7. Spend has no meter and no limit per agent or person. Only pipeline runs have a cap, so a chat, routine or room can spend without one.
+8. Work starts only from cron, this Mac's Gitea and a signed webhook. Slack, email, Linear and the rest are not built, and GitHub is on a branch. Voice, meetings, phone calls, 1Password, payments and a plugin marketplace are not started, and Tayler's intent files voice and meetings under later phases.
+9. People cannot search the record or read summaries of it. Only agents can search.
+10. A person cannot be removed from the team, and "only the owner drives agents on their box" is decided and not enforced.
+11. The cloud half and joining are not ready. AWS is switched off, a team gets 2 job boxes by default, and there is no warm start. There is no signed one-download app, an admin adds each Mac by hand, and the invite flow has never run against the real Tailscale API.
