@@ -26,6 +26,7 @@ import { finishPushes } from './pulls.ts'
 import { WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { markLostMachines } from './durability.ts'
 import { sendRoutine } from './routines.ts'
+import { markStuckTurns, placeWaitingTurns, requestTurn } from './scheduler.ts'
 import * as framework from './framework.ts'
 import { deliverOutcomes, promiseOutcome } from './obligations.ts'
 import { lastFire } from '../shared/cron.ts'
@@ -96,8 +97,8 @@ export async function stageSession(client: pg.PoolClient, run: Run, workspace: W
     [run.team_id, run.task_id, workspace.id, workspace.instance_id, agent.id, stage, agent.harness, agent.model])
 }
 
-// Records a stage's prompt in the session and sends it to the session's
-// machine, with what the session may do without asking. On a repo with a
+// Records a stage's prompt in the session and asks the scheduler for the
+// agent's turn, with what the session may do without asking. On a repo with a
 // policy the agent also gets its principles and the team's lessons. Returns
 // the prompt's place in the session.
 export async function sendPrompt(client: pg.PoolClient, run: Run, workspace: Workspace, agent: AgentRow, session: SessionRow,
@@ -113,10 +114,7 @@ export async function sendPrompt(client: pg.PoolClient, run: Run, workspace: Wor
     instructions: guidance ? `${agent.instructions}\n\n${guidance}` : agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: workspace.id, stage: spec, maxBudgetUsd: spec.maxBudgetUsd,
   }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     select $1, $2, $3, 'message', $4, id from events where session_id = $3 and seq = $5`,
-    [run.team_id, workspace.instance_id, session.id, JSON.stringify(payload), seq])
+  await requestTurn(client, { source: 'pipeline', teamId: run.team_id, agentId: agent.id, runId: run.id }, { sessionId: session.id, seq, payload })
   return seq
 }
 
@@ -708,9 +706,12 @@ export async function readTurn(client: pg.PoolClient, run: Run, turn: { sessionI
     'select status, harness_session_id from sessions where id = $1', [sessionId])
   const ended = await maybe<{ seq: string; body: { subtype?: string }; created_at: Date }>(client,
     `select seq, body, created_at from events where session_id = $1 and kind = 'usage' and seq > $2 order by seq limit 1`, [sessionId, fromSeq])
-  const sent = await maybe<{ status: string; error: string | null; payload: MessagePayload; instance_id: string }>(client,
-    `select status, error, payload, instance_id from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [sessionId])
+  const sent = await maybe<{ status: string; error: string | null; payload: MessagePayload }>(client,
+    `select status, error, payload from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [sessionId])
   if (!ended) {
+    // A turn waiting for its machine has no command yet, so the newest one, and
+    // the session's status, are still from an earlier turn.
+    if (await maybe(client, `select 1 from turns where session_id = $1 and status = 'waiting'`, [sessionId])) return { state: 'waiting' }
     if (sent?.status === 'failed' || session.status === 'failed') return { state: 'failed', reason: `The agent's session stopped: ${sent?.error ?? 'it exited with an error'}` }
     return { state: 'waiting' }
   }
@@ -735,10 +736,8 @@ export async function readTurn(client: pg.PoolClient, run: Run, turn: { sessionI
     events: [{ clientId: turn.key, kind: 'user', text, body: { text, runId: run.id, stage: turn.stage } }],
   })
   if (seq === undefined) throw new Error(`the reminder for ${turn.stage} was not recorded`)
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     select $1, $2, $3, 'message', $4, id from events where session_id = $3 and seq = $5`,
-    [run.team_id, sent.instance_id, sessionId, JSON.stringify({ ...sent.payload, text, harnessSessionId: session.harness_session_id }), seq])
+  await requestTurn(client, { source: 'pipeline', teamId: run.team_id, agentId: sent.payload.agentId, runId: run.id },
+    { sessionId, seq, payload: { ...sent.payload, text, harnessSessionId: session.harness_session_id } })
   return { state: 'reminded', fromSeq: String(seq) }
 }
 
@@ -1034,7 +1033,7 @@ async function fireRoutines(teamIds: string[] | null) {
          where id = $1 and trigger_config->>'checkedAt' is not distinct from $3`, [routine.id, now.toISOString(), routine.checked])
       // Another server got here first.
       if (!rowCount || !due) return
-      await sendRoutine(client, routine.id)
+      await sendRoutine(client, routine.id, null)
     }).catch((error: unknown) => { console.error(`routine ${routine.id}:`, messageOf(error)) })
   }
 }
@@ -1082,6 +1081,8 @@ export function startRunner() {
           await stopIdleBoxes(teams).catch(logged('idle boxes'))
         }
         await tx((client) => expireTurns(client, teams)).catch(logged('turns'))
+        await placeWaitingTurns(teams).catch(logged('waiting turns'))
+        await markStuckTurns(teams).catch(logged('stuck turns'))
         await finishPushes(teams).catch(logged('pull requests'))
         await markLostMachines(teams).catch(logged('lost machines'))
         const rows = await many<{ id: string }>(pool,

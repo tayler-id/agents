@@ -6,6 +6,7 @@ import type pg from 'pg'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, HttpError, scrub, type Person } from './record.ts'
 import { CONVERSATION_PERMISSIONS, WORKSPACE_PERMISSIONS } from './permissions.ts'
+import { requestTurn } from './scheduler.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 // It runs once the workspace is set up, since the machine handles a session's commands in order.
@@ -32,13 +33,12 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
   const [seq] = await appendEvents(client, session.id, {
     events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text, body: said === text ? { text } : { text, said } }],
   }, person.id)
+  if (seq === undefined) throw new Error(`the message to session ${session.id} was not recorded`)
   const payload: MessagePayload = {
     permissions: session.workspace_id ? WORKSPACE_PERMISSIONS : CONVERSATION_PERMISSIONS,
     text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: session.workspace_id ?? undefined, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     select $1, $2, $3, 'message', $4, id from events where session_id = $3 and seq = $5`,
-    [session.team_id, session.instance_id, session.id, JSON.stringify(payload), seq])
+  await requestTurn(client, { source: 'person', teamId: session.team_id, agentId: agent.id, askedBy: person.id, taskId: session.task_id },
+    { sessionId: session.id, seq, payload })
 }

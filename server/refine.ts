@@ -16,11 +16,12 @@ import { forge, repoPath } from './forge.ts'
 import { recordVersion } from './pipelines.ts'
 import { appendEvents, skillsOf } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
+import { requestTurn } from './scheduler.ts'
 import { memoryText } from './agents.ts'
 import { nameIn, pickSessions, recordFindings, recordStudyFindings, sentence } from './evidence.ts'
 import { editInstructions, editsOf, insertHunks, planPipelineHunks, proposeHunks, settleHunks, withLine, writePrompt } from './hunks.ts'
 import { FindingId, JudgeReport, Picked, ProposalHunk, SessionReplay, Verdict, type RunScore, type SessionScore } from '../shared/evidence.ts'
-import { AgentId, PipelineId, ProposalId, type RunId, type TeamId } from '../shared/ids.ts'
+import { AgentId, PipelineId, ProposalId, RunId, type TeamId } from '../shared/ids.ts'
 import type { Pipeline, Report, Stage } from '../shared/pipeline.ts'
 import type { AgentSkill, MessagePayload } from '../shared/types.ts'
 
@@ -303,8 +304,11 @@ const stopSession = (client: pg.PoolClient, sessionId: string, kind: 'stop' | 'i
 // when the change writes no text, since a check changes nothing a replay could
 // show. Throws when not even one case fits.
 export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId, proposalId: ProposalId, budgetUsd: number): Promise<number> {
-  const proposal = await one<{ agent_id: string }>(client, `proposal ${proposalId}`, 'select agent_id from proposals where id = $1', [proposalId])
+  const proposal = await one<{ agent_id: string; run_id: string | null }>(client, `proposal ${proposalId}`, 'select agent_id, run_id from proposals where id = $1', [proposalId])
   const agentId = AgentId.parse(proposal.agent_id)
+  // The run that wrote the proposal scores it, so its replays' turns are that run's.
+  if (proposal.run_id === null) throw new Error(`proposal ${proposalId} has no run to score it`)
+  const runId = RunId.parse(proposal.run_id)
   const agent = await one<{ home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client, `agent ${agentId}`,
     'select home_instance_id, harness, model, instructions from agents where id = $1', [agentId])
   if (!agent.home_instance_id) throw new Error('the agent has no home machine to replay on')
@@ -398,10 +402,7 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
       permissions: CONVERSATION_PERMISSIONS, text, agentId, harness: agent.harness, model: agent.model, instructions: setup.instructions, harnessSessionId: null,
       workspaceId: workspace.id, skills: setup.skills, plugins: [], memory: await replayMemory(client, agentId, people, setup.added), maxBudgetUsd: REPLAY_BUDGET_USD,
     }
-    await client.query(
-      `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-       select $1, $2, $3, 'message', $4, id from events where session_id = $3 and seq = $5`,
-      [teamId, agent.home_instance_id, session.id, JSON.stringify(payload), seq])
+    await requestTurn(client, { source: 'pipeline', teamId, agentId, runId }, { sessionId: session.id, seq, payload })
   }
   return runs.length
 }

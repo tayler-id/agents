@@ -414,7 +414,7 @@ const routes: Route[] = [
     const routine = await maybe(pool,
       'select 1 from routines r join agents a on a.id = r.agent_id where r.id = $1 and a.team_id = $2', [routineId, person.team_id])
     if (!routine) throw new HttpError(404, 'no such routine')
-    return { conversationId: await tx((client) => sendRoutine(client, routineId)) }
+    return { conversationId: await tx((client) => sendRoutine(client, routineId, person.id)) }
   }],
 
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
