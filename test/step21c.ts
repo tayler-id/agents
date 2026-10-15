@@ -345,6 +345,43 @@ try {
   const afterOffLanded = await until('the session after Off, which must not land', 3, async () => Boolean(await sessionOf(afterOff.session)))
   check(sentinelLanded && !afterOffLanded, 'a session started after Off stays on the Mac, while a connected folder\'s lands')
 
+  // A folder that was Just me and is now Off still has sessions the team can't see, so Team asks first there too.
+  await group('diary').getByRole('button', { name: 'Off', exact: true }).click()
+  const diaryOff = await said('diary')
+  const sentinelId = String((await sessionOf(sentinel.session))?.id)
+  const offAsked = await clicked(group('diary').getByRole('button', { name: 'Team', exact: true }))
+    ? await question('diary').innerText({ timeout: SHOWS_MS }).catch(() => '')
+    : ''
+  check(diaryOff.startsWith('Disconnected diary.') && offAsked.startsWith('Show the team the 1 session already in the record from diary?')
+    && (await folderRow(diary))?.disconnected_at !== null && await pressed('diary') === 'Off* Team Just me' && !await canSee(mate, sentinelId),
+  `Team on a folder that was Just me and is now Off asks first too, with the count, and changes nothing: ${offAsked.split('\n')[0] ?? ''}`)
+  const offKeptClick = await clicked(question('diary').getByRole('button', { name: 'Keep it to me', exact: true }))
+  const offKept = await said('diary')
+  check(offKeptClick && offKept === "Nothing changed. Only you see diary's sessions." && await question('diary').count() === 0
+    && (await folderRow(diary))?.disconnected_at !== null && await pressed('diary') === 'Off* Team Just me' && !await canSee(mate, sentinelId),
+  `Keep it to me leaves that folder off: ${offKept}`)
+  const offYesClick = await clicked(group('diary').getByRole('button', { name: 'Team', exact: true }))
+    && await clicked(question('diary').getByRole('button', { name: 'Yes, show the team', exact: true }))
+  const offShown = await said('diary')
+  const diaryRejoined = await folderRow(diary)
+  const mateSeesSentinel = await canSee(mate, sentinelId)
+  await group('diary').getByRole('button', { name: 'Just me', exact: true }).click()
+  const diaryBackToMe = await said('diary')
+  check(offYesClick && offShown.startsWith('Connected diary.') && offShown.endsWith('The team also sees the 1 session already in the record from it.')
+    && diaryRejoined?.visibility === 'team' && diaryRejoined.disconnected_at === null && mateSeesSentinel
+    && diaryBackToMe.startsWith("Only you see diary's sessions now") && (await folderRow(diary))?.visibility === 'private',
+  `once the person says yes it is connected as the team's, the page says how many sessions that showed, and Just me takes it back: ${offShown}`)
+  // A folder that is Off, and whose sessions the team already sees, connects as the team's without a question.
+  const shopRejoinClick = await clicked(group('shop').getByRole('button', { name: 'Team', exact: true }))
+  const shopRejoined = await said('shop')
+  const shopAsked = await question('shop').count()
+  const shopRejoinRow = await folderRow(shop)
+  await group('shop').getByRole('button', { name: 'Off', exact: true }).click()
+  const shopOffAgain = await said('shop')
+  check(shopRejoinClick && shopRejoined.startsWith('Connected shop.') && !shopRejoined.includes('also sees') && shopAsked === 0
+    && shopRejoinRow?.visibility === 'team' && shopRejoinRow.disconnected_at === null && shopOffAgain.startsWith('Disconnected shop.'),
+  `Team on a folder that is Off, whose sessions the team already sees, connects without a question: ${shopRejoined}`)
+
   // The folders the person connected on their other machines, which this Mac doesn't change.
   const others = desk.getByRole('list', { name: 'Connected on your other machines' })
   const othersText = await others.innerText({ timeout: SHOWS_MS }).catch(() => '')
