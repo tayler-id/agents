@@ -6,7 +6,7 @@ I wrote it before the code, from prototypes run against the real `claude` CLI on
 
 ## The slice
 
-A person connects a folder on their Mac once, such as a repo:
+A person connects a folder on their Mac once, such as a repo, from the Terminal folders page in the Agents app on the Mac, or with:
 
 ```
 node daemon/folders.ts connect ~/Projects/agents
@@ -69,13 +69,28 @@ What hooks would have cost: a settings file written into each connected folder o
 ## Connecting a folder
 
 - `node daemon/folders.ts connect [folder] [--private | --team]` connects the folder, by default the current one. `disconnect [folder]` disconnects it, and no arguments lists what is connected. `--json` prints the answer as JSON. It follows our CLI conventions: an `ok:` line first, `already: true` when nothing changed, and exit codes 0 done, 1 failed and safe to retry, 2 usage, 3 refused.
-- It runs on the Mac and calls the API with the daemon's machine token, read from `AGENTS_TOKEN` or `~/.agents-app/daemon.json`. A `daemon.json` that can't be read or isn't a config is an error that names it, not a missing file. No route lets a person connect a folder from the app, so nobody can make another person's sessions leave their Mac.
+- It runs on the Mac and calls the API with the daemon's machine token, read from `AGENTS_TOKEN` or `~/.agents-app/daemon.json`. A `daemon.json` that can't be read or isn't a config is an error that names it, not a missing file. No API route lets a person connect a folder, so nobody can make another person's sessions leave their Mac. The app on the Mac connects one through the Mac's own daemon, as "Connecting from the app" says.
 - Only a Mac with an owner connects a folder, since the owner is the person whose terminal it is. Boxes are refused.
 - The folder is stored as the system gives it back, with links resolved and each name in the case it has on disk, since that is the path Claude Code records. On macOS's case-insensitive volume, a folder typed in the wrong case would otherwise match no transcript, and connect would say ok while nothing landed.
 - `connect` prints the transcript folder the daemon reads, `~/.claude/projects/<name>`. When the shell running it sets `CLAUDE_CONFIG_DIR`, it warns that Claude Code started from that shell writes its transcripts elsewhere, and that the daemon under launchd reads `~/.claude/projects` unless its own environment sets `CLAUDE_CONFIG_DIR` to the same folder. Those sessions don't land until it does. It also warns when the transcript folder's name passes 200 characters.
 - **The home folder, and any folder above it, can't be connected.** A person's home holds every project they have, so connecting it would send every session they start under it. `connect` refuses it with exit 3. The API can't tell where a Mac's home is, so something that holds the machine token can still connect one through it. The daemon reads no session in such a folder, and says so in its log, whoever connected it. A project inside the home folder connects as usual.
 - A folder connected again keeps its row, and only sessions started after the new connection land.
 - **Who sees a folder's sessions changes only when the person says so.** A folder is the team's when first connected, and `--private` keeps its sessions to the person. Connecting it again keeps whichever it is, unless `--private` or `--team` says otherwise, so a bare `connect` never shows the team a private folder's sessions. `--team` on a private folder prints how many of its sessions already in the record the team now sees. Both flags together are a usage error.
+
+## Connecting from the app
+
+Tayler asked for a way to connect a folder from the app, with no script to paste into a terminal. On a Mac, a person does it in the Agents desktop app.
+
+- **The page.** The sidebar's Terminal folders link opens `#/folders`. In the desktop app it lists the folders Claude Code ran in on this Mac, newest first by when each folder's newest transcript changed, and any folder connected on this Mac that Claude Code hasn't run in since. Each folder has one control with three choices: Off, Team and Just me. Choosing one connects, changes or disconnects the folder, and the row then says what happened, with how many sessions a change to Team showed the team and any warning that will keep the folder's sessions from landing.
+- **Asking before the team sees more.** Choosing Team asks first whenever it would show the team sessions in the record they can't see now. Those are a private folder's sessions, whether it is Just me now or was Just me and is now Off, since a folder's sessions keep its visibility while it is off. So the page first counts them afresh, through the daemon. When there are any, the row asks "Show the team the 1 session already in the record from shop?", and nothing changes until the person picks Yes, show the team. Keep it to me leaves the folder as it was, and the row says "Nothing changed." Team on a folder with no such sessions changes without a question.
+- **Folders set apart.** Folders inside the system's temporary folders, `/tmp`, `/var/folders` and the daemon's `TMPDIR`, sit in a collapsed group, since tools and checks start Claude Code there by the hundred. On the Mac this was built on, 361 of the 393 folders Claude Code ran in that still exist are there. A folder inside a connected one says its sessions land through that folder. The home folder, and a folder above it, say why they can't be connected, and their Team and Just me can't be chosen. Folders connected on the person's other machines are listed apart, read only.
+- **In a browser** the page lists the person's connected folders, each with who sees its sessions and its machine, and says to open the Agents app on the Mac it is on to change them.
+- **How the page reaches the daemon.** `desktop/preload.cjs` gives the page `window.agentsMac`, with three calls: list, connect and disconnect. `desktop/main.cjs` passes each to the daemon's socket, `$AGENTS_HOME/run/app.sock`, as HTTP, and `daemon/app-socket.ts` answers it.
+- **Only that macOS user can open the socket.** It sits in a folder of its own with mode 0700, and is 0600 itself. macOS refuses a connect without search permission on the folder or without write permission on the socket, and the check shows each by taking it away from the owner. root can still open it.
+- **The page's code comes from the team's server,** so the bridge refuses two things. `main.cjs` answers only the server's own page, by its frame's origin, so a page the window was sent to on another site gets a refusal. A connect or disconnect goes through only while `navigator.userActivation` says the person clicked or pressed a key on the page in the last 5 seconds, so the page's code can't connect a folder on its own.
+- **One copy of the rules.** The socket calls `connectFolder` and `disconnectFolder` in `daemon/folders.ts`, the functions the folders command calls, so the home folder refusal and the API's rules hold the same either way. The app always names who sees a folder's sessions, so a folder connected from the app is the team's only when its person chose Team. No API route connects a folder for a person.
+- **What stays on the Mac.** The daemon reads the list on the Mac, from each transcript folder's newest transcript, as far as the line that says where its session started, and gives it to the app on the Mac and nowhere else. A folder's name reaches the API only when its person connects it. The daemon asks the API only for this Mac's connected folders. `GET /v1/instance/folders` also returns the Mac's own id, so the page can tell this Mac's folders from those on other machines, and by path how many sessions in the record each of this Mac's private folders holds, connected or not, counted the way the API counts what a change to Team shows the team.
+- **Failures.** With the daemon down, the page says it can't reach the daemon and names the socket. A daemon that crashed leaves its socket's file behind, and the next one removes it before it listens. A socket path longer than the 103 bytes macOS keeps is reported in the daemon's log and not served, since macOS would cut it short and the app would never find it. An ask larger than 64 KB is refused.
 
 ## What leaves the Mac
 
@@ -155,6 +170,7 @@ Migration `0013_local_sessions.sql` adds one table and changes `sessions`. `docs
 
 - The sidebar lists recent terminal sessions under "From terminals", each named by its folder and marked with whose terminal it ran in. A live one also shows in "Running now", marked "terminal".
 - A terminal session opens as its own page, at `#/l/<session id>`. It says "From Tayler's terminal", the folder, the machine and the state, and lists every event the way the session panel does.
+- The Terminal folders page, at `#/folders`, lists the person's folders and connects them, as "Connecting from the app" says.
 
 ## The check
 
@@ -189,6 +205,20 @@ Every one of the 50 lines went red under a break of what it guards, with each fi
 - A transcript whose lines name another folder's session writes nothing into it, and the daemon says why. The API refuses that session id for another folder.
 - Secrets: a value only `apps/api/.env` holds, read from the folder's root, `REDIS_URL`, `MONGODB_URI` and `SMTP_PASS`, a PDF, a value only the login shell exports, and a folder and a session id named with a secret, from the daemon and from the API. A path and the folder's own name are left alone. A daemon that can't read the login shell sends no terminal session.
 
+### Connecting from the app
+
+`test/step21c.ts` writes Claude Code's transcripts into a stand-in home folder, in the checkout's ignored `.scratch/`, since the page sets apart folders in the system's temporary folders. It runs the real API, daemon and Electric, drives the Electron app, and opens the page in Chromium, Firefox and WebKit at desktop and phone width. It runs in about 35 seconds, on ports 8120 to 8123, with teams named `mac-connect-<id>`. Its 42 lines cover:
+
+- The socket: its modes and owner, another process of the same user reaching it, and macOS refusing a connect once the owner loses search permission on its folder or write permission on it.
+- The page in the desktop app: the sidebar link, the folders newest first, a temporary folder set apart, a folder that is gone and the daemon's own sessions left out, an axe scan, the three choices, and the home folder that can't be chosen.
+- Team, Just me and Off, each with what the page says and the row in Postgres. A session started after connecting lands, and the one from before stays on the Mac. A teammate who could open the session's events can't once the folder is Just me. Team on that folder then asks first, with the count, and changes nothing. Keep it to me leaves it Just me, and Yes, show the team makes it the team's again. A folder that is Just me with nothing in the record changes without a question. A folder that was Just me and is now Off asks the same way, Keep it to me leaves it off, and Yes connects it as the team's. A folder that is Off and whose sessions the team already sees connects without a question. A folder inside a connected one says it lands through it. A session started after Off stays on the Mac while a connected folder's lands.
+- What is refused: the home folder and a folder above it, by the daemon, before the API hears of them. A connect from the page's code with no click behind it. A person's request to the folders route. Every call from a page on another site. An ask larger than 64 KB.
+- The browser's read-only list in all three engines at both widths, with nothing sideways at phone width and no serious accessibility finding, and the desktop app's page in a window as narrow as a phone.
+- A daemon that crashed: the page says it can't reach it, and the next daemon replaces the socket file left behind. A socket path past 103 bytes is reported and not served. With the team's server down, the page keeps its list and says the server did not answer.
+- Last, every table in Postgres and the API's log are searched for the names of three folders never connected, and none holds them.
+
+Playwright counts each of its own queries of a page as a click for 5 seconds, so the line about a connect with no click behind it asks from Electron's main process, once the page shows no recent click. No check can play another macOS user without root, so the socket lines show the modes, and that macOS enforces them, with the owner.
+
 ## Tayler's calls
 
 Tayler made these on 2026-10-14. `docs/decisions.md` has them.
@@ -205,7 +235,13 @@ Tayler made these on 2026-10-14. `docs/decisions.md` has them.
 - Sessions started in a connected folder through Codex.
 - Telling a closed terminal from a running session.
 - The cost of a terminal session. Claude Code writes it in `cost-state` lines, which aren't read.
-- Connected folders aren't listed in the app. The command lists them on the Mac.
+- The page in the desktop app runs code the team's server sends, so a server that sent other code could read the list of this Mac's folders, and could connect one in the 5 seconds after any click on the page. The bridge refuses pages from other sites and changes with no click behind them, and nothing more.
+- The count is read when Team is chosen. A session that lands between that read and the person's yes shows the team one more than the question said, and the row then says the number the API counted.
+- No check plays another macOS user. root can open the socket.
+- The list reads each transcript folder's newest transcript every 10 seconds while the page is open, on the daemon's one thread. On the Mac this was built on, 507 transcript folders, 387 of them listed, took 840 ms the first time and about 60 ms once the files were cached.
+- Two folders whose transcript folder names come out the same, such as `/a/b-c` and `/a/b/c`, list as the one whose transcript is newest.
+- agentsctl's desktop app runs with a home folder of its own, so its Terminal folders page finds no daemon socket.
+- A daemon from this change needs an API from it too, since the page reads the Mac's id from `GET /v1/instance/folders`.
 - A Bash command's output from a file outside the connected folder, a tool that names its path in a field other than `file_path`, `path` or `notebook_path`, and the input of a call that writes a file outside the folder aren't held back.
 - The API takes the home folder, or one above it, from anything holding the machine token, since it can't tell where a Mac's home is. `connect` and the daemon refuse it.
 - The daemon's state file keeps an entry for every transcript it has taken, including ones Claude Code has since removed, and writes all of them whenever one changes.

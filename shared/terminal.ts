@@ -49,8 +49,37 @@ export type FolderAnswer = z.infer<typeof FolderAnswer>
 // Connecting also says how many sessions already in the record a widening to the team showed it.
 export const ConnectAnswer = FolderAnswer.extend({ exposed: z.number().int().min(0) })
 export type ConnectAnswer = z.infer<typeof ConnectAnswer>
-export const FolderList = z.object({ folders: z.array(FolderRow) })
+// The Mac's own id, so the app can tell its folders from those on the person's other machines, its connected
+// folders, and by path how many sessions in the record each of its private folders holds, connected or not. The
+// team can't see those, and choosing Team for the folder shows them.
+export const FolderList = z.object({ instanceId: InstanceId, folders: z.array(FolderRow), hiddenSessions: z.record(z.string(), z.number().int().min(0)) })
 export type FolderList = z.infer<typeof FolderList>
+
+// What this Mac's daemon tells the Agents app on the same Mac, through the socket
+// in daemon/app-socket.ts. Each folder is one Claude Code ran in, with when its
+// newest transcript changed, or one connected here, or both. `hiddenSessions` is
+// how many of its sessions in the record the team can't see now, which choosing
+// Team shows them. A temporary one is inside the system's temporary folders,
+// where tools start Claude Code by the hundred. A folder that isn't connected
+// never leaves the Mac.
+const MacFolderPlace = { path: FolderPath, temporary: z.boolean(), hiddenSessions: z.number().int().min(0) }
+export const MacFolder = z.union([
+  z.object({ ...MacFolderPlace, usedAt: Time, folder: z.null() }),
+  z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: FolderRow }),
+])
+export type MacFolder = z.infer<typeof MacFolder>
+// This Mac's id, its person's home folder, which can't be connected, and its folders, newest first.
+export const MacFolders = z.object({ instanceId: InstanceId, home: FolderPath, folders: z.array(MacFolder) })
+export type MacFolders = z.infer<typeof MacFolders>
+// The app connects a folder by choosing who sees its sessions, and Off disconnects it.
+export const AppConnect = z.object({ path: FolderPath, visibility: FolderVisibility })
+export type AppConnect = z.infer<typeof AppConnect>
+// The daemon's answer to a connect from the app, with anything that will keep the folder's sessions from landing.
+export const AppConnected = ConnectAnswer.extend({ warnings: z.array(z.string()) })
+export type AppConnected = z.infer<typeof AppConnected>
+// The daemon's answer when it changed nothing, in words the app shows as they are.
+export const AppRefusal = z.object({ error: z.string() })
+export type AppRefusal = z.infer<typeof AppRefusal>
 
 // The daemon found a Claude Code session that started in a connected folder.
 // The API answers with the record's session for it, the same one each time.

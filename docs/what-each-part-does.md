@@ -96,9 +96,9 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** Anything that waits on a person is an ask: a tool approval, a pipeline's gate, a hand-off. It shows as a card in the conversation or run, and anyone on the team can answer it. "Always" and "never" on a tool approval become standing rules that answer the next one.
 - **Helps later.** Forms, drafts and secret requests are more kinds of the same ask.
 
-### The app (`app/`) and the desktop app (`desktop/main.cjs`)
+### The app (`app/`) and the desktop app (`desktop/main.cjs`, `desktop/preload.cjs`)
 
-- **Solves now.** One screen for the team: agents, conversations, pipelines, runs, what is running now, and machines. A conversation shows posts, live typing, ask cards and interrupt. A session panel shows every step an agent took. Agent replies and documents render their markdown. The Electron app opens the server's tailnet address.
+- **Solves now.** One screen for the team: agents, conversations, pipelines, runs, what is running now, and machines. A conversation shows posts, live typing, ask cards and interrupt. A session panel shows every step an agent took. Agent replies and documents render their markdown. The Electron app opens the server's tailnet address, and its preload gives the server's page three calls to the Mac's daemon, for the Terminal folders page.
 - **Helps later.** Rooms, memory, skills and routines get their own views in phase 4.
 
 ### Team-record tools (`daemon/record-mcp.ts`, `server/teamrecord.ts`)
@@ -441,8 +441,8 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 
 ### Connected folders (`daemon/folders.ts`, `server/folders.ts`, the `connected_folders` table)
 
-- **Solves now.** A person connects a folder on their Mac once, with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again.
-- **Helps later.** The app can list a Mac's folders and disconnect one through the same rows.
+- **Solves now.** A person connects a folder on their Mac once, from the Terminal folders page in the Agents app on the Mac or with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again. The command and the app's socket call the same `connectFolder` and `disconnectFolder`.
+- **Helps later.** Codex sessions in a connected folder can land through the same rows, with a reader for Codex's transcripts.
 
 ### The transcript reader (`daemon/transcripts.ts`, `transcriptBatch` in `daemon/claude.ts`)
 
@@ -454,6 +454,11 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 - **Solves now.** The sidebar's From terminals lists recent terminal sessions by folder and whose terminal they ran in, and Running now marks a live one as terminal. Each opens on its own page, `#/l/<session id>`, with every event. Agents' `search_record` finds them like any session the team shares.
 - **Helps later.** A teammate's Claude finds a fix made in a terminal, which is where most fixes are made today.
 
+### Connecting folders from the app (`daemon/app-socket.ts`, `desktop/preload.cjs`, `app/src/Folders.tsx`)
+
+- **Solves now.** A person connects a folder from the Agents app on their Mac, with no command to type. The Terminal folders page, `#/folders`, lists the folders Claude Code ran in on that Mac, newest first, each with one control: Off, Team or Just me. Before Team shows the team sessions in the record they can't see now, it asks, with the count. The page reaches the Mac's daemon through `desktop/preload.cjs`, which gives it only list, connect and disconnect, and only for the server's own page and right after a click. The daemon answers on a Unix socket, `~/.agents-app/run/app.sock`, that only that macOS user can open, and connects with the folders command's own functions. The names of folders that aren't connected go to the app on the Mac and nowhere else. In a browser the page lists the person's connected folders and says to open the Agents app on the Mac to change them.
+- **Helps later.** The one signed download starts the daemon from the desktop app, and this page is where its person connects folders there.
+
 ### The step 21 check (`test/step21.ts`)
 
 - **Solves now.** It runs the real `claude` CLI with `haiku`, headless, through the real daemon, API and Electric. It connects a folder and runs sessions in it, in a folder inside it, beside it, before it was connected and after it was disconnected, and in a private folder. Then it checks what the record holds and what it doesn't, the scrubbing, the picture that stayed on the Mac, the subagent, what each person sees in the API and in Chromium, a daemon restart, and what the API refuses.
@@ -463,6 +468,11 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 
 - **Solves now.** It writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, and runs the real daemon, folders command, API and Electric on them, with no Claude. It takes about a minute and a half, on ports 8110 to 8113. It holds the review's fixes for terminal sessions, each as a line that went red under a break of what it guards. `test/read-meter.ts` is loaded into the daemon it starts and counts the bytes the daemon reads from each file, the biggest buffer a read was given and the CPU time it used, so the check can say how much a read cost and not only that it landed.
 - **Helps later.** A change to how the daemon reads, scrubs, sends or withholds a transcript gets its answer in about a minute and a half, where step 21 takes about three and spends a little of the subscription.
+
+### The step 21c check (`test/step21c.ts`)
+
+- **Solves now.** It connects folders from the app the way a person does. It writes Claude Code's transcripts into a stand-in home folder, runs the real API, daemon and Electric, drives the Electron app's Terminal folders page, and opens the page in Chromium, Firefox and WebKit at desktop and phone width, on ports 8120 to 8123, in about 35 seconds. Its 42 lines cover the socket's modes, the list and its order, Team, Just me and Off with the sessions that land or stay on the Mac, the question before a private folder's sessions are shown the team, the home folder refusal, what the bridge refuses, a crashed daemon's socket, and a search of every Postgres table and the API's log for the names of folders never connected.
+- **Helps later.** When the signed download changes how the daemon starts, this check says whether the page still connects folders and keeps the names of the others on the Mac.
 
 ## Worktrees and landing (`daemon/agents-git/`, `test/step22.ts`, `test/fake-gh.ts`, `test/fake-docker.ts`)
 
