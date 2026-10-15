@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
+import { call, type Reply } from './api.ts'
 import { childEnv, ROOT } from './config.ts'
 import { withClient } from './db.ts'
 import { Refused } from '../shared/cli/output.ts'
@@ -172,6 +173,23 @@ export async function seedExtraRepo(state: ReadyState, repo: string): Promise<{ 
   if (latest?.phase !== 'ready') throw new Error(`instance ${state.name} stopped while the repo was made`)
   saveState({ ...latest, forgeRepos: [...latest.forgeRepos, made] })
   return { repo: made, already: false }
+}
+
+const TaskRow = z.object({ id: z.string() })
+const taskTitled = (teamId: string, title: string) => withClient(async (client) => z.array(TaskRow).parse((await client.query(
+  'select id from tasks where team_id = $1 and title = $2 order by created_at desc limit 1', [teamId, title])).rows)[0] ?? null)
+
+export type TaskStart = { kind: 'started'; taskId: string; already: boolean } | { kind: 'refused'; reply: Reply } | { kind: 'missing' }
+
+// Starts a task for an agent, as a person does with New task, unless a task with the title is already there.
+export async function startTask(state: ReadyState, task: { title: string; instructions: string; agentId: string }): Promise<TaskStart> {
+  const had = await taskTitled(state.seed.teamId, task.title)
+  if (!had) {
+    const reply = await call(state, { method: 'POST', path: '/v1/tasks', as: 'person', body: task })
+    if (reply.status < 200 || reply.status >= 300) return { kind: 'refused', reply }
+  }
+  const started = await taskTitled(state.seed.teamId, task.title)
+  return started ? { kind: 'started', taskId: started.id, already: had !== null } : { kind: 'missing' }
 }
 
 // The team's repos on the forge: shop, a small app with a known bug, and

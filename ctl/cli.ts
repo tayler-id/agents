@@ -19,7 +19,7 @@ import { doctor, down, list, ready, resolve, up, type DoctorReport } from './ins
 import { isOurs } from './procs.ts'
 import { Role, type Found, type Handle, type Op, type SessionReply, type Target } from './protocol.ts'
 import { sessionCall, stopSessionServer } from './session-client.ts'
-import { addAgent, addBox, addPerson, loginOf, PERSON_RULE, PersonName, seedExtraRepo } from './seed.ts'
+import { addAgent, addBox, addPerson, loginOf, PERSON_RULE, PersonName, seedExtraRepo, startTask } from './seed.ts'
 import { Harness, InstanceName, readState, saveState, type InstanceState, type ReadyState } from './state.ts'
 import { baseline, BaselineReason, compare } from './visual.ts'
 import { checkMap, exportMap, guardMap, listMap, runMap } from './map.ts'
@@ -461,16 +461,10 @@ const seedTask = command({
     const state = ready(values.instance)
     const agentId = state.seed.agents[values.agent]
     if (!agentId) throw new UsageError(`no agent named ${values.agent} on the instance: ${Object.keys(state.seed.agents).join(', ')}`)
-    const existing = async () => withClient(async (client) => one(z.object({ id: z.string(), title: z.string() }), (await client.query(
-      'select id, title from tasks where team_id = $1 and title = $2 order by created_at desc limit 1', [state.seed.teamId, values.title])).rows))
-    const had = await existing()
-    if (!had) {
-      const reply = await call(state, { method: 'POST', path: '/v1/tasks', as: 'person', body: { title: values.title, instructions: values.instructions ?? '', agentId } })
-      if (reply.status < 200 || reply.status >= 300) return failed(`POST /v1/tasks answered ${String(reply.status)}`, { outside: [{ source: 'API answer', text: JSON.stringify(reply.body) }], untrusted: [{ source: 'API answer', field: 'data.body' }], help: [run(`doctor${at(state)}`, 'to check the instance')], data: reply, log: state.evidence })
-    }
-    const task = await existing()
-    if (!task) return failed(`no task titled "${values.title}" after starting it`, { help: [], data: null, log: state.evidence })
-    return { kind: 'write', did: `seed task "${values.title}"`, state: `the task is at #/t/${task.id}, for ${values.agent}`, already: had !== null, help: [run(`browser goto "#/t/${task.id}"`, 'to open it')], data: { taskId: task.id }, log: state.evidence }
+    const started = await startTask(state, { title: values.title, instructions: values.instructions ?? '', agentId })
+    if (started.kind === 'refused') return failed(`POST /v1/tasks answered ${String(started.reply.status)}`, { outside: [{ source: 'API answer', text: JSON.stringify(started.reply.body) }], untrusted: [{ source: 'API answer', field: 'data.body' }], help: [run(`doctor${at(state)}`, 'to check the instance')], data: started.reply, log: state.evidence })
+    if (started.kind === 'missing') return failed(`no task titled "${values.title}" after starting it`, { help: [], data: null, log: state.evidence })
+    return { kind: 'write', did: `seed task "${values.title}"`, state: `the task is at #/t/${started.taskId}, for ${values.agent}`, already: started.already, help: [run(`browser goto "#/t/${started.taskId}"`, 'to open it')], data: { taskId: started.taskId }, log: state.evidence }
   },
 })
 
