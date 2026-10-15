@@ -311,6 +311,7 @@ try {
   check(asked.startsWith('Show the team the 1 session already in the record from shop?')
     && (await folderRow(shop))?.visibility === 'private' && await pressed('shop') === 'Off Team Just me*' && !await canSee(mate, freshId),
   `Team on a folder that is Just me, with a session in the record, asks first, says how many the team would see, and changes nothing: ${asked.split('\n')[0] ?? ''}`)
+  await desk.screenshot({ path: join(SHOTS, 'step21c-desktop-app-ask.png') })
   const keptClick = await clicked(question('shop').getByRole('button', { name: 'Keep it to me', exact: true }))
   const kept = await said('shop')
   check(keptClick && kept === "Nothing changed. Only you see shop's sessions." && await question('shop').count() === 0
