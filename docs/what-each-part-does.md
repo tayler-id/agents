@@ -25,7 +25,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
   - It numbers each session's events and each conversation's messages, so order holds when people and agents write at once.
   - It skips anything already written, so a retry never adds a duplicate.
   - It scrubs secrets a second time.
-  - It links things together. A person's message becomes a post in the conversation, a user event in the agent's session, and a command for the agent's machine. When the agent's turn ends, its last words become its post in the conversation, linked to the event that wrote them.
+  - It links things together. A person's message becomes a post in the conversation, a user event in the agent's session, and a turn, which the scheduler hands to the agent's machine as a command. When the agent's turn ends, its last words become its post in the conversation, linked to the event that wrote them.
 - **Helps later.** Rooms, tasks, asks and artifacts plug into the same functions, so the numbering and the links stay right everywhere.
 
 ### The API (`server/api.ts`)
@@ -191,7 +191,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### Routines (`server/routines.ts`)
 
-- **Solves now.** A routine sends a prompt to its agent's main conversation on a cron schedule, or when someone runs it from the app. The team sees the prompt and the reply.
+- **Solves now.** A routine sends a prompt to its agent's main conversation on a cron schedule, or when someone runs it from the app. The team sees the prompt and the reply. Each firing is a turn with the routine's id and whoever ran it, so the turns table keeps every firing. No page shows that history yet.
 
 ### Tasks people start (`server/tasks.ts`, `app/src/Work.tsx`)
 
@@ -224,9 +224,9 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 
 ### A box for each person (`server/boxes.ts`, `app/src/Box.tsx`)
 
-- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never stops for being idle. It never gets the team's Claude token. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
+- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never gets the team's Claude token. It goes to sleep after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it, a command is queued for it, its owner starts a Claude sign-in, or a person holds its screen. The Your box page and the welcome steps say it is asleep, and the Team page lists it so. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
 - **Helps later.** Each person's agents run on their own computer and their own Claude account, so one person's work doesn't slow or bill another's.
-- **Not done.** Personal boxes run all the time. Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them.
+- **Not done.** Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them. A person can watch an asleep box's screen only once something wakes it, since the Screen view does not wake it.
 
 ### The Claude sign-in relay (`server/claudelogin.ts`, `server/box-routes.ts`, `daemon/claude-login.ts`)
 
@@ -590,3 +590,22 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 ### The AWS checks (`test/step11.ts` to `test/step11g.ts`, `test/netlab.ts`, `test/fake-aws.ts`)
 
 - **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, and through the one in colima's VM on this Mac, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.
+
+## One door for turns
+
+The design is "A scheduler places every turn" in `docs/design/target-architecture.md`, step 1 of its build order.
+
+### The scheduler (`server/scheduler.ts`, `shared/turns.ts`, `0014_door.sql`)
+
+- **Solves now.** Every turn an agent is asked to take is a row in `turns`: a person's message in a DM or a room, a person's message to a task, a routine's firing, and a pipeline's stage, its reminder to report and a coach replay. Each says who asked and what for, and carries the session, the prompt's event and the payload the engine is handed. `requestTurn` is the one way in, and `server/scheduler.ts` is the only file that writes a message command. It writes one once the turn's machine is online and its daemon has reported in, and until then marks the turn waiting, with `computer_starting` for a box the server starts and `machine_offline` for anything else. The runner's loop places waiting turns as their machines report in, and marks a running turn stuck when its session has had no new event for `AGENTS_TURN_STUCK_MIN`, 10 minutes by default. A placed turn runs and ends with its message command, in the same statement that moves the command. A room still gives one agent its go at a time, and a turn whose deadline passes while it waits is cancelled.
+- **Helps later.** Seats, budgets, job computers and agent chains decide where and when a turn runs in one place, before any machine gets it. `whereTurnsRun` is the one choice of place, so a place on the server can be added there (decision 1). The stuck mark is what a notification to the asker will read.
+
+### The waiting line (`app/src/TurnWaits.tsx`)
+
+- **Solves now.** While a turn in a conversation waits, the conversation shows the agent's name and why, such as "Starting Alice's computer" or "Waiting for mac-bob, which is offline", with Docker's words when the box could not start. A running turn marked stuck shows when it was last heard from. The line goes once the turn has its machine, and the reply comes in its place. It reads a shape of only those turns, with no prompt in it, every 2 seconds, and holds no connection open.
+- **Helps later.** Waiting for a seat, a budget or a plan's limit are more reasons on the same line.
+
+### The step 23 check (`test/step23.ts`)
+
+- **Solves now.** It builds a box image under its own tag and gives a person their own box as a real container. A DM sent while the new box first starts waits, then the box answers. A routine's firing is kept as a turn. The box goes to sleep with nothing to do, a DM wakes it while its conversation reads that the computer is starting, and the check times the start and the reply. A DM to an agent on a Mac that is offline waits until the Mac reports in. A hung turn is marked stuck and an event clears the mark. It also fails if any file but the scheduler writes a message command. It uses port 7701, so it runs under the run lock.
+- **Helps later.** Each later step that places turns, such as seats, adds its own reasons to wait here.

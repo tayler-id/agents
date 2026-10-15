@@ -767,6 +767,11 @@ type Call = {
   - Durability is built for (a). The five crash tests resume the engine's own session.
   - What (b) buys is thinking with no computer awake. Waking a computer on a turn, which Tayler decided, covers most of that. The cost is a computer start before the first reply after idle, up to the 30 seconds `daemon/desktop.ts:59` gives a desktop to come up.
   - (a) keeps one cost the checklist names. A box holds a Claude token its agent can read, and (b) would move the token off the box.
+- **Tayler's call, 2026-10-15.** (a) for now, and the build plans for (b). Agents keep thinking inside each engine's own CLI on their computer, as today.
+- **What the door keeps open for (b).** Step 1 builds no server loop. It keeps three things ready for one.
+  - A turn's row carries what any place needs to run it: the session its record goes to, the user event that holds its prompt, and the payload the engine is handed, with the agent's instructions, model, skills, plugins, memory and budget. A loop on the server would read the same row.
+  - Where a turn runs is chosen in one function, `whereTurnsRun` in `server/scheduler.ts`. Today it answers with the machine the session started on. A place on the server would be a second kind of answer there, and no caller of `requestTurn` would change.
+  - The turn's lifecycle is its own table in `shared/turns.ts`. Today a placed turn follows its message command through `moveMessages`. A turn the server runs would move along the same table with no command.
 
 ### 2. How big a person's computer is, and how many seats it holds
 
