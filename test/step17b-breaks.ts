@@ -70,7 +70,7 @@ const BREAKS: Break[] = [
     edits: [{ file: CLI, anchor: 'if (positionals.length) throw new UsageError(', replace: 'if (positionals.length < 0) throw new UsageError(' }] },
   { name: 'late-who', why: 'a name that is not a person is found after the instance is up', red: ['a word where a flag belongs'],
     edits: [{ file: CLI, anchor: "const Who = z.union([PersonName, z.string().includes('@')], { error: PERSON_RULE })", replace: 'const Who = z.string()' }] },
-  { name: 'new-instance', why: 'with no instance named, preview makes one even when this checkout has one', red: ['with two instances here and none named', 'with one instance here and none named'],
+  { name: 'new-instance', why: 'with no instance named, preview makes one even when this checkout has one', red: ['with two instances here and none named', 'with one instance here, started with pipelines'],
     edits: [{ file: CLI, anchor: 'const exists = name ? readState(name) !== null : list().length > 0', replace: 'const exists = name ? readState(name) !== null : false' }] },
   // What it seeds.
   { name: 'seeds-with-no-seed', why: '--no-seed seeds anyway', red: ['--no-seed adds no task'],
