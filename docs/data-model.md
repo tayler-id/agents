@@ -97,7 +97,7 @@ Onboarding, in `server/migrations/0005_onboarding.sql`. The design is in `docs/d
 - **`invites`, new.** An invite to join a team, made in the app. It holds the email the person must arrive with, their role on the team, Tailscale's id for the matching tailnet invite, the admin who made it, and whether it is open, joined or cancelled. One open invite per email. The invite link is never stored.
 - **`join_requests`, new.** A login that opened the app while on no team and with no invite, with the name Tailscale passed and when it first and last came. An admin adds it with one click. It has no team, since the login is on none yet.
 - **`claude_logins`, new.** One sign-in to Claude on a person's box. It goes from starting, to waiting for the person's code, to checking it, and ends signed in, failed or cancelled. It keeps the sign-in link and when the token runs out. One open sign-in per box. The code and the token are never stored.
-- **`instances.personal` and `instances.start_error`.** A personal box belongs to one person for good. Runs never claim it, the box limit does not count it, and it is never stopped for being idle. Each person has at most one. `start_error` says why its container did not start.
+- **`instances.personal` and `instances.start_error`.** A personal box belongs to one person for good. Runs never claim it and the box limit does not count it. Until migration 0014 it was never stopped for being idle. Each person has at most one. `start_error` says why its container did not start.
 - **Every team has an admin.** `people.role` existed but nothing set it. The migration makes the earliest person of each team that has no admin into one.
 
 Projects, in `server/migrations/0006_projects.sql`. The design is in `docs/design/projects.md`.

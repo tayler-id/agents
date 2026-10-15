@@ -23,7 +23,7 @@ Rolled out in this order, no old daemon ever reaches the new API.
 4. Restart the Mac's daemon.
 5. Restart the API.
 
-Do steps 2 and 3 when no box has a turn in flight. Teammates' personal boxes are never stopped for being idle, so check that none of their sessions is working, and tell their owners first. A turn cut off by recreating its box is not resumed, since the old API marked its message done when the box took it.
+Do steps 2 and 3 when no box has a turn in flight. A teammate's personal box runs until it has been idle for `AGENTS_BOX_IDLE_MIN`, so check that none of their sessions is working, and tell their owners first. A turn cut off by recreating its box is not resumed, since the old API marked its message done when the box took it.
 
 Between steps 2 and 5 the new daemons get 404 from the old API and retry, waiting up to 15 seconds between tries, while messages wait in the queue. Each daemon reads its queue once the new API answers.
 
