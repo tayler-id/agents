@@ -42,9 +42,11 @@ export const LIVE_PORTS: readonly number[] = [7700, 7701, 7710, 4437, 3000]
 // WebKit cannot map a name, so it uses the loopback address.
 export const INSECURE_HOST = 'agents.test'
 const LOOPBACK_HOST = '127.0.0.1'
+// The origin of a page served from the people port itself, by its loopback address.
+export const peopleOrigin = (peoplePort: number) => `http://${LOOPBACK_HOST}:${String(peoplePort)}`
 // The origin the pages of a browser's engine come from on an instance's people port.
 export const pageOrigin = (engine: Engine, peoplePort: number) =>
-  `http://${engine === 'webkit' ? LOOPBACK_HOST : INSECURE_HOST}:${String(peoplePort)}`
+  (engine === 'webkit' ? peopleOrigin(peoplePort) : `http://${INSECURE_HOST}:${String(peoplePort)}`)
 // Every origin an instance's pages come from. Its API opens a screen's WebSocket only for these.
 export const pageOrigins = (peoplePort: number): string[] => [...new Set(ENGINES.map((engine) => pageOrigin(engine, peoplePort)))]
 

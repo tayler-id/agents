@@ -130,6 +130,16 @@ It reads `.env` and then `.env.test`, and refuses to start unless the database i
 
 The skill that tells an agent how to use it, and the feature map it runs, are in `.claude/skills/verify-agents/`. `node test/step17.ts` checks the tool, and `node test/step17-breaks.ts` breaks each thing a check guards and watches the check fail.
 
+## Working on the screens
+
+```sh
+bin/agentsctl preview
+```
+
+Run it from the repo root with `~/.local/node/bin` first on PATH. It starts this checkout's private copy of Agents if none runs, serves the app from source, and prints one address to open, `http://127.0.0.1:8200/` unless something holds that port. The page is signed in as the instance's owner. A team with no task gets a sample task, and a sample repo if it has none. Save a file under `app/src` and the open page shows the change in under a second, with no build. `--as ben` signs in as someone else.
+
+Ctrl+C stops it. The instance keeps running until `bin/agentsctl down`. It uses the test database like the rest of agentsctl, listens on 127.0.0.1 only, and refuses API requests from any page that is not its own. Vite's messages go to `preview.log` in the instance's evidence folder. A change to `app/vite.config.ts` needs a new start. The page runs React in development mode, and browsers treat 127.0.0.1 as a secure page where the tailnet's plain HTTP is not, so `npm run check:step4b` still checks code that needs one.
+
 ## Checks
 
 ```sh

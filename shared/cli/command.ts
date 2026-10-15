@@ -47,6 +47,9 @@ export type Result =
   | (Shared & { kind: 'write'; did: string; state: string; already: boolean })
   | (Shared & { kind: 'failed'; code: typeof EXIT.failed | typeof EXIT.refused; error: string })
 export type Run = () => Promise<Result>
+// What a command that keeps running prints before it ends, in the form its last result takes.
+// A person reads the address a server answers on while it still serves.
+export type Say = (result: Result) => void
 
 export type Command = {
   name: string
@@ -55,17 +58,17 @@ export type Command = {
   flags: Flags
   // For a list: every field a row has, and the ones shown unless --fields names others.
   fields?: { all: readonly string[]; shown: readonly string[] }
-  prepare: (values: Record<string, unknown>, positionals: string[]) => Run
+  prepare: (values: Record<string, unknown>, positionals: string[], say: Say) => Run
 }
 
 // A command whose flags parse with a zod schema before it can run.
-export function command<S extends z.ZodType>(spec: Omit<Command, 'prepare'> & { schema: S; prepare: (values: z.infer<S>, positionals: string[]) => Run }): Command {
+export function command<S extends z.ZodType>(spec: Omit<Command, 'prepare'> & { schema: S; prepare: (values: z.infer<S>, positionals: string[], say: Say) => Run }): Command {
   return {
     name: spec.name, args: spec.args, about: spec.about, flags: spec.flags, fields: spec.fields,
-    prepare: (values, positionals) => {
+    prepare: (values, positionals, say) => {
       const parsed = spec.schema.safeParse(values)
       if (!parsed.success) throw new UsageError(`${spec.name}: ${z.prettifyError(parsed.error)}`)
-      return spec.prepare(parsed.data, positionals)
+      return spec.prepare(parsed.data, positionals, say)
     },
   }
 }
@@ -247,16 +250,16 @@ const failure = (commandName: string, error: unknown, help: string[]): Output =>
 }
 
 // A command's flags parsed and checked, and what runs it. Touches nothing.
-function prepared(cli: Cli, command: Command, rest: string[]) {
+function prepared(cli: Cli, command: Command, rest: string[], say: Say) {
   const { values, positionals } = parseFlags(flagsOf(cli, command), rest, `Run \`${cli.invoke} ${command.name} --help\` for its flags`)
   const { json: _json, full: _full, help: _help, 'dry-run': dry, fields, ...own } = values
-  return { run: command.prepare(own, positionals), own, requested: requestedFields(command, fields), dry: dry === true }
+  return { run: command.prepare(own, positionals, say), own, requested: requestedFields(command, fields), dry: dry === true }
 }
 
 // Checks a command line the way dispatch would, and runs nothing. Throws a UsageError naming what is wrong.
 export function parseOnly(cli: Cli, argv: string[]): void {
   const { command, rest } = find(cli, argv)
-  prepared(cli, command, rest)
+  prepared(cli, command, rest, () => {})
 }
 
 // The arguments with each secret flag's value masked, for logs and dry runs.
@@ -270,8 +273,12 @@ function masked(argv: string[], flags: Flags): string[] {
   })
 }
 
+// What a command line came to: the envelope, its exit code, and how to print it.
+export type Shown = { code: ExitCode; output: Output; json: boolean; full: boolean }
+
 // Runs one command line. Never throws: a failure comes back as an envelope with its exit code.
-export async function dispatch(cli: Cli, argv: string[]): Promise<{ code: ExitCode; output: Output; json: boolean; full: boolean }> {
+// `show` prints what the command says while it runs, which only a command that keeps running does.
+export async function dispatch(cli: Cli, argv: string[], show: (shown: Shown) => void = () => {}): Promise<Shown> {
   const json = argv.includes('--json')
   const full = argv.includes('--full')
   const words = argv.filter((a) => !a.startsWith('--'))
@@ -292,10 +299,12 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<{ code: ExitCo
     const { command, rest } = find(cli, argv)
     commandName = command.name
     if (rest.includes('--help')) return { code: EXIT.done, output: helpOutput(commandHelp(cli, command), `${command.name} --help`), json, full: true }
-    const { run, own, requested, dry } = prepared(cli, command, rest)
     const shownArgv = masked(argv, flagsOf(cli, command))
+    const conclude = (result: Result, requested: string[] | null) =>
+      finish(result, envelope({ ...result, help: withoutSelf(cli, result.help, argv) }, command, command.name, requested, full), shownArgv)
+    const { run, own, requested, dry } = prepared(cli, command, rest, (result) => { show(conclude(result, null)) })
     const result = dry && cli.dryRun ? cli.dryRun(command, shownArgv, own) : await run()
-    return finish(result, envelope({ ...result, help: withoutSelf(cli, result.help, argv) }, command, command.name, requested, full), shownArgv)
+    return conclude(result, requested)
   } catch (error) {
     return finish(null, failure(commandName, error, error instanceof UsageError ? [`Run \`${cli.invoke} help\` for every command`] : cli.failureHelp), argv)
   }
