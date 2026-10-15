@@ -96,20 +96,27 @@ const profileOf = (home: string, n: SeatNumber) => (n === FIRST_SEAT ? join(home
 
 export function startSeats(config: SeatsConfig): Seats {
   const running = new Map<SeatNumber, Seat>()
+  // Seats still stopping. One starts again only once its last stop has finished,
+  // so two displays or two browsers never contend for one number and port.
+  const stopping = new Map<SeatNumber, Promise<void>>()
   const rows = new Map<SeatNumber, SeatRow>()
   const controls = new Map<SeatNumber, ScreenControl>()
   // Set by stop() while reports wait, so read through a function.
-  const state: { stopping: boolean; retry: NodeJS.Timeout | null } = { stopping: false, retry: null }
-  const stopping = () => state.stopping
+  const state: { stopped: boolean; retry: NodeJS.Timeout | null } = { stopped: false, retry: null }
+  const stopped = () => state.stopped
   const logins = shareLogins(() => [...running.values()]
     .filter((seat) => seat.desktopUp && !seat.stopped)
     .map((seat) => ({ n: seat.n, cdpUrl: seat.desktop.cdpUrl, starts: seat.desktop.browserStarts() })))
 
-  async function stopSeat(seat: Seat) {
+  function stopSeat(seat: Seat): Promise<void> {
     seat.stopped = true
     if (running.get(seat.n) === seat) running.delete(seat.n)
-    await seat.service?.stop()
-    await seat.desktop.stop()
+    const done = (async () => {
+      await seat.service?.stop()
+      await seat.desktop.stop()
+    })().finally(() => { if (stopping.get(seat.n) === done) stopping.delete(seat.n) })
+    stopping.set(seat.n, done)
+    return done
   }
 
   function startSeat(n: SeatNumber, holder: Seat['holder']): Seat {
@@ -138,7 +145,7 @@ export function startSeats(config: SeatsConfig): Seats {
         if (seat.stopped) return
         console.error(`seat ${n}: ${messageOf(error)}. Stopping it, to start again in ${SEAT_RETRY_MS / 1000}s.`)
         stopSeat(seat).then(() => {
-          if (stopping()) return
+          if (stopped()) return
           if (state.retry) clearTimeout(state.retry)
           state.retry = setTimeout(settle, SEAT_RETRY_MS)
         }, (stopError: unknown) => { console.error(`seat ${n}: stopping it: ${messageOf(stopError)}`) })
@@ -155,7 +162,7 @@ export function startSeats(config: SeatsConfig): Seats {
     void (async () => {
       await seat.up
       await seat.cleared
-      for (let wait = REPORT_FIRST_MS; !stopping() && !seat.stopped && seat.holder === agentId; wait = Math.min(REPORT_MAX_MS, wait * 2)) {
+      for (let wait = REPORT_FIRST_MS; !stopped() && !seat.stopped && seat.holder === agentId; wait = Math.min(REPORT_MAX_MS, wait * 2)) {
         try {
           await config.reportUp(seat.n, agentId)
           return
@@ -172,7 +179,7 @@ export function startSeats(config: SeatsConfig): Seats {
 
   // Brings the running seats in line with the rows.
   function settle() {
-    if (stopping()) return
+    if (stopped()) return
     for (const seat of [...running.values()]) {
       const row = rows.get(seat.n)
       if (seat.n !== FIRST_SEAT && (row === undefined || row.agent_id === null)) {
@@ -180,6 +187,12 @@ export function startSeats(config: SeatsConfig): Seats {
       }
     }
     for (const row of rows.values()) {
+      const previous = stopping.get(row.n)
+      if (!running.has(row.n) && row.agent_id !== null && previous) {
+        // The seat starts once its last stop finishes, from the rows as they are then.
+        void previous.then(settle, settle)
+        continue
+      }
       const seat = running.get(row.n) ?? (row.agent_id === null ? null : startSeat(row.n, row.agent_id))
       if (!seat) continue
       if (seat.holder === 'unknown') seat.holder = row.agent_id
@@ -226,10 +239,10 @@ export function startSeats(config: SeatsConfig): Seats {
       return seat?.desktopUp ? seat.desktop.vncSocket : null
     },
     async stop() {
-      state.stopping = true
+      state.stopped = true
       if (state.retry) clearTimeout(state.retry)
       await logins.stop()
-      await Promise.all([...running.values()].map(stopSeat))
+      await Promise.all([...[...running.values()].map(stopSeat), ...stopping.values()])
     },
   }
 }
