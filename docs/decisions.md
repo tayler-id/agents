@@ -382,7 +382,7 @@ Tayler went with the coordinator's picks on all of these.
   - A person's computer has 8 GB of memory and 4 CPUs, and holds 4 seats. This is decision 2, option (b).
   - Seats share one Unix user and the person's logins, as in the agent app we studied. There, each extra display's browser links its cookies and saved logins to the first one's, and a script copies cookies between them every 1.5 seconds (`docs/evidence/box/box-chrome-session.md`). Logging in once logs in every agent on the computer. One agent can read another's files and secrets on the same computer. The walls stay between people, since each person has their own computer. This is decision 3, option (a), with shared logins added.
 - **What it changes.** `AGENTS.md` says each cloud agent gets its own Docker container. With seats, a person's agents share one computer with a seat each, so that line needs Tayler's edit.
-- **Status.** Step 1, one entry point for every turn, is being built on branch `door`. Seats are step 2.
+- **Status.** Step 1, one entry point for every turn, is being built on branch `door`. Step 2's seat side, with each seat's display, browser and screen, shared logins and a person's computer at 4 seats, 4 CPUs and 8 GiB, is built on branch `seats`, and joins the scheduler once the door lands.
 
 ### Connectors, MCP apps and WebMCP
 

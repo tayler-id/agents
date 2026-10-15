@@ -177,6 +177,13 @@ When every seat is held, the scheduler reclaims the seat whose agent has no runn
 
 A Mac has no seats. Its agents run without a screen, as today, until the helper gives it one (see "People's own machines").
 
+**Built so far.** The seat side is built on branch `seats`, and joins the scheduler once step 1 lands. `test/step15c.ts` and `test/step15d.ts` check it. It differs from the plan above in four ways.
+
+- A box follows its seat rows through sync, where the plan had `seat_open` commands, so a box that restarts brings back the seats its agents held.
+- A seat is `free`, `starting` or `ready`. A seat given to another agent goes back to `starting` for that agent, and the box closes the pages the last agent had open before it reports the seat ready, so there is no `reclaiming`.
+- Seat 1 runs whenever its computer runs. A session whose agent holds no seat runs on seat 1, as every session on a box did before seats. A person can always open seat 1's screen, to sign in to a site once for every seat.
+- Each seat's browser has a profile of its own, and the box copies cookies between the seats' browsers every 1.5 seconds, as Tayler decided on 2026-10-15. Seat 1 keeps the profile a box had before seats, so its logins stay. A login a site keeps only in localStorage or IndexedDB stays in its seat. The profile for each agent in the plan above is not built.
+
 **Stays, changes, new.**
 
 - Stays: the image, Xvnc, matchbox, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`.

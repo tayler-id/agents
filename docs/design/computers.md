@@ -1,6 +1,6 @@
 # Agent computers
 
-Every box gets a computer: a Linux desktop, a browser, and tools to see and drive both. The agents' sessions on a box share it, one action at a time, so an agent has a computer to itself only when it has a box to itself. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
+Every box gets a computer: a Linux desktop, a browser, and tools to see and drive both. Since seats, each agent at work on a box has a seat with a desktop, a browser and a screen of its own, and its sessions share that seat, one action at a time. This doc describes one seat's computer, and "Seats" in `docs/design/target-architecture.md` describes how a box runs several. A person can watch that screen live from the app and take over the keyboard and mouse. Agents use the computer to check their own work, and the screenshots they save land on the task.
 
 Tayler asked for this on 2026-10-13: each agent should have its own computer, with computer use, a browser and a way for people to control it, and agents need to be able to verify their own work, always. This is the design, and everything in it is built on the agent computers branch except what "Not done" at the end lists. `docs/build-log.md` records how it was checked.
 

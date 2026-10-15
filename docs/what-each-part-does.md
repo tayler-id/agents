@@ -339,7 +339,7 @@ The design is `docs/design/computers.md`.
 
 ### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
 
-- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until the desktop is up, and stops so the box starts again when it can't come up. The sessions on a box share its one computer. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until seat 1's desktop is up, and stops so the box starts again when it can't come up. Each agent at work on a box has a seat with a desktop of its own, as "Seats" below says. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. A box runs within the size its row gives, which for a person's computer is 8 GiB of memory and 4 CPUs, and for any other box 4 GiB and 2 CPUs, with 4,096 threads for each seat.
 - **Helps later.** Each person's own box, which onboarding added, and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
 
 ### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`, `daemon/page-secrets.ts`)
@@ -366,6 +366,43 @@ The design is `docs/design/computers.md`.
 
 - **Solves now.** A session on a machine with a screen, except a judge's, is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
 - **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
+
+## Seats
+
+The design is "Seats" in `docs/design/target-architecture.md`, and Tayler's calls of 2026-10-15 are in `docs/decisions.md`. Only the seat side is built. Nothing gives an agent a seat until the scheduler from step 1 does, so today only the seat checks give agents seats.
+
+### The seats table (`server/migrations/0015_seats.sql`, `shared/seats.ts`)
+
+- **Solves now.** Each box has a row for each of its seats, numbered 1 to its seat cap, with the agent holding it and whether it is free, starting or ready. The database makes the rows whenever a box is added or its cap changes, however it was added. A box's size is in its row too: a person's computer holds 4 seats in 4 CPUs and 8 GiB, and every other box keeps 1 seat in 2 CPUs and 4 GiB. A session records the seat it last ran on, and a takeover the seat whose screen a person held. `shared/seats.ts` holds the row's type, how its status moves, and what the API and a box tell each other.
+- **Helps later.** The scheduler places a turn on its agent's seat, and the app shows who works where.
+
+### Giving out seats (`server/seats.ts`, `server/seat-routes.ts`)
+
+- **Solves now.** `takeSeat` gives an agent the seat it holds on a computer, else the free seat with the lowest number, else the seat the reclaim rule takes back: one whose agent has no turn running or waiting there, whose screen nobody holds, and whose last turn there started the longest ago, more than 15 minutes back. With none, every seat is busy and it says how many there are. A box asks which seat a session runs on each time it starts it or hands it a message: the seat its agent holds there, or seat 1 when it holds none, as every session on a box ran before seats. The answer is recorded on the session, and counts as a turn on a held seat. A box reports a seat up for its agent, which makes it ready.
+- **Helps later.** The scheduler calls `takeSeat` when it places a turn, waits while every seat is busy, and sends the turn once the seat is ready. No check covers the reclaim rule until then.
+
+### Seats in a box (`daemon/seats.ts`, `daemon/desktop.ts`)
+
+- **Solves now.** Each seat is a display, a window manager, a browser and a screen service of its own. Seat n has display :n, its browser's DevTools port 9221 + n and its own sockets, so seat 1 keeps the :1 and 9222 a box had before. Seat 1 runs whenever the box does, and its failure to come up still stops the box so it starts again. Every other seat runs while an agent holds it. The daemon follows its box's seat rows, starts and stops seats to match, closes a seat's pages when another agent takes it, and reports each seat up for its agent. A session waits for its seat, and its `computer` server drives that seat's screen and browser. A session whose agent moves to another seat starts again there with its next message.
+- **Helps later.** A job computer is a box with one seat.
+
+### Shared logins (`daemon/logins.ts`, `daemon/devtools.ts`)
+
+- **Solves now.** Every 1.5 seconds the daemon reads each running seat's cookies over its browser's DevTools port and copies what one browser changed into the others, so logging in once logs in every agent on the computer, and logging out logs them all out. A browser that starts, or starts again, takes the shared cookies whole, so a seat that was stopped through a logout can't bring the login back. A seat goes to work once its browser holds them, or after 10 seconds without them, which it logs. Seat 1's profile, the one a box had before seats, keeps the logins across a restart. `daemon/devtools.ts` is the daemon's DevTools client, which `daemon/page-secrets.ts` also uses.
+- **Helps later.** Logins a site keeps in a page's storage, such as localStorage or IndexedDB, could be copied the same way. Today they stay in their own seat.
+
+### A seat's screen (`server/screens.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
+
+- **Solves now.** Each seat has its own screen, viewers and takeover. `/v1/screens/<box>/seats/<n>` watches seat n, and a screen named without a seat is seat 1. Taking over one seat stops only that seat's agent. The box keeps one control connection, which carries each seat's control and tunnel requests. One agent's private work hides only its own seat's screen, and a box session with no seat counts for seat 1. A free seat's screen is off, so it can't be opened.
+- **Helps later.** The Mac helper can serve its screen as a seat.
+
+### Seats in the app (`app/src/Screen.tsx`, `app/src/Box.tsx`)
+
+- **Solves now.** The Screen view names the seat it shows. A session's Screen button opens the seat the session runs on. The box page lists the box's seats, the agent holding each and whether it is ready, with a Screen for each running seat, which opens beside the page.
+
+### The seat checks (`test/step15c.ts`, `test/step15d.ts`, `test/seats.ts`)
+
+- **Solves now.** Both start a person's computer from a box image built under a tag of the run's own, and give two agents seats with `takeSeat`, as the scheduler will. step15c drives both seats' browsers at once and checks each screenshot shows its own page, takes over seat 1 while seat 2 keeps working, signs in on seat 1 and finds the login in seat 2, signs out on seat 2 and finds seat 1 signed out, starts seat 3 with the login, checks the privacy rule per seat, and prints each seat's memory. step15d drives the box page's seat list and a seat's Screen view in Chromium, Firefox and WebKit at desktop and phone width. `test/seats.ts` holds what both use, including the computer tools started with the check's environment.
 
 ## Projects and GitHub
 
