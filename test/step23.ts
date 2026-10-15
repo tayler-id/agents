@@ -14,7 +14,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -24,6 +24,8 @@ import { killFakes } from './crash.ts'
 import { must } from './must.ts'
 import { servePeople } from './people.ts'
 import { messageOf } from '../shared/errors.ts'
+import { TurnWaitRow, turnLine } from '../shared/turns.ts'
+import { commandWritersOutOfPlace } from './commands-scan.ts'
 
 // Ports 8130 and 8131 are this check's alone, since a check that needs no run lock
 // runs beside the one that holds it, and a shared port stops whichever starts second.
@@ -78,6 +80,17 @@ const agentPosts = async (conversationId: string) =>
 // What a person reads of a conversation's waiting and stuck turns, as the app reads it.
 const waitsOf = async (conversationId: string) => (await shapeRows(PEOPLE, alice, 'turn_waits', { conversation: conversationId })).rows
 const seconds = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / 100) / 10
+// What the app's line says for a conversation's waiting and stuck turns, read from the
+// rows a page reads, its turns, their machines and the people, by the function the app calls.
+const linesOf = async (conversationId: string, viewer: string) => {
+  const machines = (await shapeRows(PEOPLE, alice, 'instances')).rows
+  const people = (await shapeRows(PEOPLE, alice, 'people')).rows
+  return (await waitsOf(conversationId)).map((raw) => {
+    const turn = TurnWaitRow.parse(raw)
+    const machine = machines.find((m) => m.id === turn.instance_id)
+    return turnLine(turn, machine, viewer, people.find((p) => p.id === machine?.owner_id), (time) => `@${time.slice(11, 16)}`)
+  })
+}
 
 let boxId = ''
 let sleeperFolder = ''
@@ -86,10 +99,11 @@ try {
   mkdirSync(macHome, { recursive: true })
   writeFileSync(join(work, 'scenario.json'), JSON.stringify({ turns: [{ match: 'HANG', hang: true }] }))
 
-  // Only the scheduler writes message commands, so every turn goes through its door.
-  const writers = readdirSync(join(ROOT, 'server')).filter((file) => file.endsWith('.ts'))
-    .filter((file) => /insert into commands\b[^`]*'message'/.test(readFileSync(join(ROOT, 'server', file), 'utf8')))
-  check(writers.join() === 'scheduler.ts', `only server/scheduler.ts writes message commands (written in ${writers.join(', ') || 'no file'})`)
+  // Only the scheduler writes message, stop and interrupt commands, so every turn
+  // goes through its door and a stop reaches a turn that waits. Only durability
+  // changes a message command's status. Read from every source file but the checks.
+  const strays = commandWritersOutOfPlace(ROOT)
+  check(strays.length === 0, `only server/scheduler.ts writes message, stop and interrupt commands, and only server/durability.ts changes a message's status (${strays.join('; ') || 'none stray'})`)
 
   await node('server/migrate.ts')
   await node('server/admin.ts', 'add-team', team, alice)
@@ -151,6 +165,9 @@ try {
     `a DM to an agent whose computer is asleep waits for the computer to start (${woken?.status} ${woken?.wait})`)
   check(waits.length === 1 && waits[0].id === woken?.id && waits[0].wait === 'computer_starting' && waits[0].instance_id === boxId && !('payload' in waits[0]),
     `the conversation reads that its computer is starting, and never the turn's prompt (${JSON.stringify(waits)})`)
+  const [mine, theirs] = [await linesOf(dm, aliceId), await linesOf(dm, randomBytes(16).toString('hex'))]
+  check(mine.length === 1 && mine[0] === 'Starting your computer' && theirs[0] === `Starting ${alice}'s computer`,
+    `the line says "Starting your computer" to its owner and names the owner to a teammate (${JSON.stringify([mine, theirs])})`)
   const answered = await within(START_LIMIT_SECONDS * 2, async () => (await latestTurn(dm))?.status === 'done' && await agentPosts(dm) === posts + 1)
   const end = await latestTurn(dm)
   const started = end?.placed_at ? seconds(end.requested_at, end.placed_at) : null
@@ -174,6 +191,8 @@ try {
   check(parked?.status === 'waiting' && parked.wait === 'machine_offline' && parked.instance_id === parkedId
     && parkedWaits.length === 1 && parkedWaits[0].wait === 'machine_offline',
   `a DM to an agent on a box nobody holds waits, and the conversation reads that the box is offline (${parked?.status} ${parked?.wait})`)
+  const parkedLines = await linesOf(idlerDm, aliceId)
+  check(parkedLines.length === 1 && parkedLines[0] === `Waiting for parked-${id}, which is offline`, `the line names the box that is offline (${JSON.stringify(parkedLines)})`)
 
   // A Mac takes commands whenever its daemon comes, so a turn for one that is
   // offline goes to its queue at once, with no wait, as before the door. Its
@@ -206,6 +225,8 @@ try {
   const stuckWaits = await waitsOf(sleeperDm)
   check(marked && stuck.status === 'running' && stuckWaits.length === 1 && stuckWaits[0].status === 'running' && stuckWaits[0].stuck_since,
     `a running turn quiet past its limit is marked stuck, and the conversation reads since when (${stuck?.status}, ${String(stuck?.stuck_since)})`)
+  const stuckLines = await linesOf(sleeperDm, aliceId)
+  check(stuckLines.length === 1 && /^No new step since @\d\d:\d\d\. It may be stuck\.$/.test(stuckLines[0] ?? ''), `the line says since when it was last heard from (${JSON.stringify(stuckLines)})`)
   const heard = await fetch(`${API}/v1/sessions/${stuck.session_id}/events`, {
     method: 'POST', headers: { authorization: `Bearer ${macToken}`, 'content-type': 'application/json' },
     body: JSON.stringify({ events: [{ clientId: `still-here-${id}`, kind: 'thinking', text: 'Still on it.', body: { text: 'Still on it.' } }] }),

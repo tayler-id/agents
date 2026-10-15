@@ -55,3 +55,17 @@ export const TurnWaitRow = z.discriminatedUnion('status', [
   z.object({ id: TurnId, agent_id: AgentId, status: z.literal('running'), wait: z.null(), instance_id: InstanceId, stuck_since: z.string().min(1), source: TurnSource }),
 ])
 export type TurnWaitRow = z.infer<typeof TurnWaitRow>
+
+// What the line for a turn says to the person reading it. A machine not read yet is
+// named for what it is to the turn, until the next read names it. `owner` is the
+// person whose computer it is, and `clock` says a time as the reader's page does.
+// The app shows this line, and step23 reads it from the rows a page reads.
+export function turnLine(turn: TurnWaitRow, machine: { name: string; personal: boolean; owner_id: string | null } | undefined,
+  viewer: string, owner: { name: string | null; login: string } | undefined, clock: (time: string) => string): string {
+  if (turn.status === 'running') return `No new step since ${clock(turn.stuck_since)}. It may be stuck.`
+  if (!machine) return turn.wait === 'computer_starting' ? 'Starting its computer' : 'Waiting for its machine, which is offline'
+  if (turn.wait === 'machine_offline') return `Waiting for ${machine.name}, which is offline`
+  if (!machine.personal || !machine.owner_id) return `Starting ${machine.name}`
+  if (machine.owner_id === viewer) return 'Starting your computer'
+  return owner ? `Starting ${owner.name ?? owner.login}'s computer` : `Starting ${machine.name}`
+}
