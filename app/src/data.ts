@@ -43,6 +43,8 @@ export type Message = Row & {
 export type Session = Row & {
   id: string; conversation_id: string | null; task_id: string | null; instance_id: string; agent_id: string; stage: string | null
   status: string; model: string | null; turns: number; harness_session_id: string | null; created_at: string; last_active_at: string | null
+  // The seat of its box it last ran on. A box session with none ran on seat 1.
+  seat_id: string | null
 }
 export type EventRow = Row & {
   id: bigint; session_id: string; seq: bigint; kind: string; text: string | null; tool_name: string | null
