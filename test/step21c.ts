@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { AxeBuilder } from '@axe-core/playwright'
-import { _electron as electron, chromium, firefox, webkit, type ElectronApplication, type Page } from '@playwright/test'
+import { _electron as electron, chromium, firefox, webkit, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import pg from 'pg'
 import { messageOf } from '../shared/errors.ts'
 import { must } from './must.ts'
@@ -263,7 +263,9 @@ try {
 
   // Team connects the folder as the team's.
   const folderRow = async (path: string) => (await db.query('select id, visibility, disconnected_at, connected_at from connected_folders where path = $1', [path])).rows[0]
-  const said = (name: string) => item(name).locator('.folder-note[role]').innerText({ timeout: SHOWS_MS }).catch(() => '')
+  const said = (name: string) => item(name).locator('.folder-note[role="status"], .folder-note[role="alert"]').innerText({ timeout: SHOWS_MS }).catch(() => '')
+  // Whether a control could be clicked, so a line that needs a missing one fails on its own and the run goes on.
+  const clicked = (control: Locator) => control.click({ timeout: SHOWS_MS }).then(() => true, () => false)
   await group('shop').getByRole('button', { name: 'Team', exact: true }).click()
   const toTeam = await said('shop')
   const shopTeam = await folderRow(shop)
@@ -300,6 +302,36 @@ try {
   const diaryPrivate = await said('diary')
   check(diaryPrivate.startsWith('Connected diary.') && diaryPrivate.includes('only you see them') && (await folderRow(diary))?.visibility === 'private',
     `Just me on a folder that was off connects it as private: ${diaryPrivate}`)
+
+  // Team on a folder that is Just me, with a session in the record, asks first and changes nothing until the person says yes.
+  const question = (name: string) => item(name).getByRole('group', { name: /^Show the team the / })
+  const asked = await clicked(group('shop').getByRole('button', { name: 'Team', exact: true }))
+    ? await question('shop').innerText({ timeout: SHOWS_MS }).catch(() => '')
+    : ''
+  check(asked.startsWith('Show the team the 1 session already in the record from shop?')
+    && (await folderRow(shop))?.visibility === 'private' && await pressed('shop') === 'Off Team Just me*' && !await canSee(mate, freshId),
+  `Team on a folder that is Just me, with a session in the record, asks first, says how many the team would see, and changes nothing: ${asked.split('\n')[0] ?? ''}`)
+  const keptClick = await clicked(question('shop').getByRole('button', { name: 'Keep it to me', exact: true }))
+  const kept = await said('shop')
+  check(keptClick && kept === "Nothing changed. Only you see shop's sessions." && await question('shop').count() === 0
+    && (await folderRow(shop))?.visibility === 'private' && await pressed('shop') === 'Off Team Just me*' && !await canSee(mate, freshId),
+  `Keep it to me leaves the folder as it was, and the page says so: ${kept}`)
+  const yesClick = await clicked(group('shop').getByRole('button', { name: 'Team', exact: true }))
+    && await clicked(question('shop').getByRole('button', { name: 'Yes, show the team', exact: true }))
+  const shown = await said('shop')
+  check(yesClick && shown === "The team sees shop's sessions now, and the 1 session already in the record from it."
+    && (await folderRow(shop))?.visibility === 'team' && await showsPressed('shop', 'Off Team* Just me') && await canSee(mate, freshId),
+  `once the person says yes the folder is the team's, the page says how many sessions that showed, and the teammate sees its session again: ${shown}`)
+  // A folder that is Just me with nothing in the record changes without a question, and changes back.
+  await group('diary').getByRole('button', { name: 'Team', exact: true }).click()
+  const diaryTeam = await said('diary')
+  const diaryAsked = await question('diary').count()
+  const diaryTeamRow = await folderRow(diary)
+  await group('diary').getByRole('button', { name: 'Just me', exact: true }).click()
+  const diaryBack = await said('diary')
+  check(diaryTeam === "The team sees diary's sessions now." && diaryAsked === 0 && diaryTeamRow?.visibility === 'team'
+    && diaryBack.startsWith("Only you see diary's sessions now") && (await folderRow(diary))?.visibility === 'private',
+  `Team on a folder that is Just me with nothing in the record changes it without asking, and Just me takes it back: ${diaryTeam}`)
 
   // Off disconnects it, and what is started there afterwards stays on the Mac.
   await group('shop').getByRole('button', { name: 'Off', exact: true }).click()
