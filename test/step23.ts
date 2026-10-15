@@ -3,9 +3,10 @@
 // the conversation's line reads that the computer is starting, until the box is
 // up. Then the turn goes to the box and the reply is posted. The check times the
 // start. It also covers a DM sent while a new box first starts, a routine's firing
-// kept as a turn, a turn that waits for a Mac that is offline, a running turn
-// marked stuck and cleared when an event comes, and that only the scheduler
-// writes message commands. The box is a real container from this branch's image,
+// kept as a turn, a turn that waits for a box nobody holds, a turn for a Mac that
+// goes to its queue at once while the Mac is offline, a running turn marked stuck
+// and cleared when an event comes, and that only the scheduler writes message
+// commands. The box is a real container from this branch's image,
 // with the stand-in for Claude, and the API listens on 7701, the port the box
 // firewall keeps open for checks. The caller holds ~/.agents-app/checks/run.lock
 // while it runs, as for step15.
@@ -159,23 +160,37 @@ try {
   check(awake?.stopped_at === null && awake.idle_since > woken.requested_at && (await waitsOf(dm)).length === 0,
     'waking clears the sleep mark and starts its idle time again, and the line goes once the turn has its computer')
 
-  // A Mac that is offline: the turn waits for it, and goes when it reports in.
+  // A box nobody holds is offline and nothing starts it. A turn for an agent on one
+  // waits, and the conversation reads that the box is offline.
+  await node('server/admin.ts', 'add-instance', team, `parked-${id}`, 'box', alice)
+  await node('server/admin.ts', 'add-agent', team, 'idler', `parked-${id}`)
+  const parkedId = must(await row('select id from instances where name = $1', [`parked-${id}`]), 'the box nobody holds').id
+  const { conversationId: idlerDm } = await post('/v1/conversations', { kind: 'dm', agent: 'idler' })
+  await post(`/v1/conversations/${idlerDm}/messages`, { text: 'Anyone there?' })
+  const parked = await latestTurn(idlerDm)
+  const parkedWaits = await waitsOf(idlerDm)
+  check(parked?.status === 'waiting' && parked.wait === 'machine_offline' && parked.instance_id === parkedId
+    && parkedWaits.length === 1 && parkedWaits[0].wait === 'machine_offline',
+  `a DM to an agent on a box nobody holds waits, and the conversation reads that the box is offline (${parked?.status} ${parked?.wait})`)
+
+  // A Mac takes commands whenever its daemon comes, so a turn for one that is
+  // offline goes to its queue at once, with no wait, as before the door. Its
+  // daemon takes the turn when it starts.
   const { token: macToken } = JSON.parse(await node('server/admin.ts', 'add-instance', team, `mac-${id}`, 'mac', alice))
   await node('server/admin.ts', 'add-agent', team, 'courier', `mac-${id}`)
   const macId = must(await row('select id from instances where name = $1', [`mac-${id}`]), 'the Mac').id
   const { conversationId: courierDm } = await post('/v1/conversations', { kind: 'dm', agent: 'courier' })
   await post(`/v1/conversations/${courierDm}/messages`, { text: 'Where are you?' })
   const offline = await latestTurn(courierDm)
-  const offlineWaits = await waitsOf(courierDm)
-  check(offline?.status === 'waiting' && offline.wait === 'machine_offline' && offline.instance_id === macId
-    && offlineWaits.length === 1 && offlineWaits[0].wait === 'machine_offline',
-  `a DM to an agent on a Mac that is offline waits, and the conversation reads why (${offline?.status} ${offline?.wait})`)
+  check(offline?.status === 'placed' && offline.wait === null && offline.instance_id === macId && offline.command_id !== null
+    && (await waitsOf(courierDm)).length === 0,
+  `a DM to an agent on a Mac that is offline goes to the Mac's queue at once, and the conversation shows no wait (${offline?.status} ${offline?.wait})`)
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
     env: { ...process.env, AGENTS_API: API, AGENTS_TOKEN: macToken, AGENTS_HOME: macHome, AGENTS_CLAUDE_BIN: join(ROOT, 'test/fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(work, 'scenario.json') },
   }))
   check(await within(60, async () => (await latestTurn(courierDm))?.status === 'done' && await agentPosts(courierDm) === 1),
-    'once the Mac reports in, the waiting turn goes to it and the reply is posted')
+    "once the Mac's daemon starts, it takes the queued turn and the reply is posted")
 
   // A running turn with no new event is marked stuck with when it was last heard
   // from, which the conversation reads. An event clears the mark. Nothing is stopped.
