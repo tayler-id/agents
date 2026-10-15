@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, relative } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
-import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row } from '../shared/cli/command.ts'
+import { command, dispatch, parseOnly, type Cli, type Command, type Flags, type Result, type Row, type Shown } from '../shared/cli/command.ts'
 import { JSON_VALUE, Refused, UsageError, type JsonValue } from '../shared/cli/output.ts'
 import { ENGINE, EVIDENCE_MANIFEST, EVIDENCE_MANIFEST_FILE, FEATURE_MAP, WIDTH } from '../shared/verification.ts'
 import { BASELINES_DIR, EVIDENCE_DIR, ROOT, scrubber } from './config.ts'
@@ -912,4 +912,4 @@ export const CLI: Cli = {
   scrub: scrubber,
 }
 
-export const runCli = (argv: string[]) => dispatch(CLI, argv)
+export const runCli = (argv: string[], show?: (shown: Shown) => void) => dispatch(CLI, argv, show)
