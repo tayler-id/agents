@@ -233,11 +233,18 @@ try {
   const names = await list.locator(':scope > li > .folder-place > strong').allTextContents()
   check(names.join(', ') === [hiddenName, 'shop', 'api', 'diary', 'home'].join(', '),
     `it lists the folders Claude Code ran in on this Mac, newest first: ${names.join(', ')}`)
-  await desk.getByText('Temporary folders, 1', { exact: true }).click()
+  // The group shows only when it holds a folder, and opens with a click.
+  const groupSummary = desk.locator('main details.temporary > summary')
+  const groupLabel = await groupSummary.count() ? await groupSummary.innerText() : 'no group'
+  if (await groupSummary.count()) await groupSummary.click()
   const tempNames = await desk.getByRole('list', { name: 'Temporary folders on this Mac' }).locator(':scope > li > .folder-place > strong').allTextContents()
-  const pageText = await desk.locator('main').innerText()
-  check(tempNames.join(', ') === tempName && !pageText.includes(goneName) && !pageText.includes('agent-one'),
-    `a folder in the system's temporary folders is set apart, and a folder that is gone and the daemon's own are left out: ${tempNames.join(', ')}`)
+  const pageText = await desk.locator('main').textContent() ?? ''
+  check(groupLabel === 'Temporary folders, 1' && tempNames.join(', ') === tempName && !pageText.includes(goneName) && !pageText.includes('agent-one'),
+    `a folder in the system's temporary folders is set apart, and a folder that is gone and the daemon's own are left out: ${groupLabel}, ${tempNames.join(', ')}`)
+  // Electron's pages can't open the blank page axe uses to finish, so it runs in its older mode here.
+  const deskAxe = await new AxeBuilder({ page: desk }).setLegacyMode(true).analyze()
+  const deskSerious = deskAxe.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => v.id)
+  check(!deskSerious.length, `the desktop app's page has no serious accessibility problem (${deskSerious.join(' ') || 'clean'})`)
 
   const group = (name: string) => desk.getByRole('group', { name: `Who sees sessions from ${name}`, exact: true })
   const item = (name: string) => list.locator(':scope > li', { has: group(name) })
@@ -369,8 +376,13 @@ try {
         const page: Page = await context.newPage()
         await page.goto('/#/folders')
         const connected = page.getByRole('list', { name: 'Your connected folders' })
-        const text = await connected.innerText({ timeout: 30_000 }).catch(() => '')
-        const listed = text.includes('diary') && text.includes(`Just me · mac-${id}`) && text.includes(remoteName) && text.includes(`Team · other-mac-${id}`) && !text.includes('shop')
+        let text = ''
+        const shows = () => text.includes('diary') && text.includes(`Just me · mac-${id}`) && text.includes(remoteName) && text.includes(`Team · other-mac-${id}`)
+        await until(`the connected folders in ${engine}`, 30, async () => {
+          text = await connected.innerText({ timeout: 1000 }).catch(() => '')
+          return shows()
+        })
+        const listed = shows() && !text.includes('shop')
         const told = await page.getByText('open the Agents app on the Mac it is on').isVisible()
         const controls = await page.getByRole('group', { name: /^Who sees sessions from/ }).count()
         const content = await page.content()
@@ -381,7 +393,7 @@ try {
         await page.screenshot({ path: join(SHOTS, `step21c-${engine}-${width}.png`) })
         check(listed && told && controls === 0 && !content.includes(hiddenName) && fitsPhone && !serious.length,
           `in ${engine} at ${width} width the page lists your connected folders read only and says to open the app on your Mac `
-          + `(listed ${String(listed)}, told ${String(told)}, ${controls} controls, fits ${String(fitsPhone)}, axe ${serious.join(' ') || 'clean'})`)
+          + `(listed ${listed ? 'yes' : JSON.stringify(text.replace(/\s+/g, ' '))}, told ${String(told)}, ${controls} controls, fits ${String(fitsPhone)}, axe ${serious.join(' ') || 'clean'})`)
         await context.close()
       }
     } finally {
@@ -413,6 +425,13 @@ try {
     logs.filter((l) => l.startsWith('long-daemon: ')).map((l) => l.slice('long-daemon: '.length)).join('').includes('longer than the 103 bytes macOS allows'))
   longDaemon.kill('SIGTERM')
   check(longSaid && !existsSync(join(longHome, 'run')), 'a daemon whose socket path would pass the 103 bytes macOS keeps says so, and serves no socket')
+
+  // With the team's server down, the page keeps its list and says why it may be out of date. The page reads again every 10 seconds.
+  api.kill('SIGTERM')
+  await until('the API to stop', STOP_SEC, async () => api.exitCode !== null || api.signalCode !== null)
+  const stale = await until('the page to say the server is down', 30, async () =>
+    (await desk.locator('main').getByRole('alert').innerText({ timeout: 1000 }).catch(() => '')).includes("The team's server did not answer"))
+  check(stale && await list.isVisible(), "with the team's server down the page keeps its list and says the server did not answer")
 
   // Nothing about a folder that was never connected left the Mac: no table in Postgres holds its name, and neither does the API's log.
   const unconnected = [hiddenName, goneName, tempName]
