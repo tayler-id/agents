@@ -201,7 +201,9 @@ const routes: Route[] = [
     const instance = await instanceFrom(req)
     const body = Heartbeat.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
-    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, body.data.status])
+    // A daemon going offline takes no more work until it reports in again with recover.
+    await pool.query(`update instances set status = $2, last_seen_at = now(), ready = ready and $2::text <> 'offline' where id = $1`,
+      [instance.id, body.data.status])
     // A machine with a desktop reports its screen's size, and one without reports null.
     // Daemons from before screens, and a daemon going offline, leave it as it was.
     const { screen } = body.data

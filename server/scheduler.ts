@@ -1,0 +1,184 @@
+// The one door every turn goes through. A person's message, a room's go, a
+// routine's firing and a pipeline's stage each become a row in turns, saying who
+// asked and what for, and carrying what any place needs to run the turn: its
+// session, the event that holds its prompt, and what the engine is handed. The
+// scheduler picks the turn's place and writes its message command there once the
+// machine takes work, or marks it waiting with the reason. No other file writes a
+// message command. The runner's loop places waiting turns as their machines come
+// up, and marks a running turn stuck when its session goes quiet. The design is
+// "A scheduler places every turn" in docs/design/target-architecture.md.
+
+import type pg from 'pg'
+import { z } from 'zod'
+import { many, maybe, one, pool, tx } from './db.ts'
+import { InstanceId, movesInto } from '../shared/onboarding.ts'
+import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
+import { TurnId } from '../shared/ids.ts'
+import { MessagePayload } from '../shared/types.ts'
+
+// How long a running turn may go without a new event before it is marked stuck,
+// long enough for a slow build or test run between two steps. Nothing is stopped.
+const STUCK_AFTER_MIN = 10
+
+function stuckAfterSec(raw: string | undefined): number {
+  if (raw === undefined) return STUCK_AFTER_MIN * 60
+  const minutes = z.coerce.number().positive().safeParse(raw)
+  if (!minutes.success) throw new Error('AGENTS_TURN_STUCK_MIN must be a number of minutes above 0')
+  return minutes.data * 60
+}
+const STUCK_AFTER_SEC = stuckAfterSec(process.env.AGENTS_TURN_STUCK_MIN)
+
+// Who asked for a turn, and what for. A person's message is for the DM or room
+// it was posted in, or the task whose session it went to. A routine's firing is
+// for its agent's main conversation, and a pipeline's stage, reminder or replay
+// for its run.
+type Asker = { teamId: string; agentId: string }
+export type TurnAsk = Asker & (
+  | { source: 'person'; askedBy: string; conversationId: string }
+  | { source: 'person'; askedBy: string; taskId: string }
+  | { source: 'routine'; askedBy: string | null; conversationId: string; routineId: string }
+  | { source: 'pipeline'; runId: string }
+)
+// A room's turn waits in the room's line, without a prompt, until the room gives
+// it its go. The deadline is how long it may take once it has the go.
+export type RoomTurnAsk = Asker & { conversationId: string; askedBy: string; deadlineSec: number }
+// What the engine runs: the session the turn's record goes to, the place in it of
+// the user event that holds the prompt, and what the engine is handed.
+export type Prompt = { sessionId: string; seq: number; payload: MessagePayload }
+
+// The machine a session's turns run on, and whether it takes work now: online,
+// and its daemon has reported in since it last went offline. A box is held when
+// a person or a run holds it, which is when the runner starts it.
+const TAKES_WORK = `i.status = 'online' and i.ready`
+const Machine = z.object({ id: InstanceId, kind: z.enum(['mac', 'box', 'check']), held: z.boolean(), takes_work: z.boolean() })
+type Machine = z.infer<typeof Machine>
+
+// Where a session's turns run. Each runs on the machine its session started on,
+// since the engine's own transcript, which resuming needs, lives there. This is
+// the one place the choice is made, so a place of another kind, such as the
+// server running the engine's loop itself (decision 1, option b), is another
+// answer here, not a change to any caller.
+async function whereTurnsRun(client: pg.PoolClient, sessionId: string): Promise<Machine> {
+  return Machine.parse(await one(client, `the machine of session ${sessionId}`,
+    `select i.id, i.kind, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
+     from sessions s join instances i on i.id = s.instance_id where s.id = $1`, [sessionId]))
+}
+
+// The runner starts a box a person or a run holds. Any other machine starts on its own.
+const waitFor = (machine: Machine): WaitReason => (machine.kind === 'box' && machine.held ? 'computer_starting' : 'machine_offline')
+
+// Each move a turn can make before its machine takes it, with what that state holds.
+type Move =
+  | { to: 'waiting'; wait: WaitReason; instanceId: string }
+  | { to: 'placed'; instanceId: string; commandId: string }
+  | { to: 'cancelled' }
+
+// Moves a turn on, only from a status the lifecycle allows. A refused move is a
+// bug, so it throws, having changed nothing.
+async function moveTurn(client: pg.PoolClient, turnId: string, move: Move) {
+  const moved = await maybe(client,
+    `update turns set status = $2::text, wait = $3,
+       instance_id = coalesce($4, instance_id), command_id = coalesce($5, command_id),
+       placed_at = case when $2::text = 'placed' then now() else placed_at end,
+       finished_at = case when $2::text = 'cancelled' then now() else finished_at end
+     where id = $1 and status = any($6) returning id`,
+    [turnId, move.to, move.to === 'waiting' ? move.wait : null, move.to === 'cancelled' ? null : move.instanceId,
+      move.to === 'placed' ? move.commandId : null, movesInto(TURN_MOVES, move.to)])
+  if (!moved) throw new Error(`turn ${turnId} cannot move to ${move.to} from where it is`)
+}
+
+// Places a session's unplaced turns, oldest first, on the machine its turns run
+// on, when that machine takes work. Until then each one waits, with the reason.
+// The caller holds the session's row, so its turns go in the order they were asked for.
+async function placeSession(client: pg.PoolClient, sessionId: string) {
+  const turns = await many<{ id: string; team_id: string; status: 'queued' | 'waiting'; event_id: string; payload: unknown }>(client,
+    `select id, team_id, status, event_id, payload from turns
+     where session_id = $1 and status in ('queued', 'waiting') and payload is not null
+     order by requested_at, id for update`, [sessionId])
+  if (!turns.length) return
+  const machine = await whereTurnsRun(client, sessionId)
+  for (const turn of turns) {
+    if (machine.takes_work) {
+      const command = await one<{ id: string }>(client, 'the message command',
+        `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
+         values ($1, $2, $3, 'message', $4, $5) returning id`,
+        [turn.team_id, machine.id, sessionId, JSON.stringify(MessagePayload.parse(turn.payload)), turn.event_id])
+      await moveTurn(client, turn.id, { to: 'placed', instanceId: machine.id, commandId: command.id })
+    } else if (turn.status === 'queued') {
+      await moveTurn(client, turn.id, { to: 'waiting', wait: waitFor(machine), instanceId: machine.id })
+    }
+  }
+}
+
+// The one way into the queue for a turn with its prompt, or for a room's turn
+// that the room has given its go. It comes after the prompt went into the
+// session, and is placed at once when its machine takes work.
+export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queued: TurnId }, prompt: Prompt): Promise<TurnId> {
+  // Placing takes the session's row first, as appending its prompt did, and as the
+  // runner's loop does, so the two never wait on each other.
+  await client.query('select 1 from sessions where id = $1 for update', [prompt.sessionId])
+  const event = await one<{ id: string }>(client, 'the turn\'s prompt in its session',
+    'select id from events where session_id = $1 and seq = $2', [prompt.sessionId, prompt.seq])
+  const payload = JSON.stringify(prompt.payload)
+  const row = 'queued' in turn
+    ? await one<{ id: string }>(client, `room turn ${turn.queued}, queued without a prompt`,
+      `update turns set session_id = $2, event_id = $3, payload = $4
+       where id = $1 and status = 'queued' and session_id is null returning id`, [turn.queued, prompt.sessionId, event.id, payload])
+    : await one<{ id: string }>(client, 'the new turn',
+      `insert into turns (team_id, agent_id, source, conversation_id, task_id, run_id, routine_id, asked_by_person,
+         session_id, event_id, payload, status, requested_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', clock_timestamp()) returning id`,
+      [turn.teamId, turn.agentId, turn.source,
+        'conversationId' in turn ? turn.conversationId : null, 'taskId' in turn ? turn.taskId : null,
+        turn.source === 'pipeline' ? turn.runId : null, turn.source === 'routine' ? turn.routineId : null,
+        turn.source === 'pipeline' ? null : turn.askedBy, prompt.sessionId, event.id, payload])
+  await placeSession(client, prompt.sessionId)
+  return TurnId.parse(row.id)
+}
+
+// A turn in a room's line. clock_timestamp, unlike now, moves on within a
+// transaction, so turns queued together keep their order.
+export async function queueRoomTurn(client: pg.PoolClient, turn: RoomTurnAsk): Promise<TurnId> {
+  const row = await one<{ id: string }>(client, 'the room turn',
+    `insert into turns (team_id, agent_id, source, conversation_id, asked_by_person, status, requested_at, deadline)
+     values ($1, $2, 'room', $3, $4, 'queued', clock_timestamp(), now() + make_interval(secs => $5)) returning id`,
+    [turn.teamId, turn.agentId, turn.conversationId, turn.askedBy, turn.deadlineSec])
+  return TurnId.parse(row.id)
+}
+
+// A turn that never reached its machine and no longer should.
+export async function cancelTurn(client: pg.PoolClient, turnId: string) {
+  await moveTurn(client, turnId, { to: 'cancelled' })
+}
+
+// Places the turns waiting on machines that take work now, one session at a
+// time. A session a request holds is left to that request, which places the
+// session's turns in order itself. placeSession decides again, under the lock.
+export async function placeWaitingTurns(teamIds: string[] | null) {
+  const sessions = await many<{ session_id: string }>(pool,
+    `select distinct t.session_id from turns t join instances i on i.id = t.instance_id
+     where t.status = 'waiting' and ${TAKES_WORK} and ($1::uuid[] is null or t.team_id = any($1))`, [teamIds])
+  for (const { session_id: sessionId } of sessions) {
+    await tx(async (client) => {
+      if (await maybe(client, 'select 1 from sessions where id = $1 for update skip locked', [sessionId])) await placeSession(client, sessionId)
+    })
+  }
+}
+
+// When a running turn was last heard from: its session's newest event, or the
+// moment its machine took it, whichever is later.
+const LAST_HEARD = `greatest(t.started_at, (select e.created_at from events e where e.session_id = t.session_id order by e.seq desc limit 1))`
+
+// Marks each running turn whose session has had no new event for
+// AGENTS_TURN_STUCK_MIN, 10 minutes by default, with when it was last heard
+// from, and clears the mark when an event comes. Nothing is stopped.
+export async function markStuckTurns(teamIds: string[] | null) {
+  await pool.query(
+    `update turns t set stuck_since = ${LAST_HEARD}
+     where t.status = 'running' and t.stuck_since is null and ($2::uuid[] is null or t.team_id = any($2))
+       and ${LAST_HEARD} < now() - make_interval(secs => $1)`, [STUCK_AFTER_SEC, teamIds])
+  await pool.query(
+    `update turns t set stuck_since = null
+     where t.status = 'running' and t.stuck_since is not null and ($1::uuid[] is null or t.team_id = any($1))
+       and ${LAST_HEARD} > t.stuck_since`, [teamIds])
+}
