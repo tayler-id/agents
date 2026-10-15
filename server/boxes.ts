@@ -49,14 +49,18 @@ const CLAUDE_TOKEN_FILE = process.env.AGENTS_BOX_TOKEN_FILE ?? join(homedir(), '
 // Browsers keep their rendering buffers in /dev/shm. Docker's default of 64 MB
 // crashes tabs on real pages, and Playwright's own Docker guide raises it.
 const BOX_SHM_SIZE = '512m'
-// A box's ceiling, so a runaway browser or agent can't take the host. In step 15,
-// with a stand-in in place of Claude Code, a box running Chromium, Firefox and
-// WebKit beside its own browser used 1.2 GB and 2.5 CPUs at most before these
-// limits. Swap equal to memory means no swap.
-const BOX_MEMORY = '4g'
-const BOX_CPUS = '2'
-// Docker counts every thread against this, not only each process.
-const BOX_PIDS = '4096'
+// A box's ceiling is its size in `instances`, so a runaway browser or agent
+// can't take the host, with swap equal to memory, which means no swap. In step
+// 15, with a stand-in in place of Claude Code, a box running Chromium, Firefox
+// and WebKit beside its own browser used 1.2 GB and 2.5 CPUs at most before
+// there were limits. Every box keeps the 4 GiB and 2 CPUs of one seat, except
+// a person's computer, which holds 4 seats in 4 CPUs and 8 GiB, as Tayler
+// decided on 2026-10-15.
+const PERSON_COMPUTER = { seats: 4, cpus: 4, memoryGib: 8 }
+// Docker counts every thread against this, not only each process. One seat ran
+// its browser and checks in three engines within 4,096, so a box gets that
+// many for each seat.
+const PIDS_PER_SEAT = 4096
 // Room for `docker ps` over every box, and for a build's progress output.
 const DOCKER_OUTPUT_BYTES = 8 * 1024 * 1024
 const BUILD_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -128,7 +132,7 @@ async function boxStates(): Promise<Map<string, ContainerState>> {
   return new Map(out.split('\n').filter((line) => line !== '').map((line) => BoxLine.parse(line)))
 }
 
-const BoxKind = z.object({ personal: z.boolean() })
+const BoxKind = z.object({ personal: z.boolean(), seat_cap: z.int().positive(), cpus: z.int().positive(), memory_gib: z.int().positive() })
 
 // Starts a fresh container for the box from the current image, on the box's volume.
 // The token is new each time, since only its hash is kept. It changes only after
@@ -139,14 +143,15 @@ async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string)
   await docker(['rm', '-f', boxContainer(instanceId)])
   const token = `machine_${randomBytes(24).toString('base64url')}`
   await client.query('update instances set token_sha256 = $2 where id = $1', [instanceId, sha256(token)])
-  const { personal } = BoxKind.parse(await one(client, 'the box', 'select personal from instances where id = $1', [instanceId]))
+  const box = BoxKind.parse(await one(client, 'the box', 'select personal, seat_cap, cpus, memory_gib from instances where id = $1', [instanceId]))
   const secrets: Record<string, string> = { AGENTS_TOKEN: token }
-  if (!personal && existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
+  if (!box.personal && existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
   // Without NET_RAW a box cannot put raw frames on the shared bridge, such as ARP
   // replies that claim another box's address, and cannot capture packets or run
   // raw-socket scans. A ping an agent installs still works, through ICMP sockets.
   await docker(['run', '-d', '--name', boxContainer(instanceId), '--restart', 'unless-stopped', '--cap-drop', 'NET_RAW',
-    '--shm-size', BOX_SHM_SIZE, '--memory', BOX_MEMORY, '--memory-swap', BOX_MEMORY, '--cpus', BOX_CPUS, '--pids-limit', BOX_PIDS,
+    '--shm-size', BOX_SHM_SIZE, '--memory', `${box.memory_gib}g`, '--memory-swap', `${box.memory_gib}g`, '--cpus', String(box.cpus),
+    '--pids-limit', String(PIDS_PER_SEAT * box.seat_cap),
     '--label', `${BOX_LABEL}=${instanceId}`, '-v', `${boxHomeVolume(instanceId)}:/home/agent`,
     '-e', `AGENTS_API=${API_FROM_BOX}`, '-e', 'AGENTS_HOME=/home/agent/.agents-app',
     ...Object.keys(secrets).flatMap((name) => ['-e', name]), ...EXTRA_ARGS, IMAGE], secrets)
@@ -186,17 +191,18 @@ export async function makeOwnBox(person: { id: PersonId; team_id: TeamId; login:
   }
 }
 
-// A person's own box, named after their login, held by them for good. The
-// runner starts its container, as it does for any box a person holds.
+// A person's own box, named after their login, held by them for good, with a
+// person's computer's seats and size. The runner starts its container, as it
+// does for any box a person holds.
 export async function addPersonalBox(client: pg.PoolClient, teamId: TeamId, owner: PersonId, login: string): Promise<InstanceId> {
   const base = boxNameFor(login)
   const names = [base, ...Array.from({ length: NAME_TRIES - 1 }, (_, i) => `${base}-${i + 2}`), `${base}-${randomBytes(3).toString('hex')}`]
   for (const name of names) {
     const box = await maybe(client,
-      `insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal, idle_since)
-       values ($1, $2, 'box', $3, $4, $3, now(), true, now())
+      `insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal, idle_since, seat_cap, cpus, memory_gib)
+       values ($1, $2, 'box', $3, $4, $3, now(), true, now(), $5, $6, $7)
        on conflict (team_id, name) do nothing returning id`,
-      [teamId, name, owner, placeholderToken()])
+      [teamId, name, owner, placeholderToken(), PERSON_COMPUTER.seats, PERSON_COMPUTER.cpus, PERSON_COMPUTER.memoryGib])
     if (box) return InstanceId.parse(box.id)
   }
   throw new Error(`no free name for ${login}'s box`)
