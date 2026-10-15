@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, pool, tx } from './db.ts'
-import { appendEvents, appendMessage, HttpError, type Person } from './record.ts'
+import { appendEvents, appendMessage, HttpError, reportUnplaceableTurn, type Person } from './record.ts'
 import { loadSource, loadVersion, outcomesOf, syncPipelines } from './pipelines.ts'
 import { forge, repoPath } from './forge.ts'
 import { withFolders } from './checkout.ts'
@@ -1081,7 +1081,7 @@ export function startRunner() {
           await stopIdleBoxes(teams).catch(logged('idle boxes'))
         }
         await tx((client) => expireTurns(client, teams)).catch(logged('turns'))
-        await placeWaitingTurns(teams).catch(logged('waiting turns'))
+        await placeWaitingTurns(teams, reportUnplaceableTurn).catch(logged('waiting turns'))
         await markStuckTurns(teams).catch(logged('stuck turns'))
         await finishPushes(teams).catch(logged('pull requests'))
         await markLostMachines(teams).catch(logged('lost machines'))

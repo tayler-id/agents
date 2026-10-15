@@ -8,6 +8,8 @@ import type { SessionStatus } from './types.ts'
 export const WORKING: readonly SessionStatus[] = ['starting', 'running', 'needs_approval', 'needs_input']
 // The app reads a session's status as a plain string.
 export const isWorking = (status: string): boolean => WORKING.some((working) => working === status)
+// A session that is waiting for a person, who is why it says nothing new.
+export const WAITING_ON_PERSON: readonly SessionStatus[] = ['needs_input', 'needs_approval']
 // A session whose turn is not over: working now, or cut off with its machine and
 // to be resumed. Its agent may still change files, and a person can interrupt it.
 export const IN_FLIGHT: readonly SessionStatus[] = [...WORKING, 'lost']

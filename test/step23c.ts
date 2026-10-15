@@ -13,8 +13,9 @@ import { execFileSync } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { markAsleep, makeOwnBox } from '../server/boxes.ts'
 import { pool, tx } from '../server/db.ts'
-import { openDm, Person, sendPersonMessage } from '../server/record.ts'
-import { placeWaitingTurns } from '../server/scheduler.ts'
+import { moveMessages } from '../server/durability.ts'
+import { openDm, Person, reportUnplaceableTurn, sendPersonMessage } from '../server/record.ts'
+import { markStuckTurns, placeWaitingTurns } from '../server/scheduler.ts'
 import { messageOf } from '../shared/errors.ts'
 import { must } from './must.ts'
 
@@ -138,7 +139,7 @@ try {
     const w = await world('sleeping')
     await w.ask('First.')
     await up(w)
-    await placeWaitingTurns([teamId])
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
     const marked = deferred()
     const commit = deferred()
     let sleeper = 0
@@ -158,6 +159,77 @@ try {
     const turns = await turnsOf(w)
     check(how === 'waiting' && turns[1]?.status === 'waiting' && turns[1].wait === 'computer_starting' && !turns[1].has_command,
       `a request that arrives while the box is being marked asleep waits for the mark, then waits for the box (request ${how}, ${shown(turns)})`)
+  }
+
+  // Turns asked for while the box was away are placed together, and each command
+  // gets a moment of its own, so a machine and a resume read them in the order they
+  // were asked in.
+  {
+    const w = await world('together')
+    for (const text of ['one', 'two', 'three', 'four', 'five']) await w.ask(text)
+    await up(w)
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
+    const read = await one(
+      `select count(*)::int as commands, count(distinct c.created_at)::int as moments,
+         string_agg(c.payload->>'text', ',' order by c.created_at, c.id) as order_read
+       from commands c where c.kind = 'message' and c.session_id = (select session_id from turns where conversation_id = $1 limit 1)`, [w.conversationId])
+    check(read?.commands === 5 && read.moments === 5 && read.order_read === 'one,two,three,four,five',
+      `five turns placed together are five commands at five moments, read back in the order asked (${String(read?.moments)} moments, ${String(read?.order_read)})`)
+  }
+
+  // A turn that waits for a person's answer is quiet because of them. The same
+  // quiet turn with a session that is working is stuck.
+  for (const [label, status, stuck] of [['approval', 'needs_approval', false], ['working', 'running', true]] as const) {
+    const w = await world(label)
+    await up(w)
+    await w.ask('Do the thing.')
+    const command = must(await one(`select c.id from commands c join sessions s on s.id = c.session_id where s.conversation_id = $1 and c.kind = 'message'`, [w.conversationId]), 'its command')
+    await moveMessages(pool, [String(command.id)], 'handed_over')
+    await pool.query(`update sessions set status = $2 where conversation_id = $1`, [w.conversationId, status])
+    await pool.query(`update events set created_at = now() - interval '11 minutes' where session_id = (select id from sessions where conversation_id = $1)`, [w.conversationId])
+    await pool.query(`update turns set started_at = now() - interval '11 minutes' where conversation_id = $1`, [w.conversationId])
+    await markStuckTurns([teamId])
+    const marked = Boolean((await one('select stuck_since is not null as marked from turns where conversation_id = $1', [w.conversationId])).marked)
+    check(marked === stuck, `a turn quiet for 11 minutes ${stuck ? 'is marked stuck while its session works' : 'is not marked stuck while its session waits for a person'} (${status})`)
+  }
+
+  // One waiting turn that cannot be read does not hold up the turns behind it. It
+  // fails alone, and its person is told why.
+  {
+    const bad = await world('unreadable')
+    const good = await world('readable')
+    await bad.ask('This one is asked first.')
+    await good.ask('This one is behind it.')
+    await pool.query(`update turns set payload = '{"text": 5}'::jsonb where conversation_id = $1`, [bad.conversationId])
+    await up(bad)
+    await up(good)
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
+    const [badTurns, goodTurns] = [await turnsOf(bad), await turnsOf(good)]
+    const told = await one(
+      `select s.status, (select e.text from events e where e.session_id = s.id and e.kind = 'error' order by e.seq desc limit 1) as said
+       from sessions s where s.conversation_id = $1`, [bad.conversationId])
+    check(goodTurns[0]?.status === 'placed' && goodTurns[0].has_command,
+      `a waiting turn that cannot be read does not keep the turn behind it from being placed (${shown(goodTurns)})`)
+    check(badTurns[0]?.status === 'failed' && !badTurns[0].has_command && told?.status === 'failed' && String(told.said).includes('could not be sent'),
+      `the turn that cannot be read fails alone, and its session says it could not be sent (${shown(badTurns)}, session ${String(told?.status)})`)
+  }
+
+  // A session whose turns cannot be placed for a reason of its own, here that
+  // telling its person failed, does not hold up the session behind it either. Its
+  // turn is left waiting for the next tick.
+  {
+    const first = await world('stalls')
+    const second = await world('carries')
+    await first.ask('Asked first.')
+    await second.ask('Asked second.')
+    await pool.query(`update turns set payload = '{"text": 5}'::jsonb where conversation_id = $1`, [first.conversationId])
+    await up(first)
+    await up(second)
+    const ticked = await placeWaitingTurns([teamId], () => Promise.reject(new Error('the report could not be written')))
+      .then(() => 'went on', (error: unknown) => `stopped with "${messageOf(error)}"`)
+    const [stalled, carried] = [await turnsOf(first), await turnsOf(second)]
+    check(ticked === 'went on' && carried[0]?.status === 'placed' && stalled[0]?.status === 'waiting',
+      `a session that cannot be placed does not stop the next session from being placed, and its turn waits for the next tick (the tick ${ticked}; ${shown(stalled)}; ${shown(carried)})`)
   }
 } catch (error) {
   failures.push(messageOf(error))

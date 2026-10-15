@@ -220,6 +220,16 @@ export async function interruptSession(client: pg.PoolClient, sessionId: string)
     [session.team_id, session.instance_id, sessionId])
 }
 
+// Tells a person their message was not sent, when the turn that carried it can
+// never be placed. The session fails with the reason, as it does when its machine
+// cannot hand it a message, and a room's line moves on to the next agent.
+export async function reportUnplaceableTurn(client: pg.PoolClient, turn: { turnId: string; sessionId: string; reason: string }) {
+  await appendEvents(client, turn.sessionId, {
+    events: [{ clientId: `turn:${turn.turnId}:unplaceable`, kind: 'error', text: turn.reason, body: { turnId: turn.turnId, reason: turn.reason } }],
+    status: 'failed',
+  })
+}
+
 // In a terminal session only what the person writes carries their author, so its
 // batch names them on their prompts and on nothing Claude wrote. Any other
 // session takes the author its caller gives, such as the person a screen notice

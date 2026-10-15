@@ -12,6 +12,8 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, pool, tx } from './db.ts'
 import { InstanceId, movesInto } from '../shared/onboarding.ts'
+import { messageOf } from '../shared/errors.ts'
+import { WAITING_ON_PERSON } from '../shared/lifecycle.ts'
 import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
 import { TurnId } from '../shared/ids.ts'
 import { MessagePayload } from '../shared/types.ts'
@@ -78,26 +80,34 @@ const waitFor = (machine: Machine): WaitReason => (machine.held ? 'computer_star
 type Move =
   | { to: 'waiting'; wait: WaitReason; instanceId: string }
   | { to: 'placed'; instanceId: string; commandId: string }
-  | { to: 'cancelled' }
+  | { to: 'cancelled' | 'failed' }
 
 // Moves a turn on, only from a status the lifecycle allows. A refused move is a
 // bug, so it throws, having changed nothing.
 async function moveTurn(client: pg.PoolClient, turnId: string, move: Move) {
+  const instanceId = move.to === 'waiting' || move.to === 'placed' ? move.instanceId : null
   const moved = await maybe(client,
     `update turns set status = $2::text, wait = $3,
        instance_id = coalesce($4, instance_id), command_id = coalesce($5, command_id),
        placed_at = case when $2::text = 'placed' then now() else placed_at end,
-       finished_at = case when $2::text = 'cancelled' then now() else finished_at end
+       finished_at = case when $2::text in ('cancelled', 'failed') then now() else finished_at end
      where id = $1 and status = any($6) returning id`,
-    [turnId, move.to, move.to === 'waiting' ? move.wait : null, move.to === 'cancelled' ? null : move.instanceId,
+    [turnId, move.to, move.to === 'waiting' ? move.wait : null, instanceId,
       move.to === 'placed' ? move.commandId : null, movesInto(TURN_MOVES, move.to)])
   if (!moved) throw new Error(`turn ${turnId} cannot move to ${move.to} from where it is`)
 }
 
+// What the runner does for a turn it gives up on, because the request it stored no
+// longer reads. The turn is failed first, and this tells the person why.
+export type GiveUp = (client: pg.PoolClient, turn: { turnId: TurnId; sessionId: string; reason: string }) => Promise<void>
+
 // Places a session's unplaced turns, oldest first, on the machine its turns run
 // on, when that machine takes work. Until then each one waits, with the reason.
 // The caller holds the session's row, so its turns go in the order they were asked for.
-async function placeSession(client: pg.PoolClient, sessionId: string) {
+// A turn whose stored request no longer reads, as after a release that added a
+// field to it, is failed and reported through `giveUp`, so it does not hold up the
+// turns behind it. A request, which has just built its own, has no one to give up to.
+async function placeSession(client: pg.PoolClient, sessionId: string, giveUp?: GiveUp) {
   const turns = await many<{ id: string; team_id: string; status: 'queued' | 'waiting'; event_id: string; payload: unknown }>(client,
     `select id, team_id, status, event_id, payload from turns
      where session_id = $1 and status in ('queued', 'waiting') and payload is not null
@@ -110,10 +120,22 @@ async function placeSession(client: pg.PoolClient, sessionId: string) {
   if (!machine.takes_work) await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
   for (const turn of turns) {
     if (machine.takes_work) {
+      const request = MessagePayload.safeParse(turn.payload)
+      if (!request.success) {
+        const issue = request.error.issues[0]
+        const reason = `The message could not be sent to the agent, because what it carries no longer reads (${issue ? `${issue.path.join('.') || 'the request'}: ${issue.message}` : 'unreadable'}).`
+        if (!giveUp) throw new Error(`turn ${turn.id}: ${reason}`)
+        console.error(`turn ${turn.id}: ${reason}`)
+        await moveTurn(client, turn.id, { to: 'failed' })
+        await giveUp(client, { turnId: TurnId.parse(turn.id), sessionId, reason })
+        continue
+      }
+      // clock_timestamp, unlike now, moves on within a transaction, so turns placed
+      // together keep the order they were asked in where a machine or a resume reads them.
       const command = await one<{ id: string }>(client, 'the message command',
-        `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-         values ($1, $2, $3, 'message', $4, $5) returning id`,
-        [turn.team_id, machine.id, sessionId, JSON.stringify(MessagePayload.parse(turn.payload)), turn.event_id])
+        `insert into commands (team_id, instance_id, session_id, kind, payload, event_id, created_at)
+         values ($1, $2, $3, 'message', $4, $5, clock_timestamp()) returning id`,
+        [turn.team_id, machine.id, sessionId, JSON.stringify(request.data), turn.event_id])
       await moveTurn(client, turn.id, { to: 'placed', instanceId: machine.id, commandId: command.id })
     } else if (turn.status === 'queued') {
       await moveTurn(client, turn.id, { to: 'waiting', wait: waitFor(machine), instanceId: machine.id })
@@ -163,16 +185,24 @@ export async function cancelTurn(client: pg.PoolClient, turnId: string) {
 }
 
 // Places the turns waiting on machines that take work now, one session at a
-// time. A session a request holds is left to that request, which places the
-// session's turns in order itself. placeSession decides again, under the lock.
-export async function placeWaitingTurns(teamIds: string[] | null) {
+// time, the one that has waited longest first. A session a request holds is left
+// to that request, which places the session's turns in order itself. placeSession
+// decides again, under the lock. One session that cannot be placed, for a reason
+// of its own, must not keep the sessions behind it waiting, so its error is
+// logged and the next tick tries it again.
+export async function placeWaitingTurns(teamIds: string[] | null, giveUp: GiveUp) {
   const sessions = await many<{ session_id: string }>(pool,
-    `select distinct t.session_id from turns t join instances i on i.id = t.instance_id
-     where t.status = 'waiting' and ${TAKES_WORK} and ($1::uuid[] is null or t.team_id = any($1))`, [teamIds])
+    `select t.session_id from turns t join instances i on i.id = t.instance_id
+     where t.status = 'waiting' and ${TAKES_WORK} and ($1::uuid[] is null or t.team_id = any($1))
+     group by t.session_id order by min(t.requested_at), t.session_id`, [teamIds])
   for (const { session_id: sessionId } of sessions) {
-    await tx(async (client) => {
-      if (await maybe(client, 'select 1 from sessions where id = $1 for update skip locked', [sessionId])) await placeSession(client, sessionId)
-    })
+    try {
+      await tx(async (client) => {
+        if (await maybe(client, 'select 1 from sessions where id = $1 for update skip locked', [sessionId])) await placeSession(client, sessionId, giveUp)
+      })
+    } catch (error) {
+      console.error(`placing the turns of session ${sessionId}: ${messageOf(error)}`)
+    }
   }
 }
 
@@ -182,12 +212,14 @@ const LAST_HEARD = `greatest(t.started_at, (select e.created_at from events e wh
 
 // Marks each running turn whose session has had no new event for
 // AGENTS_TURN_STUCK_MIN, 10 minutes by default, with when it was last heard
-// from, and clears the mark when an event comes. Nothing is stopped.
+// from, and clears the mark when an event comes. A session that waits for a
+// person to answer is quiet because of them, so it is not marked. Nothing is stopped.
 export async function markStuckTurns(teamIds: string[] | null) {
   await pool.query(
     `update turns t set stuck_since = ${LAST_HEARD}
      where t.status = 'running' and t.stuck_since is null and ($2::uuid[] is null or t.team_id = any($2))
-       and ${LAST_HEARD} < now() - make_interval(secs => $1)`, [STUCK_AFTER_SEC, teamIds])
+       and ${LAST_HEARD} < now() - make_interval(secs => $1)
+       and not exists (select 1 from sessions s where s.id = t.session_id and s.status = any($3))`, [STUCK_AFTER_SEC, teamIds, WAITING_ON_PERSON])
   await pool.query(
     `update turns t set stuck_since = null
      where t.status = 'running' and t.stuck_since is not null and ($1::uuid[] is null or t.team_id = any($1))

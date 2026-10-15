@@ -22,11 +22,14 @@ export type WaitReason = z.infer<typeof WaitReason>
 export const TURN_MOVES = {
   // A room's turn waits here for the room to give it its go, and any other turn
   // passes through as it is requested. A room cancels one whose agent has no machine.
-  queued: ['waiting', 'placed', 'cancelled'],
-  // Its machine comes up, or a room's deadline passes first.
-  waiting: ['placed', 'cancelled'],
+  // A turn whose stored request no longer reads fails, since it can never be sent.
+  queued: ['waiting', 'placed', 'cancelled', 'failed'],
+  // Its machine comes up, or a room's deadline passes first, or a person or a stop
+  // cancels it before its machine has it.
+  waiting: ['placed', 'cancelled', 'failed'],
   // The machine takes the message command, then the turn ends as the command does.
-  placed: ['running'],
+  // The runner can also give up on a command no machine took, and then it fails.
+  placed: ['running', 'failed'],
   running: ['done', 'failed'],
   done: [],
   failed: [],
