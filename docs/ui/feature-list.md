@@ -966,7 +966,7 @@ While a change runs, every row's buttons are disabled. A change goes through onl
 
 | State | When | What shows | Code |
 |---|---|---|---|
-| Asking | The first list has not come back | `Asking this Mac's daemon for its folders…` | `ThisMac` |
+| Loading | The first list has not come back | `Asking this Mac's daemon for its folders…` | `ThisMac` |
 | No daemon | The first list failed | `This Mac's folders can't be listed. {reason}` in red, `role="alert"`, such as `Agents can't reach this Mac's daemon at {socket}: ECONNREFUSED.` | `ThisMac`, `desktop/main.cjs` |
 | Out of date | A later list failed | `The list may be out of date. {reason}` in red above the list, which keeps its rows | `ThisMac` |
 | Empty | Claude Code has not run on this Mac | `Claude Code hasn't run on this Mac yet. Start a session in a project folder, and the folder shows here.` | `ThisMac` |

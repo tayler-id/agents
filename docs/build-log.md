@@ -960,3 +960,16 @@ Built on `mac-connect`, phase 1 of making terminal sessions easy to connect. Tay
   - No check plays another macOS user, and root can open the socket.
   - agentsctl's desktop app runs with a home folder of its own, so its page finds no daemon socket.
   - A daemon from this change needs an API from it, since the page reads the Mac's id from `GET /v1/instance/folders`.
+
+### Asking before Team shows the team a private folder (on its branch, not merged)
+
+The coordinator asked for the question I had recommended before landing phase 1. When a person picks Team on a folder that is Just me and already has sessions in the record, the page asks first, says how many sessions the team would then see, and changes nothing until the person says yes. Keep it to me leaves the folder as it was.
+
+- **How it works.** Picking Team on a Just me folder makes the page read this Mac's list afresh through the daemon, so a session that landed since the last read counts. When the folder holds any sessions, the row asks "Show the team the 1 session already in the record from shop?" with Yes, show the team and Keep it to me, in place, as the Tailscale page asks before removing. The safe answer takes the focus. Keep it to me says "Nothing changed." A folder with nothing in the record changes without a question.
+- **The count.** `GET /v1/instance/folders` also returns how many sessions each connected folder holds, and the daemon's list carries it. `server/folders.ts` counts it with the expression it already used for the sessions a change to Team shows, now one definition, so the question and the line after agree.
+- **Verified.** Run from main's checkout with `node daemon/agents-git/main.ts check mac-connect 21c 21b 21` at 36a05dd, step21c passed all 38 lines in 32.4 s, step21b all 59 in 96.7 s, and step21 all 50 with the real CLI in 34.6 s. step21c also passed three times in a row while another session's box checks loaded the Mac. Typecheck, lint, the name guard and the style check pass. The question is in `test/ui-shots/step21c-desktop-app-ask.png`.
+- **Seen failing.** Four new lines in `test/step21c.ts`, now 38. On the branch's code with only the lines added, the three about the question failed and the one about a folder with nothing in the record passed, since that was already the behavior. With the change all 38 passed. One break, the question asked only above one session, turned exactly the three red, and the file came back by sha256.
+- **Not done.**
+  - A folder that was Just me and is now Off shows the team its earlier sessions when Team is chosen, and the row says how many afterwards without asking first. This Mac's list holds no disconnected folder's past.
+  - A session that lands between the count and the yes shows the team one more than the question said, and the row then says the number the API counted.
+  - The coordinator answered the first report's other questions. The signed download in phase 2 carries this page itself, `daemon/agentsd.ts` needs no sign-off since the framework doesn't govern this repo yet, and the coordinator deploys with Tayler after landing.
