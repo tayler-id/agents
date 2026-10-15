@@ -15,7 +15,7 @@ import { InstanceId, movesInto } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
 import { WAITING_ON_PERSON } from '../shared/lifecycle.ts'
 import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
-import { TurnId } from '../shared/ids.ts'
+import { TurnId, type SessionId } from '../shared/ids.ts'
 import { MessagePayload } from '../shared/types.ts'
 
 // How long a running turn may go without a new event before it is marked stuck,
@@ -182,6 +182,28 @@ export async function queueRoomTurn(client: pg.PoolClient, turn: RoomTurnAsk): P
 // A turn that never reached its machine and no longer should.
 export async function cancelTurn(client: pg.PoolClient, turnId: string) {
   await moveTurn(client, turnId, { to: 'cancelled' })
+}
+
+// Cancels the turns of a session that have not reached its machine. A turn that
+// waits has no message command yet, so a stop or an interrupt written now would
+// queue ahead of the message the scheduler writes later, find nothing to stop, and
+// let the turn start. A room's turn also ends its line, which the room moves on from.
+export async function cancelWaitingTurns(client: pg.PoolClient, sessionId: SessionId) {
+  const turns = await many<{ id: string; source: string }>(client,
+    `select id, source from turns where session_id = $1 and status in ('queued', 'waiting') order by requested_at, id for update`, [sessionId])
+  for (const turn of turns) {
+    if (turn.source === 'room') await client.query(`update turns set outcome = coalesce(outcome, 'cancelled') where id = $1`, [turn.id])
+    await moveTurn(client, turn.id, { to: 'cancelled' })
+  }
+}
+
+// The one writer of stop and interrupt commands, as this file is of message
+// commands. It cancels the session's turns that wait before it writes the command,
+// in the caller's transaction, so none of them is sent after it.
+export async function signalSession(client: pg.PoolClient, sessionId: SessionId, kind: 'stop' | 'interrupt') {
+  await cancelWaitingTurns(client, sessionId)
+  await client.query(
+    `insert into commands (team_id, instance_id, session_id, kind) select team_id, instance_id, id, $2 from sessions where id = $1`, [sessionId, kind])
 }
 
 // Places the turns waiting on machines that take work now, one session at a

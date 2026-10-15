@@ -11,11 +11,17 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { markAsleep, makeOwnBox } from '../server/boxes.ts'
 import { pool, tx } from '../server/db.ts'
 import { moveMessages } from '../server/durability.ts'
-import { openDm, Person, reportUnplaceableTurn, sendPersonMessage } from '../server/record.ts'
-import { markStuckTurns, placeWaitingTurns } from '../server/scheduler.ts'
+import { lostMachine } from '../server/framework.ts'
+import { recordVersion } from '../server/pipelines.ts'
+import { interruptSession, openDm, Person, reportUnplaceableTurn, sendPersonMessage } from '../server/record.ts'
+import { markStuckTurns, placeWaitingTurns, signalSession } from '../server/scheduler.ts'
+import { InstanceId } from '../shared/onboarding.ts'
+import { SessionId } from '../shared/ids.ts'
 import { messageOf } from '../shared/errors.ts'
 import { must } from './must.ts'
 
@@ -62,23 +68,26 @@ async function settledOrWaiting<T>(started: Promise<T>, holder: number): Promise
   return Promise.race([settled, waiting])
 }
 
-type World = { person: Person; boxId: ReturnType<typeof makeOwnBox> extends Promise<infer B> ? B : never; conversationId: string; ask: (text: string) => Promise<void> }
+type World = { person: Person; boxId: InstanceId; conversationId: string; sessionId: () => Promise<SessionId>; ask: (text: string) => Promise<void> }
 
-// A person with a box of their own, an agent on it, and a DM with that agent. The
-// box has not reported in, so it takes no work until `up` says its daemon has.
-async function world(label: string): Promise<World> {
+// A person with a machine for their agent and a DM with that agent. A box is their
+// own, and has not reported in, so it takes no work until `up` says its daemon has.
+// A Mac takes commands whenever it comes, so its turns are placed at once.
+async function world(label: string, kind: 'box' | 'mac' = 'box'): Promise<World> {
   const login = `${label}-${id}@local`
   node('server/admin.ts', 'add-person', team, login)
   const person = Person.parse(must(await one('select id, team_id, login, role from people where login = $1', [login]), login))
-  const boxId = await makeOwnBox(person)
-  const box = must(await one('select name from instances where id = $1', [boxId]), 'the box')
+  if (kind === 'mac') node('server/admin.ts', 'add-instance', team, `mac-${label}-${id}`, 'mac', login)
+  const boxId = kind === 'box' ? await makeOwnBox(person) : InstanceId.parse(must(await one('select id from instances where name = $1', [`mac-${label}-${id}`]), 'the Mac').id)
+  const box = must(await one('select name from instances where id = $1', [boxId]), 'the machine')
   const agent = `scout-${label}`
   node('server/admin.ts', 'add-agent', team, agent, String(box.name))
   const conversationId = await tx((client) => openDm(client, person, agent))
   const ask = async (text: string) => {
     await tx((client) => sendPersonMessage(client, person, conversationId, text, randomUUID()))
   }
-  return { person, boxId, conversationId, ask }
+  const sessionId = async () => SessionId.parse(must(await one('select id from sessions where conversation_id = $1', [conversationId]), 'the session').id)
+  return { person, boxId, conversationId, sessionId, ask }
 }
 
 // The daemon reporting in, and going away.
@@ -230,6 +239,106 @@ try {
     const [stalled, carried] = [await turnsOf(first), await turnsOf(second)]
     check(ticked === 'went on' && carried[0]?.status === 'placed' && stalled[0]?.status === 'waiting',
       `a session that cannot be placed does not stop the next session from being placed, and its turn waits for the next tick (the tick ${ticked}; ${shown(stalled)}; ${shown(carried)})`)
+  }
+
+  // A stop or an interrupt written while a turn waits cancels the turn, so the
+  // message is not sent after it when the box comes up. A turn that already has
+  // its command is left to run, with the stop queued behind it, as before the door.
+  for (const [label, how] of [
+    ['an interrupt from the app', (client: Parameters<typeof interruptSession>[0], sessionId: SessionId) => interruptSession(client, sessionId)],
+    ['a stop from a run or a replay', (client: Parameters<typeof signalSession>[0], sessionId: SessionId) => signalSession(client, sessionId, 'stop')],
+  ] as const) {
+    const w = await world(label.startsWith('an') ? 'interrupted' : 'stopped')
+    await w.ask('Start this.')
+    await tx(async (client) => how(client, await w.sessionId()))
+    await up(w)
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
+    const turns = await turnsOf(w)
+    const sent = await all(`select kind from commands where session_id = $1 order by created_at, id`, [await w.sessionId()])
+    check(turns[0]?.status === 'cancelled' && !turns[0].has_command && sent.every((c) => c.kind !== 'message') && sent.length === 1,
+      `${label} cancels a turn that waits, and no message follows it when the box comes up (${shown(turns)}; commands ${sent.map((c) => String(c.kind)).join(', ') || 'none'})`)
+  }
+  {
+    const w = await world('running', 'mac')
+    await w.ask('Start this.')
+    await tx(async (client) => interruptSession(client, await w.sessionId()))
+    const turns = await turnsOf(w)
+    const sent = await all(`select kind from commands where session_id = $1 order by created_at, id`, [await w.sessionId()])
+    check(turns[0]?.status === 'placed' && turns[0].has_command && sent.map((c) => String(c.kind)).join() === 'message,interrupt',
+      `an interrupt leaves a turn that already has its command, with the interrupt queued behind the message (${shown(turns)}; commands ${sent.map((c) => String(c.kind)).join(', ')})`)
+  }
+
+  // A governed stage whose machine went silent fails, and what it held ends with
+  // it. A message ends through the one writer, so its turn ends too, and a turn
+  // that waits for a box that never came up is cancelled, so it is not sent when the
+  // box returns. A stage on a machine that has reported lately is left alone.
+  const PIPELINE = `export default {
+    description: 'Works.', agent: 'scout', runsOn: 'home', spendCapUsd: 1, triggers: [{ kind: 'manual' }], start: 'work',
+    stages: { work: { kind: 'agent', prompt: () => 'Work.', next: { work: { done: 'succeeded', note: 'ok' } } } },
+  }`
+  const rules = JSON.stringify(JSON.parse(readFileSync(join(ROOT, 'ops/policies/agents.json'), 'utf8')))
+  const governedStage = async (w: World, label: string) => {
+    const policy = must(await one(`insert into policies (team_id, name, version, rules, created_by) values ($1, $2, 1, $3, $4) returning id`,
+      [teamId, `policy-${label}-${id}`, rules, w.person.id]), 'the policy').id
+    const repo = must(await one(`insert into repos (team_id, remote_url, forge, owner_id, policy_id) values ($1, $2, 'gitea', $3, $4) returning id`,
+      [teamId, `http://127.0.0.1:3000/door-23c/${label}-${id}.git`, w.person.id, policy]), 'the repo').id
+    const task = must(await one(`insert into tasks (team_id, slug, title, owner_id, source) values ($1, $2, 'Governed work', $3, 'manual') returning id`,
+      [teamId, `governed-${label}-${id}`, w.person.id]), 'the task').id
+    await pool.query('insert into task_repos (task_id, repo_id, is_primary) values ($1, $2, true)', [task, repo])
+    const version = await recordVersion(teamId, null, `gate-${label}-${id}`, 'pipelines/gate.ts', PIPELINE)
+    const run = must(await one(`insert into runs (team_id, pipeline_version_id, task_id, trigger, status) values ($1, $2, $3, 'manual', 'running') returning *`,
+      [teamId, version.versionId, task]), 'the run')
+    const stage = must(await one(
+      `insert into run_stages (team_id, run_id, n, stage, attempt, kind, status, session_id, started_at) values ($1, $2, 1, 'work', 1, 'agent', 'running', $3, now() - interval '20 minutes') returning *`,
+      [teamId, run.id, String(await w.sessionId())]), 'the stage')
+    return { run, stage, sessions: [await w.sessionId()] }
+  }
+  const silent = (w: World) => pool.query(`update instances set status = 'offline', ready = false, last_seen_at = now() - interval '20 minutes' where id = $1`, [w.boxId])
+  const aged = async (w: World) => {
+    await pool.query(`update commands set created_at = now() - interval '20 minutes' where session_id = (select id from sessions where conversation_id = $1)`, [w.conversationId])
+    await pool.query(`update turns set requested_at = now() - interval '20 minutes' where conversation_id = $1`, [w.conversationId])
+  }
+  const stageStatus = async (stage: { id: string }) => String((await one('select status from run_stages where id = $1', [stage.id])).status)
+  const commandsOf = async (w: World) => all(`select kind, status from commands where session_id = $1 and kind = 'message'`, [await w.sessionId()])
+
+  {
+    const w = await world('lostwaiting')
+    await w.ask('Build it.')
+    const { run, stage, sessions } = await governedStage(w, 'lostwaiting')
+    await silent(w)
+    await aged(w)
+    const failed = await tx((client) => lostMachine(client, run, stage, sessions))
+    const turns = await turnsOf(w)
+    await up(w)
+    await placeWaitingTurns([teamId], reportUnplaceableTurn)
+    check(failed && await stageStatus(stage) === 'failed' && (await turnsOf(w))[0]?.status === 'cancelled' && (await commandsOf(w)).length === 0,
+      `a stage whose turn waits for a box that never came up fails, and the turn is cancelled, so nothing is sent when the box returns (stage ${await stageStatus(stage)}, ${shown(turns)}, then ${shown(await turnsOf(w))})`)
+  }
+  {
+    const w = await world('lostqueued', 'mac')
+    await w.ask('Build it.')
+    const { run, stage, sessions } = await governedStage(w, 'lostqueued')
+    await silent(w)
+    await aged(w)
+    const failed = await tx((client) => lostMachine(client, run, stage, sessions))
+    const turns = await turnsOf(w)
+    const commands = await commandsOf(w)
+    check(failed && await stageStatus(stage) === 'failed' && commands[0]?.status === 'failed' && turns[0]?.status === 'failed',
+      `a stage whose message no machine took fails with the message, and its turn fails with it (stage ${await stageStatus(stage)}, message ${String(commands[0]?.status)}, ${shown(turns)})`)
+  }
+  {
+    const w = await world('lostclaimed', 'mac')
+    await w.ask('Build it.')
+    const command = must(await one(`select id from commands where session_id = (select id from sessions where conversation_id = $1) and kind = 'message'`, [w.conversationId]), 'its message')
+    await moveMessages(pool, [String(command.id)], 'handed_over')
+    const { run, stage, sessions } = await governedStage(w, 'lostclaimed')
+    await silent(w)
+    await aged(w)
+    const failed = await tx((client) => lostMachine(client, run, stage, sessions))
+    const turns = await turnsOf(w)
+    const commands = await commandsOf(w)
+    check(failed && await stageStatus(stage) === 'failed' && commands[0]?.status === 'failed' && turns[0]?.status === 'failed',
+      `a stage whose message a machine took and then went silent fails with the message, and its turn fails with it (stage ${await stageStatus(stage)}, message ${String(commands[0]?.status)}, ${shown(turns)})`)
   }
 } catch (error) {
   failures.push(messageOf(error))

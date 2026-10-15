@@ -1,6 +1,7 @@
 // The lifecycle of a message an agent is asked to answer, and the session
 // statuses it depends on. docs/design/durability.md explains both, and
-// moveMessages in server/durability.ts is the only writer of a message's status.
+// moveMessages in server/durability.ts is the only writer of a message's status,
+// apart from failUntakenMessage beside it, for a message no machine took.
 
 import type { SessionStatus } from './types.ts'
 

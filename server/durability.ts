@@ -22,7 +22,26 @@ export class MessageMoveRefused extends Error {}
 
 export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
 
-// The only writer of a message command's status. It moves every command in `ids`
+// The runner gives up on a message that no machine took, because the machine it
+// was queued for went silent. The lifecycle has no move from queued to failed, since
+// a queued message may still be handed over, so this is the one way a message ends
+// without being handed over first, and it fails the message's placed turn in the
+// same statement. A message a machine took ends through moveMessages. Says whether
+// the message was still queued.
+export async function failUntakenMessage(db: Db, commandId: string, error: string): Promise<boolean> {
+  const failed = await many<{ id: string }>(db,
+    `with failed as (
+       update commands set status = 'failed', error = $2, done_at = now()
+       where id = $1 and kind = 'message' and status = 'queued' returning id
+     ), turned as (
+       update turns set status = 'failed', finished_at = now() where command_id in (select id from failed) and status = 'placed'
+     )
+     select id from failed`, [commandId, error])
+  return failed.length > 0
+}
+
+// The only writer of a message command's status, apart from failUntakenMessage
+// below, for a message no machine took. It moves every command in `ids`
 // to `to`'s status, or none of them. Each must be a message in a status
 // MESSAGE_MOVES allows that move from, and on `instanceId` when it is given.
 // Otherwise it throws, having changed nothing. Each command's turn moves with it

@@ -8,9 +8,9 @@ import { z } from 'zod'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, conversationSession, HttpError, type Person } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
-import { cancelTurn, queueRoomTurn, requestTurn } from './scheduler.ts'
+import { cancelTurn, queueRoomTurn, requestTurn, signalSession } from './scheduler.ts'
 import type { MessagePayload } from '../shared/types.ts'
-import { TurnId } from '../shared/ids.ts'
+import { SessionId, TurnId } from '../shared/ids.ts'
 import { PersonId, type ConversationId, type Login } from '../shared/onboarding.ts'
 import type { ProjectId } from '../shared/projects.ts'
 
@@ -150,11 +150,7 @@ export async function expireTurns(client: pg.PoolClient, teamIds: string[] | nul
      returning id, conversation_id, session_id, status`, [teamIds])
   for (const turn of rows) {
     if (turn.status === 'waiting') await cancelTurn(client, turn.id)
-    if (turn.status === 'placed' || turn.status === 'running') {
-      await client.query(
-        `insert into commands (team_id, instance_id, session_id, kind) select team_id, instance_id, id, 'interrupt' from sessions where id = $1`,
-        [turn.session_id])
-    }
+    if (turn.status === 'placed' || turn.status === 'running') await signalSession(client, SessionId.parse(turn.session_id), 'interrupt')
     await nextTurn(client, turn.conversation_id)
   }
   return rows.length
