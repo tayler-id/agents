@@ -48,11 +48,12 @@ export type Prompt = { sessionId: string; seq: number; payload: MessagePayload }
 
 // The machine a session's turns run on, and whether it takes work now. A box takes
 // none until it is online and its daemon has reported in since it last went
-// offline, which is once its desktop is up. A Mac takes commands whenever its
-// daemon comes, so a turn for one goes to its queue at once, even while the Mac is
+// offline, which is once its desktop is up, and none while it is marked asleep,
+// since the runner is about to stop it. A Mac takes commands whenever its daemon
+// comes, so a turn for one goes to its queue at once, even while the Mac is
 // offline, as it did before the door. A box is held when a person or a run holds
 // it, which is when the runner starts it.
-const TAKES_WORK = `(i.kind <> 'box' or (i.status = 'online' and i.ready))`
+const TAKES_WORK = `(i.kind <> 'box' or (i.status = 'online' and i.ready and i.stopped_at is null))`
 const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean() })
 type Machine = z.infer<typeof Machine>
 
@@ -60,11 +61,13 @@ type Machine = z.infer<typeof Machine>
 // since the engine's own transcript, which resuming needs, lives there. This is
 // the one place the choice is made, so a place of another kind, such as the
 // server running the engine's loop itself (decision 1, option b), is another
-// answer here, not a change to any caller.
+// answer here, not a change to any caller. It reads the machine's row with a key
+// share lock, which the runner's mark that puts a box to sleep waits for, so a
+// turn is placed on a box before the mark or waits for it after, never between.
 async function whereTurnsRun(client: pg.PoolClient, sessionId: string): Promise<Machine> {
   return Machine.parse(await one(client, `the machine of session ${sessionId}`,
     `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
-     from sessions s join instances i on i.id = s.instance_id where s.id = $1`, [sessionId]))
+     from sessions s join instances i on i.id = s.instance_id where s.id = $1 for key share of i`, [sessionId]))
 }
 
 // Only a box waits. The runner starts a box a person or a run holds, and one nobody

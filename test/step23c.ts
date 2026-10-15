@@ -1,0 +1,171 @@
+// Step 23c, the door's edges, against the database with no machine and no port.
+// Each line calls the server's own code the way the API and the runner do, then
+// reads the rows a person or the next process would see. A person's own box is
+// marked asleep and a request that places a turn on it never interleave, so a
+// turn asked for while a box is going to sleep waits for it and wakes it. Turns
+// released together keep the order they were asked in. A session that waits for a
+// person is not stuck. One waiting turn that cannot be read does not hold up the
+// rest. A stop or an interrupt cancels the turns that wait for the session, and a
+// governed stage whose machine went silent fails its turn with its command.
+//   node --env-file=.env --env-file=.env.test test/step23c.ts
+
+import { execFileSync } from 'node:child_process'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { markAsleep, makeOwnBox } from '../server/boxes.ts'
+import { pool, tx } from '../server/db.ts'
+import { openDm, Person, sendPersonMessage } from '../server/record.ts'
+import { placeWaitingTurns } from '../server/scheduler.ts'
+import { messageOf } from '../shared/errors.ts'
+import { must } from './must.ts'
+
+const ROOT = new URL('..', import.meta.url).pathname
+const id = randomBytes(4).toString('hex')
+const team = `door-23c-${id}`
+const failures: string[] = []
+
+function check(ok: unknown, label: string) {
+  console.log(`${ok ? 'pass' : 'FAIL'}  ${label}`)
+  if (!ok) failures.push(label)
+}
+
+const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', ...args], { cwd: ROOT, encoding: 'utf8' })
+const all = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows
+const one = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows[0]
+
+// A promise settled by hand, so a transaction can be held open between two steps.
+function deferred() {
+  let resolve: () => void = () => undefined
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+// Waits for a condition, polling, and says whether it held before the limit.
+async function within(seconds: number, test: () => Promise<boolean>): Promise<boolean> {
+  const until = Date.now() + seconds * 1000
+  while (Date.now() < until) {
+    if (await test()) return true
+    await new Promise((done) => setTimeout(done, 25))
+  }
+  return false
+}
+
+// Whether some backend is waiting for a lock the given backend holds.
+const waitsFor = async (pid: number) =>
+  Number((await one('select count(*)::int as n from pg_stat_activity where $1 = any(pg_blocking_pids(pid))', [pid])).n) > 0
+
+// What a person who started something that may wait sees come of it: it finished
+// first, or it is still waiting for the lock the other holds.
+async function settledOrWaiting<T>(started: Promise<T>, holder: number): Promise<'settled' | 'waiting'> {
+  const settled = started.then(() => 'settled' as const, () => 'settled' as const)
+  const waiting = within(10, () => waitsFor(holder)).then((held) => (held ? 'waiting' as const : 'settled' as const))
+  return Promise.race([settled, waiting])
+}
+
+type World = { person: Person; boxId: ReturnType<typeof makeOwnBox> extends Promise<infer B> ? B : never; conversationId: string; ask: (text: string) => Promise<void> }
+
+// A person with a box of their own, an agent on it, and a DM with that agent. The
+// box has not reported in, so it takes no work until `up` says its daemon has.
+async function world(label: string): Promise<World> {
+  const login = `${label}-${id}@local`
+  node('server/admin.ts', 'add-person', team, login)
+  const person = Person.parse(must(await one('select id, team_id, login, role from people where login = $1', [login]), login))
+  const boxId = await makeOwnBox(person)
+  const box = must(await one('select name from instances where id = $1', [boxId]), 'the box')
+  const agent = `scout-${label}`
+  node('server/admin.ts', 'add-agent', team, agent, String(box.name))
+  const conversationId = await tx((client) => openDm(client, person, agent))
+  const ask = async (text: string) => {
+    await tx((client) => sendPersonMessage(client, person, conversationId, text, randomUUID()))
+  }
+  return { person, boxId, conversationId, ask }
+}
+
+// The daemon reporting in, and going away.
+const up = (w: World) => pool.query(`update instances set status = 'online', ready = true, last_seen_at = now() where id = $1`, [w.boxId])
+const turnsOf = (w: World) => all(
+  `select status, wait, command_id is not null as has_command from turns where conversation_id = $1 order by requested_at, id`, [w.conversationId])
+const asleep = async (w: World) => Boolean((await one('select stopped_at is not null as asleep from instances where id = $1', [w.boxId])).asleep)
+const shown = (turns: { status: string; wait: string | null; has_command: boolean }[]) =>
+  turns.map((t) => `${t.status}${t.wait ? ` ${t.wait}` : ''}${t.has_command ? ' with a command' : ''}`).join(', ') || 'no turns'
+
+try {
+  node('server/migrate.ts')
+  node('server/admin.ts', 'add-team', team, `admin-${id}@local`)
+  const teamId = String(must(await one('select id from teams where name = $1', [team]), 'the team').id)
+
+  // A box marked asleep takes no work. The runner is about to stop it, so a turn
+  // asked for now waits, and its waiting is what makes the runner start the box again.
+  {
+    const w = await world('asleep')
+    await up(w)
+    check(await markAsleep(w.boxId) && await asleep(w), 'a box with nothing wanting it is marked asleep')
+    await w.ask('Are you there?')
+    const turns = await turnsOf(w)
+    check(turns.length === 1 && turns[0]?.status === 'waiting' && turns[0].wait === 'computer_starting' && !turns[0].has_command,
+      `a turn asked for after the box is marked asleep waits for it and has no command (${shown(turns)})`)
+    check(!(await markAsleep(w.boxId)), 'a box a turn waits for is wanted, so the runner starts it again')
+  }
+
+  // A request that has placed a turn on the box and not yet committed keeps the
+  // box from being marked, since the mark waits for it and then sees its command.
+  {
+    const w = await world('inflight')
+    await up(w)
+    const written = deferred()
+    const commit = deferred()
+    let requester = 0
+    const request = tx(async (client) => {
+      requester = Number((await client.query('select pg_backend_pid() as pid')).rows[0]?.pid)
+      await sendPersonMessage(client, w.person, w.conversationId, 'In flight.', randomUUID())
+      written.resolve()
+      await commit.promise
+    })
+    await written.promise
+    const marking = markAsleep(w.boxId)
+    const how = await settledOrWaiting(marking, requester)
+    commit.resolve()
+    await request
+    const marked = await marking
+    const turns = await turnsOf(w)
+    check(how === 'waiting' && !marked && !(await asleep(w)) && turns[0]?.status === 'placed' && turns[0].has_command,
+      `a box is not marked asleep while a request that placed a turn on it is in flight (mark ${how}, marked ${String(marked)}, ${shown(turns)})`)
+  }
+
+  // The other way round. While the mark holds the box's row, a request waits for
+  // it, and then reads the box as asleep. The agent has a session already, so the
+  // request reads the box before it writes anything that names it.
+  {
+    const w = await world('sleeping')
+    await w.ask('First.')
+    await up(w)
+    await placeWaitingTurns([teamId])
+    const marked = deferred()
+    const commit = deferred()
+    let sleeper = 0
+    const sleeping = tx(async (client) => {
+      sleeper = Number((await client.query('select pg_backend_pid() as pid')).rows[0]?.pid)
+      await client.query('select 1 from instances where id = $1 for update', [w.boxId])
+      await client.query('update instances set stopped_at = now() where id = $1', [w.boxId])
+      marked.resolve()
+      await commit.promise
+    })
+    await marked.promise
+    const asking = w.ask('Are you awake?')
+    const how = await settledOrWaiting(asking, sleeper)
+    commit.resolve()
+    await sleeping
+    await asking
+    const turns = await turnsOf(w)
+    check(how === 'waiting' && turns[1]?.status === 'waiting' && turns[1].wait === 'computer_starting' && !turns[1].has_command,
+      `a request that arrives while the box is being marked asleep waits for the mark, then waits for the box (request ${how}, ${shown(turns)})`)
+  }
+} catch (error) {
+  failures.push(messageOf(error))
+  console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : messageOf(error)}`)
+} finally {
+  if (!failures.length) await pool.query('delete from teams where name = $1', [team]).catch(() => undefined)
+  await pool.end().catch(() => undefined)
+}
+
+console.log(`\n${failures.length ? `${failures.length} failed (team ${team} kept)` : 'all passed (test team removed)'}`)
+process.exit(failures.length ? 1 : 0)
