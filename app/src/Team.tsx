@@ -34,9 +34,10 @@ export function Waiting({ me, onJoined }: { me: WaitingView; onJoined: (me: Memb
 }
 
 // What a person's own box is doing, in a few words.
-export function boxState(box: Instance): 'ready' | 'starting' | 'could not start' {
+export function boxState(box: Instance): 'ready' | 'asleep' | 'starting' | 'could not start' {
   if (box.start_error) return 'could not start'
-  return box.status === 'online' ? 'ready' : 'starting'
+  if (box.status === 'online') return 'ready'
+  return box.stopped_at === null ? 'starting' : 'asleep'
 }
 
 export function TeamPage({ me }: { me: Me }) {

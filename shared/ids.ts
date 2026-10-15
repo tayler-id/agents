@@ -46,3 +46,5 @@ export const TunnelId = z.uuid().brand<'TunnelId'>()
 export type TunnelId = z.infer<typeof TunnelId>
 export const FolderId = z.uuid().brand<'FolderId'>()
 export type FolderId = z.infer<typeof FolderId>
+export const TurnId = z.uuid().brand<'TurnId'>()
+export type TurnId = z.infer<typeof TurnId>

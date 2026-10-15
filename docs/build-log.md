@@ -946,3 +946,42 @@ Tayler asked for connectors to Jira, Confluence and Slack, MCP support, MCP apps
 - **Takes away.** Decision 17 asks the owner of a Mac to approve a plugin's exact command, and asks an agent's owner or manager to add plugins. Today any teammate can add either. The call is Tayler's.
 - **How I checked it.** `node test/names.ts` and `node test/style.ts` pass with the section in. I broke the file four ways, with an em dash, a banned word, a title-case heading and an old name. Each check went red on its own line, and I restored the file and compared its sha256 with the original before the next break. A script kept outside the repo looked up every file path and line range the section cites, and the cited lines say what the text says. The quotes of the specs and provider pages come from the pages as fetched on 2026-10-15.
 - **Not done.** Nothing here is built, so there is no check of mine to see fail. Each build step names the check that proves it. The section's last list says what I could not confirm. The first is whether the Chromium in a box, and the one in Electron, expose WebMCP at all.
+
+### One door for turns (step 1 of the fit design, 2026-10-15)
+
+- **What changed.** Every turn an agent is asked to take is a row in `turns`, and `server/scheduler.ts` is the only file that writes a message command. A person's message in a DM, a room or a task, a routine's firing, a pipeline stage and its reminder, and a coach replay all call `requestTurn`. A person's own box sleeps after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it. A conversation says why its turn waits, such as "Starting your computer", and marks a running turn with no new event for 10 minutes as stuck. Migration 0014 widens `turns` and adds `instances.ready` and `instances.stopped_at`. `docs/data-model.md`, `docs/what-each-part-does.md` and `docs/design/target-architecture.md` describe it.
+- **What the earlier agent decided, as far as its commits show.** A safety flag on its model stopped it at 16:10 on 2026-10-15, with 11 commits and one uncommitted docs edit.
+  - `turns` is the queue. The existing table is widened, and room turns from before are filled in from the message command whose event names them. The defaults on `source` and `status` let the release before keep queueing room turns if a deploy goes back.
+  - A turn carries what any place needs to run it, which is its session, its prompt's event and the payload the engine is handed. `whereTurnsRun` is the one choice of place, so a loop on the server (decision 1, option b) is another answer there. Tayler's call on decision 1 is recorded as (a) now with (b) planned.
+  - A placed turn runs and ends with its message command, in the one statement in `moveMessages` that moves the command. `shared/turns.ts` is the one transition table.
+  - A box takes work once it is online and its daemon has reported in, which is once its desktop is up. A box going offline clears that.
+  - A person's own box is marked asleep before it stops, and a box marked asleep whose container still runs is stopped again. A pool box is no longer stopped while a turn or command wants it. `AGENTS_BOX_IDLE_MIN` is parsed at start and may be a fraction.
+  - A room still gives one agent its go at a time. A turn whose deadline passes while it waits is cancelled, and one its machine has is interrupted.
+  - A new session reads as idle while its turn waits, since a starting session shows as the agent thinking and the watchdog marks it lost.
+  - The `turn_waits` shape replaces the `turns` shape, which nothing read, and carries no prompt. The Your box page, the welcome steps and the Team page say a box is asleep.
+  - It edited step2 and step12 to fit turns that wait for a Mac, and wrote step23, which it saw fail on main.
+- **Decisions I made.**
+  - **Revisit.** A turn for a Mac goes to its queue at once, as before the door. The design says a turn waits while its Mac is offline, and the earlier agent built that. step20a must pass unchanged and reads the coach's replay commands on a Mac that never reports in, so four of its lines failed. Only a box holds a turn now. If a Mac's turn should wait, revert 88502f3 and make step20a read turns.
+  - step2 and step12 are back to their text before the door, since nothing needs the edits now.
+  - step15 and step15b failed at 44c061a with "Connection closed" before their tool lines, and the cause is agents-git's docker, not the door. The MCP client gives `docker exec` only HOME, PATH and four more variables, and the docker agents-git puts first on a check's PATH needs three of its own, so it exits. I changed `test/computers.ts` to pass the environment on (e7e13fe), and both passed under agents-git. The coordinator asked that the file stay as it is, so c33f88c restores it and both run by hand under the run lock. I did not touch agents-git.
+  - step23 moved to ports 8130 and 8131. Another branch's step21c holds 8120 to 8123 without the run lock, and took 8120 first.
+  - `RoutineId` was added and used nowhere, so it is gone. Four lines in other docs, besides the one the earlier agent left uncommitted, still said a person's box never stops. They are fixed.
+- **Seen failing.**
+  - step20a had 65 passed and 4 failed at 44c061a, and the same alone. The kept team held 44 pipeline turns, all waiting as `machine_offline` on a Mac with status offline, `ready` false and no `last_seen_at`, and no message command.
+  - step2 failed 2 lines, step12 1 and step20a 4 at 09efd86, the commit before the scheduler change, with step2 and step12 as they were.
+  - step23's two new lines both failed, 14 passed and 2 failed, with `waitFor` broken to always answer `computer_starting` and the scheduler otherwise as it was. The box nobody holds line read `computer_starting` where it expects `machine_offline`, and the Mac line failed because the Mac's turn waited. The break was a commit of its own, dropped with `git reset --hard`, and `server/scheduler.ts` matched the commit before by sha256.
+  - step15 and step15b failed at 44c061a on the docker's ZodError. Starting the MCP client's transport against `docker version` through that docker shows the same error with the default environment and none with the check's environment passed on.
+- **Checks.**
+  - The coordinator's batch and step7 passed, 29 of 29. Under agents-git, 22 steps passed at 15bf4d3 and 5 at c33f88c. step15 and step15b passed by hand under the run lock, with main's env files, no agents-git docker on the PATH and `test/computers.ts` untouched, 53 of 53 and 51 of 51 at c33f88c. Their logs are in `.scratch/` in the worktree. The commits after c33f88c change only this entry.
+  - step6, step9, step13, step16 and step21b are outside the batch and use the stand-in for Claude. They also pass at 2838e23, 29, 14, 69, 96 and 59 lines. They cover pipeline stages, reminders and terminal sessions on Macs.
+  - step20a passes 69 of 69, step2 22 of 22 and step12 76 of 76, as they were before the door.
+  - step23 passes 16 of 16. On this Mac with the stand-in for Claude, a sleeping computer woke and took the turn 2.3 s after the message, and the reply came 2.5 s after it, against the 30 s the check allows. A real Claude adds its own time to the reply.
+  - Typecheck, lint, the name guard and the style check pass.
+- **Not done.**
+  - The design's wait for an offline Mac is not built, so a conversation shows nothing while a Mac is off. That is the call above.
+  - What happens to a turn requested in the few seconds while a box is being stopped to sleep is not checked. The box is still online then, so the turn may be placed on it.
+  - The Screen view does not wake an asleep box. Waits for a seat, a budget, a plan's limit and a missing engine are later steps.
+  - Nothing was tried on the live system, as instructed. The earlier agent drove an isolated instance with agentsctl at 14:32 and looked at the starting, offline and asleep views in three browsers at two widths. The app has not changed since.
+  - agents-git's docker should not depend on inherited variables. Its launcher can carry the three values in the script it writes.
+  - 30 steps of the suite are not run by me. Some of them use real Claude, which spends Tayler's usage. The full suite is the landing gate.
+  - step12c builds `agents-box:onboard-check` and never removes it, as before the door.

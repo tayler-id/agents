@@ -66,7 +66,7 @@ Read `AGENTS.md` first. In short:
 
 - Add `AGENTS_TAILSCALE_API` and `AGENTS_TAILSCALE_KEY_FILE` to the real `.env`, then save a user-owned API access token from the Tailscale page. The README shows the line. Without both settings, invites are made in the app only.
 - Migration 0005 makes the earliest person of each team with no admin an admin. On the real server that is Tayler.
-- Personal boxes run all the time. Should they stop when idle?
+- Answered on 2026-10-14. Personal boxes stop when idle and start again when a message arrives. Step 1 of the target architecture built it.
 - Teammates can message agents on someone's box and add them to rooms, which spends that person's Claude usage, and the box's agents and their plugins' tools can read its token. Keep that, or let only the owner drive agents on their box?
 - Admins can't reach private rooms they aren't in. Should they?
 - Removing a person from the team is not built.

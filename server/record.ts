@@ -17,6 +17,7 @@ import { finishTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
+import { requestTurn } from './scheduler.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -320,8 +321,8 @@ export async function openDm(client: pg.PoolClient, person: Person, agentName: s
 }
 
 // A person's post. In a main or DM conversation its agent answers: the post goes
-// into that agent's session for the conversation, and the agent's machine gets
-// a command to hand it to the harness.
+// into that agent's session for the conversation, and asks the scheduler for the
+// agent's turn.
 export async function sendPersonMessage(
   client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
 ): Promise<{ messageId: string; seq: number }> {
@@ -347,7 +348,7 @@ export async function sendPersonMessage(
   })
   if (!message.fresh) return { messageId: message.id, seq: message.seq }
   if (conversation.kind === 'room') {
-    await queueTurns(client, person.team_id, conversationId, text)
+    await queueTurns(client, person, conversationId, text)
     return { messageId: message.id, seq: message.seq }
   }
 
@@ -358,17 +359,14 @@ export async function sendPersonMessage(
   const [seq] = await appendEvents(client, session.id, {
     events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text, messageId: message.id }, text }],
   }, person.id)
-  const event = await one<{ id: string }>(client, 'the event for the post',
-    'select id from events where session_id = $1 and seq = $2', [session.id, seq])
+  if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 
   const payload: MessagePayload = {
     permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     values ($1, $2, $3, 'message', $4, $5)`,
-    [person.team_id, session.instance_id, session.id, JSON.stringify(payload), event.id])
+  await requestTurn(client, { source: 'person', teamId: person.team_id, agentId: agent.id, askedBy: person.id, conversationId },
+    { sessionId: session.id, seq, payload })
   return { messageId: message.id, seq: message.seq }
 }
 

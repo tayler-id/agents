@@ -288,8 +288,9 @@ A turn waits, with its reason, while its computer starts, while no seat is free,
 **Stays, changes, new.**
 
 - Stays: commands, claims and durability. Rooms keep taking one turn at a time, with deadlines (`server/rooms.ts`). Runs keep claiming their machine (`server/runner.ts:357`).
-- Changes: `agents.home_instance_id` names the agent's computer and no longer decides alone where a turn runs. People's own computers stop when idle and start on a turn, as Tayler decided on 2026-10-14. Nothing does that yet.
+- Changes: `agents.home_instance_id` names the agent's computer and no longer decides alone where a turn runs. People's own computers stop when idle and start on a turn, as Tayler decided on 2026-10-14. Step 1 built that.
 - New: `server/scheduler.ts`, `shared/turns.ts`, wait reasons in conversations, the stuck check, and a run history for routines, since every firing is now a turn row. Today a routine keeps only `last_fired_at`.
+- Built in step 1: a turn waits only for a computer the server starts, which is a box. A turn for a Mac goes to its queue at once, as before, since a Mac's daemon takes commands whenever it comes. The wait for an offline Mac, named above, is not built. Building it would put `machine_offline` on Macs and change step2, step12 and step20a, which read a Mac's queue while the Mac never reports in. Whether to build it is Tayler's call.
 
 ## Agents creating, messaging and delegating to agents
 
@@ -1145,6 +1146,11 @@ type Call = {
   - Durability is built for (a). The five crash tests resume the engine's own session.
   - What (b) buys is thinking with no computer awake. Waking a computer on a turn, which Tayler decided, covers most of that. The cost is a computer start before the first reply after idle, up to the 30 seconds `daemon/desktop.ts:59` gives a desktop to come up.
   - (a) keeps one cost the checklist names. A box holds a Claude token its agent can read, and (b) would move the token off the box.
+- **Tayler's call, 2026-10-15.** (a) for now, and the build plans for (b). Agents keep thinking inside each engine's own CLI on their computer, as today.
+- **What the door keeps open for (b).** Step 1 builds no server loop. It keeps three things ready for one.
+  - A turn's row carries what any place needs to run it: the session its record goes to, the user event that holds its prompt, and the payload the engine is handed, with the agent's instructions, model, skills, plugins, memory and budget. A loop on the server would read the same row.
+  - Where a turn runs is chosen in one function, `whereTurnsRun` in `server/scheduler.ts`. Today it answers with the machine the session started on. A place on the server would be a second kind of answer there, and no caller of `requestTurn` would change.
+  - The turn's lifecycle is its own table in `shared/turns.ts`. Today a placed turn follows its message command through `moveMessages`. A turn the server runs would move along the same table with no command.
 
 ### 2. How big a person's computer is, and how many seats it holds
 

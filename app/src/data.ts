@@ -29,6 +29,8 @@ export type Instance = Row & {
   owner_id: string | null; personal: boolean; start_error: string | null
   // The size of the machine's screen, when it has one.
   screen_width: number | null; screen_height: number | null
+  // When a person's own box went to sleep for having nothing to do. It wakes when something needs it.
+  stopped_at: string | null
 }
 export type Conversation = Row & {
   id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
