@@ -9,7 +9,7 @@
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createConnection } from 'node:net'
 import { join } from 'node:path'
@@ -25,7 +25,7 @@ import { MeView } from '../shared/onboarding.ts'
 import { ScreenClose } from '../shared/screen.ts'
 import { withClient } from '../ctl/db.ts'
 import { removeForge } from '../ctl/seed.ts'
-import { InstanceName, readState, stateFile, type ReadyState } from '../ctl/state.ts'
+import { InstanceName, listStates, readState, stateFile, type ReadyState } from '../ctl/state.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const exec = promisify(execFile)
@@ -44,6 +44,9 @@ const START_S = 90
 const HOT_UPDATE_MS = 3000
 // How long a page may take to show its workspace, and its agents and tasks once it does.
 const PAGE_MS = 30_000
+// How long the check watches the preview after it touches the app's Vite config. Vite hears of a changed file
+// within a few hundred milliseconds.
+const TOUCH_MS = 2000
 // The only things a browser's console says that mean the preview broke the page: the policy refusing
 // what the dev server needs, and the update socket failing.
 const BROKEN = /content[- ]security[- ]policy|refused to (apply|execute|load|connect)|violates|failed to connect to websocket|WebSocket connection .* failed/i
@@ -51,6 +54,7 @@ const SAMPLE_TASK = 'Fix the checkout discount'
 const ENGINES: Record<string, BrowserType> = { chromium, firefox, webkit }
 // What the check writes under app/src to watch a saved file reach the page, and removes again. None of it is
 // the app's, and nothing in the app imports it.
+const APP_CONFIG = join(ROOT, 'app', 'vite.config.ts')
 const PROBE = {
   component: join(ROOT, 'app', 'src', 'preview-probe.tsx'),
   style: join(ROOT, 'app', 'src', 'preview-probe.css'),
@@ -163,6 +167,9 @@ const accepts = (port: number) => new Promise<boolean>((resolve) => {
   socket.once('error', () => { resolve(false) })
 })
 
+// What Vite wrote to the preview's log, or nothing when it wrote no file.
+const logged = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8') : '')
+
 const held = (teamId: string) => withClient(async (client) => z.object({ repos: z.number(), tasks: z.number() }).parse((await client.query(
   'select (select count(*)::int from repos where team_id = $1) as repos, (select count(*)::int from tasks where team_id = $1) as tasks', [teamId])).rows[0]))
 
@@ -249,17 +256,25 @@ async function savedFilesReach(base: string): Promise<{ problems: string[]; comp
   return { problems, component, style, builtBefore, builtAfter: statSync(built).mtimeMs }
 }
 
-// Whatever happened, leaves nothing running, nothing under app/src and nothing in the database.
+// Whatever happened, leaves nothing running, nothing under app/src and nothing in the database. The check starts
+// with no instance in the checkout, so each one there now is one it made, whatever it was named.
 async function teardown() {
   for (const running of previews) if (running.child.exitCode === null) running.child.kill('SIGKILL')
   for (const file of Object.values(PROBE)) rmSync(file, { force: true })
-  for (const instance of [name, bare]) if (existsSync(stateFile(instance))) await ctl(['down', '--instance', instance])
+  for (const instance of listStates()) await ctl(['down', '--instance', instance.name])
   // Their teams too, should a broken down have left them, and their forge orgs.
   await withClient(async (client) => { await client.query('delete from teams where name = any($1)', [[`verify-${name}`, `verify-${bare}`]]) })
   for (const instance of [name, bare]) await removeForge(instance)
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void teardown().finally(() => { process.exit(1) }) })
+}
+
+// Preview is run here with no instance named, which picks the one this checkout has, so the checkout must have none.
+const present = listStates().map((state) => state.name)
+if (present.length) {
+  console.error(`FAIL  this checkout already has ${present.join(', ')}, and this check needs none, since it runs preview with no instance named. Run bin/agentsctl down first`)
+  process.exit(1)
 }
 
 try {
@@ -322,58 +337,81 @@ try {
   const rebinding = await send(`${base}v1/me`, { headers: { host: 'agents.example:80' } })
   check(rebinding.status === 403, 'a request that names another host, as a rebound DNS name does, is refused')
 
+  // Vite restarts when its config changes, and a restart left a second proxy on the server, which stopped it at the
+  // next refused WebSocket. The config is touched, not changed, and given back its times.
+  const configTimes = statSync(APP_CONFIG)
+  utimesSync(APP_CONFIG, new Date(), new Date())
+  let kept = true
+  const until = Date.now() + TOUCH_MS
+  while (kept && Date.now() < until) {
+    kept = await openScreen(base, foreign).then((opened) => 'refused' in opened && opened.refused === 404, () => false)
+    await sleep(LOOK_MS)
+  }
+  utimesSync(APP_CONFIG, configTimes.atime, configTimes.mtime)
+  check(kept && first.child.exitCode === null && !logged(serving.log).includes('restarting server'), "touching the app's Vite config does not restart the preview, or stop it at the next refused WebSocket")
+
   // A saved file.
   const saved = await savedFilesReach(base)
   check(!saved.problems.length && saved.component <= HOT_UPDATE_MS && saved.builtAfter === saved.builtBefore,
     `a saved component reaches the open page in ${String(saved.component)} ms, with no reload and no build${saved.problems.length ? `, and ${saved.problems.join('; ')}` : ''}`)
   check(!saved.problems.length && saved.style <= HOT_UPDATE_MS, `a saved stylesheet reaches it in ${String(saved.style)} ms, in a style the page's policy allows`)
-  check(readFileSync(serving.log, 'utf8').includes('hmr update') && first.errors.length === 0, "Vite's messages go to preview.log in the instance's evidence folder, and none to the terminal")
+  check(logged(serving.log).includes('hmr update') && first.errors.length === 0, "Vite's messages go to preview.log in the instance's evidence folder, and none to the terminal")
 
-  // A second preview, for another instance, while the first runs.
-  const second = runPreview(bare, '--no-seed')
-  const secondServing = await comesUp(second, START_S)
+  // A second instance, started as the README says, with pipelines, while the first preview runs.
+  const bareUp = await ctl(['up', '--pipelines', '--instance', bare])
   const bareState = readState(bare)
-  if (bareState?.phase !== 'ready') throw new Error(`preview left the instance ${bare} ${bareState?.phase ?? 'missing'}`)
-  const empty = await held(bareState.seed.teamId)
-  check(secondServing.url !== base && secondServing.added === null && empty.repos === 0 && empty.tasks === 0,
-    `a second preview takes a port of its own, and --no-seed leaves its team empty (${secondServing.url}, ${String(empty.repos)} repos, ${String(empty.tasks)} tasks)`)
-  check(await whoAnswers(secondServing.url) === asked(bareState, bareState.seed.owner.login), 'each preview signs in to its own instance')
+  if (bareUp.code !== 0 || bareState?.phase !== 'ready') throw new Error(`up --pipelines did not start ${bare}: ${bareUp.stdout.slice(0, 300)}`)
   const several = await ctl(['preview'])
   const here = z.object({ data: z.array(z.unknown()) }).parse(JSON.parse((await ctl(['list', '--json'])).stdout)).data
   check(several.code === 2 && several.stdout.includes('several instances') && several.stdout.includes('--instance') && here.length === 2,
     'with two instances here and none named, preview exits 2 and starts no third')
+
+  // A second preview, for it, while the first runs.
+  const second = runPreview(bare, '--no-seed')
+  const secondServing = await comesUp(second, READY_S)
+  const unseeded = await held(bareState.seed.teamId)
+  check(secondServing.url !== base && !secondServing.started && secondServing.added === null && unseeded.tasks === 0,
+    `a second preview takes a port of its own and uses the instance that is there, and --no-seed adds no task (${secondServing.url}, ${String(unseeded.tasks)} tasks)`)
+  check(await whoAnswers(secondServing.url) === asked(bareState, bareState.seed.owner.login), 'each preview signs in to its own instance')
   const secondStopped = await stopWith(second, 'SIGTERM')
   check(secondStopped.code === 0 && secondStopped.last.code === 0 && secondStopped.last.head.includes('stopped by SIGTERM'), 'SIGTERM stops a preview with exit 0 and a last result that says so')
 
-  // A team a run left with a repo and no task gets the task, and no second repo.
-  const seededRepo = await ctl(['seed', 'repo', 'shop', '--instance', bare])
+  // A team that has repos and no task gets the task, and no repo.
   const third = runPreview(bare)
   const thirdServing = await comesUp(third, READY_S)
-  const converged = await held(bareState.seed.teamId)
-  check(seededRepo.code === 0 && thirdServing.added?.length === 1 && converged.repos === 1 && converged.tasks === 1,
-    `a team with a repo and no task gets only the task (${String(converged.repos)} repo and ${String(converged.tasks)} task after)`)
+  const seeded = await held(bareState.seed.teamId)
+  check(thirdServing.added?.length === 1 && seeded.repos === unseeded.repos && seeded.tasks === 1,
+    `a team with repos and no task gets only the task (${String(seeded.repos)} repos and ${String(seeded.tasks)} task after)`)
   await stopWith(third, 'SIGINT')
-  const goneSecond = await ctl(['down', '--instance', bare])
-  check(goneSecond.code === 0 && !existsSync(stateFile(bare)), "down stops the second preview's instance, and removes its team")
 
   // The first one ends, and the instance stays.
   const stopped = await stopWith(first, 'SIGINT')
   check(stopped.code === 0 && stopped.last.code === 0 && stopped.last.head.includes(`ok: preview ${name} -> stopped by Ctrl+C`), 'Ctrl+C stops the preview with exit 0 and a last result that says so')
   check(!await accepts(Number(new URL(base).port)) && first.lines.every((line) => OUTPUT.safeParse(JSON.parse(line)).success), 'its port is free again, and everything it printed was an envelope')
   check(await whoAnswers(`http://127.0.0.1:${String(state.ports.people)}/`, { 'tailscale-user-login': state.seed.owner.login }) === asked(state, state.seed.owner.login), 'the instance keeps running after the preview stops')
-
-  // Again with no instance named, as someone else.
-  const again = runPreview(null, '--as', 'ben')
-  const againServing = await comesUp(again, READY_S)
-  const after = await held(state.seed.teamId)
-  check(againServing.instance === name && !againServing.started && againServing.added?.length === 0 && after.tasks === 1 && after.repos === 1 && againServing.login === state.seed.teammate.login,
-    'with one instance here and none named, preview uses it, adds no second sample, and signs in as the person --as names')
-  check(await whoAnswers(againServing.url) === asked(state, state.seed.teammate.login), '/v1/me answers as ben through it')
-  await stopWith(again, 'SIGINT')
-
-  // Down removes what preview started with the instance.
   const down = await ctl(['down', '--instance', name])
   check(down.code === 0 && !existsSync(stateFile(name)) && !await accepts(state.ports.people), 'down stops the instance preview started, and nothing answers on its ports')
+
+  // The instance with pipelines is the only one here now, and preview uses it, as someone else.
+  const again = runPreview(null, '--as', 'ben')
+  const againServing = await comesUp(again, READY_S)
+  const afterAgain = await held(bareState.seed.teamId)
+  check(againServing.instance === bare && !againServing.started && againServing.added?.length === 0 && afterAgain.tasks === 1 && againServing.login === bareState.seed.teammate.login,
+    'with one instance here, started with pipelines, and none named, preview uses it, adds no second sample, and signs in as the person --as names')
+  check(await whoAnswers(againServing.url) === asked(bareState, bareState.seed.teammate.login), '/v1/me answers as ben through it')
+  await stopWith(again, 'SIGINT')
+
+  // A team that has a task of its own, and a person who is on no team.
+  await withClient(async (client) => { await client.query("update tasks set title = 'A task of the team''s own' where team_id = $1", [bareState.seed.teamId]) })
+  const outsider = runPreview(null, '--as', 'cy')
+  const outsiderServing = await comesUp(outsider, READY_S)
+  const own = await held(bareState.seed.teamId)
+  check(!outsiderServing.started && outsiderServing.added?.length === 0 && own.tasks === 1, 'a team that already has a task gets no sample next to it')
+  const waiting = await send(`${outsiderServing.url}v1/me`, { headers: { 'tailscale-user-name': 'Mallory' } })
+  check(waiting.body.includes('"kind":"waiting"') && waiting.body.includes('"name":null'), 'a person on no team is shown as waiting to join, with no name a caller made up')
+  await stopWith(outsider, 'SIGINT')
+  const goneBare = await ctl(['down', '--instance', bare])
+  check(goneBare.code === 0 && !existsSync(stateFile(bare)), 'down removes the second instance and its team')
 } catch (error) {
   failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
