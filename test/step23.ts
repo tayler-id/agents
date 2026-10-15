@@ -25,8 +25,10 @@ import { must } from './must.ts'
 import { servePeople } from './people.ts'
 import { messageOf } from '../shared/errors.ts'
 
-const PEOPLE_PORT = 8120
-const STREAMS_PORT = 8121
+// Ports 8130 and 8131 are this check's alone, since a check that needs no run lock
+// runs beside the one that holds it, and a shared port stops whichever starts second.
+const PEOPLE_PORT = 8130
+const STREAMS_PORT = 8131
 const API = `http://127.0.0.1:${MACHINE_PORT}`
 const PEOPLE = `http://127.0.0.1:${PEOPLE_PORT}`
 // A box sleeps after 15 seconds with nothing to do, where the default is 30
