@@ -374,6 +374,16 @@ Tayler went with the coordinator's picks on all of these.
 - **Implementation.** The AWS stack is written in the CDK in TypeScript, on the AWS agent's branch.
 - **Status.** Merged on 2026-10-14, and not yet run on AWS. Its export moves Postgres, the forge, the secrets and every box's home volume, and a rehearsal on this Mac, `test/step11f.ts`, resumes a task on a box restored from the export. The nightly backup does not cover the boxes' homes yet. Boxes reach the web as above, and the allowlist that blocked browsing is gone. On 2026-10-14 Tayler approved the `ops/` files, box-to-server traffic inside the VPC, dropping `NET_RAW` from boxes, colima on this Mac dropping the box host's private ranges, and the cost, about $217 a month once it runs, $119 of it the box host running all day. Boxes now run without `NET_RAW`, checked by `test/step11b.ts`. Colima's script and `test/step11g.ts` are written and were tried in a throwaway copy of the VM, and the live steps in `docs/aws.md` wait for Tayler. Nothing is deployed until the Mac version settles.
 
+### Where agents think, and seats on a person's computer
+
+- **Purpose.** A person's agents work at the same time on that person's computer, each with its own screen and browser, and the server decides where and when each turn runs.
+- **Decided by Tayler on 2026-10-15,** from the decisions in `docs/design/target-architecture.md`.
+  - Agents keep thinking inside each engine's own CLI on their computer, as today. The server places each turn and starts the computer first. Tayler asked to plan for moving thinking to the server later, so the turn queue and the choice of place keep that open. This is decision 1, option (a), with (b) planned.
+  - A person's computer has 8 GB of memory and 4 CPUs, and holds 4 seats. This is decision 2, option (b).
+  - Seats share one Unix user and the person's logins, as in the agent app we studied. There, each extra display's browser links its cookies and saved logins to the first one's, and a script copies cookies between them every 1.5 seconds (`docs/evidence/box/box-chrome-session.md`). Logging in once logs in every agent on the computer. One agent can read another's files and secrets on the same computer. The walls stay between people, since each person has their own computer. This is decision 3, option (a), with shared logins added.
+- **What it changes.** `AGENTS.md` says each cloud agent gets its own Docker container. With seats, a person's agents share one computer with a seat each, so that line needs Tayler's edit.
+- **Status.** Step 1, one entry point for every turn, is being built on branch `door`. Seats are step 2.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
