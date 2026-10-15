@@ -93,20 +93,20 @@ export function serveAppSocket({ home, api, signal }: { home: string; api: Api; 
   }
 }
 
-// This Mac's folders: the ones Claude Code ran in, and the ones connected here
-// with how many sessions in the record each holds, newest first. Two used at the
-// same moment go in order of their paths.
+// This Mac's folders: the ones Claude Code ran in, and the ones connected here,
+// each with how many of its sessions in the record the team can't see now,
+// newest first. Two used at the same moment go in order of their paths.
 async function listFolders(home: string, api: Api): Promise<MacFolders> {
-  const { instanceId, folders: connected, sessions } = await connectedFolders(api)
+  const { instanceId, folders: connected, hiddenSessions } = await connectedFolders(api)
+  // Only a private folder hides sessions from the team. A folder this Mac never connected has none in the record.
+  const hidden = (path: string) => hiddenSessions[path] ?? 0
   const rows = new Map<string, MacFolder>()
   for (const used of claudeFolders(realpathSync.native(home))) {
-    rows.set(used.path, { path: used.path, temporary: temporary(used.path), usedAt: used.usedAt.toISOString(), folder: null, sessions: null })
+    rows.set(used.path, { path: used.path, temporary: temporary(used.path), usedAt: used.usedAt.toISOString(), folder: null, hiddenSessions: hidden(used.path) })
   }
   for (const folder of connected) {
-    const count = sessions[folder.id]
-    if (count === undefined) throw new Error(`the team's server listed ${folder.path} with no count of its sessions`)
     const used = rows.get(folder.path)
-    rows.set(folder.path, { path: folder.path, temporary: temporary(folder.path), usedAt: used?.usedAt ?? null, folder, sessions: count })
+    rows.set(folder.path, { path: folder.path, temporary: temporary(folder.path), usedAt: used?.usedAt ?? null, folder, hiddenSessions: hidden(folder.path) })
   }
   const newest = (row: MacFolder) => Date.parse(row.folder === null ? row.usedAt : row.usedAt ?? row.folder.connected_at)
   const folders = [...rows.values()].sort((a, b) => newest(b) - newest(a) || a.path.localeCompare(b.path))

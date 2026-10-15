@@ -80,7 +80,7 @@ export function FoldersPage({ me }: { me: Me }) {
 
 // What a folder's row last said, after its person chose something on it.
 type Said = { path: string; text: string; failed: boolean }
-// A folder whose person chose Team while it is Just me and has sessions in the record, which the page asks about first.
+// A folder whose person chose Team while the team can't see some of its sessions in the record, which the page asks about first.
 type Asking = { path: string; sessions: number }
 
 function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
@@ -90,9 +90,9 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const [said, setSaid] = useState<Said | null>(null)
   const [asking, setAsking] = useState<Asking | null>(null)
 
-  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team on a folder
-  // that is Just me asks first when the team would then see sessions already in the record, counted afresh, unless
-  // the person just said yes to that.
+  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team asks first
+  // whenever it would show the team sessions in the record they can't see now, counted afresh, unless the person
+  // just said yes to that.
   const choose = act(async (row: MacFolder, choice: Choice, confirmed: boolean) => {
     const before = chosen(row)
     if (choice === before) return
@@ -101,10 +101,10 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
     setSaid(null)
     setAsking(null)
     try {
-      if (before === 'private' && choice === 'team' && !confirmed) {
+      if (choice === 'team' && !confirmed) {
         const now = (await asked(MacFolders, bridge.list())).folders.find((r) => r.path === row.path)
-        if (now?.folder && now.folder.visibility === 'private' && now.sessions > 0) {
-          setAsking({ path: row.path, sessions: now.sessions })
+        if (now && now.hiddenSessions > 0) {
+          setAsking({ path: row.path, sessions: now.hiddenSessions })
           return
         }
       }
@@ -132,7 +132,7 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const connected = value.folders.flatMap((row) => (row.folder ? [row.folder] : []))
   const item = (row: MacFolder) => (
     <FolderItem key={row.path} row={row} home={value.home} connected={connected} busy={busy !== null} working={busy === row.path}
-      said={said?.path === row.path ? said : null} asking={asking?.path === row.path && chosen(row) === 'private' ? asking.sessions : null}
+      said={said?.path === row.path ? said : null} asking={asking?.path === row.path && chosen(row) !== 'team' ? asking.sessions : null}
       onChoose={(choice) => { choose(row, choice, false) }} onConfirm={() => { choose(row, 'team', true) }} onKeep={() => { keep(row) }} />
   )
   const recent = value.folders.filter((row) => !row.temporary)

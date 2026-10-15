@@ -63,13 +63,16 @@ export async function disconnectFolder(client: pg.PoolClient, instance: Instance
   return { folder: FolderRow.parse(gone), already: false }
 }
 
-// This Mac's connected folders, and how many sessions in the record each holds, so the app can ask before a private one becomes the team's.
+// This Mac's connected folders, and by path how many sessions in the record each of its private folders holds,
+// connected or not. The team can't see those, and choosing Team for the folder shows them, so the app asks first.
 const CountedFolder = FolderRow.extend({ sessions: z.number().int().min(0) })
 export async function connectedFolders(instance: Instance): Promise<Omit<FolderList, 'instanceId'>> {
-  const rows = await many(pool, `select ${FOLDER}, ${SESSIONS_OF('connected_folders.id')} as sessions
-    from connected_folders where instance_id = $1 and disconnected_at is null order by path`, [instance.id])
-  const counted = rows.map((row) => CountedFolder.parse(row))
-  return { folders: counted.map(({ sessions, ...folder }) => folder), sessions: Object.fromEntries(counted.map((folder) => [folder.id, folder.sessions])) }
+  const rows = (await many(pool, `select ${FOLDER}, ${SESSIONS_OF('connected_folders.id')} as sessions
+    from connected_folders where instance_id = $1 order by path`, [instance.id])).map((row) => CountedFolder.parse(row))
+  return {
+    folders: rows.filter((row) => row.disconnected_at === null).map(({ sessions, ...folder }) => folder),
+    hiddenSessions: Object.fromEntries(rows.filter((row) => row.visibility === 'private').map((row) => [row.path, row.sessions])),
+  }
 }
 
 // The record's session for a Claude Code session the Mac found in one of its
