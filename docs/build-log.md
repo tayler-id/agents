@@ -870,3 +870,25 @@ An agent on a different model reviewed the terminal-sessions branch on 2026-10-1
     - step11c went red on three lines with the firewall's rule for the box host's own addresses removed. step11d went red on one with a security group open to the internet on port 22. step11e went red on two with `fetch-secrets.ts` writing files with mode 644.
     - step11g went red on three lines with the private ranges not dropped, and on two with the Mac not closed to boxes.
   - **A gap that predates the rebase.** Putting the token values back on `docker run`'s command line alone leaves step11 green, because the logged reason is Docker's stderr and nothing else. step11 goes red only when the log also takes the error's message. No check reads the command line itself.
+
+### Verification, terminal sessions, agents-git and AWS land together (2026-10-14)
+
+- **What landed.** Each branch first merged onto main in its own landing branch, then the coordinator merged the four into one and landed that on main. The pieces are verification at 631f06d, terminal sessions at ef2ea55, agents-git at d29a210 and the AWS setup at b01438e.
+- **Where the merges met.** Most conflicts were docs that both sides appended to, and both sides stay.
+  - `shared/errors.ts`. Verification and AWS each added `hasCode`. Verification's stays, since it also takes a number, such as an exit status.
+  - `server/api.ts`. AWS's `accepts` in `shared/socket.ts` and its machine listener per address, with main's screen upgrades on each.
+  - `server/boxes.ts`. AWS's settings, its argument-list `docker` and its `runContainer`, which keeps main's box limits and adds `--cap-drop NET_RAW`.
+  - One module names a box's container and home volume. Verification's `shared/box-names.ts` and AWS's `shared/boxes.ts` named the same two things, so `shared/box-names.ts` is gone. `ctl/instance.ts` and step17's box-volume break use `shared/boxes.ts`.
+- **New packages, at exact versions, all dev dependencies for AWS.** `aws-cdk` 2.1145.0, `aws-cdk-lib` 2.273.0 and `constructs` 10.8.1 write and deploy the stack. `@aws-sdk/client-cloudwatch`, `client-s3`, `client-secrets-manager` and `client-ssm` at 3.1150.0 serve the host scripts. `package.json` also gains the `ctl` script. Tayler approved both at 17:10.
+- **What the review changed.** A sonnet review of the terminal merge, agents-git's fixes and the combine found one blocker. This Mac's home folder path was in `docs/design/local-sessions.md` and `docs/intent/feature-checklist.md`, and the repo on GitHub is public. Both lines now use a made-up path. Older commits from the branches still hold it, so the next push to GitHub must not copy them. A second round fixed five of its agents-git findings, and a second sonnet review checked those.
+- **Checks.**
+  - The full suite on 072867c, the four merged, passed 62 of 63 checks. step11c failed 7 lines, every one a box reaching the public internet over TCP, before the firewall as well as after it, while its DNS lines passed. Alone it passed 45 of 45.
+  - npm ci installs the merged lockfile unchanged. Typecheck, lint, the name guard and the style check pass, and step17-breaks finds each of its 84 anchors once.
+  - Migration 0013 applied alone to a copy of the live database restored from the 19:01 backup.
+  - After agents-git's fixes merged at 3934eb4, typecheck, lint, the name guard and the style check pass again, and step22 passes 202 of 202 with main's `.env` and `.env.test` loaded, the way the suite runs it.
+- **Not done.**
+  - This repo's policy still names the stand-in verify skill and map. `docs/decisions.md` says why.
+  - On AWS, `ops/aws/fetch-secrets.ts` doesn't write `AGENTS_PEOPLE_ORIGINS`, so the API won't start there. `docs/aws.md` says so.
+  - From the review, still open: agents-git's docker guard misses `-t=`, `commit` and a global flag before `build`. No check reads a screen notice's author or an unreadable verify, suite or push payload. `failCommand` drops a failed report. `daemon/claude.ts` leaves images out of the record in two ways. The framework's secrets gate in `shared/gates/diff.ts` reads one added line at a time, so a private key over several lines passes it.
+  - From the second review, of agents-git's fixes. No step22 line goes red if `childEnv` stops reading `.env.test`. With `--text`, binary data reaches the 64 MB output cap at about 32 MB, and the error names no file. The joined scan misses a key split across two commits, and refuses code that keeps a key's two armor lines as constants. `sync`'s rebase can still sign a commit. `runLogged` takes the main checkout as one string among several. Two comments say more than the code shows.
+  - Tayler hasn't seen agents-git's AGENTS.md wording or the Claude Code hooks that would route agents through it.
