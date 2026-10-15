@@ -14,7 +14,7 @@
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step15c.ts
 
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -170,10 +170,12 @@ const LOGIN_SITE = `require('node:http').createServer((req, res) => {
   res.end(signed ? 'signed in as ' + signed[1] : 'nobody signed in')
 }).listen(${SITE_PORT}, '127.0.0.1')`
 
-// What a seat's browser shows of the site after going to `path`.
+// What a seat's browser shows of the site after going to `path`, or, when it
+// shows none of the site's answers, the start of what the browser tools said.
 async function siteSays(tools: Client, path: string): Promise<string> {
-  await tools.callTool({ name: 'browser_navigate', arguments: { url: `${SITE}${path}` } })
-  return /signed in as [a-z0-9-]+|nobody signed in|signed out now/.exec(textOf(await tools.callTool({ name: 'browser_snapshot', arguments: {} })))?.[0] ?? '(nothing)'
+  const went = textOf(await tools.callTool({ name: 'browser_navigate', arguments: { url: `${SITE}${path}` } }))
+  const shown = textOf(await tools.callTool({ name: 'browser_snapshot', arguments: {} }))
+  return /signed in as [a-z0-9-]+|nobody signed in|signed out now/.exec(shown)?.[0] ?? `none of the site's answers: ${`${went} ${shown}`.replace(/\s+/g, ' ').slice(0, 300)}`
 }
 
 // The memory each seat's processes hold, from inside the box: its Xvnc, its
@@ -393,7 +395,7 @@ try {
   const reader = await startTask('reader')
   const readerSays = await siteSays(reader.tools, '/whoami')
   check(n(readerSeat) === '3 free' && reader.seat === 3 && readerSays === `signed in as ${second}`,
-    `a third agent takes seat 3, whose new browser starts with the shared login (${n(readerSeat)}, ${readerSays})`)
+    `a third agent takes seat 3, whose new browser starts with the shared login (${n(readerSeat)}, session on seat ${reader.seat} at ${reader.cdp}, ${readerSays})`)
 
   // Private work on seat 2 hides seat 2's screen from bob, and only seat 2's.
   const { id: privateTask } = must(await one(
@@ -420,8 +422,13 @@ try {
   for (const close of closers) await Promise.resolve(close()).catch(() => undefined)
   await stopAll(children)
   // Boxes are removed whatever happened, or they would keep calling a closed port.
+  // A failed run keeps each box's daemon log in its folder first.
   const boxes = await db.query(`select i.id from instances i join teams t on t.id = i.team_id where t.name = $1 and i.kind = 'box'`, [team]).catch(() => ({ rows: [] }))
   for (const { id: boxId } of boxes.rows) {
+    if (failures.length) {
+      const logs = spawnSync('docker', ['logs', `agents-box-${String(boxId)}`], { encoding: 'utf8' })
+      writeFileSync(join(work, `box-${String(boxId)}.log`), `${logs.stdout}${logs.stderr}`)
+    }
     tryDocker('rm', '-f', `agents-box-${boxId}`)
     tryDocker('volume', 'rm', `agents-box-${boxId}-home`)
   }
