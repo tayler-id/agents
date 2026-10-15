@@ -110,6 +110,9 @@ try {
   check(first?.source === 'person' && first.asked_by_person === aliceId && first.status === 'waiting' && first.wait === 'computer_starting'
     && first.instance_id === boxId && first.command_id === null,
   `a DM sent while its agent's new computer starts is a turn that waits for it, with no command yet (${first?.status} ${first?.wait})`)
+  // The app shows a working session as the agent thinking, and the watchdog marks one lost when its machine is silent.
+  const waitingSession = await row('select status from sessions where id = $1', [first?.session_id])
+  check(waitingSession?.status === 'idle', `while its turn waits, the new session is idle, not shown as working (${waitingSession?.status})`)
   const firstDone = await within(START_LIMIT_SECONDS * 2, async () => (await latestTurn(dm))?.status === 'done' && await agentPosts(dm) === 1)
   const firstEnd = await latestTurn(dm)
   check(firstDone && firstEnd.placed_at && firstEnd.started_at && firstEnd.finished_at && firstEnd.command_id,
