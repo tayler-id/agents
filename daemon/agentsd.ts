@@ -37,6 +37,7 @@ import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL }
 import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
 import { followTerminalSessions } from './transcripts.ts'
 import { loginShellSecrets } from './secrets.ts'
+import { serveAppSocket } from './app-socket.ts'
 
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
@@ -686,3 +687,5 @@ followSignIns(abort.signal)
 // The person's own Claude Code sessions in the folders they connected on this Mac.
 void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, ready: shellRead, signal: abort.signal })
   .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })
+// The Agents app on this Mac lists and connects those folders through this socket.
+serveAppSocket({ home: HOME, api, signal: abort.signal })

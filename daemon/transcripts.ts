@@ -479,6 +479,77 @@ export async function followTerminalSessions(options: {
   }
 }
 
+// A folder Claude Code sessions on this Mac started in, and when its newest transcript last changed.
+export type UsedFolder = { path: string; usedAt: Date }
+
+// The folders Claude Code sessions on this Mac started in, for the list in the
+// Agents app on this Mac, which never leaves it. Each transcript folder's newest
+// transcript is read as far as the line that says where its session started. A
+// folder that is gone is left out, and so are the daemon's own sessions, which
+// run inside `home`. The path is the one Claude Code recorded, which is the
+// folder's path on disk, as connect stores it.
+export function claudeFolders(home: string): UsedFolder[] {
+  const used = new Map<string, Date>()
+  for (const dir of transcriptFolders()) {
+    for (const { file, changed } of transcriptsByAge(dir)) {
+      const start = startIn(file)
+      if (start === undefined) continue
+      const known = used.get(start.cwd)
+      if (stillThere(start.cwd) && !insideFolder(home, start.cwd) && (known === undefined || known < changed)) used.set(start.cwd, changed)
+      break
+    }
+  }
+  return [...used].map(([path, usedAt]) => ({ path, usedAt }))
+}
+
+function transcriptFolders(): string[] {
+  try {
+    return readdirSync(PROJECTS, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(PROJECTS, entry.name))
+  } catch (error) {
+    // Claude Code has not run on this Mac yet.
+    if (missing(error)) return []
+    throw error
+  }
+}
+
+// A folder's transcripts, newest first.
+function transcriptsByAge(dir: string): { file: string; changed: Date }[] {
+  const found: { file: string; changed: Date }[] = []
+  for (const name of listed(dir).filter((n) => n.endsWith('.jsonl'))) {
+    try {
+      found.push({ file: join(dir, name), changed: statSync(join(dir, name)).mtime })
+    } catch (error) {
+      // Claude Code's cleanup removes old transcripts, so one can go between listing it and looking at it.
+      if (!missing(error)) throw error
+    }
+  }
+  return found.sort((a, b) => b.changed.getTime() - a.changed.getTime())
+}
+
+// Where a transcript's session started, when its first START_BYTES say.
+function startIn(file: string): Start | undefined {
+  try {
+    for (const line of readLines(file, 0, START_BYTES)) {
+      const start = Start.safeParse(parseJson(line.text))
+      if (start.success) return start.data
+    }
+    return undefined
+  } catch (error) {
+    // Removed by Claude Code's cleanup since it was listed.
+    if (missing(error)) return undefined
+    throw error
+  }
+}
+
+function stillThere(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch (error) {
+    if (unresolvable(error)) return false
+    throw error
+  }
+}
+
 const missing = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT'
 
 // A path that can't be looked up as it stands. It isn't there, part of it isn't a
