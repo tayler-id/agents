@@ -238,8 +238,9 @@ A turn waits, with its reason, while its computer starts, while no seat is free,
 **Stays, changes, new.**
 
 - Stays: commands, claims and durability. Rooms keep taking one turn at a time, with deadlines (`server/rooms.ts`). Runs keep claiming their machine (`server/runner.ts:357`).
-- Changes: `agents.home_instance_id` names the agent's computer and no longer decides alone where a turn runs. People's own computers stop when idle and start on a turn, as Tayler decided on 2026-10-14. Nothing does that yet.
+- Changes: `agents.home_instance_id` names the agent's computer and no longer decides alone where a turn runs. People's own computers stop when idle and start on a turn, as Tayler decided on 2026-10-14. Step 1 built that.
 - New: `server/scheduler.ts`, `shared/turns.ts`, wait reasons in conversations, the stuck check, and a run history for routines, since every firing is now a turn row. Today a routine keeps only `last_fired_at`.
+- Built in step 1: a turn waits only for a computer the server starts, which is a box. A turn for a Mac goes to its queue at once, as before, since a Mac's daemon takes commands whenever it comes. The wait for an offline Mac, named above, is not built. Building it would put `machine_offline` on Macs and change step2, step12 and step20a, which read a Mac's queue while the Mac never reports in. Whether to build it is Tayler's call.
 
 ## Agents creating, messaging and delegating to agents
 
