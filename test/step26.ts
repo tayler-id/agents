@@ -152,6 +152,13 @@ try {
   const quokka = await hitsOf(ava, WORDS.dm)
   check(quokka.length === 3 && quokka.map((h) => h.kind).sort().join() === 'tool_call,tool_result,user', 'a word is found in a message, a tool call and a result')
   check(quokka.every((h) => h.seq > 0 && h.session.id === sessions.dm && h.snippet.includes(`${MARK_START}${WORDS.dm}${MARK_END}`)), 'each result names its session and step, and marks the words that matched')
+  const inScope = async (scope: string, words = WORDS.dm) => (await hitsOf(ava, words, `&scope=${scope}`)).map((h) => h.kind).sort().join()
+  check(await inScope('messages') === 'user' && await inScope('tools') === 'tool_call,tool_result' && await inScope('all') === 'tool_call,tool_result,user',
+    'a search can read only messages, only tool calls and results, or every step')
+  check(await inScope('errors') === 'tool_result' && await inScope('errors', 'room') === 'error' && await inScope('errors', WORDS.all) === '',
+    'or only the steps that went wrong: a failed result, an error')
+  check((await hitsOf(ben, WORDS.privateDm, '&scope=messages')).length === 0 && (await hitsOf(ben, WORDS.privateTerminal, '&scope=all')).length === 0
+    && (await ava.json(`/v1/search?q=a&scope=everything`)).status === 400, 'a scope narrows a search and widens no one\'s access, and a scope that does not exist is refused')
   const bash = quokka.find((h) => h.kind === 'tool_call')
   check(bash?.tool_name === 'Bash' && bash.session.agent.name === 'scout', 'a tool call result names its tool and its agent')
   check(JSON.stringify(zanzibar.map((h) => [h.created_at, h.seq])) === JSON.stringify([...zanzibar].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((h) => [h.created_at, h.seq])),

@@ -191,13 +191,13 @@ function Player({ me, view, error, at }: { me: Me; view: SessionView; error: str
           {view.errors_total ? ` · ${String(view.errors_total)} ${view.errors_total === 1 ? 'step' : 'steps'} went wrong` : ''}
         </p>
         {first !== null && last !== null && cursor !== null && (
-          <div className="timeline">
+          <div className="replay-timeline">
             <input type="range" aria-label="Position in the session" min={first} max={last} value={shown ?? cursor}
               aria-valuetext={`Step ${String(shown ?? cursor)} of ${String(last)}`}
               onChange={(e) => { setScrub(Number(e.target.value)) }} onKeyDown={slide} />
-            <div className="ticks">
+            <div className="replay-ticks">
               {view.errors.map((seq) => (
-                <button key={seq} type="button" className="tick" aria-label={`Go to the error at step ${String(seq)}`}
+                <button key={seq} type="button" className="replay-tick" aria-label={`Go to the error at step ${String(seq)}`}
                   style={{ left: `${String(last === first ? 0 : ((seq - first) / (last - first)) * 100)}%` }} onClick={() => { goTo(seq) }} />
               ))}
             </div>
@@ -214,16 +214,16 @@ function Player({ me, view, error, at }: { me: Me; view: SessionView; error: str
         )}
         {loaded !== null && !loaded.steps.length && request === null && <p className="muted">This session has no steps yet.</p>}
         {loaded !== null && first !== null && loaded.from > first && (
-          <button type="button" className="ghost more" disabled={request !== null} onClick={() => { dispatch({ type: 'earlier', bounds }) }}>Show earlier steps</button>
+          <button type="button" className="ghost history-more" disabled={request !== null} onClick={() => { dispatch({ type: 'earlier', bounds }) }}>Show earlier steps</button>
         )}
-        <ol className="steps" aria-label="Steps">
+        <ol className="replay-steps" aria-label="Steps">
           {loaded?.steps.map((step, i) => (
             <StepItem key={step.seq} step={step} stamp={stampOf(step, loaded.steps[i - 1])} current={step.seq === cursor}
               ahead={cursor !== null && step.seq > cursor} onGo={goTo} />
           ))}
         </ol>
         {loaded !== null && last !== null && loaded.to < last && (
-          <button type="button" className="ghost more" disabled={request !== null} onClick={() => { dispatch({ type: 'later', bounds }) }}>Show later steps</button>
+          <button type="button" className="ghost history-more" disabled={request !== null} onClick={() => { dispatch({ type: 'later', bounds }) }}>Show later steps</button>
         )}
       </div>
     </section>
@@ -238,10 +238,10 @@ function stampOf(step: Step, before: Step | undefined): string {
 const StepItem = memo(function StepItem({ step, stamp, current, ahead, onGo }: {
   step: Step; stamp: string; current: boolean; ahead: boolean; onGo: (seq: number) => void
 }) {
-  const classes = ['step', step.kind, step.sub ? 'sub' : '', current ? 'current' : '', ahead ? 'ahead' : '', step.error ? 'failed' : ''].filter(Boolean).join(' ')
+  const classes = ['replay-step', step.sub ? 'sub' : '', current ? 'current' : '', ahead ? 'ahead' : '', step.error ? 'failed' : ''].filter(Boolean).join(' ')
   return (
-    <li id={`step-${String(step.seq)}`} className={classes} aria-current={current ? 'step' : undefined}>
-      <div className="meta">
+    <li id={`step-${String(step.seq)}`} className={classes} data-kind={step.kind} aria-current={current ? 'step' : undefined}>
+      <div className="replay-meta">
         <button type="button" className="link small" aria-label={`Go to step ${String(step.seq)}`} onClick={() => { onGo(step.seq) }}>{step.seq}</button>
         <span className="kicker">{STEP_LABELS[step.kind]}{step.tool_name ? ` · ${step.tool_name}` : ''}</span>
         {step.error && <span className="kicker"><span aria-hidden="true">! </span>Went wrong</span>}
@@ -257,15 +257,15 @@ function Block({ step, label, text, open }: { step: Step; label: string | null; 
   const body = step.kind === 'assistant' && label === null ? <Markdown text={text} /> : <pre>{text}</pre>
   if (!long || open) {
     return (
-      <div className="block">
-        {label !== null && <span className="block-label">{label}</span>}
+      <div className="replay-block">
+        {label !== null && <span className="replay-label">{label}</span>}
         {body}
       </div>
     )
   }
   return (
-    <details className="block">
-      <summary>{label !== null && <span className="block-label">{label} </span>}{text.slice(0, 160).replace(/\s+/g, ' ')}…</summary>
+    <details className="replay-block">
+      <summary>{label !== null && <span className="replay-label">{label} </span>}{text.slice(0, 160).replace(/\s+/g, ' ')}…</summary>
       {body}
     </details>
   )

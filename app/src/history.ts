@@ -1,13 +1,14 @@
 // What the History page and the replay share: the calls they make, where they
 // are in the address, and the words a session is described with.
 
-import { HistoryKind, HistoryPage, SearchPage, SessionView, StepsPage, type HistorySession, type SessionFilters } from '../../shared/history.ts'
+import { HistoryKind, HistoryPage, SearchPage, SearchScope, SessionView, StepsPage, type HistorySession, type SessionFilters } from '../../shared/history.ts'
 import { placeOf as placeInFolder } from '../../shared/terminal.ts'
 import { call, clock, day, parseTime, type Me } from './data.ts'
 
-// The filters of the page, as the address holds them. An empty string is no filter.
-export type Filters = { q: string; agent: string; person: string; kind: '' | HistoryKind; project: string; repo: string; day: string }
-export const NO_FILTERS: Filters = { q: '', agent: '', person: '', kind: '', project: '', repo: '', day: '' }
+// The filters of the page, as the address holds them. An empty string is no filter,
+// and no scope reads every step.
+export type Filters = { q: string; scope: '' | SearchScope; agent: string; person: string; kind: '' | HistoryKind; project: string; repo: string; day: string }
+export const NO_FILTERS: Filters = { q: '', scope: '', agent: '', person: '', kind: '', project: '', repo: '', day: '' }
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -24,6 +25,7 @@ function dayRange(picked: string): Pick<SessionFilters, 'since' | 'until'> {
 function queryOf(filters: Filters, before: string | null, search: boolean): string {
   const params = new URLSearchParams()
   if (search) params.set('q', filters.q)
+  if (search && filters.scope) params.set('scope', filters.scope)
   for (const key of ['agent', 'person', 'kind', 'project', 'repo'] as const) {
     if (filters[key]) params.set(key, filters[key])
   }
@@ -53,7 +55,8 @@ export function placeOf(hash: string): Place {
   return {
     view: 'list',
     filters: {
-      q: params.get('q') ?? '', agent: params.get('agent') ?? '', person: params.get('person') ?? '', kind: HistoryKind.safeParse(params.get('kind')).data ?? '',
+      q: params.get('q') ?? '', scope: SearchScope.safeParse(params.get('scope')).data ?? '', agent: params.get('agent') ?? '', person: params.get('person') ?? '',
+      kind: HistoryKind.safeParse(params.get('kind')).data ?? '',
       project: params.get('project') ?? '', repo: params.get('repo') ?? '', day: DAY.test(picked) ? picked : '',
     },
   }
@@ -79,6 +82,35 @@ export const STATUS_WORDS: Record<HistorySession['status'], string> = {
 }
 
 export const KIND_WORDS: Record<HistoryKind, string> = { conversation: 'Conversation', task: 'Task', run: 'Run', terminal: 'Terminal' }
+
+export const SCOPE_WORDS: Record<SearchScope, string> = {
+  all: 'Everything', messages: 'Messages', tools: 'Tool calls and results', errors: 'Steps that went wrong',
+}
+
+// How many days back the day filter offers.
+const DAYS_OFFERED = 14
+
+// A day as the date input writes it, on the person's own clock.
+export const dayValue = (date: Date): string =>
+  `${String(date.getFullYear())}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+
+export const dayWords = (value: string, now: Date): string => {
+  const [year, month, date] = value.split('-').map(Number)
+  if (year === undefined || month === undefined || date === undefined) return value
+  const picked = new Date(year, month - 1, date)
+  const ago = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - picked.getTime()) / 86_400_000)
+  if (ago === 0) return 'Today'
+  if (ago === 1) return 'Yesterday'
+  return picked.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+}
+
+// The days a person can pick, the latest first.
+export function dayChoices(now: Date): { value: string; label: string }[] {
+  return Array.from({ length: DAYS_OFFERED }, (_, ago) => {
+    const value = dayValue(new Date(now.getFullYear(), now.getMonth(), now.getDate() - ago))
+    return { value, label: dayWords(value, now) }
+  })
+}
 
 // What a session was for, in a line.
 export function titleOf(session: HistorySession): string {

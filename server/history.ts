@@ -8,7 +8,7 @@
 import { z } from 'zod'
 import {
   Cursor, ERRORS_MAX, HistorySession, MARK_END, MARK_START, NO_SUCH_SESSION, SearchHit, SHOWN_NOTICES, Step,
-  type HistoryKind, type HistoryPage, type HistoryQuery, type SearchPage, type SearchQuery, type SessionFilters, type SessionView, type StepsPage,
+  type HistoryKind, type HistoryPage, type HistoryQuery, type SearchPage, type SearchQuery, type SearchScope, type SessionFilters, type SessionView, type StepsPage,
 } from '../shared/history.ts'
 import type { SessionId } from '../shared/ids.ts'
 import { canSeeSession, VISIBLE_SESSION } from './access.ts'
@@ -40,6 +40,14 @@ const JOINS = `
     from runs r join pipeline_versions pv on pv.id = r.pipeline_version_id join pipelines pl on pl.id = pv.pipeline_id
     where r.task_id = s.task_id order by r.created_at, r.id limit 1) run on true
   left join projects pr on pr.id = coalesce(t.project_id, c.project_id)`
+
+// Which steps a search reads. Errors are the steps events_errors holds.
+const OF_SCOPE: Record<SearchScope, string> = {
+  all: 'true',
+  messages: `e.kind in ('user', 'assistant')`,
+  tools: `e.kind in ('tool_call', 'tool_result')`,
+  errors: ERROR_STEP,
+}
 
 // A session as HistorySession describes it, built in the query so the answer
 // parses against the shared schema with no mapping between.
@@ -149,7 +157,7 @@ export async function searchSteps(person: Person, query: SearchQuery): Promise<S
   const params: unknown[] = [person.team_id, person.id, query.q]
   const bind = binder(params)
   const where = [
-    'e.team_id = $1', 's.archived_at is null', VISIBLE_SESSION, SHOWN_STEP, `${STEP_VECTOR} @@ q.query`, ...ofSession(query, bind),
+    'e.team_id = $1', 's.archived_at is null', VISIBLE_SESSION, SHOWN_STEP, OF_SCOPE[query.scope], `${STEP_VECTOR} @@ q.query`, ...ofSession(query, bind),
     ...(query.since ? [`e.created_at >= ${bind(query.since)}::timestamptz`] : []),
     ...(query.until ? [`e.created_at < ${bind(query.until)}::timestamptz`] : []),
   ]

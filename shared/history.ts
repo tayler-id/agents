@@ -45,9 +45,17 @@ const Limit = z.coerce.number().int().min(1).max(PAGE_MAX).default(PAGE_DEFAULT)
 export const HistoryQuery = SessionFilters.extend({ before: Cursor.optional(), limit: Limit })
 export type HistoryQuery = z.infer<typeof HistoryQuery>
 
+// What a search reads. Every step, or only what people and agents wrote, or
+// only tool calls and their results, or only the steps that went wrong.
+export const SEARCH_SCOPES = ['all', 'messages', 'tools', 'errors'] as const
+export const SearchScope = z.enum(SEARCH_SCOPES)
+export type SearchScope = z.infer<typeof SearchScope>
+
 // The longest search a person may run, enough for a pasted error line.
 export const QUERY_MAX = 300
-export const SearchQuery = SessionFilters.extend({ q: z.string().trim().min(1).max(QUERY_MAX), before: Cursor.optional(), limit: Limit })
+export const SearchQuery = SessionFilters.extend({
+  q: z.string().trim().min(1).max(QUERY_MAX), scope: SearchScope.default('all'), before: Cursor.optional(), limit: Limit,
+})
 export type SearchQuery = z.infer<typeof SearchQuery>
 
 // What a session was for. The kind decides what the rest says.

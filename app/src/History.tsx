@@ -3,13 +3,13 @@
 // opens it at the step that matched. The filters and the words searched are in
 // the address, so a page can be shared and the browser's Back returns to it.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode, type SyntheticEvent } from 'react'
-import { HistoryKind, snippetParts, STEP_LABELS, type HistorySession, type SearchHit } from '../../shared/history.ts'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { HistoryKind, SEARCH_SCOPES, SearchScope, snippetParts, STEP_LABELS, type HistorySession, type SearchHit } from '../../shared/history.ts'
 import { ProjectRow } from '../../shared/projects.ts'
 import { clock, day, messageOf, repoName, useSnapshot, useSnapshotOf, type Agent, type Me, type Person, type Repo } from './data.ts'
 import {
-  actorOf, historyApi, KIND_WORDS, listHash, NO_FILTERS, outcomeWords, placeOf, replaceHash, replayHash, spanWords, stepsWords, titleOf, whenWords,
-  type Filters,
+  actorOf, dayChoices, dayWords, historyApi, KIND_WORDS, listHash, NO_FILTERS, outcomeWords, placeOf, replaceHash, replayHash, SCOPE_WORDS, spanWords, stepsWords,
+  titleOf, whenWords, type Filters,
 } from './history.ts'
 import { Replay } from './Replay.tsx'
 import './history.css'
@@ -17,17 +17,18 @@ import './history.css'
 // The lists a filter chooses from change when someone joins or an agent is made, which is rare.
 const OPTIONS_EVERY_MS = 60_000
 
-const subscribe = (notify: () => void) => {
-  window.addEventListener('hashchange', notify)
-  return () => { window.removeEventListener('hashchange', notify) }
-}
-const hashNow = () => window.location.hash
-
+// The address as the last navigation left it. A replay names its step in the address as it goes,
+// without navigating, and that is not a reason to open the replay again.
 export function HistoryPage({ me }: { me: Me }) {
-  const hash = useSyncExternalStore(subscribe, hashNow)
+  const [hash, setHash] = useState(() => window.location.hash)
+  useEffect(() => {
+    const navigated = () => { setHash(window.location.hash) }
+    window.addEventListener('hashchange', navigated)
+    return () => { window.removeEventListener('hashchange', navigated) }
+  }, [])
   const place = useMemo(() => placeOf(hash), [hash])
   return place.view === 'replay'
-    ? <Replay key={place.sessionId} me={me} sessionId={place.sessionId} at={place.seq} />
+    ? <Replay key={`${place.sessionId}/${String(place.seq)}`} me={me} sessionId={place.sessionId} at={place.seq} />
     : <Sessions me={me} filters={place.filters} />
 }
 
@@ -73,7 +74,7 @@ function Feed<T>({ pages, label, empty, children }: { pages: Pages<T>; label: st
       {pages.ready && !pages.error && !pages.items.length && <p className="muted">{empty}</p>}
       <ul className="history-list" aria-label={label}>{children}</ul>
       {pages.next !== null && (
-        <button type="button" className="ghost more" onClick={pages.more} disabled={pages.loadingMore}>{pages.loadingMore ? 'Loading…' : 'Show more'}</button>
+        <button type="button" className="ghost history-more" onClick={pages.more} disabled={pages.loadingMore}>{pages.loadingMore ? 'Loading…' : 'Show more'}</button>
       )}
     </>
   )
@@ -117,7 +118,7 @@ function Sessions({ me, filters }: { me: Me; filters: Filters }) {
         </div>
       </header>
       <div className="page-body">
-        <SearchBox key={filters.q} words={filters.q} onSearch={(q) => { apply({ ...filters, q }) }} />
+        <SearchBox key={filters.q} filters={filters} onChange={apply} />
         <FilterBar filters={filters} onChange={apply} />
         {filters.q === '' ? <SessionList me={me} filters={filters} /> : <SearchResults me={me} filters={filters} />}
       </div>
@@ -125,25 +126,27 @@ function Sessions({ me, filters }: { me: Me; filters: Filters }) {
   )
 }
 
-function SearchBox({ words, onSearch }: { words: string; onSearch: (q: string) => void }) {
-  const [text, setText] = useState(words)
-  const submit = (event: SyntheticEvent) => {
-    event.preventDefault()
-    onSearch(text.trim())
-  }
+// The words to search for, searched when Enter is pressed, and what to search in. Clearing the words ends the search.
+function SearchBox({ filters, onChange }: { filters: Filters; onChange: (filters: Filters) => void }) {
+  const [text, setText] = useState(filters.q)
+  const search = (q: string, scope: Filters['scope']) => { onChange({ ...filters, q, scope: q === '' ? '' : scope }) }
   return (
-    <form className="history-search" role="search" onSubmit={submit}>
-      <input type="search" aria-label="Search the text of steps" placeholder="Search messages, tool calls and results" value={text}
-        onChange={(e) => { setText(e.target.value) }} />
-      <button type="submit" className="primary">Search</button>
-      {words !== '' && <button type="button" className="ghost" onClick={() => { onSearch('') }}>Clear search</button>}
-    </form>
+    <div className="history-search" role="search">
+      <input type="search" aria-label="Search the text of steps" placeholder="Search messages, tool calls and results, then press Enter" value={text}
+        onChange={(e) => { setText(e.target.value) }}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) search(text.trim(), filters.scope) }} />
+      <Select label="Search in" anyLabel={SCOPE_WORDS.all} value={filters.scope} onChange={(scope) => { search(filters.q, SearchScope.safeParse(scope).data ?? '') }}
+        options={SEARCH_SCOPES.filter((scope) => scope !== 'all').map((scope) => ({ value: scope, label: SCOPE_WORDS[scope] }))} />
+      {filters.q !== '' && <button type="button" className="ghost" onClick={() => { search('', '') }}>Clear search</button>}
+    </div>
   )
 }
 
 type Option = { value: string; label: string }
 
-function Select({ label, value, options, anyLabel, onChange }: { label: string; value: string; options: Option[]; anyLabel: string; onChange: (value: string) => void }) {
+function Select({ label, value, options, anyLabel, onChange, unlisted = 'Loading…' }: {
+  label: string; value: string; options: Option[]; anyLabel: string; onChange: (value: string) => void; unlisted?: string
+}) {
   // A value the list has not loaded yet still shows, so the filter in the address is never hidden.
   const known = value === '' || options.some((option) => option.value === value)
   return (
@@ -151,7 +154,7 @@ function Select({ label, value, options, anyLabel, onChange }: { label: string; 
       {label}
       <select value={value} onChange={(e) => { onChange(e.target.value) }}>
         <option value="">{anyLabel}</option>
-        {!known && <option value={value}>Loading…</option>}
+        {!known && <option value={value}>{unlisted}</option>}
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
@@ -178,11 +181,9 @@ function FilterBar({ filters, onChange }: { filters: Filters; onChange: (filters
         options={byLabel(projects.map((p) => ({ value: p.id, label: p.name })))} />
       <Select label="Repo" anyLabel="Any repo" value={filters.repo} onChange={(repo) => { change({ repo }) }}
         options={byLabel(repos.map((r) => ({ value: r.id, label: repoName(r.remote_url) })))} />
-      <label>
-        Day
-        <input type="date" value={filters.day} onChange={(e) => { change({ day: e.target.value }) }} />
-      </label>
-      <button type="button" className="ghost" onClick={() => { onChange({ ...NO_FILTERS, q: filters.q }) }}>Clear filters</button>
+      <Select label="Day" anyLabel="Any day" value={filters.day} onChange={(picked) => { change({ day: picked }) }} unlisted={dayWords(filters.day, new Date())}
+        options={dayChoices(new Date())} />
+      <button type="button" className="ghost" onClick={() => { onChange({ ...NO_FILTERS, q: filters.q, scope: filters.scope }) }}>Clear filters</button>
     </div>
   )
 }
@@ -199,12 +200,12 @@ const isLive = (session: HistorySession) => ['starting', 'running', 'needs_appro
 function SessionRow({ session, me }: { session: HistorySession; me: Me }) {
   return (
     <a className="history-row" href={replayHash(session.id)}>
-      <span className="head">
+      <span className="history-head">
         <span className="kicker">{KIND_WORDS[session.subject.kind]}{session.private ? ' · Private' : ''}</span>
         <span className="muted small">{isLive(session) && <span className={`dot ${session.status}`} aria-hidden="true" />}{whenWords(session)}</span>
       </span>
-      <span className="title">{titleOf(session)}</span>
-      {session.asked !== null && <span className="asked muted">&ldquo;{session.asked.replace(/\s+/g, ' ')}&rdquo;</span>}
+      <span className="history-title">{titleOf(session)}</span>
+      {session.asked !== null && <span className="history-asked muted">&ldquo;{session.asked.replace(/\s+/g, ' ')}&rdquo;</span>}
       <SessionFacts session={session} me={me} />
     </a>
   )
@@ -215,11 +216,11 @@ function HitRow({ hit, me }: { hit: SearchHit; me: Me }) {
   const { session } = hit
   return (
     <a className="history-row" href={replayHash(session.id, hit.seq)}>
-      <span className="head">
+      <span className="history-head">
         <span className="kicker">{STEP_LABELS[hit.kind]}{hit.tool_name ? ` · ${hit.tool_name}` : ''}</span>
         <span className="muted small">{day(hit.created_at)}, {clock(hit.created_at)}</span>
       </span>
-      <span className="snippet">
+      <span className="history-snippet">
         {snippetParts(hit.snippet).map((part, i) => (part.hit ? <mark key={i}>{part.text}</mark> : <span key={i}>{part.text}</span>))}
       </span>
       <span className="muted small">{titleOf(session)} · {actorOf(session, me)} · step {hit.seq}</span>
