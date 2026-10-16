@@ -276,13 +276,13 @@ try {
   // The desktop's programs, the browser among them, see none of the daemon's
   // tokens. A page the browser opens, such as file:///proc/self/environ, can put
   // whatever they hold on screen, and screenshots aren't scrubbed.
-  const environs = [['-x', 'Xvnc'], ['-f', 'matchbox-window-manager'], ['-f', 'remote-debugging-port']].map((match) => {
+  const environs = [['-x', 'Xvnc'], ['-x', 'jwm'], ['-f', 'remote-debugging-port']].map((match) => {
     const pid = (tryDocker('exec', container, 'pgrep', '-o', ...match) ?? '').split('\n')[0] ?? ''
     return pid ? tryDocker('exec', container, 'cat', `/proc/${pid}/environ`) : null
   })
   const tokens = environs.flatMap((environ) => (environ ?? '').split('\0').map((entry) => entry.split('=')[0] ?? '').filter((name) => name.endsWith('TOKEN')))
   check(environs.every((environ) => environ !== null) && tokens.length === 0,
-    `Xvnc, matchbox and the browser see none of the daemon's tokens (${tokens.join(', ') || 'none seen'})`)
+    `Xvnc, JWM and the browser see none of the daemon's tokens (${tokens.join(', ') || 'none seen'})`)
 
   const idle = await measure(container, () => sleep(IDLE_SAMPLE_MS))
   console.log(`      idle box with its desktop and an open browser: ${idle.last} MiB, CPU up to ${idle.cpu}%`)
