@@ -20,11 +20,12 @@ export async function exportRecipe(client: pg.PoolClient, person: Person, agentI
   return file.data
 }
 
-// A new agent from a file. What enters the record is never a secret value, so a
-// file that holds one is refused and nothing is made.
+// A new agent from a file. What enters the record is never a secret value and never text
+// Postgres can't hold, such as a NUL character, so a file that has either is refused and
+// nothing is made. The scrubber changes both, which is how they are found.
 export async function importRecipe(client: pg.PoolClient, person: Person, ask: ImportAsk): Promise<CopyDone> {
   if (!isDeepStrictEqual(scrub(ask.file), ask.file)) {
-    throw new HttpError(400, 'The file holds what looks like a secret value, such as an API key, and the record keeps what it is given. Take the value out and import the file again.')
+    throw new HttpError(400, 'The file holds something that looks like a secret value, such as an API key, or text the record cannot store. Take it out and import the file again.')
   }
   return agentFromRecipe(client, person, {
     name: ask.name ?? await freeName(client, person.team_id, ask.file.name, ''),
