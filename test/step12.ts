@@ -90,6 +90,9 @@ try {
   check(saved.json?.state === 'connected' && saved.json.lastFour === key.slice(-4) && saved.json.expires === tailscale.state.keyExpires
     && saved.json.daysLeft >= 29 && saved.json.savedBy === owner && !saved.text.includes(key.slice(0, -4)),
   "the browser gets the key's last four characters and Tailscale's expiry, never the key")
+  const noInvites = await asPerson(PEOPLE, owner, 'GET', '/v1/tailscale/invites')
+  check(noInvites.status === 200 && Array.isArray(noInvites.json?.invites) && noInvites.json.invites.length === 0,
+    `with no invite open, the tailnet's invites read as none, though Tailscale answers null (${noInvites.status} ${noInvites.json?.error ?? ''})`)
 
   // Invites.
   const made = await asPerson(PEOPLE, owner, 'POST', '/v1/invites', { email: invitee.toUpperCase(), role: 'member' })
