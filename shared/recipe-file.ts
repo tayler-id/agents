@@ -22,6 +22,7 @@ export const RecipeFile = z.object({
 })
 export type RecipeFile = z.infer<typeof RecipeFile>
 
-// Importing a file as a new agent, with the name and machine the person picked.
-export const ImportAsk = z.object({ file: RecipeFile, name: z.string(), homeInstanceId: InstanceId })
+// Importing a file as a new agent. With no name, it takes the one the file offers, or the next free one.
+// With no machine, it goes on the person's own, as a copy does.
+export const ImportAsk = z.object({ file: RecipeFile, name: z.string().optional(), homeInstanceId: InstanceId.optional() })
 export type ImportAsk = z.infer<typeof ImportAsk>

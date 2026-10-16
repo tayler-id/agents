@@ -52,7 +52,7 @@ const lockNames = (client: pg.PoolClient, teamId: string) => client.query('selec
 const fit = (base: string, suffix: string) => `${base.slice(0, NAME_LENGTH - suffix.length)}${suffix}`
 
 // The first name of `base` + `suffix`, then `suffix-2`, `suffix-3` and on, that no agent of the team has.
-async function freeName(client: pg.PoolClient, teamId: string, base: string, suffix: string): Promise<string> {
+export async function freeName(client: pg.PoolClient, teamId: string, base: string, suffix: string): Promise<string> {
   await lockNames(client, teamId)
   for (let n = 1; ; n++) {
     const name = fit(base, n === 1 ? suffix : `${suffix}-${String(n)}`)
@@ -62,7 +62,7 @@ async function freeName(client: pg.PoolClient, teamId: string, base: string, suf
 
 // The machine a new agent goes on when its person names none: their own box, else a Mac of theirs. An agent
 // runs commands on its machine, so one never lands on a teammate's machine without a word.
-async function defaultMachine(client: pg.PoolClient, person: Person): Promise<string> {
+export async function defaultMachine(client: pg.PoolClient, person: Person): Promise<string> {
   const own = await maybe<{ id: string }>(client,
     `select id from instances where team_id = $1 and owner_id = $2 and (personal or kind = 'mac') order by personal desc, name limit 1`,
     [person.team_id, person.id])

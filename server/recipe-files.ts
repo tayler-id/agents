@@ -7,7 +7,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { RECIPE_FILE_FORMAT, RecipeFile, type ImportAsk } from '../shared/recipe-file.ts'
 import type { CopyDone } from '../shared/recipe.ts'
-import { agentFromRecipe, agentOf, recipeOf } from './agents.ts'
+import { agentFromRecipe, agentOf, defaultMachine, freeName, recipeOf } from './agents.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 
 // The file for an agent. What leaves the team is scrubbed, whatever a person once
@@ -26,5 +26,8 @@ export async function importRecipe(client: pg.PoolClient, person: Person, ask: I
   if (!isDeepStrictEqual(scrub(ask.file), ask.file)) {
     throw new HttpError(400, 'The file holds what looks like a secret value, such as an API key, and the record keeps what it is given. Take the value out and import the file again.')
   }
-  return agentFromRecipe(client, person, ask, ask.file.recipe, null)
+  return agentFromRecipe(client, person, {
+    name: ask.name ?? await freeName(client, person.team_id, ask.file.name, ''),
+    homeInstanceId: ask.homeInstanceId ?? await defaultMachine(client, person),
+  }, ask.file.recipe, null)
 }
