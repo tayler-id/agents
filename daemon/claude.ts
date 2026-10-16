@@ -412,6 +412,7 @@ class ClaudeSession implements HarnessSession {
     if (options.acceptEdits) args.push('--permission-mode', 'acceptEdits')
     if (options.maxBudgetUsd) args.push('--max-budget-usd', options.maxBudgetUsd.toFixed(2))
     if (options.hookEvents) args.push('--include-hook-events')
+    if (options.settings) args.push('--settings', options.settings)
     const env = { ...process.env }
     for (const name of PARENT_SESSION_ENV) delete env[name]
     // A box's owner signed in from the app. Their token wins over any team-wide one.

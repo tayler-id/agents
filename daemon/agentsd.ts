@@ -335,9 +335,10 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
-  // A session sent no hooks runs none, so the file never carries another session's into it.
+  // A session sent no hooks runs none. Its hooks are in a settings file of its own, never in the folder, which
+  // another session, such as a judge's in the same task, may share.
   const hooks = payload.hooks ?? []
-  writeHooks(cwd, hooks)
+  const settings = writeHooks(join(SESSIONS_DIR, `${command.sessionId}.settings.json`), hooks)
   // A plugin with the name of a server this session has of its own is overwritten in the config,
   // and its name must not allow the session's own server's tools to run without asking.
   const ownServers = new Set<string>([...(stage?.isolated ? [] : ['team-record']), ...(stage ? ['stage'] : [TEAM_AGENTS_SERVER]), ...(computer ? [COMPUTER_SERVER] : [])])
@@ -355,6 +356,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     // A server before this release sends a stage's budget only in the stage.
     maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
     hookEvents: hooks.length > 0,
+    settings,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)

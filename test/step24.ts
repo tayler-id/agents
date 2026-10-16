@@ -80,9 +80,13 @@ function daemon(home: string, token: string): ChildProcess {
 }
 
 const jsonFile = (file: string) => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null)
-const settingsOf = (home: string, agentId: string | undefined) => (agentId ? jsonFile(join(home, 'agents', agentId, '.claude', 'settings.local.json')) : null)
-const eventsOf = (home: string, agentId: string | undefined): string[] | null => {
-  const settings = settingsOf(home, agentId)
+// The settings file the daemon wrote for a conversation's session, which holds its hooks, or null when it wrote none.
+const settingsOf = async (home: string, conversationId: string) => {
+  const session = await row('select id from sessions where conversation_id = $1', [conversationId])
+  return session ? jsonFile(join(home, 'sessions', `${String(session.id)}.settings.json`)) : null
+}
+const eventsOf = async (home: string, conversationId: string): Promise<string[] | null> => {
+  const settings = await settingsOf(home, conversationId)
   return settings ? Object.keys(settings.hooks).sort() : null
 }
 // The files under a folder that hold some text.
@@ -218,8 +222,10 @@ try {
     return session && (await replies(aliceDm)).length === 1 && (await notices(session.id)).length >= 2
   }), "Alice's message gets a reply, and her agent's hooks ran")
   const aliceSession = must((await sessionOf(aliceDm))?.id, "Alice's session")
-  const written = settingsOf(homeA, source)
+  const written = await settingsOf(homeA, aliceDm)
   check(same(written, SETTINGS), `the daemon wrote the hooks where Claude Code reads them, grouped by event and matcher: ${JSON.stringify(written)}`)
+  check(!existsSync(join(homeA, 'agents', source, '.claude', 'settings.local.json')),
+    "and wrote them in the session's own settings file, with nothing in the agent's folder, which other sessions may share")
   const ran = await notices(aliceSession)
   const prompt = ran.find((n) => n.body.hook_event === 'UserPromptSubmit')
   const stop = ran.find((n) => n.body.hook_event === 'Stop')
@@ -367,7 +373,7 @@ try {
   "the copy's session stops on Bob's machine, which has no value for the secret, and names the secret")
   const stopped = await row(`select string_agg(e.text, ' ') as said from sessions s join events e on e.session_id = s.id where s.conversation_id = $1 and e.kind = 'error'`, [bobDm])
   const said: string = stopped?.said ?? ''
-  check(said.includes('LUCKY_TOKEN') && !said.includes(ALICE_SECRET) && settingsOf(homeB, copy) === null, "Alice's value did not reach Bob's machine, and no hooks were written there")
+  check(said.includes('LUCKY_TOKEN') && !said.includes(ALICE_SECRET) && await settingsOf(homeB, bobDm) === null, "Alice's value did not reach Bob's machine, and no hooks were written there")
   writeFileSync(join(homeB, 'secrets.json'), JSON.stringify({ LUCKY_TOKEN: BOB_SECRET }), { mode: 0o600 })
   await say(bob, bobDm, 'Try again.')
   check(await within(40, async () => (await replies(bobDm)).length === 1), 'with a value of his own set on his machine, the copy answers')
@@ -378,7 +384,7 @@ try {
   const remembered: string = first?.payload.memory ?? ''
   check(remembered.includes(TEAM_PROFILE) && remembered.includes(TEAM_LOG) && !remembered.includes(ABOUT_ALICE) && !remembered.includes(ABOUT_BOB),
     "the copy's sessions start with the team's memories, and with nothing about Alice or Bob that Alice's agent learned")
-  check(same(settingsOf(homeB, copy), SETTINGS), "the copy's hooks are written on Bob's machine as they are on Alice's")
+  check(same(await settingsOf(homeB, bobDm), SETTINGS), "the copy's hooks are written on Bob's machine as they are on Alice's")
   const copyRan = await notices(bobSession)
   check(copyRan.some((n) => n.body.hook_event === 'UserPromptSubmit' && n.text === 'Hook UserPromptSubmit finished.\nnoted-the-prompt')
     && copyRan.some((n) => n.body.hook_event === 'Stop' && n.body.exit_code === 3),
@@ -403,12 +409,12 @@ try {
   // A message sent while a turn runs joins it, so each waits for the answer to the one before.
   const removed = await as(bob, `/v1/agents/${copy}/hooks/stamp-writes/delete`)
   await say(bob, bobDm, 'And now?')
-  check(removed.status === 200 && await within(40, async () => same(eventsOf(homeB, copy), ['Stop', 'UserPromptSubmit']) && (await replies(bobDm)).length === 2),
+  check(removed.status === 200 && await within(40, async () => same(await eventsOf(homeB, bobDm), ['Stop', 'UserPromptSubmit']) && (await replies(bobDm)).length === 2),
     "taking a hook off the agent takes it from the file of the session that was already running")
   await as(bob, `/v1/agents/${copy}/hooks/check-stop/delete`)
   await as(bob, `/v1/agents/${copy}/hooks/note-prompts/delete`)
   await say(bob, bobDm, 'And again?')
-  check(await within(40, async () => settingsOf(homeB, copy) === null && (await replies(bobDm)).length === 3), 'an agent with no hooks has no settings file')
+  check(await within(40, async () => await settingsOf(homeB, bobDm) === null && (await replies(bobDm)).length === 3), 'an agent with no hooks has no settings file')
 
   // Templates keep the hooks and no memory.
   const saved = await as(alice, `/v1/agents/${source}/templates`, { name: 'release notes' })

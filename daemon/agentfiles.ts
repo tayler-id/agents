@@ -48,18 +48,20 @@ export function claudeHooks(hooks: AgentHook[]): Record<string, HookGroup[]> {
   return byEvent
 }
 
-// Claude Code reads hooks from <cwd>/.claude/settings.local.json, and the daemon starts it
-// with that source. The file is the daemon's alone and written whole for every session,
-// so a hook taken off the agent in the app is gone from the next session, and an agent with
-// no hooks has no file.
-export function writeHooks(cwd: string, hooks: AgentHook[]) {
-  const file = join(cwd, '.claude', 'settings.local.json')
+// A session's hooks, as a Claude Code settings file of the session's own that the daemon
+// passes with --settings. Sessions of different agents can share a task's folder, so the
+// hooks never go in the folder, where one session's start would write them for another.
+// The file is written whole each time the session starts, so a hook taken off the agent is
+// gone from its next start, and a session with no hooks has no file. Gives the file to pass,
+// or null.
+export function writeHooks(file: string, hooks: AgentHook[]): string | null {
   if (!hooks.length) {
     rmSync(file, { force: true })
-    return
+    return null
   }
-  mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify({ hooks: claudeHooks(hooks) }, null, 2)}\n`)
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  writeFileSync(file, `${JSON.stringify({ hooks: claudeHooks(hooks) }, null, 2)}\n`, { mode: 0o600 })
+  return file
 }
 
 export function machineSecrets(home: string): Record<string, string> {

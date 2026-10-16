@@ -11,7 +11,7 @@
 
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -171,8 +171,10 @@ try {
   check(new Set([prompt, pre, postInput, finish].map((i) => i?.prompt_id)).size === 1 && new Set([prompt, pre, postInput, finish].map((i) => i?.session_id)).size === 1,
     "all four hooks saw one turn's id and one session's id")
   const workspace = must(await row('select id from workspaces where task_id = $1', [taskId]), "the task's workspace").id
-  const settingsFile = join(home, 'workspaces', String(workspace), '.claude', 'settings.local.json')
-  check(same(JSON.parse(readFileSync(settingsFile, 'utf8')), SETTINGS), 'the daemon wrote the hooks into the workspace where Claude Code reads them, with their matchers and time limits')
+  const settingsFile = join(home, 'sessions', `${sessionId}.settings.json`)
+  check(existsSync(settingsFile) && same(JSON.parse(readFileSync(settingsFile, 'utf8')), SETTINGS), "the daemon wrote the hooks into the session's own settings file, which Claude Code read, with their matchers and time limits")
+  check(!existsSync(join(home, 'workspaces', String(workspace), '.claude', 'settings.local.json')),
+    "and nothing into the task's workspace, which another session, such as a judge's, may share")
 
   // A change to the agent's hooks restarts its session on the next message, as a resume.
   const removed = await as('POST', `/v1/agents/${agent}/hooks/finish/delete`)

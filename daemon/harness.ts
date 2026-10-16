@@ -21,6 +21,8 @@ export type HarnessStart = {
   // Reports every hook the harness runs, so each lands in the record. Claude Code reports a
   // SessionStart hook either way, and the rest only when asked.
   hookEvents: boolean
+  // A settings file of this session's own, which holds the agent's hooks, or null when it has none.
+  settings: string | null
   // The Claude token this machine's owner signed in with from the app, or null to use the machine's own login.
   oauthToken: string | null
 }

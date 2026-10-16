@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The stand-in for `claude -p`, test/fake-claude.ts, with Claude Code's hooks. Claude Code
-// reads the hooks in .claude/settings.json and .claude/settings.local.json of its folder,
+// reads the hooks in .claude/settings.json and .claude/settings.local.json of its folder, and
+// in the file --settings names, which is where Agents puts a session's hooks. It
 // runs a hook's command when its event happens, and gives the command the event as JSON on
 // its standard input. This runs the stand-in as it is and does that around it, so a check
 // can watch a turn with hooks on, with no model and no Claude Code.
@@ -59,11 +60,11 @@ const reportAll = args.includes('--include-hook-events')
 const permissionMode = flag('--permission-mode') ?? 'default'
 const cwd = process.cwd()
 
-// The hooks of both settings files Agents starts Claude with.
+// The hooks of the folder's two settings files and of the file --settings names, as Claude Code merges them.
 function settings(): Settings['hooks'] {
   const merged: Settings['hooks'] = {}
-  for (const name of ['settings.json', 'settings.local.json']) {
-    const file = join(cwd, '.claude', name)
+  const given = flag('--settings')
+  for (const file of [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json'), ...(given ? [given] : [])]) {
     if (!existsSync(file)) continue
     const read = Settings.safeParse(JSON.parse(readFileSync(file, 'utf8')))
     if (!read.success) throw new Error(`${file} is not a settings file this stand-in reads: ${z.prettifyError(read.error)}`)
