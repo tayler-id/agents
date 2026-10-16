@@ -5,8 +5,8 @@
 // the machine.
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { NAME, type AgentPlugin, type AgentSkill, type SecretRef } from '../shared/types.ts'
+import { dirname, join } from 'node:path'
+import { NAME, type AgentHook, type AgentPlugin, type AgentSkill, type SecretRef } from '../shared/types.ts'
 
 // Replaces <cwd>/.claude/skills with the agent's skills, so Claude finds them as project skills.
 export function writeSkills(cwd: string, skills: AgentSkill[]) {
@@ -20,6 +20,40 @@ export function writeSkills(cwd: string, skills: AgentSkill[]) {
     const description = skill.description.replace(/\s+/g, ' ').trim()
     writeFileSync(join(dir, skill.name, 'SKILL.md'), `---\nname: ${skill.name}\ndescription: ${description}\n---\n\n${skill.content.trim()}\n`)
   }
+}
+
+// One group of hook commands, as Claude Code's settings hold it. A matcher names the
+// tools a PreToolUse or PostToolUse group applies to, and the other events take none.
+type HookGroup = { matcher?: string; hooks: { type: 'command'; command: string; timeout?: number }[] }
+
+// The hooks as Claude Code reads them, grouped by event and then by matcher.
+export function claudeHooks(hooks: AgentHook[]): Record<string, HookGroup[]> {
+  const byEvent: Record<string, HookGroup[]> = {}
+  for (const hook of hooks) {
+    const groups = (byEvent[hook.event] ??= [])
+    const matcher = hook.matcher ?? undefined
+    let group = groups.find((g) => g.matcher === matcher)
+    if (!group) {
+      group = matcher === undefined ? { hooks: [] } : { matcher, hooks: [] }
+      groups.push(group)
+    }
+    group.hooks.push({ type: 'command', command: hook.command, ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })
+  }
+  return byEvent
+}
+
+// Claude Code reads hooks from <cwd>/.claude/settings.local.json, and the daemon starts it
+// with that source. The file is the daemon's alone and written whole for every session,
+// so a hook taken off the agent in the app is gone from the next session, and an agent with
+// no hooks has no file.
+export function writeHooks(cwd: string, hooks: AgentHook[]) {
+  const file = join(cwd, '.claude', 'settings.local.json')
+  if (!hooks.length) {
+    rmSync(file, { force: true })
+    return
+  }
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, `${JSON.stringify({ hooks: claudeHooks(hooks) }, null, 2)}\n`)
 }
 
 export function machineSecrets(home: string): Record<string, string> {
