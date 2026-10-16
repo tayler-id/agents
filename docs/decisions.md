@@ -361,6 +361,17 @@ Tayler went with the coordinator's picks on all of these.
   - The daemon refuses to save a screenshot while a page in the box's browser shows a known secret value. It can't cover a secret shown outside the page.
   - A page that can't give its text within 5 seconds, such as one an open alert holds, refuses every screenshot until it can. That takes away saving proof of a dialog, which an agent could do before.
 
+### Agent setup and copies
+
+- **Purpose.** A person copies a teammate's agent in one tap and gets its setup, an agent runs the Claude Code hooks its setup names, and a hook's effect lands in the record.
+- **How it works.**
+  - An agent has hooks, commands its machine runs when a message arrives, a tool runs, a turn ends or a session starts. The agent's owner or a team admin adds them, since a hook is as strong as a plugin's command. The daemon writes them to `.claude/settings.local.json` and starts Claude Code with hook events on, so each run is a notice in the session's record. A file a hook writes in a task's folder is a document.
+  - Create a copy makes a new agent for the person who asks, with the source's title, instructions, skills, plugins, routines and hooks and the team's memories. It never carries what the agent remembers about a person, and never a secret value. It saves no template. The button sends nothing, because the server picks the name (`name-copy`, then `name-copy-2`), the machine (the person's own box, else a Mac they own) and the memories, so the controls need no form. A person with no machine of their own is told to name one.
+  - One shape, `Recipe`, serves copies and templates. Templates keep hooks and no memories.
+  - The controls are small components that take props, in `app/src/agent/`, so the redesigned agent panel can use them. Its Share menu calls the copy endpoint for "Create a copy" and the template endpoint for "Share a template link".
+- **Implementation.** `shared/recipe.ts`, `server/agents.ts`, `daemon/agentfiles.ts`, `app/src/agent/` and migration 0017. `test/step24.ts` and `test/step24b.ts` check them with the stand-in for Claude, and `test/step24d.ts` checks the hooks with the real Claude Code against a stand-in for the Anthropic API. Where the build differs from the design, "Templates, sharing and cloning" in `docs/design/target-architecture.md` says so.
+- **Status.** Built on the branch `agent-copies`, not landed. Nothing has run on the live system, and no real model has run these hooks. A box runs an agent's hooks only after its image is rebuilt and its container recreated, and a Mac after its daemon restarts.
+
 ### The cloud half moves to AWS
 
 - **Purpose.** Boxes and long-running work keep going when this Mac sleeps.
@@ -392,16 +403,6 @@ Tayler went with the coordinator's picks on all of these.
   - The regression is accepted. Only admins add team connectors, only an agent's owner or manager adds its servers, and a Mac's owner approves the exact command before a server runs on that Mac. Today any teammate can add a server to any agent. This is decision 17, option (a).
 - **The design's picks, which Tayler let stand on 2026-10-15.** Hosted connectors are called from the server's gateway, so no connector token reaches a computer (13). An agent acts as the person whose turn it is, and team accounts are for service accounts only (14). Read-only tools are on and other tools ask (16). MCP apps are off for each connector until a manager turns them on (18). The app offers reads, opening a page and two writes the person confirms as WebMCP tools, never approvals or secrets (19). An agent's browser takes tools from no site until the team lists its origins (20).
 - **Status.** Designed. Building starts after seats, with secrets from the app first.
-
-### Agent setup and copies
-
-- **Purpose.** A person copies a teammate's agent and gets its setup, an agent runs the Claude Code hooks its setup names, and a hook's effect lands in the record.
-- **How it works.**
-  - An agent has hooks, commands its machine runs when a message arrives, a tool runs, a turn ends or a session starts. The agent's owner or a team admin adds them, since a hook is as strong as a plugin's command. The daemon writes them to `.claude/settings.local.json` and starts Claude Code with hook events on, so each run is a notice in the session's record. A file a hook writes in a task's folder is a document.
-  - Copy makes a new agent for the person who asks, on a machine they may use, with the source's title, instructions, skills, plugins, routines and hooks, and the team's memories only when they ask. It never carries what the agent remembers about a person, and never a secret value. It saves no template.
-  - One shape, `Recipe`, serves copies and templates. Templates keep hooks and no memories.
-- **Implementation.** `shared/recipe.ts`, `server/agents.ts`, `daemon/agentfiles.ts`, `app/src/Hooks.tsx`, `app/src/CopyAgent.tsx` and migration 0017. `test/step24.ts` and `test/step24b.ts` check them with the stand-in for Claude, and `test/step24d.ts` checks the hooks with the real Claude Code against a stand-in for the Anthropic API. Where the build differs from the design, "Templates, sharing and cloning" in `docs/design/target-architecture.md` says so.
-- **Status.** Built on the branch `agent-copies`, not landed. Nothing has run on the live system, and no real model has run these hooks. A box runs an agent's hooks only after its image is rebuilt and its container recreated, and a Mac after its daemon restarts.
 
 ### Under evaluation
 

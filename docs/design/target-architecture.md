@@ -558,12 +558,13 @@ type Recipe = {                                   // changed. Today's fields, th
 - Changes: versions are kept, and the recipe gains fields.
 - New: copying an agent, export and import, provenance, hooks, and promoting a memory to the team.
 
-**Built so far.** Hooks and copies are built on branch `agent-copies`. `test/step24.ts`, `test/step24b.ts` and, with the real Claude Code, `test/step24d.ts` check them. The build differs from the plan above in six ways.
+**Built so far.** Hooks and copies are built on branch `agent-copies`. `test/step24.ts`, `test/step24b.ts` and, with the real Claude Code, `test/step24d.ts` check them. The build differs from the plan above in seven ways.
 
 - A copy does not save a template version. It reads the source agent into a recipe and installs it in the new agent, so copying changes no template the team keeps. The new agent records the one it came from in `agents.copied_from_agent_id`, in place of `template_version_id`.
 - Versions are not kept. Saving a template again still overwrites it, and `template_versions` is not built.
 - The recipe gains `hooks` and `memories` and no other new field. The engine, the avatar, reference documents and the first message have no reader yet.
 - Hooks are rows of their own, in `agent_hooks`, with a typed event, matcher, command and time limit, in place of an untyped blob. Six events can be set. Only the agent's owner or a team admin changes them, since a hook is a command on the agent's machine. `docs/data-model.md` describes the table.
+- Create a copy is one tap with nothing to pick. The server names the copy after the agent with `-copy`, puts it on the person's own box or a Mac they own, and carries the team's memories unless the request says `memories: false`, where the plan had the person pick "with the team's memories". A person with no machine of their own is told to name one. The answer holds the person's new conversation with the copy.
 - The copy's first message places no turn on a seat, since the door and seats are other steps. It runs where any message to the agent runs.
 - Nothing promotes a memory about a person to the team's, offers a Mac's own Claude Code setup as a recipe, or adds recall and sort tools to memory.
 
