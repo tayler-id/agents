@@ -54,6 +54,13 @@ Tayler set this on 2026-10-14. Agents is done when a team can do all of it from 
 **Where the team already works**
 - GitHub, Slack and email.
 
+**Voice, meetings and calendars**, added by Tayler on 2026-10-16
+- People talk with agents by voice as well as by typing, and dictate into any message box.
+- Google and Microsoft calendars connect, so agents see upcoming meetings, prepare for them and join them.
+- Meetings happen in the app with people and agents together, with audio, video and screen sharing. Agents talk in them.
+- Every meeting has a transcript in the record, with who said what. Tasks and requirements are created right from it, with a person's yes.
+- Phone calls come after meetings.
+
 **Connectors and MCP**, added by Tayler on 2026-10-15
 - Agents reach the team's knowledge and tools through connectors, starting with Jira, Confluence and Slack. A person connects one from the app by signing in, with no token pasted onto a machine, and picks which agents may use it.
 - Any MCP server can be added, run on the agent's computer or hosted, including hosted ones that sign in with OAuth.
