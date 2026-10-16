@@ -146,6 +146,19 @@ function probe(headers: Record<string, string>): Promise<{ ws: WebSocket; refuse
     ws.once('error', () => undefined)
   })
 }
+// Whether a process is still running.
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    // ESRCH: no such process.
+    return false
+  }
+}
+// The process id the daemon keeps for a session's harness while it runs.
+const harnessPid = (agentsHome: string, session: string) => Number(readFileSync(join(agentsHome, 'sessions', `${session}.pid`), 'utf8'))
+
 // When a WebSocket has closed, with the code it closed with. One that has closed already gives 0, since its code is gone.
 const closedWith = (ws: WebSocket) => new Promise<number>((resolve) => {
   if (ws.readyState === WebSocket.CLOSED) resolve(0)
@@ -350,12 +363,14 @@ async function main() {
   check(putFrames === 1, `only the one value that could be set was sent to the computer (${String(putFrames)} secret_put frame)`)
 
   // Setting it again replaces the value, and the old one is gone from the computer.
+  const holdingFirst = harnessPid(homes.a, scoutSession)
   const replaced = await ask(alice, 'POST', valueRoute, { value: value.second })
   check(replaced.status === 200 && !holds(replaced.text, value.second), `setting it again answers 200 (${String(replaced.status)})`)
   const storedAgain = JSON.parse(readFileSync(secretsFile, 'utf8'))
   check(storedAgain.SENTRY_TOKEN === value.second && storedAgain.HAND_PLACED === HAND_PLACED, 'the new value, with its quote and backslash, is in secrets.json as written, beside the hand-placed one')
   check(filesHolding(homes.a, value.first).length === 0, `nothing of the old value is left on the computer, not even in the config that started the plugin (${filesHolding(homes.a, value.first).join(', ')})`)
   check((await all('select 1 from secret_sets where name = $1 and instance_id = $2', ['SENTRY_TOKEN', instanceA])).length === 1, 'the record still has one row for it')
+  check(await within(15, async () => !running(holdingFirst)), "the process that held the old value is stopped when the new one is set, and does not wait for scout's next message")
   check(await exchange(scoutDm, 'hello third time') === 'fake reply', 'scout answers its next message')
   check(startsOf(scout).length === 2, 'its idle session was stopped for the new value and started again, not left holding the old one')
   check(await pluginSees('TOKEN') === sha(value.second), 'the plugin started from the new config gets the new value, quote and backslash intact')
@@ -403,26 +418,31 @@ async function main() {
 
   // A secrets file the daemon cannot read is left alone, and so is one it cannot write.
   const rowBefore = await setRowOf(instanceA)
-  const corrupt = `{"OTHER": "${CORRUPT_MARK}", `
+  // The file starts with the mark, since Node's error for text that is not JSON quotes its first ten characters.
+  const corrupt = `${CORRUPT_MARK} {"OTHER": 1`
+  const quoted = CORRUPT_MARK.slice(0, 10)
   writeFileSync(secretsFile, corrupt, { mode: 0o600 })
   const refused = await ask(alice, 'POST', valueRoute, { value: value.sixth })
-  check(refused.status === 409 && /not valid JSON/.test(refused.json.error) && !refused.text.includes(CORRUPT_MARK) && !holds(refused.text, value.sixth) && readFileSync(secretsFile, 'utf8') === corrupt,
+  check(refused.status === 409 && /not valid JSON/.test(refused.json.error) && !refused.text.includes(quoted) && !holds(refused.text, value.sixth) && readFileSync(secretsFile, 'utf8') === corrupt,
     `a secrets file that is not JSON is refused, not rewritten and not quoted (${String(refused.status)} ${String(refused.json.error)})`)
-  check(!daemons.some((d) => d.text().includes(CORRUPT_MARK)) && !api.text().includes(CORRUPT_MARK), 'and neither log quotes what was in the file')
+  check(!daemons.some((d) => d.text().includes(quoted)) && !api.text().includes(quoted), 'and neither log quotes what was in the file')
   writeFileSync(secretsFile, JSON.stringify({ SENTRY_TOKEN: value.fourth, HAND_PLACED }), { mode: 0o600 })
   chmodSync(homes.a, 0o500)
   const unwritable = await ask(alice, 'POST', valueRoute, { value: value.sixth }).finally(() => { chmodSync(homes.a, 0o700) })
-  check(unwritable.status === 409 && /could not change/.test(unwritable.json.error) && !holds(unwritable.text, value.sixth) && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.fourth,
+  check(unwritable.status === 409 && /could not change what this computer holds/.test(unwritable.json.error) && !holds(unwritable.text, value.sixth) && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.fourth,
     `a folder the daemon cannot write to is refused with the daemon's words, and the file is as it was (${String(unwritable.status)} ${String(unwritable.json.error)})`)
   check((await setRowOf(instanceA))?.set_at === rowBefore?.set_at, 'neither refusal changed what the record says about when it was set')
 
   // Removing the value from the app removes it from the computer.
+  check(await exchange(scoutDm, 'hello with the fourth value') === 'fake reply', 'scout starts its plugin with the value that is about to be removed')
+  const holdingFourth = harnessPid(homes.a, scoutSession)
   const removed = await ask(alice, 'POST', removeRoute)
   check(removed.status === 200 && removed.json.had === true && removed.json.name === 'SENTRY_TOKEN' && !holds(removed.text, value.fourth), `the owner removes it from the app (${String(removed.status)} ${removed.text})`)
   const afterRemove = JSON.parse(readFileSync(secretsFile, 'utf8'))
   check(!('SENTRY_TOKEN' in afterRemove) && afterRemove.HAND_PLACED === HAND_PLACED, 'it is gone from secrets.json, and the value put there by hand is not')
   const left = SENT.flatMap((text) => filesHolding(homes.a, text))
   check(left.length === 0, `no file on the computer holds any value that was set, the plugin's config included (${left.join(', ')})`)
+  check(await within(15, async () => !running(holdingFourth)), 'and the idle process whose plugin held the value is stopped')
   check((await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 0, 'the record no longer says it is set')
   check(await stops(scoutDm, 'hello after removal', 'SENTRY_TOKEN'), 'scout stops again, saying its computer lacks the value')
   check((await exchange(writerDm, 'What is the new token?'))?.includes('[secret:SENTRY_TOKEN]') === true, 'a value removed from the computer is still scrubbed when an agent repeats it')
@@ -510,9 +530,9 @@ async function main() {
 
   const mute = await playDaemon(() => undefined)
   const asked = Date.now()
-  const noAnswer = await ask(alice, 'POST', `${carlRoute}/value`, { value: value.carl })
-  check(noAnswer.status === 409 && /did not answer in time/.test(noAnswer.json.error) && Date.now() - asked >= LINK_ANSWER_MS - 500 && await lines() === 0,
-    `a computer that answers nothing is given ${String(LINK_ANSWER_MS / 1000)} seconds, then a refusal, and nothing is recorded (${String(noAnswer.status)})`)
+  const noAnswer = await boundedBy(ask(alice, 'POST', `${carlRoute}/value`, { value: value.carl }), 30, null)
+  check(noAnswer?.status === 409 && /did not answer in time/.test(noAnswer.json.error) && Date.now() - asked >= LINK_ANSWER_MS - 500 && await lines() === 0,
+    `a computer that answers nothing is given ${String(LINK_ANSWER_MS / 1000)} seconds, then a refusal, and nothing is recorded (${String(noAnswer?.status)})`)
   mute.close()
   await boundedBy(closedWith(mute), 5, 0)
 
