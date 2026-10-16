@@ -11,6 +11,8 @@ import { many, one, pool, tx, type Db } from './db.ts'
 import {
   COMMAND_STATUS_OF, commandSources, MACHINE_LOST_AFTER_MIN_SEC, MACHINE_LOST_AFTER_SEC, WORKING, type CommandStatus,
 } from '../shared/lifecycle.ts'
+import { movesInto } from '../shared/onboarding.ts'
+import { TURN_MOVES, TURN_OF_COMMAND } from '../shared/turns.ts'
 import type { EndedMessages, MessagePayload, Recovery, ResumeTurn } from '../shared/types.ts'
 import { appendEvents, recordAnswer, scrub, type AskBody, type AskTarget, type Decision } from './record.ts'
 
@@ -20,28 +22,57 @@ export class MessageMoveRefused extends Error {}
 
 export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
 
-// The only writer of a message command's status. It moves every command in `ids`
+// The runner gives up on a message that no machine took, because the machine it
+// was queued for went silent. The lifecycle has no move from queued to failed, since
+// a queued message may still be handed over, so this is the one way a message ends
+// without being handed over first, and it fails the message's placed turn in the
+// same statement. A message a machine took ends through moveMessages. Says whether
+// the message was still queued.
+export async function failUntakenMessage(db: Db, commandId: string, error: string): Promise<boolean> {
+  const failed = await many<{ id: string }>(db,
+    `with failed as (
+       update commands set status = 'failed', error = $2, done_at = now()
+       where id = $1 and kind = 'message' and status = 'queued' returning id
+     ), turned as (
+       update turns set status = 'failed', finished_at = now() where command_id in (select id from failed) and status = 'placed'
+     )
+     select id from failed`, [commandId, error])
+  return failed.length > 0
+}
+
+// The only writer of a message command's status, apart from failUntakenMessage
+// below, for a message no machine took. It moves every command in `ids`
 // to `to`'s status, or none of them. Each must be a message in a status
 // MESSAGE_MOVES allows that move from, and on `instanceId` when it is given.
-// Otherwise it throws, having changed nothing.
+// Otherwise it throws, having changed nothing. Each command's turn moves with it
+// in the same statement: it runs once its machine takes the command, and ends as
+// the command ends.
 export async function moveMessages(
   db: Db, ids: string[], to: 'handed_over' | 'done' | 'failed', options: { instanceId?: string; error?: string | null } = {},
 ): Promise<MovedMessage[]> {
   const wanted = [...new Set(ids)]
   const sources = commandSources(to)
+  const turn = TURN_OF_COMMAND[COMMAND_STATUS_OF[to]]
   const moved = await many<MovedMessage>(db,
     `with movable as (
        select id from commands
        where id = any($1) and kind = 'message' and status = any($3) and ($4::uuid is null or instance_id = $4)
        for update
+     ), moved as (
+       update commands set status = $2::text,
+         claimed_at = case when $2::text = 'claimed' then now() else claimed_at end,
+         done_at = case when $2::text = 'claimed' then done_at else now() end,
+         error = case when $2::text = 'failed' then $5 else error end
+       where id in (select id from movable) and (select count(*) from movable) = cardinality($1::uuid[])
+       returning id, kind, session_id, payload
+     ), turned as (
+       update turns set status = $6::text,
+         started_at = case when $6::text = 'running' then now() else started_at end,
+         finished_at = case when $6::text = 'running' then finished_at else now() end
+       where command_id in (select id from moved) and status = any($7)
      )
-     update commands set status = $2::text,
-       claimed_at = case when $2::text = 'claimed' then now() else claimed_at end,
-       done_at = case when $2::text = 'claimed' then done_at else now() end,
-       error = case when $2::text = 'failed' then $5 else error end
-     where id in (select id from movable) and (select count(*) from movable) = cardinality($1::uuid[])
-     returning id, kind, session_id, payload`,
-    [wanted, COMMAND_STATUS_OF[to], sources, options.instanceId ?? null, options.error ?? null])
+     select id, kind, session_id, payload from moved`,
+    [wanted, COMMAND_STATUS_OF[to], sources, options.instanceId ?? null, options.error ?? null, turn, movesInto(TURN_MOVES, turn)])
   if (moved.length !== wanted.length) {
     throw new MessageMoveRefused(`a message moves to ${to} only from ${sources.join(' or ')}, so none of ${wanted.join(', ')} moved`)
   }
@@ -323,5 +354,7 @@ export async function recoverMachine(client: pg.PoolClient, instanceId: string):
     [instanceId, ANSWER_LOST])
   const { rowCount } = await client.query(
     `update commands set status = 'queued', claimed_at = null where instance_id = $1 and status = 'claimed' and kind <> 'message'`, [instanceId])
+  // The daemon takes commands from here on, so turns waiting for it can be placed.
+  await client.query('update instances set ready = true where id = $1', [instanceId])
   return { requeued: rowCount ?? 0, resumed, ended, gaveUp }
 }

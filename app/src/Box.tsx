@@ -19,21 +19,28 @@ function useOwnBox(me: Me) {
   return { box, login, error }
 }
 
+// What a box is doing, as the welcome steps and the Your box page say it.
+const BOX_NOW: Record<ReturnType<typeof boxState>, string> = {
+  ready: 'is ready', asleep: 'is asleep until an agent on it has work', starting: 'is starting', 'could not start': 'could not start',
+}
+
 // What a newcomer sees in place of the welcome text until their box is ready and
-// they are signed in to Claude. Anyone else sees the welcome text.
+// they are signed in to Claude. Anyone else sees the welcome text. A box asleep
+// for having nothing to do wakes on its next turn, so it counts as ready.
 export function GettingStarted({ me, children }: { me: Me; children: ReactNode }) {
   const { box, login } = useOwnBox(me)
-  if (!box || (box.status === 'online' && login?.status === 'signed_in')) return children
-  const state = boxState(box)
+  const state = box ? boxState(box) : null
+  const up = state === 'ready' || state === 'asleep'
+  if (!box || !state || (up && login?.status === 'signed_in')) return children
   return (
     <section className="getting-started" aria-label="Getting started">
       <p className="kicker">Welcome to {me.team.name}</p>
       <h1>A few steps and you are working</h1>
       <ol className="steps">
         <li className="done"><span className="glyph" aria-hidden="true">✓</span><span>You joined the team.</span></li>
-        <li className={state === 'ready' ? 'done' : 'now'}>
-          <span className="glyph" aria-hidden="true">{state === 'ready' ? '✓' : '·'}</span>
-          <span>{state === 'ready' ? `Your box, ${box.name}, is ready.` : state === 'starting' ? `Your box, ${box.name}, is starting.` : `Your box, ${box.name}, could not start.`}</span>
+        <li className={up ? 'done' : 'now'}>
+          <span className="glyph" aria-hidden="true">{up ? '✓' : '·'}</span>
+          <span>{`Your box, ${box.name}, ${BOX_NOW[state]}.`}</span>
         </li>
         <li className={login?.status === 'signed_in' ? 'done' : ''}>
           <span className="glyph" aria-hidden="true">{login?.status === 'signed_in' ? '✓' : '·'}</span>
@@ -95,7 +102,8 @@ function BoxState({ box }: { box: Instance }) {
       <h2 className="kicker section">Box</h2>
       <p className="box-state" role="status">
         <span className={`dot ${state === 'ready' ? 'online' : state === 'starting' ? 'starting' : 'failed'}`} aria-hidden="true" />
-        {state === 'ready' ? 'Ready.' : state === 'starting' ? 'Starting. This takes under a minute.' : 'It could not start.'}
+        {state === 'ready' ? 'Ready.' : state === 'starting' ? 'Starting. This takes under a minute.'
+          : state === 'asleep' ? 'Asleep, since it had nothing to do. It starts again when an agent on it has work.' : 'It could not start.'}
       </p>
       {box.start_error && (
         <>

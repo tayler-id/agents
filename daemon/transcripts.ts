@@ -16,10 +16,11 @@ import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
 import { FolderId, SessionId } from '../shared/ids.ts'
 import { makeScrub, type Scrub } from '../shared/scrub.ts'
-import { FolderRow, holdsHome, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
+import { decidingFolder, FolderRow, holdsHome, insideFolder, TerminalSessionAnswer } from '../shared/terminal.ts'
 import { MAX_BODY_BYTES, type EventBatch, type NewEvent, type RawLine, type SessionStatus } from '../shared/types.ts'
 import { ApiError, type Api, type Config } from './api.ts'
 import { TranscriptLine, toolTraffic, transcriptBatch, withoutWhatStays } from './claude.ts'
+import { keptFolders } from './kept.ts'
 import { dotenvFinder, dotenvSecrets, type Secrets } from './secrets.ts'
 
 // Where Claude Code keeps transcripts. CLAUDE_CONFIG_DIR moves its whole config folder.
@@ -152,8 +153,12 @@ export async function followTerminalSessions(options: {
   let changed = false
   // Transcripts of sessions that are not a connected folder's, by path. They are never read again.
   const passed = new Set<string>()
-  // Connected folders, deepest first, so a session in a folder inside another belongs to the inner one.
+  // Connected folders, deepest first.
   let folders: FolderRow[] = []
+  // The folders turned Off on this Mac, whose sessions stay here whatever folder they are in is connected.
+  let kept: string[] = []
+  let keptKey = ''
+  let keptProblem = ''
   // The person's home folder, and any folder above it, is never read. It holds every project they have,
   // and the API can't tell where a Mac's home is, so a folder there that something with this machine's
   // token connected would send every session they start under it.
@@ -178,17 +183,26 @@ export async function followTerminalSessions(options: {
       }
     }
     folders = connected.filter((folder) => !holdsHome(folder.path, userHome)).sort((a, b) => b.path.length - a.path.length)
-    // A disconnected folder's sessions stop at once. One connected again starts
-    // over, so a session taken under its earlier connection stops too, even when
-    // this daemon missed the disconnect, as it does when stopped through it.
-    const connectedAt = new Map(folders.map((f) => [f.id, Date.parse(f.connected_at)]))
+    dropUndecided()
+  })
+
+  // A session stops at once when the folder it was taken under no longer decides
+  // where its sessions go. That folder was disconnected, or connected again, which
+  // starts over, or a folder holding the session's own folder inside it was turned
+  // Off or connected on its own. The daemon forgets the session, and the folder
+  // that decides now never takes it, since it started before that choice. This
+  // catches a disconnect the daemon missed while it was stopped through it too.
+  function dropUndecided() {
     for (const [file, tracked] of sent) {
-      if (connectedAt.get(tracked.folderId) !== Date.parse(tracked.connectedAt)) {
+      const deciding = decidingFolder(tracked.cwd, folders, kept, userHome)
+      const still = deciding !== null && !deciding.kept && deciding.folder.id === tracked.folderId
+        && Date.parse(deciding.folder.connected_at) === Date.parse(tracked.connectedAt)
+      if (!still) {
         sent.delete(file)
         changed = true
       }
     }
-  })
+  }
 
   // Transcripts and folders parked until the daemon starts again.
   const parked = new Set<string>()
@@ -380,7 +394,9 @@ export async function followTerminalSessions(options: {
       console.error(`terminal sessions, ${file}: its lines name session ${start.sessionId}, not the one in its name, so it stays on the Mac`)
       return undefined
     }
-    const folder = folders.find((f) => insideFolder(f.path, start.cwd))
+    // The deepest folder with a choice of its own decides, and one turned Off keeps the session on the Mac.
+    const deciding = decidingFolder(start.cwd, folders, kept, userHome)
+    const folder = deciding?.kept === false ? deciding.folder : undefined
     // A time that does not parse never counts as after, so such a session stays on the Mac.
     const startedAfter = folder !== undefined && Date.parse(start.timestamp) >= Date.parse(folder.connected_at)
     // The daemon's own sessions run in its home, and reach the record as an agent's.
@@ -450,6 +466,24 @@ export async function followTerminalSessions(options: {
   }
 
   async function readAll() {
+    // The folders turned Off, read again on every read, since the app's socket and
+    // the folders command change them. Without them the daemon could send what its
+    // person kept on the Mac, so it reads nothing until they can be read.
+    try {
+      const now = keptFolders(home)
+      const key = [...now].sort().join('\n')
+      keptProblem = ''
+      if (key !== keptKey) {
+        keptKey = key
+        kept = now
+        dropUndecided()
+      }
+    } catch (error) {
+      const problem = messageOf(error)
+      if (problem !== keptProblem) console.error(`terminal sessions: ${problem}. No session is read until it can be.`)
+      keptProblem = problem
+      return
+    }
     scrubs = new Map()
     let projects: string[] = []
     await attempt(PROJECTS, async () => { projects = listed(PROJECTS) })
@@ -476,6 +510,77 @@ export async function followTerminalSessions(options: {
       // Aborting the wait is how the daemon stops this loop.
       if (!signal.aborted) throw error
     })
+  }
+}
+
+// A folder Claude Code sessions on this Mac started in, and when its newest transcript last changed.
+export type UsedFolder = { path: string; usedAt: Date }
+
+// The folders Claude Code sessions on this Mac started in, for the list in the
+// Agents app on this Mac, which never leaves it. Each transcript folder's newest
+// transcript is read as far as the line that says where its session started. A
+// folder that is gone is left out, and so are the daemon's own sessions, which
+// run inside `home`. The path is the one Claude Code recorded, which is the
+// folder's path on disk, as connect stores it.
+export function claudeFolders(home: string): UsedFolder[] {
+  const used = new Map<string, Date>()
+  for (const dir of transcriptFolders()) {
+    for (const { file, changed } of transcriptsByAge(dir)) {
+      const start = startIn(file)
+      if (start === undefined) continue
+      const known = used.get(start.cwd)
+      if (stillThere(start.cwd) && !insideFolder(home, start.cwd) && (known === undefined || known < changed)) used.set(start.cwd, changed)
+      break
+    }
+  }
+  return [...used].map(([path, usedAt]) => ({ path, usedAt }))
+}
+
+function transcriptFolders(): string[] {
+  try {
+    return readdirSync(PROJECTS, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(PROJECTS, entry.name))
+  } catch (error) {
+    // Claude Code has not run on this Mac yet.
+    if (missing(error)) return []
+    throw error
+  }
+}
+
+// A folder's transcripts, newest first.
+function transcriptsByAge(dir: string): { file: string; changed: Date }[] {
+  const found: { file: string; changed: Date }[] = []
+  for (const name of listed(dir).filter((n) => n.endsWith('.jsonl'))) {
+    try {
+      found.push({ file: join(dir, name), changed: statSync(join(dir, name)).mtime })
+    } catch (error) {
+      // Claude Code's cleanup removes old transcripts, so one can go between listing it and looking at it.
+      if (!missing(error)) throw error
+    }
+  }
+  return found.sort((a, b) => b.changed.getTime() - a.changed.getTime())
+}
+
+// Where a transcript's session started, when its first START_BYTES say.
+function startIn(file: string): Start | undefined {
+  try {
+    for (const line of readLines(file, 0, START_BYTES)) {
+      const start = Start.safeParse(parseJson(line.text))
+      if (start.success) return start.data
+    }
+    return undefined
+  } catch (error) {
+    // Removed by Claude Code's cleanup since it was listed.
+    if (missing(error)) return undefined
+    throw error
+  }
+}
+
+function stillThere(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch (error) {
+    if (unresolvable(error)) return false
+    throw error
   }
 }
 

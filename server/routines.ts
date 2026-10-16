@@ -1,15 +1,19 @@
 // Routines: an agent's standing jobs. When one comes due, or someone runs it
 // from the app, its prompt goes to the agent's main conversation, where the team
-// sees it and the agent's reply.
+// sees it and the agent's reply. Each firing is a turn, so turns keep every
+// firing, whoever asked for it.
 
 import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
 import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, appendMessage, conversationSession, HttpError } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
+import { requestTurn } from './scheduler.ts'
+import { AgentId, ConversationId, RoutineId, SessionId, TeamId, type PersonId } from '../shared/ids.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
-export async function sendRoutine(client: pg.PoolClient, routineId: string) {
+// `askedBy` is the person who ran it from the app, or null when it came due.
+export async function sendRoutine(client: pg.PoolClient, routineId: string, askedBy: PersonId | null) {
   const routine = await maybe<{
     id: string; name: string; prompt: string; agent_id: string; team_id: string; home_instance_id: string | null
     harness: 'claude' | 'codex'; model: string | null; instructions: string
@@ -32,14 +36,15 @@ export async function sendRoutine(client: pg.PoolClient, routineId: string) {
   const [seq] = await appendEvents(client, session.id, {
     events: [{ clientId: `message:${message.id}`, kind: 'user', text, body: { text, messageId: message.id, routineId: routine.id } }],
   })
+  if (seq === undefined) throw new Error(`routine ${routine.id}'s prompt did not reach its session`)
   const payload: MessagePayload = {
     permissions: CONVERSATION_PERMISSIONS, text, agentId: routine.agent_id, harness: routine.harness, model: routine.model, instructions: routine.instructions,
     harnessSessionId: session.harness_session_id, ...(await agentKit(client, routine.agent_id, [])),
   }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     select $1, $2, $3, 'message', $4, id from events where session_id = $3 and seq = $5`,
-    [routine.team_id, session.instance_id, session.id, JSON.stringify(payload), seq])
+  await requestTurn(client, {
+    source: 'routine', teamId: TeamId.parse(routine.team_id), agentId: AgentId.parse(routine.agent_id), askedBy,
+    conversationId: ConversationId.parse(main.id), routineId: RoutineId.parse(routine.id),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
   await client.query('update routines set last_fired_at = now() where id = $1', [routine.id])
   return main.id
 }

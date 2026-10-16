@@ -430,3 +430,17 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; backgro
 .device-code { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; background: var(--raised); border-radius: 8px; padding: 8px 14px; }
 .task-place { margin-top: 2px; }
 .form input[type="password"] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+
+/* Terminal folders. Rows sit between hairlines, and each folder has one control
+   of three choices. The chosen one is a brighter surface and heavier type. */
+.folder-list { list-style: none; margin: 0; padding: 0; }
+.folder-list > li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 9px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.folder-place { display: grid; gap: 1px; flex: 1 1 240px; min-width: 0; }
+.folder-place .path, .folder-note { overflow-wrap: anywhere; }
+.folder-note { flex-basis: 100%; }
+.choice { display: inline-flex; flex-shrink: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.choice button { border: 0; border-radius: 0; padding: 4px 12px; background: transparent; }
+.choice button + button { border-left: 1px solid var(--line); }
+.choice button[aria-pressed="true"] { background: var(--raised); font-weight: 600; }
+.choice button:focus-visible { border-color: var(--line); text-decoration: underline; text-underline-offset: 3px; }
+.temporary summary { cursor: pointer; color: var(--muted); padding: 8px 0; }

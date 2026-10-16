@@ -25,7 +25,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
   - It numbers each session's events and each conversation's messages, so order holds when people and agents write at once.
   - It skips anything already written, so a retry never adds a duplicate.
   - It scrubs secrets a second time.
-  - It links things together. A person's message becomes a post in the conversation, a user event in the agent's session, and a command for the agent's machine. When the agent's turn ends, its last words become its post in the conversation, linked to the event that wrote them.
+  - It links things together. A person's message becomes a post in the conversation, a user event in the agent's session, and a turn, which the scheduler hands to the agent's machine as a command. When the agent's turn ends, its last words become its post in the conversation, linked to the event that wrote them.
 - **Helps later.** Rooms, tasks, asks and artifacts plug into the same functions, so the numbering and the links stay right everywhere.
 
 ### The API (`server/api.ts`)
@@ -75,9 +75,10 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** Colima, Tailscale and the API start on their own after a reboot.
 - **Helps later.** Teammates can count on the server being up.
 
-### Live reading: Electric and the sync proxy (`server/sync.ts`)
+### Live reading: Electric and the sync proxy (`server/sync.ts`, `test/step2c.ts`)
 
 - **Solves now.** The app and the daemons read Postgres live over plain HTTP. Electric follows Postgres's change log like a read replica and streams new rows. The proxy in front of it picks the table and the filter from who is asking, so a person sees only their team, minus private conversations and tasks they are not in. A client never names its own filter.
+- **What a client's read may carry.** The proxy passes on `offset`, `handle`, `live` and `cursor` and drops every other key. A read with a subset key gets 400, because Electric lets a subset's filter name a column the shape hides. A shape that lists its `columns` also sends them as `queryable_columns`, so Electric would refuse such a filter itself. `test/step2c.ts` checks the refusal through the instances shape, and that live reads, their cursor and the 409 for a replaced shape still work.
 - **Helps later.** Every new list in the app is one more named shape. Runs, stages, pipelines, documents and proposals came in phase 2 and 3 this way.
 - **Watch for.** Electric 1.8.1 never sends a row that moves into a filter ORing two subqueries. Sessions are therefore two shapes, one for conversations and one for tasks, and `check:step2` fails if a session started after a view opened does not arrive whole. Every live shape holds one of the browser's six connections over plain HTTP, so the sidebar polls instead.
 
@@ -96,9 +97,9 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** Anything that waits on a person is an ask: a tool approval, a pipeline's gate, a hand-off. It shows as a card in the conversation or run, and anyone on the team can answer it. "Always" and "never" on a tool approval become standing rules that answer the next one.
 - **Helps later.** Forms, drafts and secret requests are more kinds of the same ask.
 
-### The app (`app/`) and the desktop app (`desktop/main.cjs`)
+### The app (`app/`) and the desktop app (`desktop/main.cjs`, `desktop/preload.cjs`)
 
-- **Solves now.** One screen for the team: agents, conversations, pipelines, runs, what is running now, and machines. A conversation shows posts, live typing, ask cards and interrupt. A session panel shows every step an agent took. Agent replies and documents render their markdown. The Electron app opens the server's tailnet address.
+- **Solves now.** One screen for the team: agents, conversations, pipelines, runs, what is running now, and machines. A conversation shows posts, live typing, ask cards and interrupt. A session panel shows every step an agent took. Agent replies and documents render their markdown. The Electron app opens the server's tailnet address, and its preload gives the server's page three calls to the Mac's daemon, for the Terminal folders page.
 - **Helps later.** Rooms, memory, skills and routines get their own views in phase 4.
 
 ### Team-record tools (`daemon/record-mcp.ts`, `server/teamrecord.ts`)
@@ -191,7 +192,7 @@ Each part, the problem it solves now, and what it makes possible later. I update
 
 ### Routines (`server/routines.ts`)
 
-- **Solves now.** A routine sends a prompt to its agent's main conversation on a cron schedule, or when someone runs it from the app. The team sees the prompt and the reply.
+- **Solves now.** A routine sends a prompt to its agent's main conversation on a cron schedule, or when someone runs it from the app. The team sees the prompt and the reply. Each firing is a turn with the routine's id and whoever ran it, so the turns table keeps every firing. No page shows that history yet.
 
 ### Tasks people start (`server/tasks.ts`, `app/src/Work.tsx`)
 
@@ -224,9 +225,9 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 
 ### A box for each person (`server/boxes.ts`, `app/src/Box.tsx`)
 
-- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never stops for being idle. It never gets the team's Claude token. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
+- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never gets the team's Claude token. It goes to sleep after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it, a command is queued for it, its owner starts a Claude sign-in, or a person holds its screen. The Your box page and the welcome steps say it is asleep, and the Team page lists it so. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
 - **Helps later.** Each person's agents run on their own computer and their own Claude account, so one person's work doesn't slow or bill another's.
-- **Not done.** Personal boxes run all the time. Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them.
+- **Not done.** Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them. A person can watch an asleep box's screen only once something wakes it, since the Screen view does not wake it.
 
 ### The Claude sign-in relay (`server/claudelogin.ts`, `server/box-routes.ts`, `daemon/claude-login.ts`)
 
@@ -439,10 +440,10 @@ The design is in `docs/design/projects.md`.
 
 The design, with what is not done and the calls waiting on Tayler, is `docs/design/local-sessions.md`.
 
-### Connected folders (`daemon/folders.ts`, `server/folders.ts`, the `connected_folders` table)
+### Connected folders (`daemon/folders.ts`, `daemon/kept.ts`, `server/folders.ts`, the `connected_folders` table)
 
-- **Solves now.** A person connects a folder on their Mac once, with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again.
-- **Helps later.** The app can list a Mac's folders and disconnect one through the same rows.
+- **Solves now.** A person connects a folder on their Mac once, from the Terminal folders page in the Agents app on the Mac or with `node daemon/folders.ts connect`, and every Claude Code session they start in it, or in a folder inside it, from their own terminal lands in the record. A folder's own choice wins over the folder it is in. Off on a folder inside a connected one keeps its sessions on the Mac, and `daemon/kept.ts` keeps that Off on the Mac, one file per folder in `~/.agents-app/kept`, so the name of a folder never connected never reaches the server. Only the Mac connects or disconnects its folders, with its machine token, so nobody in the app can make another person's sessions leave their Mac. The team sees a folder's sessions, and `--private` keeps them to the person who connected it. Only `--team` widens a private folder again. The command and the app's socket call the same `connectFolder` and `disconnectFolder`.
+- **Helps later.** Codex sessions in a connected folder can land through the same rows, with a reader for Codex's transcripts.
 
 ### The transcript reader (`daemon/transcripts.ts`, `transcriptBatch` in `daemon/claude.ts`)
 
@@ -454,6 +455,11 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 - **Solves now.** The sidebar's From terminals lists recent terminal sessions by folder and whose terminal they ran in, and Running now marks a live one as terminal. Each opens on its own page, `#/l/<session id>`, with every event. Agents' `search_record` finds them like any session the team shares.
 - **Helps later.** A teammate's Claude finds a fix made in a terminal, which is where most fixes are made today.
 
+### Connecting folders from the app (`daemon/app-socket.ts`, `desktop/preload.cjs`, `app/src/Folders.tsx`, `shared/socket.ts`, `shared/body.ts`)
+
+- **Solves now.** A person connects a folder from the Agents app on their Mac, with no command to type. The Terminal folders page, `#/folders`, lists the folders Claude Code ran in on that Mac, newest first, each with one control: Off, Team or Just me, showing the choice that decides where its sessions go. Before Team shows the team sessions in the record they can't see now, the daemon refuses it until the person says yes to their count, which the page asks about. The page reaches the Mac's daemon through `desktop/preload.cjs`, which gives it only list, connect and disconnect, only for the server's own page, and one change for each click or key press. The daemon answers on a Unix socket, `~/.agents-app/run/app.sock`, that only that macOS user can open, and connects with the folders command's own functions. It listens with `listenOnSocket` in `shared/socket.ts`, as the API's people socket does, so a second daemon leaves a running one's socket alone, and reads each ask with `shared/body.ts`, the API's body reader. The names of folders that aren't connected go to the app on the Mac and nowhere else. In a browser the page lists the person's connected folders and says to open the Agents app on the Mac to change them.
+- **Helps later.** The one signed download starts the daemon from the desktop app, and this page is where its person connects folders there.
+
 ### The step 21 check (`test/step21.ts`)
 
 - **Solves now.** It runs the real `claude` CLI with `haiku`, headless, through the real daemon, API and Electric. It connects a folder and runs sessions in it, in a folder inside it, beside it, before it was connected and after it was disconnected, and in a private folder. Then it checks what the record holds and what it doesn't, the scrubbing, the picture that stayed on the Mac, the subagent, what each person sees in the API and in Chromium, a daemon restart, and what the API refuses.
@@ -463,6 +469,11 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 
 - **Solves now.** It writes Claude Code's transcript lines itself, into a temp folder the daemon reads as `CLAUDE_CONFIG_DIR`, and runs the real daemon, folders command, API and Electric on them, with no Claude. It takes about a minute and a half, on ports 8110 to 8113. It holds the review's fixes for terminal sessions, each as a line that went red under a break of what it guards. `test/read-meter.ts` is loaded into the daemon it starts and counts the bytes the daemon reads from each file, the biggest buffer a read was given and the CPU time it used, so the check can say how much a read cost and not only that it landed.
 - **Helps later.** A change to how the daemon reads, scrubs, sends or withholds a transcript gets its answer in about a minute and a half, where step 21 takes about three and spends a little of the subscription.
+
+### The step 21c check (`test/step21c.ts`)
+
+- **Solves now.** It connects folders from the app the way a person does. It writes Claude Code's transcripts into a stand-in home folder, runs the real API, daemon and Electric, drives the Electron app's Terminal folders page, and opens the page in Chromium, Firefox and WebKit at desktop and phone width, on ports 8140 to 8144, in about 45 seconds. Its 51 lines cover the socket's modes, the list and its order, Team, Just me and Off with the sessions that land or stay on the Mac, a folder inside a connected one, the question before a private folder's sessions are shown the team and the daemon's own refusal without it, the home folder and root refusals, what the bridge refuses, one change per click, a second daemon, a crashed daemon's socket, every request the daemon and the page sent the server, and a search of every Postgres table and the API's log for the names of folders never connected.
+- **Helps later.** When the signed download changes how the daemon starts, this check says whether the page still connects folders and keeps the names of the others on the Mac.
 
 ## Worktrees and landing (`daemon/agents-git/`, `test/step22.ts`, `test/fake-gh.ts`, `test/fake-docker.ts`)
 
@@ -604,3 +615,33 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 ### The AWS checks (`test/step11.ts` to `test/step11g.ts`, `test/netlab.ts`, `test/fake-aws.ts`)
 
 - **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, and through the one in colima's VM on this Mac, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.
+
+## One door for turns
+
+The design is "A scheduler places every turn" in `docs/design/target-architecture.md`, step 1 of its build order.
+
+### The scheduler (`server/scheduler.ts`, `shared/turns.ts`, `0014_door.sql`)
+
+- **Solves now.** Every turn an agent is asked to take is a row in `turns`: a person's message in a DM or a room, a person's message to a task, a routine's firing, and a pipeline's stage, its reminder to report and a coach replay. Each says who asked and what for, and carries the session, the prompt's event and the payload the engine is handed. `requestTurn` is the one way in, and `server/scheduler.ts` is the only file that writes a message, stop or interrupt command, through `requestTurn` and `signalSession`. For a Mac it writes one at once, since a Mac's daemon takes commands whenever it comes. For a box it writes one once the box is online and its daemon has reported in, which is once its desktop is up. Until then the box's turn waits, with `computer_starting` for a box a person or a run holds, which the runner starts, and `machine_offline` for a box nobody holds. The runner's loop places waiting turns as their boxes report in, and marks a running turn stuck when its session has had no new event for `AGENTS_TURN_STUCK_MIN`, 10 minutes by default. A placed turn runs and ends with its message command, in the same statement that moves the command. A room still gives one agent its go at a time, and a turn whose deadline passes while it waits is cancelled. A box marked asleep takes no work, and the mark and the placing of a turn lock the box's row against each other, so a turn asked for while a box is going to sleep waits and wakes it. `signalSession` cancels a session's waiting turns before it writes a stop or an interrupt, for the runner, the replays, a room's deadline and the interrupt route. A person cancels a turn that waits with `POST /v1/turns/<id>/cancel`, and a room's turn is left to its deadline. Turns placed together keep the order they were asked in, a session waiting for a person's answer is not marked stuck, and one waiting turn that cannot be read fails alone, with its session told why, and does not hold up the rest. A governed stage whose machine went silent fails with its message, which ends with its turn through `moveMessages` or, for a message no machine took, `failUntakenMessage`, and with its waiting turn cancelled.
+- **Helps later.** Seats, budgets, job computers and agent chains decide where and when a turn runs in one place, before any machine gets it. `whereTurnsRun` is the one choice of place, so a place on the server can be added there (decision 1). The stuck mark is what a notification to the asker will read.
+- **Not done.** The design says a turn waits while its Mac is offline, and no turn does. A turn for a Mac sits in its queue, as before the door, so a conversation shows nothing while the Mac is off, and step2, step12 and step20a, which read a Mac's queue while it never reports in, pass as they were. Whether a turn for a Mac should wait is Tayler's call. What happens to a turn requested in the seconds while a box is being stopped to sleep is not checked.
+
+### The waiting line (`app/src/TurnWaits.tsx`)
+
+- **Solves now.** While a turn in a conversation or a task waits, the page shows the agent's name and why, such as "Starting Alice's computer" or "Waiting for box-pool-1, which is offline", with Docker's words when the box could not start, and a Cancel button for a turn that is not a room's. A running turn marked stuck shows when it was last heard from. The line goes once the turn has its machine, and the reply comes in its place. `turnLine` in `shared/turns.ts` says the words, so the app and step23 read one function. It reads a shape of only those turns, with no prompt in it, every 2 seconds, and holds no connection open.
+- **Helps later.** Waiting for a seat, a budget or a plan's limit are more reasons on the same line.
+
+### The step 23 check (`test/step23.ts`)
+
+- **Solves now.** It builds a box image under its own tag and gives a person their own box as a real container. A DM sent while the new box first starts waits, then the box answers. A routine's firing is kept as a turn. The box goes to sleep with nothing to do, a DM wakes it while its conversation reads that the computer is starting, and the check times the start and the reply. A DM to an agent on a box nobody holds waits, and the conversation reads that the box is offline. A DM to an agent on a Mac that is offline goes to the Mac's queue at once, and the Mac answers when its daemon starts. A hung turn is marked stuck and an event clears the mark. It reads the line the app shows for each of these from the rows a page reads. It also fails if any source file but the scheduler writes a message, stop or interrupt command, or any but durability changes a message's status, which `test/commands-scan.ts` reads from the code. It uses port 7701, so it runs under the run lock, and ports 8130 and 8131, which no other check uses.
+- **Helps later.** Each later step that places turns, such as seats, adds its own reasons to wait here.
+
+### The step 23c check (`test/step23c.ts`)
+
+- **Solves now.** It calls the scheduler, the box sleeper, the interrupt route's function and the governed stage's lost-machine check against the test database, with no machine and no port, so it needs no run lock. It marks a box asleep and asks for a turn, holds a request open across the mark and the mark open across a request, and expects the turn to wait and wake the box and the box not to be put to sleep under a turn on its way to it. It checks the order of turns placed together, that a session waiting for a person is not marked stuck, that one unreadable turn fails alone, that a stop, an interrupt and a person's cancel cancel a waiting turn and that a turn its machine has is left alone, and that a stage whose machine went silent fails with its message, its turn and its waiting turn.
+- **Helps later.** The next place a turn can be held, such as a budget, gets its edges checked here without a box.
+
+### The step 23b check (`test/step23b.ts`)
+
+- **Solves now.** It drives the conversation and task views in Chromium, Firefox and WebKit at desktop and phone width against a real API and runner, with a person's box that cannot start because its image does not exist. It expects "Starting your computer" with Docker's words and a Cancel button, the name of a box nobody holds that is offline, a teammate's view naming whose computer is starting, the same line on a task's page, and a quiet turn saying since when. Cancelling takes the line away and cancels the turn. It scans for accessibility problems, checks the phone fit and keeps screenshots in `test/ui-shots`. It uses ports 8150 to 8151 and 8250, so it needs no run lock.
+- **Not done.** WebKit logs three Content Security Policy console errors on the task page, with or without a waiting line, which agentsctl's visual shot reports and which this check does not fail on, since it records page errors only.

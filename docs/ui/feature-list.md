@@ -42,6 +42,7 @@ How to read it.
   - 2.20 Document panel (`/d/{artifactId}` after a task or run)
   - 2.21 File panel (`/f/{changeId}` after a task or run)
   - 2.22 Screen panel (`/screen/{instanceId}` or `/screen/{instanceId}/{sessionId}`)
+  - 2.23 Terminal folders (`#/folders`)
 - 3. Shared components and their states
   - 3.1 Markdown
   - 3.2 Code view
@@ -92,7 +93,7 @@ The window has these parts. `Workspace` (`App.tsx:113`) lays them out in a CSS g
 |---|---|---|---|
 | Topbar | A bar with a `Menu` button, the team name and a `Go to` button | Phone width only. CSS hides it above 760 px | `App.tsx:132-136`, `styles.css:102`, `styles.css:326` |
 | Sidebar | A `nav` named `Workspace`. It holds the team block, page links, create links and the lists in 1.2 | Always at desktop width. On a phone only while Menu is open | `App.tsx:137`, `App.tsx:188-468` |
-| Main area | One `main` element that holds the screen for the route. It is named `Team`, `Tailscale`, `Your box`, `Repos`, `Run`, `Task`, `Pipeline`, `Agent`, `Project` or `Terminal session` for those routes, and `Conversation` for every other route, forms and the welcome screen included | Always | `App.tsx:139-159` |
+| Main area | One `main` element that holds the screen for the route. It is named `Team`, `Tailscale`, `Your box`, `Repos`, `Terminal folders`, `Run`, `Task`, `Pipeline`, `Agent`, `Project` or `Terminal session` for those routes, and `Conversation` for every other route, forms and the welcome screen included | Always | `App.tsx:139-159` |
 | Side panel | The Session, Document, File or Screen panel, beside the main area | The hash ends in `/s/`, `/d/`, `/f/` or `/screen/` plus an id. One panel at a time | `App.tsx:160-171` |
 | Command palette | A modal dialog for finding things and starting new ones | After `⌘K` or `Ctrl+K`, the topbar `Go to`, or the sidebar `Go to` | `App.tsx:138`, `Palette.tsx` (see 3.9) |
 | Keyboard shortcuts | `⌘K` or `Ctrl+K` toggles the palette. `c` opens New task and `r` opens New room outside a field | Any time. The two single keys can be turned off | `Palette.tsx:50-73` |
@@ -106,7 +107,7 @@ The app renders under React's strict mode (`main.tsx:9`). The code has no global
 | Section | Rows | Refresh | Empty text | Code |
 |---|---|---|---|---|
 | Team block | The team name in bold and your login | none | | `App.tsx:276-279` |
-| Page links | `Team`, `Your box`, and for admins `Tailscale` | waiting logins every 10 s for admins | | `App.tsx:280-286` |
+| Page links | `Team`, `Your box`, `Terminal folders`, and for admins `Tailscale` | waiting logins every 10 s for admins | | `App.tsx:280-286`, and `Terminal folders` after `fb9e65b` |
 | Key notice | Admins only, from 14 days before the Tailscale key expires | 60 s | | `App.tsx:287-291` |
 | Create links | `New project`, `New task`, `New room`, `New agent`, and `Go to` with the shortcut | none | | `App.tsx:292-298` |
 | Projects | One row per project. Under it, its rooms, up to 5 tasks people started and up to 5 runs, newest first | projects 10 s | `No projects yet` | `App.tsx:300-338` |
@@ -130,6 +131,7 @@ Sidebar actions.
 |---|---|---|---|---|
 | `Team` link | Opens `#/team`. For admins the label gains the count of logins waiting to join | none | none | `App.tsx:281-283` |
 | `Your box` link | Opens `#/box` | none | none | `App.tsx:284` |
+| `Terminal folders` link | Opens `#/folders` (2.23) | none | none | `App.tsx`, after `fb9e65b` |
 | `Tailscale` link (admins) | Opens `#/tailscale` | none | none | `App.tsx:285` |
 | Key notice button (admins) | Opens `#/tailscale` | none | none | `App.tsx:289` |
 | `New project`, `New task`, `New room`, `New agent` | Open `#/n/project`, `#/n/task`, `#/n/room`, `#/n/agent` | none | none | `App.tsx:293-296` |
@@ -150,7 +152,7 @@ Sidebar states.
 |---|---|---|---|
 | Before the first read | A list has not been read yet | The list's empty text. No list has a loading text, and Machines shows nothing | `App.tsx:337-454` |
 | Selected | The row's id equals the open route's id. An agent row is selected when the open conversation is a DM with that agent, whoever's DM it is | Brighter surface and heavier type. There is no `aria-current` | `App.tsx:308`, `App.tsx:356`, `styles.css:127` |
-| Current page | The route is `Team`, `Your box` or `Tailscale` | The link is bold without underline | `App.tsx:281-285`, `styles.css:270` |
+| Current page | The route is `Team`, `Your box`, `Terminal folders` or `Tailscale` | The link is bold without underline | `App.tsx:281-285`, `styles.css:270` |
 | Draft task | A listed task has a draft session | A muted `draft` after the title | `App.tsx:321`, `App.tsx:384` |
 | Logins waiting | An admin, and at least one login waits | The link gains ` · {n} {verb} to join`, where the verb is `wants` for one login and `want` for more | `App.tsx:282` |
 | Key close to expiry | An admin, the key connected, 14 days or fewer left | `The Tailscale key expires in {days}`, where the count reads `day` or `days` | `Tailscale.tsx:45-46` |
@@ -189,6 +191,7 @@ The app has no router library. The URL hash holds the whole location. `readRoute
 | `#/tailscale` | Tailscale (2.17) | The `Tailscale` link, the key notice, `Connect Tailscale` | `App.tsx:285`, `Team.tsx:105` |
 | `#/box` | Your box (2.18) | The `Your box` link, `Set up your box` | `App.tsx:284`, `Box.tsx:44` |
 | `#/repos` | Repos (2.14) | `All repos` | `App.tsx:345` |
+| `#/folders` | Terminal folders (2.23) | The `Terminal folders` link | `App.tsx`, after `fb9e65b` |
 | `#/n/agent` | New agent (2.11) | `New agent`, the palette, `Make an agent on your box` | `App.tsx:296`, `Box.tsx:82` |
 | `#/n/room` or `#/n/room/{projectId}` | New room (2.4) | `New room`, the palette, the `r` key, `New room` on a project | `App.tsx:295`, `Projects.tsx:420` |
 | `#/n/task` or `#/n/task/{projectId}` | New task (2.5) | `New task`, the palette, the `c` key, `New task` on a project | `App.tsx:294`, `Projects.tsx:419` |
@@ -245,9 +248,10 @@ Both load the same bundle from the same server. The routes, shortcuts, panels an
 | Window | A tab | 1280 by 820 pixels, titled `Agents` | `main.cjs:37-42` |
 | Links that open a new window | Open in a new tab | Open in the system browser. The window opens no other window | `main.cjs:43-46` |
 | Closing | | Closing the last window quits the app | `main.cjs:50` |
-| Page isolation | | `contextIsolation` and `sandbox` are on, with no preload script | `main.cjs:41` |
+| Page isolation | | `contextIsolation` and `sandbox` are on. Since `fb9e65b` the preload is `desktop/preload.cjs` (2.23) | `main.cjs:41` |
+| This Mac's daemon | None. The Terminal folders page lists the person's connected folders only | The page lists this Mac's folders and connects them through `window.agentsMac`, which `main.cjs` passes to the daemon's socket, for the server's own page only (2.23) | `desktop/main.cjs`, `desktop/preload.cjs`, after `fb9e65b` |
 
-The shell defines no menu, preload script or message channel of its own. The app code never tests for Electron. Its only environment test is the Mac check that picks `⌘K` or `Ctrl+K` (`Palette.tsx:23`).
+The shell defines no menu. At `fb9e65b` it had no preload script or message channel, and the app code never tested for Electron. Since then its one preload, `desktop/preload.cjs`, and its one channel, `agents-mac`, serve the Terminal folders page (2.23), which tests for `window.agentsMac`. The app's other environment test is the Mac check that picks `⌘K` or `Ctrl+K` (`Palette.tsx:23`).
 
 ### 1.6 Phone width
 
@@ -940,6 +944,51 @@ Reasons the server gives when it closes a screen (`server/screens.ts`):
 The app itself closes with `the app could not read who holds the screen` when a control message does not match its schema (`Screen.tsx:41`). A refusal before the connection opens, such as `Only the app may open a screen.`, reaches the browser as a failed connection with no reason, so the panel shows `The connection to the screen dropped.`
 
 The screen area is a region named `The screen of {machine name}` (`the box` until read), scaled to fit, with no resizing of the box's desktop. The panel does not show who else is watching. At phone width the panel replaces the main area.
+
+### 2.23 Terminal folders (`#/folders`)
+
+Added after `fb9e65b`, so its code is cited by name, not line. A bare name is in `app/src/Folders.tsx`. The page is where a person connects the folders whose Claude Code sessions land in the record. In the desktop app on a Mac it lists that Mac's folders, each with its control. In a browser it lists the person's connected folders, read only. `FoldersPage` is a `section` named `Terminal folders`, opened by the sidebar's `Terminal folders` link. `docs/design/local-sessions.md` has the design.
+
+The header has the kicker `Terminal sessions`, the heading `Terminal folders`, and the line `Claude Code sessions you start in a connected folder land in the team's record. Team shows them to everyone on the team, Just me keeps them to you, and Off keeps them on this Mac, even in a folder inside a connected one.`
+
+In the desktop app (`ThisMac`) the heading `On this Mac` and the line `Folders where Claude Code ran on this Mac, newest first. Sessions from before a folder was connected stay on this Mac.` sit above a list named `Folders on this Mac`. Each row has the folder's name in bold, then muted `{path} · used {date}`, with ` · connected {date}` when it is connected and a path under the home folder written from `~`. A group named `Who sees sessions from {name}` holds three toggle buttons, `Off`, `Team` and `Just me`. The pressed one, a raised surface and heavier type, is the choice that decides where the folder's sessions go, its own or that of the connected folder they land through. A folder's own choice wins over the folder it is in.
+
+| Control | What happens | Confirm | On failure | Code |
+|---|---|---|---|---|
+| `Team` | Connects the folder, or changes it, so the team sees its sessions | Asked first when the folder has sessions in the record the team can't see now, which the daemon counts | The daemon's words under the row in red, `role="alert"` | `choose` in `ThisMac`, `desktop/preload.cjs`, `daemon/app-socket.ts` |
+| `Just me` | Connects the folder, or changes it, so only you see its sessions, the ones in the record too | none | Same | Same |
+| `Off` | Keeps the folder's sessions on this Mac from now on, even inside a connected folder. It disconnects the folder when it was connected, and the daemon keeps the Off on this Mac, so a folder never connected never reaches the server | none | Same | Same, `daemon/kept.ts` |
+| `Yes, show the team`, under the row while it asks | Makes the folder the team's, sending the count it asked about, which the daemon checks again | It is the confirmation | Same | `choose` in `ThisMac` |
+| `Keep it to me`, beside it, which takes the focus when the question appears | Closes the question and changes nothing | none | none | `keep` in `ThisMac` |
+| `Temporary folders, {n}` disclosure | Opens a list named `Temporary folders on this Mac`, of folders in the system's temporary folders, under the line `Folders in the system's temporary space, where tools and checks start Claude Code.` | none | none | `ThisMac` |
+
+While a change runs, every row's buttons are disabled. Each change answers one click or key press on the page, in the 5 seconds after it, and otherwise the row shows `A folder is connected or disconnected only when you choose it on the page.`
+
+| State | When | What shows | Code |
+|---|---|---|---|
+| Loading | The first list has not come back | `Asking this Mac's daemon for its folders…` | `ThisMac` |
+| No daemon | The first list failed | `This Mac's folders can't be listed. {reason}` in red, `role="alert"`, such as `Agents can't reach this Mac's daemon at {socket}: ECONNREFUSED.` | `ThisMac`, `desktop/main.cjs` |
+| Out of date | A later list failed | `The list may be out of date. {reason}` in red above the list, which keeps its rows | `ThisMac` |
+| Empty | Claude Code has not run on this Mac | `Claude Code hasn't run on this Mac yet. Start a session in a project folder, and the folder shows here.` | `ThisMac` |
+| Connected | After `Team` or `Just me` on a folder that wasn't connected itself, whether Off or landing through another folder | `Connected {name}. Claude Code sessions you start in it from now on land in the record, and the team sees them.`, or `only you see them`, with ` The team also sees the {n} sessions already in the record from it.` after `Yes, show the team` on a folder that was private before | `connectedText` |
+| Asking | `Team` on a folder with sessions in the record the team can't see now, one that is `Just me` or was and is now `Off`. The daemon refuses `Team` with their count, and the row asks with it. A count that changed by the time of `Yes, show the team` is asked about again | Under the row, a group named by its question, `Show the team the {n} sessions already in the record from {name}?`, with `Yes, show the team` and `Keep it to me`. The pressed choice stays and nothing changes | `choose` in `ThisMac`, `FolderItem`, `askedFirst` in `daemon/app-socket.ts` |
+| Kept | After `Keep it to me` | `Nothing changed. Only you see {name}'s sessions.` | `keep` in `ThisMac` |
+| Widened | After `Team` on a folder that was `Just me`, at once when it has nothing in the record, or after `Yes, show the team` | `The team sees {name}'s sessions now.`, with `, and the {n} sessions already in the record from it` before the full stop when there are any | `connectedText` |
+| Narrowed | After `Just me` on a folder that was `Team` | `Only you see {name}'s sessions now, the ones already in the record too.` | `connectedText` |
+| Off | After `Off` | `Disconnected {name}.` when it was connected, or `{name} is off.`, then ` Sessions you start in it from now on stay on this Mac`, with `, though it is inside {name}, which the team sees` (or `which only you see`) when a connected folder holds it, then `. The ones already in the record stay there.` | `offText` |
+| Already | Nothing was left to change | `{name} was already connected, and the team sees its sessions.` (or `only you see`), or `{name} was already off.` | `connectedText`, `offText` |
+| Warning | The folder's transcript folder name passes 200 characters | ` Warning: the folder's transcript folder name is {n} characters, and Claude Code shortens names past 200, so its sessions will not land.` after the result | `connectedText`, `daemon/folders.ts` |
+| Inside a connected folder | It has no choice of its own, and a connected folder holding it decides, whose choice is pressed | `Its sessions land through {name}, which the team sees.` or `which only you see.` | `shownFor` |
+| Off inside a connected folder | It is Off, or inside a folder that is, and a connected folder holds it | `Its sessions stay on this Mac, though it is inside {name}, which the team sees.` (or `which only you see.`) for the folder turned Off, and `Its sessions stay on this Mac, since {name} is off.` for a folder inside it | `shownFor` |
+| Left out | Claude Code ran in a folder whose path can't be a connected folder's, such as `/` | Under the list, `{path} isn't listed, since {why}.`, such as `/ isn't listed, since the root folder holds every folder on the Mac and can't be connected.` | `ThisMac`, `listFolders` in `daemon/app-socket.ts` |
+| Home folder | The home folder, or a folder above it | `Your home folder holds every project you have, so it can't be connected. Connect a project inside it.`, or `It holds your home folder, and with it every project you have, so it can't be connected. Connect a project inside it.` `Team` and `Just me` are disabled | `FolderItem` |
+| Other machines | A folder of the person's is connected on another machine | The heading `Connected on your other machines` and a list of that name, read only, as in a browser | `OtherMachines` |
+
+The daemon's refusals show as written, for example `{path} is your home folder or holds it, so every Claude Code session you start under it would land in the record.`, `{path} does not exist.` and `The team's server did not answer: {reason}` (`daemon/folders.ts`, `daemon/app-socket.ts`). A page the window was sent to on another site gets `Only the Agents page at {origin} may reach this Mac's daemon.` (`desktop/main.cjs`).
+
+In a browser (`Connected`) the heading `Connected` sits above a list named `Your connected folders`, in order of path. Each row has the folder's name in bold and its path muted, then `{Team or Just me} · {machine} · since {date}`. The machine reads `a machine` until its row is read. With none it shows `None of your folders are connected yet.` Below the list: `To connect a folder, or change who sees its sessions, open the Agents app on the Mac it is on.` A failed read shows its error in red.
+
+The desktop list is read every 10 s while the page is open, and again after each change. The connected folders and the machines are read every 10 s.
 
 ## 3. Shared components and their states
 

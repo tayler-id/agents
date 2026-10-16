@@ -9,11 +9,14 @@ import { z } from 'zod'
 import { BUILD } from './build.ts'
 import { many, maybe, one } from './db.ts'
 import { scrub } from './record.ts'
+import { failUntakenMessage, moveMessages } from './durability.ts'
+import { cancelWaitingTurns, signalSession } from './scheduler.ts'
+import type { SessionId } from '../shared/ids.ts'
 import { JUDGE_PERMISSIONS } from './permissions.ts'
 import { forge, repoPath } from './forge.ts'
 import { changes, commitOf, diffText, list, mergeBase, mergeTree, mirror, patchId, read, type Mirror } from './mirror.ts'
 import {
-  addRow, agentNamed, branchOf, finishRun, post, readTurn, REPORT_INSTRUCTION, sendPrompt, sendPush, setRow, signal,
+  addRow, agentNamed, branchOf, finishRun, post, readTurn, REPORT_INSTRUCTION, sendPrompt, sendPush, setRow,
   stageOf, stageSession, tail, taskOf, workspaceOf, type AgentRow, type Row, type Run, type Workspace,
 } from './runner.ts'
 import {
@@ -1095,7 +1098,7 @@ export async function pollDeploy(client: pg.PoolClient, row: Row): Promise<boole
 // An agent with no tool call or finished turn for the policy's liveness window
 // is stuck. It is replaced by a fresh session rather than resumed, up to the
 // policy's limit, then the stage fails and a person decides.
-export async function stuck(client: pg.PoolClient, run: Run, rows: Row[], row: Row, sessions: string[]): Promise<boolean> {
+export async function stuck(client: pg.PoolClient, run: Run, rows: Row[], row: Row, sessions: SessionId[]): Promise<boolean> {
   const governed = await policyOf(client, run)
   if (!governed || !row.started_at || !sessions.length) return false
   const { minutes, replacements } = governed.policy.liveness
@@ -1103,7 +1106,7 @@ export async function stuck(client: pg.PoolClient, run: Run, rows: Row[], row: R
     `select max(created_at) as at from events where session_id = any($1) and kind in ('user', 'tool_call', 'tool_result', 'usage')`, [sessions])
   const since = Math.max(row.started_at.getTime(), last.at?.getTime() ?? 0)
   if (Date.now() - since < minutes * 60_000) return false
-  for (const sessionId of sessions) await signal(client, run, sessionId, 'stop')
+  for (const sessionId of sessions) await signalSession(client, sessionId, 'stop')
   const replaced = rows.filter((r) => r.stage === row.stage && r.data.replaced === true).length
   if (replaced >= replacements) {
     await setRow(client, row, { status: 'failed', summary: `No tool call or finished turn for ${minutes} minutes, after ${replaced} fresh sessions.`, ended: true })
@@ -1114,22 +1117,39 @@ export async function stuck(client: pg.PoolClient, run: Run, rows: Row[], row: R
   return true
 }
 
-// A command left with a machine that stopped reporting can never finish. On a
-// repo with a policy the stage fails at once and the run waits on a person, so
-// a stall never shows as work in progress.
-export async function lostMachine(client: pg.PoolClient, run: Run, row: Row, sessions: string[]): Promise<boolean> {
+// A command, or a turn waiting for a box, left with a machine that stopped
+// reporting can never finish. On a repo with a policy the stage fails at once and
+// the run waits on a person, so a stall never shows as work in progress. A message
+// ends through the one writer of messages, with its turn, and a waiting turn is
+// cancelled, so nothing is sent to the machine when it comes back.
+export async function lostMachine(client: pg.PoolClient, run: Run, row: Row, sessions: SessionId[]): Promise<boolean> {
   if (!(await policyOf(client, run))) return false
-  const held = await maybe<{ id: string; name: string; status: string; last_seen_at: Date | null; created_at: Date }>(client,
-    `select c.id, i.name, i.status, i.last_seen_at, c.created_at from commands c join instances i on i.id = c.instance_id
-     where (c.id = $1 or c.session_id = any($2)) and c.status in ('queued', 'claimed') order by c.created_at limit 1`, [row.command_id, sessions])
-  if (!held || Date.now() - held.created_at.getTime() < SILENT_MACHINE_MS) return false
+  const held = await maybe<{ what: 'command' | 'turn'; id: string; kind: string | null; held_status: string; name: string; status: string; last_seen_at: Date | null; since: Date }>(client,
+    `select h.what, h.id, h.kind, h.status as held_status, i.name, i.status, i.last_seen_at, h.since
+     from (
+       select 'command' as what, c.id, c.kind, c.status, c.instance_id, c.created_at as since from commands c
+       where (c.id = $1 or c.session_id = any($2)) and c.status in ('queued', 'claimed')
+       union all
+       select 'turn', t.id, null::text, t.status, t.instance_id, t.requested_at from turns t
+       where t.session_id = any($2) and t.status = 'waiting'
+     ) h join instances i on i.id = h.instance_id
+     order by h.since limit 1`, [row.command_id, sessions])
+  if (!held || Date.now() - held.since.getTime() < SILENT_MACHINE_MS) return false
   const seen = held.last_seen_at
   const silent = held.status === 'offline' || seen === null || Date.now() - seen.getTime() > SILENT_MACHINE_MS
   if (!silent) return false
   const when = seen ? `has not reported since ${seen.toISOString()}` : 'has never reported'
-  await client.query(`update commands set status = 'failed', error = $2, done_at = now() where id = $1 and status in ('queued', 'claimed')`,
-    [held.id, `${held.name} ${when}`])
-  await setRow(client, row, { status: 'failed', summary: `${held.name} ${when}, so the command it holds for ${row.stage} cannot finish. Bring the machine back and let the stage try again, or stop the run.`, ended: true })
+  const error = `${held.name} ${when}`
+  if (held.what === 'turn') {
+    for (const sessionId of sessions) await cancelWaitingTurns(client, sessionId)
+  } else if (held.kind === 'message') {
+    if (held.held_status === 'claimed') await moveMessages(client, [held.id], 'failed', { error })
+    else await failUntakenMessage(client, held.id, error)
+  } else {
+    await client.query(`update commands set status = 'failed', error = $2, done_at = now() where id = $1 and status in ('queued', 'claimed') and kind <> 'message'`,
+      [held.id, error])
+  }
+  await setRow(client, row, { status: 'failed', summary: `${held.name} ${when}, so what it holds for ${row.stage} cannot finish. Bring the machine back and let the stage try again, or stop the run.`, ended: true })
   return true
 }
 

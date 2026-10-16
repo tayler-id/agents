@@ -116,7 +116,7 @@ When a person joins, the join transaction adds their box. It is an instance of k
 A personal box differs from the team's pool of boxes in four ways.
 
 - Pipeline runs never claim it, and it does not count toward `AGENTS_MAX_BOXES`.
-- It is never stopped for being idle, since its agents answer messages at any time.
+- It goes to sleep after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it, a command is queued for it, its owner starts a Claude sign-in or a person holds its screen. Tayler decided on 2026-10-14 that people's boxes stop when idle, and step 1 of `docs/design/target-architecture.md` built it.
 - Its owner cannot release it back to the pool.
 - Only its owner can make an agent whose home it is, because its agents run on the owner's Claude account.
 
@@ -244,7 +244,7 @@ The routes for people and the team, Tailscale and rooms live in `server/onboardi
 
 ## Open questions for Tayler
 
-1. Personal boxes run all the time, one container per person. That is fine for a few people. Should they stop when idle and start again when a message arrives?
+1. Answered on 2026-10-14. Personal boxes stop when idle and start again when a message arrives. Step 1 of the target architecture built it.
 2. Anyone on the team can message an agent whose home is someone else's box, and add it to a room, which spends that person's Claude usage. The token sits in the box's home, where the box's agents and the tools their plugins run can read it. Keep that, or let only the owner drive agents on their box?
 3. Removing someone from the team is not built. Removing them from the tailnet locks them out, but their row and their box stay.
 4. Should personal boxes fall back to the team token until their owner signs in? That is not built.

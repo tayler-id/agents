@@ -22,9 +22,10 @@ import { NewProject, ProjectPage, ReposView } from './Projects.tsx'
 import { ProjectRow } from '../../shared/projects.ts'
 import { TerminalSessionView, terminalOwner, terminalPlace } from './Terminal.tsx'
 import { FolderRow, TerminalSessionRow } from '../../shared/terminal.ts'
+import { FoldersPage } from './Folders.tsx'
 
 // Pages with no id of their own, such as the team and the team's repos.
-const PAGES = ['team', 'tailscale', 'box', 'repos'] as const
+const PAGES = ['team', 'tailscale', 'box', 'repos', 'folders'] as const
 type Page = (typeof PAGES)[number]
 
 // The VNC client and its schemas load only when someone opens a screen.
@@ -137,15 +138,16 @@ function Workspace({ me }: { me: Me }) {
       <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
       {palette && <Palette me={me} onClose={() => setPalette(false)} />}
       <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
-        : route.page === 'repos' ? 'Repos' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
+        : route.page === 'repos' ? 'Repos' : route.page === 'folders' ? 'Terminal folders' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
           : route.project ? 'Project' : route.terminal ? 'Terminal session' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
           : route.page === 'repos' ? <ReposView me={me} />
+          : route.page === 'folders' ? <FoldersPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
-            : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
+            : route.task ? <TaskView key={route.task} me={me} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
                 : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
@@ -282,6 +284,7 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
           Team{waitingToJoin.length ? ` · ${waitingToJoin.length} ${waitingToJoin.length === 1 ? 'wants' : 'want'} to join` : ''}
         </button>
         <button type="button" className={`link small${route.page === 'box' ? ' current' : ''}`} onClick={() => go({ page: 'box' })}>Your box</button>
+        <button type="button" className={`link small${route.page === 'folders' ? ' current' : ''}`} onClick={() => go({ page: 'folders' })}>Terminal folders</button>
         {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
       </div>
       {keyAlert && (

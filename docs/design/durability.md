@@ -23,7 +23,7 @@ Rolled out in this order, no old daemon ever reaches the new API.
 4. Restart the Mac's daemon.
 5. Restart the API.
 
-Do steps 2 and 3 when no box has a turn in flight. Teammates' personal boxes are never stopped for being idle, so check that none of their sessions is working, and tell their owners first. A turn cut off by recreating its box is not resumed, since the old API marked its message done when the box took it.
+Do steps 2 and 3 when no box has a turn in flight. A teammate's personal box runs until it has been idle for `AGENTS_BOX_IDLE_MIN`, so check that none of their sessions is working, and tell their owners first. A turn cut off by recreating its box is not resumed, since the old API marked its message done when the box took it.
 
 Between steps 2 and 5 the new daemons get 404 from the old API and retry, waiting up to 15 seconds between tries, while messages wait in the queue. Each daemon reads its queue once the new API answers.
 
@@ -77,7 +77,7 @@ A message is one `message` command, such as a person's post, a pipeline stage's 
 | interrupted to done | the server | the machine restarts and a person's interrupt or a run's stop was waiting for it |
 | interrupted to failed | the server | the machine restarts in a turn it has already resumed three times |
 
-`shared/lifecycle.ts` holds this table as code, and `moveMessages` in `server/durability.ts` is the only writer of a message command's status. The claim endpoint, the end of a turn, a daemon's failure report and a machine's recovery all go through it. Its update matches only commands in a status the table allows the move from, and when any command it was given doesn't match, it moves none of them and throws. A move between handed over and interrupted changes only the session's status. Check 10 makes illegal moves and sees each one throw and change nothing.
+`shared/lifecycle.ts` holds this table as code, and `moveMessages` in `server/durability.ts` is the only writer of a message command's status, apart from `failUntakenMessage` beside it. The table has no move from queued to failed, since a queued message may still be handed over, so when the runner gives up on a message no machine took, because its machine went silent, `failUntakenMessage` fails it and its placed turn in one statement. The claim endpoint, the end of a turn, a daemon's failure report and a machine's recovery all go through it. Its update matches only commands in a status the table allows the move from, and when any command it was given doesn't match, it moves none of them and throws. A move between handed over and interrupted changes only the session's status. Check 10 makes illegal moves and sees each one throw and change nothing.
 
 Two rules make the table hold.
 

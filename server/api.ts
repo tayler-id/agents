@@ -7,11 +7,8 @@
 
 import { BUILD } from './build.ts'
 import { randomUUID } from 'node:crypto'
-import { once } from 'node:events'
-import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
-import type { Server } from 'node:net'
-import { userInfo } from 'node:os'
-import { dirname, extname, normalize } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
@@ -20,8 +17,8 @@ import { connectedFolders, connectFolder, disconnectFolder, sessionWriter, termi
 import { ConnectFolder, DisconnectFolder, TerminalSessionAsk, type FolderList } from '../shared/terminal.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { migrate } from './migrate.ts'
-import { hasCode, messageOf } from '../shared/errors.ts'
-import { accepts } from '../shared/socket.ts'
+import { messageOf } from '../shared/errors.ts'
+import { listenOnSocket } from '../shared/socket.ts'
 import { MACHINE_PORT, MachineHosts, Port } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
@@ -29,6 +26,7 @@ import {
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
 import { MessageMoveRefused, moveMessages, recoverMachine } from './durability.ts'
+import { cancelWaitingTurn } from './scheduler.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
 import { proxyShape } from './sync.ts'
 import { GIT_PATH, proxyGit } from './git.ts'
@@ -52,7 +50,7 @@ import { discardDraft, editDraft, startDraft } from './drafts.ts'
 import { saveChanges } from './changes.ts'
 import { askForPullRequests } from './pulls.ts'
 import { versionDiff } from './versions.ts'
-import { ArtifactId, SessionId, TaskId, WorkspaceId } from '../shared/ids.ts'
+import { ArtifactId, SessionId, TaskId, TurnId, WorkspaceId } from '../shared/ids.ts'
 import { BlockAsk, ChangesPost, HoldAsk, NewComment, NewTask, PriorityAsk, PullRequestAsk, TaskAction, DraftEdit, type WorkspaceSetup } from '../shared/work.ts'
 import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold } from './order.ts'
 import { sendRoutine } from './routines.ts'
@@ -201,7 +199,9 @@ const routes: Route[] = [
     const instance = await instanceFrom(req)
     const body = Heartbeat.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
-    await pool.query('update instances set status = $2, last_seen_at = now() where id = $1', [instance.id, body.data.status])
+    // A daemon going offline takes no more work until it reports in again with recover.
+    await pool.query(`update instances set status = $2, last_seen_at = now(), ready = ready and $2::text <> 'offline' where id = $1`,
+      [instance.id, body.data.status])
     // A machine with a desktop reports its screen's size, and one without reports null.
     // Daemons from before screens, and a daemon going offline, leave it as it was.
     const { screen } = body.data
@@ -313,10 +313,13 @@ const routes: Route[] = [
     return { ok: true, commit: BUILD.commit, build: BUILD }
   }],
 
-  // The folders on this Mac whose terminal sessions land in the record. Only the
-  // Mac itself connects or disconnects one, so nobody in the app can.
+  // The folders on this Mac whose terminal sessions land in the record, how many
+  // sessions each holds, and the Mac's own id. Only the Mac itself connects or
+  // disconnects one, from the folders command or from the Agents app on that Mac
+  // through its daemon, so no person's request can.
   ['machines', 'GET', /^\/v1\/instance\/folders$/, async (req) => {
-    const answer: FolderList = { folders: await connectedFolders(await instanceFrom(req)) }
+    const instance = await instanceFrom(req)
+    const answer: FolderList = { instanceId: InstanceId.parse(instance.id), ...await connectedFolders(instance) }
     return answer
   }],
 
@@ -412,7 +415,7 @@ const routes: Route[] = [
     const routine = await maybe(pool,
       'select 1 from routines r join agents a on a.id = r.agent_id where r.id = $1 and a.team_id = $2', [routineId, person.team_id])
     if (!routine) throw new HttpError(404, 'no such routine')
-    return { conversationId: await tx((client) => sendRoutine(client, routineId)) }
+    return { conversationId: await tx((client) => sendRoutine(client, routineId, person.id)) }
   }],
 
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
@@ -596,6 +599,18 @@ const routes: Route[] = [
     const person = await personFrom(req)
     if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, 'no such session')
     await tx((client) => interruptSession(client, sessionId))
+    return { ok: true }
+  }],
+
+  // A person cancels a turn that waits for its machine, as they could interrupt one that runs.
+  ['people', 'POST', new RegExp(`^/v1/turns/${UUID}/cancel$`), async (req, [turnId]) => {
+    const person = await personFrom(req)
+    const found = await maybe<{ session_id: string | null }>(pool, 'select session_id from turns where id = $1 and team_id = $2', [turnId, person.team_id])
+    if (!found?.session_id || !(await canSeeSession(person, found.session_id))) throw new HttpError(404, 'no such turn')
+    const result = await tx((client) => cancelWaitingTurn(client, TurnId.parse(turnId)))
+    if (result === 'missing') throw new HttpError(404, 'no such turn')
+    if (result === 'room') throw new HttpError(409, "A room's turn ends at its deadline.")
+    if (result === 'not waiting') throw new HttpError(409, 'The turn is no longer waiting. Interrupt stops one that is running.')
     return { ok: true }
   }],
 
@@ -817,37 +832,6 @@ const PeopleOrigins = z.string().transform((text) => text.split(',').map((origin
   // Zod runs a refinement even when z.url() has failed, so this one must not throw.
   .pipe(z.array(z.url().refine((url) => URL.canParse(url) && new URL(url).origin === url, 'an origin, such as http://host:port, with no path')).min(1))
 
-// An API that stops without closing its socket leaves the file behind, and it
-// refuses connections. A socket that accepts them belongs to a running API, and
-// taking it over would send people to this one instead, so that stops this one.
-async function listenForPeople(server: Server, path: string) {
-  // On a new server the folder may not exist yet. Made here, only its owner can open it.
-  const folder = dirname(path)
-  await mkdir(folder, { recursive: true, mode: 0o700 })
-  // Another user who could write to the folder could put their own socket in its place.
-  const owner = await stat(folder)
-  if (owner.uid !== userInfo().uid || (owner.mode & 0o022) !== 0) {
-    throw new Error(`${folder} must belong to this user and be writable by no one else, since the people socket lives in it`)
-  }
-  const existing = await lstat(path).catch((error: unknown) => {
-    if (hasCode(error, 'ENOENT')) return null
-    throw error
-  })
-  if (existing && !existing.isSocket()) throw new Error(`${path} is not a socket, so the API will not replace it`)
-  if (existing && await accepts(path)) throw new Error(`another API already serves people on ${path}`)
-  if (existing) await rm(path)
-  // The socket file appears when listen binds, which it does before returning, so
-  // the umask keeps it private from its first moment. tailscaled runs as this user.
-  const umask = process.umask(0o077)
-  try {
-    server.listen(path)
-  } finally {
-    process.umask(umask)
-  }
-  await once(server, 'listening')
-  await chmod(path, 0o600)
-}
-
 // Where machines reach the API: the machine port, on each address in AGENTS_MACHINE_HOST.
 const Listen = z.object({
   AGENTS_MACHINE_HOST: MachineHosts,
@@ -867,7 +851,9 @@ if (import.meta.main) {
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
-  await listenForPeople(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
+  // A socket an API that stopped left behind is replaced. One a running API still serves stops this one, since taking it
+  // over would send people here instead. tailscaled runs as this user, so the socket's mode 0600 lets it in.
+  await listenOnSocket(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()

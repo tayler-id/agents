@@ -7,16 +7,17 @@ import { basename } from 'node:path'
 import type pg from 'pg'
 import { z } from 'zod'
 import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
-import type { BlobId } from '../shared/ids.ts'
+import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
 import { memoryBlock } from './agents.ts'
-import { finishTurn, PASS, queueTurns } from './rooms.ts'
+import { finishTurn, nextTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
+import { requestTurn, signalSession } from './scheduler.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -207,16 +208,28 @@ export async function answerAsk(
   })
 }
 
-// Asks the session's machine to stop the current turn.
+// Asks the session's machine to stop the current turn, and cancels any turn of the
+// session that is still waiting for its machine. A room goes on to its next turn.
 export async function interruptSession(client: pg.PoolClient, sessionId: string) {
-  const session = await maybe<{ team_id: string; instance_id: string; folder_id: string | null }>(client,
-    'select team_id, instance_id, folder_id from sessions where id = $1', [sessionId])
+  const session = await maybe<{ conversation_id: string | null; folder_id: string | null }>(client,
+    'select conversation_id, folder_id from sessions where id = $1', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
   // The daemon reads a terminal session. It doesn't run it, so it can't stop it.
   if (session.folder_id !== null) throw new HttpError(409, 'A terminal session is stopped from its terminal, not from the app.')
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind) values ($1, $2, $3, 'interrupt')`,
-    [session.team_id, session.instance_id, sessionId])
+  await signalSession(client, SessionId.parse(sessionId), 'interrupt')
+  if (session.conversation_id && await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [session.conversation_id])) {
+    await nextTurn(client, session.conversation_id)
+  }
+}
+
+// Tells a person their message was not sent, when the turn that carried it can
+// never be placed. The session fails with the reason, as it does when its machine
+// cannot hand it a message, and a room's line moves on to the next agent.
+export async function reportUnplaceableTurn(client: pg.PoolClient, turn: { turnId: string; sessionId: string; reason: string }) {
+  await appendEvents(client, turn.sessionId, {
+    events: [{ clientId: `turn:${turn.turnId}:unplaceable`, kind: 'error', text: turn.reason, body: { turnId: turn.turnId, reason: turn.reason } }],
+    status: 'failed',
+  })
 }
 
 // In a terminal session only what the person writes carries their author, so its
@@ -320,8 +333,8 @@ export async function openDm(client: pg.PoolClient, person: Person, agentName: s
 }
 
 // A person's post. In a main or DM conversation its agent answers: the post goes
-// into that agent's session for the conversation, and the agent's machine gets
-// a command to hand it to the harness.
+// into that agent's session for the conversation, and asks the scheduler for the
+// agent's turn.
 export async function sendPersonMessage(
   client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
 ): Promise<{ messageId: string; seq: number }> {
@@ -347,7 +360,7 @@ export async function sendPersonMessage(
   })
   if (!message.fresh) return { messageId: message.id, seq: message.seq }
   if (conversation.kind === 'room') {
-    await queueTurns(client, person.team_id, conversationId, text)
+    await queueTurns(client, person, conversationId, text)
     return { messageId: message.id, seq: message.seq }
   }
 
@@ -358,17 +371,15 @@ export async function sendPersonMessage(
   const [seq] = await appendEvents(client, session.id, {
     events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text, messageId: message.id }, text }],
   }, person.id)
-  const event = await one<{ id: string }>(client, 'the event for the post',
-    'select id from events where session_id = $1 and seq = $2', [session.id, seq])
+  if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 
   const payload: MessagePayload = {
     permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind, payload, event_id)
-     values ($1, $2, $3, 'message', $4, $5)`,
-    [person.team_id, session.instance_id, session.id, JSON.stringify(payload), event.id])
+  await requestTurn(client, {
+    source: 'person', teamId: person.team_id, agentId: AgentId.parse(agent.id), askedBy: person.id, conversationId: ConversationId.parse(conversationId),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
   return { messageId: message.id, seq: message.seq }
 }
 

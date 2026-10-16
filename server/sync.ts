@@ -7,15 +7,22 @@
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadable } from 'node:stream/web'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { ELECTRIC_PROTOCOL_QUERY_PARAMS } from '@electric-sql/client'
 import { instanceFrom, personFrom, type Instance } from './auth.ts'
 import { canSeeConversation, canSeeSession, canSeeTask, VISIBLE_CONVERSATION, VISIBLE_FOLDER, VISIBLE_TASK } from './access.ts'
 import { maybe, pool } from './db.ts'
 import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
 import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
+import { TURN_WAIT_COLUMNS } from '../shared/turns.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
+
+// The keys of a client's read that reach Electric, each one Electric 1.8.1 reads.
+// offset and handle say where the reader is, and live holds the read open for the
+// next change. Electric answers each live read with a cursor that differs from
+// the one sent, so no live URL repeats and no browser answers one from its cache.
+// Every other key is dropped, including any a later Electric client adds.
+const CLIENT_KEYS = ['offset', 'handle', 'live', 'cursor']
 
 type Shape = { table: string; where: string; params: string[]; columns?: string[] }
 type PersonShape = (person: Person, args: URLSearchParams) => Promise<Shape>
@@ -52,7 +59,7 @@ const personShapes: Record<string, PersonShape> = {
   instances: async (p) => ({
     table: 'instances', where: 'team_id = $1', params: [p.team_id],
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
-      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height'],
+      'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height', 'stopped_at'],
   }),
   invites: async (p) => {
     requireAdmin(p)
@@ -129,7 +136,17 @@ const personShapes: Record<string, PersonShape> = {
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
   secrets: async (p) => ({ table: 'secrets', where: 'team_id = $1', params: [p.team_id] }),
-  turns: async (p, args) => ({ table: 'turns', where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
+  // A conversation's turns, or a task's, that wait for their machine, or that run
+  // and have gone quiet, for the line it shows. Never the prompt each turn carries.
+  turn_waits: async (p, args) => {
+    const waiting = `(status = 'waiting' or (status = 'running' and stuck_since is not null))`
+    if (args.has('task')) {
+      const task = arg(args, 'task')
+      if (!(await canSeeTask(p, task))) throw new HttpError(404, 'no such task')
+      return { table: 'turns', where: `task_id = $1 and ${waiting}`, params: [task], columns: TURN_WAIT_COLUMNS }
+    }
+    return { table: 'turns', where: `conversation_id = $1 and ${waiting}`, params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS }
+  },
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
@@ -233,12 +250,19 @@ export async function proxyShape(req: IncomingMessage, res: ServerResponse, name
 
   const origin = new URL('/v1/shape', ELECTRIC_URL)
   for (const [key, value] of url.searchParams) {
-    if (ELECTRIC_PROTOCOL_QUERY_PARAMS.includes(key)) origin.searchParams.set(key, value)
+    // Electric serves a subset of any shape, and a subset's filter may name a
+    // column the shape hides, which answers yes-or-no questions about its values.
+    if (key.startsWith('subset')) throw new HttpError(400, 'subset reads are not served')
+    if (CLIENT_KEYS.includes(key)) origin.searchParams.set(key, value)
   }
   origin.searchParams.set('table', shape.table)
   origin.searchParams.set('where', shape.where.replace(/\s+/g, ' '))
   shape.params.forEach((value, i) => origin.searchParams.set(`params[${i + 1}]`, value))
-  if (shape.columns) origin.searchParams.set('columns', shape.columns.join(','))
+  if (shape.columns) {
+    origin.searchParams.set('columns', shape.columns.join(','))
+    // Should a subset ever reach Electric, its filter and order may name only these.
+    origin.searchParams.set('queryable_columns', shape.columns.join(','))
+  }
   origin.searchParams.set('secret', process.env.ELECTRIC_SECRET ?? '')
 
   const abort = new AbortController()

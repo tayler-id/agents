@@ -1,8 +1,8 @@
-import { useMemo, useState, type SyntheticEvent } from 'react'
+import { useMemo, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { go } from './App.tsx'
 import { AskCard } from './Asks.tsx'
 import {
-  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Instance, type Person, type Session, type Task,
+  act, api, byNumber, clock, useRows, useSnapshot, type Agent, type Artifact, type Ask, type EventRow, type Instance, type Me, type Person, type Session, type Task,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
 import { Changes, PullRequests } from './Changes.tsx'
@@ -12,6 +12,7 @@ import { RepoPicker } from './RepoPicker.tsx'
 import { TaskOrder } from './Order.tsx'
 import { taskState } from '../../shared/work.ts'
 import { Interrupted } from './Conversation.tsx'
+import { TurnWaits } from './TurnWaits.tsx'
 import { inFlight, isWorking } from '../../shared/lifecycle.ts'
 
 // A group conversation with teammates and agents, inside a project when one is given.
@@ -115,8 +116,8 @@ export function NewTask({ projectId = null }: { projectId?: string | null }) {
 
 // A task a person started: the agent's work as a conversation, what it made, and a way to talk to it.
 // A task whose session runs on a machine with a screen can open that screen beside it.
-export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }: {
-  taskId: string; openSession: string | null; openFile: string | null; screenOpen: boolean; onScreen: (instanceId: string, sessionId: string) => void
+export function TaskView({ me, taskId, openSession, openFile, screenOpen, onScreen }: {
+  me: Me; taskId: string; openSession: string | null; openFile: string | null; screenOpen: boolean; onScreen: (instanceId: string, sessionId: string) => void
 }) {
   const { rows: tasks } = useSnapshot<Task>('tasks', {}, 4000)
   const { rows: sessions } = useRows<Session>('sessions', { of: 'tasks' })
@@ -124,6 +125,7 @@ export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 15000)
   const { rows: artifacts } = useSnapshot<Artifact>('artifacts', { task: taskId }, 4000)
   const { rows: instances } = useSnapshot<Instance>('instances')
+  const { rows: people } = useSnapshot<Person>('people')
   const task = tasks.find((t) => t.id === taskId)
   const session = sessions.filter((s) => s.task_id === taskId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
   const screen = instances.find((i) => i.id === session?.instance_id && i.screen_width !== null)
@@ -162,7 +164,9 @@ export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }
         </div>
       </header>
       <div className="page-body">
-        {session ? <Transcript session={session} agentName={agent?.name ?? 'Agent'} /> : <p className="muted small">Starting…</p>}
+        {session
+          ? <Transcript session={session} agentName={agent?.name ?? 'Agent'}><TurnWaits me={me} of={{ task: taskId }} agents={agents} people={people} /></Transcript>
+          : <p className="muted small">Starting…</p>}
         {asks.filter((a) => a.session_id === session?.id && a.status === 'open').map((a) => <AskCard key={a.id} ask={a} />)}
         <TaskOrder task={task} state={state} />
         <Changes taskId={taskId} openId={openFile} onOpen={(id) => go({ task: taskId, file: id })}>
@@ -194,7 +198,7 @@ export function TaskView({ taskId, openSession, openFile, screenOpen, onScreen }
 
 // What was asked of the task's agent and what it said back, live. The text a
 // resumed session is sent after its machine stopped is the server's, not a request.
-function Transcript({ session, agentName }: { session: Session; agentName: string }) {
+function Transcript({ session, agentName, children }: { session: Session; agentName: string; children: ReactNode }) {
   const { rows: events } = useRows<EventRow>('events', { session: session.id })
   const said = useMemo(() => [...events].sort(byNumber((e: EventRow) => e.seq))
     .filter((e) => ((e.kind === 'user' && !('resumes' in e.body)) || e.kind === 'error' || (e.kind === 'assistant' && !e.parent_tool_use_id)) && e.text), [events])
@@ -209,6 +213,7 @@ function Transcript({ session, agentName }: { session: Session; agentName: strin
           {e.kind === 'error' ? <p className="text">{e.text}</p> : <div className="text"><Markdown text={e.text ?? ''} /></div>}
         </li>
       ))}
+      {children}
       {isWorking(session.status) && <li className="message agent typing"><span className="small working"><span className="dot running" aria-hidden="true" />working</span></li>}
       {session.status === 'lost' && <Interrupted session={session} agentName={agentName} />}
     </ol>
