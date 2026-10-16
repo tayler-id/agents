@@ -14,7 +14,7 @@ import { HttpError, scrub, type Person } from './record.ts'
 import { LINK_WAIT_MS } from '../shared/link.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
-import { SecretId, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
+import { mayPutOn, SecretId, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
 import { SetSecretBody, SettableName } from '../shared/secret-rules.ts'
 
 const UUID = '([0-9a-f-]{36})'
@@ -50,7 +50,7 @@ async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   const named = SettableName.safeParse(found.name)
   if (!named.success) throw new HttpError(400, `This secret's name can't be set from the app (${problems(named.error)}). Name it something else in the plugin.`)
   // A computer with an owner is the owner's. A value put there is readable by every agent on it.
-  if (found.owner_id !== null && found.owner_id !== person.id) {
+  if (!mayPutOn(found.owner_id, person.id)) {
     throw new HttpError(403, `${found.computer} is a teammate's own computer. Only its owner can set a secret on it.`)
   }
   return { secretId, name: found.name, teamId: person.team_id, instanceId: found.instance_id, computer: found.computer, status: found.status }
@@ -80,9 +80,14 @@ async function linkTo(target: Target): Promise<Link> {
 // is read from the request and sent on, and is in no other place.
 export async function setSecret(person: Person, secretId: SecretId, value: string): Promise<SecretStored> {
   const target = await targetOf(person, secretId)
-  const answer = await putOnComputer(await linkTo(target), target.name, value)
+  const link = await linkTo(target)
+  const answer = await putOnComputer(link, target.name, value)
   if (answer.type === 'secret_refused') throw new HttpError(409, `${target.computer} would not take it. ${scrub(answer.reason)}`)
   if (answer.type !== 'secret_stored') throw new HttpError(502, `${target.computer} answered a request to set a value with something else.`)
+  // A computer lists what it holds when it connects, and the API drops each row it does not list. This
+  // value was stored after that list was made, so the row is written once the comparison has finished,
+  // and the comparison cannot drop it.
+  await link.reported
   // The value is on the computer now. If this write fails, the person sets it again.
   const row = await one(pool, 'the row for the value just set',
     `insert into secret_sets (team_id, instance_id, name, set_by) values ($1, $2, $3, $4)

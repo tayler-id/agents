@@ -24,6 +24,12 @@ export type SecretStored = z.infer<typeof SecretStored>
 export const SecretRemoved = z.object({ name: SecretName, computer: z.string(), had: z.boolean() })
 export type SecretRemoved = z.infer<typeof SecretRemoved>
 
+// Whether a person may put a value on a computer. Every agent on a computer can read
+// what is put there, so a computer with an owner takes values from that person alone,
+// and one with none takes them from anyone on the team. The API decides, and the page
+// asks the same question, so it offers no field the API would refuse.
+export const mayPutOn = (computerOwner: string | null, person: string): boolean => computerOwner === null || computerOwner === person
+
 // A timestamp as Postgres writes it in text, which is how Electric sends it.
 const Time = z.string().min(1)
 

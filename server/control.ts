@@ -24,7 +24,9 @@ export type Answer = Extract<FromDaemon, { id: string }>
 
 // A frame sent and not yet answered, and how to finish waiting for it.
 type Waiting = { settle: (outcome: Answer | HttpError) => void }
-export type Link = { ws: WebSocket; waiting: Map<string, Waiting> }
+// `reported` settles once the record has been compared with what the computer said it holds when this
+// connection opened. It never rejects.
+export type Link = { ws: WebSocket; waiting: Map<string, Waiting>; reported: Promise<void> }
 
 const sockets = new WebSocketServer({ noServer: true, maxPayload: LINK_MAX_FRAME_BYTES })
 const links = new Map<InstanceId, Link>()
@@ -32,16 +34,21 @@ const links = new Map<InstanceId, Link>()
 const arrivals = new Map<InstanceId, Set<() => void>>()
 
 // The computer says which secrets it holds. A secret the record says was set on
-// it and it no longer holds is not set, so the app does not say it is.
-function forgetUnheld(instanceId: InstanceId, held: string[]) {
-  pool.query('delete from secret_sets where instance_id = $1 and not (name = any($2))', [instanceId, held])
-    .catch((error: unknown) => { console.error(`control connection of ${instanceId}: could not compare the secrets it holds: ${messageOf(error)}`) })
+// it and it no longer holds is not set, so the app does not say it is. A comparison
+// that fails leaves the rows as they were, and the next connection makes it again,
+// so it is logged and the connection carries on.
+async function forgetUnheld(instanceId: InstanceId, held: string[]): Promise<void> {
+  try {
+    await pool.query('delete from secret_sets where instance_id = $1 and not (name = any($2))', [instanceId, held])
+  } catch (error) {
+    console.error(`control connection of ${instanceId}: could not compare the secrets it holds: ${messageOf(error)}`)
+  }
 }
 
 function join(instanceId: InstanceId, ws: WebSocket) {
   // A daemon that reconnects replaces its old connection, which may be half open.
   links.get(instanceId)?.ws.terminate()
-  const link: Link = { ws, waiting: new Map() }
+  const link: Link = { ws, waiting: new Map(), reported: Promise.resolve() }
   links.set(instanceId, link)
   let heard = Date.now()
   const watch = setInterval(() => {
@@ -59,7 +66,7 @@ function join(instanceId: InstanceId, ws: WebSocket) {
       return
     }
     if (frame.value.type === 'secrets_held') {
-      forgetUnheld(instanceId, frame.value.names)
+      link.reported = forgetUnheld(instanceId, frame.value.names)
       return
     }
     // An answer to a frame nobody waits for any more, such as one that timed out, is dropped.

@@ -385,6 +385,15 @@ function helloSecrets(): FromDaemon | null {
 function holdSecret(frame: ToDaemon): FromDaemon {
   const { id, name } = frame
   const put = frame.type === 'secret_put'
+  const refused = (reason: string): FromDaemon => {
+    console.error(`secret ${name} was refused: ${reason}`)
+    return { type: 'secret_refused', id, name, reason: reason.slice(0, 500) }
+  }
+  // A plugin's secret is read from the daemon's environment before its secrets file, so a value
+  // stored under a name the environment holds would be set and never used. Saying so is better.
+  if (put && process.env[name] !== undefined) {
+    return refused(`This computer's environment already sets ${name}, and it is read before a value set here. Take it out of the daemon's environment first.`)
+  }
   try {
     const { had } = changeMachineSecret(HOME, name, put ? frame.value : null, (gone) => {
       // A value the scrubber would ignore, or one it already remembers, is not kept again.
@@ -403,9 +412,7 @@ function holdSecret(frame: ToDaemon): FromDaemon {
     return put ? { type: 'secret_stored', id, name } : { type: 'secret_removed', id, name, had }
   } catch (error) {
     // The daemon's own words for a file it will not touch. Anything else is Node's, scrubbed.
-    const reason = (error instanceof SecretsFileError ? error.message : `The daemon could not change what this computer holds. ${scrub(messageOf(error))}`).slice(0, 500)
-    console.error(`secret ${name} was refused: ${reason}`)
-    return { type: 'secret_refused', id, name, reason }
+    return refused(error instanceof SecretsFileError ? error.message : `The daemon could not change what this computer holds. ${scrub(messageOf(error))}`)
   }
 }
 

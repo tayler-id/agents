@@ -6,7 +6,7 @@
 // over the control connection to the functions below, which keep the file.
 
 import { randomUUID } from 'node:crypto'
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { hasCode } from '../shared/errors.ts'
 import { SecretName } from '../shared/secrets.ts'
@@ -78,7 +78,7 @@ function writeSecretsFile(home: string, entries: Record<string, unknown>) {
   try {
     const fd = openSync(temp, 'wx', 0o600)
     try {
-      writeSync(fd, `${JSON.stringify(entries, null, 2)}\n`)
+      writeFileSync(fd, `${JSON.stringify(entries, null, 2)}\n`)
       fsyncSync(fd)
     } finally {
       closeSync(fd)
