@@ -280,6 +280,9 @@ try {
   const event = lines.length ? JSON.parse(lines[0] ?? '{}') : {}
   check(event.hook_event_name === 'UserPromptSubmit' && /Write the shipping notes/.test(event.prompt ?? '') && lines.includes('a-file-was-written'),
     "a file the hooks wrote in the task's folder is a document: the event Claude Code gave the first hook, and the line the second added after the Write tool")
+  // Claude Code prints a tool's PostToolUse hooks before the line with the tool's result, and the record keeps that order.
+  const order = await rows(`select seq, kind, body->>'hook_name' as hook from events where session_id = $1 and (kind = 'tool_result' or body->>'hook_name' = 'PostToolUse:Write') order by seq`, [started.json?.sessionId])
+  check(same(order.map((e) => e.hook ?? e.kind), ['PostToolUse:Write', 'tool_result']), `the hook after the Write tool is in the record before the tool's result: ${order.map((e) => e.hook ?? e.kind).join(' > ')}`)
 
   // A change to the agent's hooks reaches its running session, and an agent with none has no file.
   // A message sent while a turn runs joins it, so each waits for the answer to the one before.
