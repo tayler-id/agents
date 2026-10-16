@@ -54,6 +54,12 @@ type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 
 export async function appendEvents(
   client: pg.PoolClient, sessionId: string, batch: EventBatch, author: string | null = null,
 ): Promise<number[]> {
+  // A batch that ends a turn in a conversation posts there, which locks the
+  // conversation. A person's post locks the conversation before the session, so
+  // this takes the two in the same order, or the two writes deadlock.
+  if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {
+    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for update', [sessionId])
+  }
   const session = await maybe<Session>(client,
     'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for update', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
