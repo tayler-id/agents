@@ -20,6 +20,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
+import { z } from 'zod'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { must } from './must.ts'
 import { ROOT, IMAGE, MACHINE_PORT, SCREEN, within, docker, tryDocker, boxCheckEnv, peopleSocket, textOf, imageOf, stopAll } from './computers.ts'
@@ -122,7 +123,9 @@ const onDisplay = (container: string, display: number, name: string) => (tryDock
 // The names of a process's environment, never their values.
 const envNames = (container: string, pid: string) => (tryDocker('exec', container, 'sh', '-c', `tr '\\0' '\\n' < /proc/${pid}/environ | cut -d= -f1`) ?? '')
   .split('\n').filter(Boolean)
-const pagesOf = (container: string, display: number) => JSON.parse(tryDocker('exec', container, 'curl', '-s', `http://127.0.0.1:${9221 + display}/json/list`) ?? '[]') as { type: string; url: string }[]
+// The pages a seat's browser has open, from its DevTools port.
+const Pages = z.array(z.object({ type: z.string(), url: z.string() }))
+const pagesOf = (container: string, display: number) => Pages.parse(JSON.parse(tryDocker('exec', container, 'curl', '-s', `http://127.0.0.1:${9221 + display}/json/list`) ?? '[]'))
 
 process.on('SIGTERM', () => {
   for (const child of children) child.kill('SIGTERM')
@@ -168,7 +171,7 @@ try {
   if (!online) throw new Error('the computer never came online, so nothing after this can run')
 
   // It runs Claude on the team's token until Bob signs in.
-  const env = JSON.parse(docker('inspect', '-f', '{{json .Config.Env}}', container)) as string[]
+  const env = z.array(z.string()).parse(JSON.parse(docker('inspect', '-f', '{{json .Config.Env}}', container)))
   check(env.includes(`CLAUDE_CODE_OAUTH_TOKEN=${teamToken}`), "the computer's container holds the team's Claude token")
   const painter = await post(bob, '/v1/agents', { name: 'painter', homeInstanceId: instanceId })
   const painterId: string = must(painter.json?.agentId, `Bob's agent (${JSON.stringify(painter.json)})`)
