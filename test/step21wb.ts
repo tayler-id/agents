@@ -50,6 +50,9 @@ const agentName = `helper-${id}`
 const WEB_ACT = 'mcp__computer__web_act'
 // How long a control gets to appear before a section gives up, so a missing view fails in seconds.
 const CONTROL_WAIT_MS = 10_000
+// How long a change takes to reach the page through sync. The test instance of the sync service is shared with every
+// other check running on this Mac, and it was slow enough once to take 10 seconds.
+const SYNC_WAIT_S = 30
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
@@ -209,7 +212,7 @@ async function runEngine(engine: string, token: string) {
       check(phoneCard && phoneChatFits, `${engine}: at phone width the cards fit without sideways scrolling (shown ${phoneCard}, fits ${phoneChatFits})`)
 
       await actCard.getByRole('button', { name: 'Allow once' }).click()
-      check(await gone(chat, 'section.ask-card', 10, new RegExp(WEB_ACT)), `${engine}: allowing the card closes it`)
+      check(await gone(chat, 'section.ask-card', SYNC_WAIT_S, new RegExp(WEB_ACT)), `${engine}: allowing the card closes it`)
       const answered = (await db.query(`select status, answer->>'decision' as decision from asks where session_id = $1 and tool_use_id = $2`, [sessionId, `toolu_act_${engine}_${id}`])).rows[0]
       check(answered?.status === 'answered' && answered.decision === 'allow', `${engine}: the answer is Allow, recorded for that call (${answered?.decision ?? 'none'})`)
     })
