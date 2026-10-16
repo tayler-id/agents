@@ -30,6 +30,9 @@ export const SessionFilters = z.object({
 })
 export type SessionFilters = z.infer<typeof SessionFilters>
 
+// What the server says when a person asks for a session they may not see, or one that is not there. Both read the same, so the answer tells nothing about private work.
+export const NO_SUCH_SESSION = 'no such session'
+
 // Where the next page of a list begins, as the server wrote it: a time as
 // Postgres prints it, then the id of the last row shown.
 export const Cursor = z.string().regex(/^[0-9TZ :.+-]{19,40}\|[0-9a-f-]{1,36}$/, 'a cursor is the one the server sent')
@@ -171,53 +174,3 @@ export const StepsQuery = z.object({
   from: z.coerce.number().int().min(1),
   to: z.coerce.number().int().min(1),
 }).refine((range) => range.to >= range.from && range.to - range.from < STEPS_SPAN_MAX, `a range holds at most ${String(STEPS_SPAN_MAX)} numbers`)
-
-// The steps a replay has loaded. They are the shown steps from `from` to `to`
-// with none missing, so the page knows whether a neighbour is loaded or must be asked for.
-export type Window = { steps: Step[]; from: number; to: number }
-
-// Joins a page onto the window when it touches or overlaps it. A page that is
-// somewhere else replaces the window, since a window stays one unbroken range.
-export function mergeWindow(window: Window | null, page: Window): Window {
-  if (!window || page.from > window.to + 1 || page.to < window.from - 1) return page
-  const bySeq = new Map([...window.steps, ...page.steps].map((step) => [step.seq, step]))
-  return {
-    steps: [...bySeq.values()].sort((a, b) => a.seq - b.seq),
-    from: Math.min(window.from, page.from),
-    to: Math.max(window.to, page.to),
-  }
-}
-
-// Keeps the `max` steps nearest `seq` once a window grows past `max`, so a replay
-// that runs for an hour keeps a bounded page.
-export function trimWindow(window: Window, seq: number, max: number): Window {
-  if (window.steps.length <= max) return window
-  const at = window.steps.findIndex((step) => step.seq >= seq)
-  const middle = at < 0 ? window.steps.length - 1 : at
-  const start = Math.max(0, Math.min(middle - Math.floor(max / 2), window.steps.length - max))
-  const kept = window.steps.slice(start, start + max)
-  const first = kept[0]
-  const last = kept.at(-1)
-  if (!first || !last) return window
-  return { steps: kept, from: start === 0 ? window.from : first.seq, to: start + max >= window.steps.length ? window.to : last.seq }
-}
-
-// The step after `seq` in a window, or the one before it.
-export const stepAfter = (window: Window, seq: number): Step | undefined => window.steps.find((step) => step.seq > seq)
-export const stepBefore = (window: Window, seq: number): Step | undefined => window.steps.findLast((step) => step.seq < seq)
-
-// The first step that went wrong after `seq`, or the last one before it.
-export const errorAfter = (errors: readonly number[], seq: number): number | undefined => errors.find((error) => error > seq)
-export const errorBefore = (errors: readonly number[], seq: number): number | undefined => errors.findLast((error) => error < seq)
-
-export const SPEEDS = [1, 2, 4, 8] as const
-export type Speed = (typeof SPEEDS)[number]
-// A step stays on screen as long as the real time before the next one, held
-// between these. Steps that came in a burst stay long enough to read, and an
-// hour of waiting does not stall the replay.
-export const PLAY_MIN_MS = 400
-export const PLAY_MAX_MS = 2500
-export function playbackDelay(gapMs: number, speed: Speed): number {
-  const gap = Number.isFinite(gapMs) ? gapMs : PLAY_MIN_MS
-  return Math.round(Math.min(PLAY_MAX_MS, Math.max(PLAY_MIN_MS, gap)) / speed)
-}

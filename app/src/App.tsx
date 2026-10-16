@@ -21,10 +21,11 @@ import { NewRoom, NewTask, TaskView } from './Work.tsx'
 import { NewProject, ProjectPage, ReposView } from './Projects.tsx'
 import { ProjectRow } from '../../shared/projects.ts'
 import { TerminalSessionView, terminalOwner, terminalPlace } from './Terminal.tsx'
+import { HistoryPage } from './History.tsx'
 import { FolderRow, TerminalSessionRow } from '../../shared/terminal.ts'
 
 // Pages with no id of their own, such as the team and the team's repos.
-const PAGES = ['team', 'tailscale', 'box', 'repos'] as const
+const PAGES = ['team', 'tailscale', 'box', 'repos', 'history'] as const
 type Page = (typeof PAGES)[number]
 
 // The VNC client and its schemas load only when someone opens a screen.
@@ -51,7 +52,9 @@ const CREATE = ['agent', 'room', 'task', 'project'] as const
 const isCreate = (value: string): value is (typeof CREATE)[number] => CREATE.some((kind) => kind === value)
 
 function readRoute(): Route {
-  const [, kind = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
+  const [, kindAndQuery = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
+  // The History page keeps its filters after a question mark.
+  const kind = kindAndQuery.split('?')[0] ?? ''
   const route = { ...EMPTY }
   if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
   if (kind === 'n' && isCreate(id)) {
@@ -137,12 +140,13 @@ function Workspace({ me }: { me: Me }) {
       <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
       {palette && <Palette me={me} onClose={() => setPalette(false)} />}
       <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
-        : route.page === 'repos' ? 'Repos' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
+        : route.page === 'repos' ? 'Repos' : route.page === 'history' ? 'History' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
           : route.project ? 'Project' : route.terminal ? 'Terminal session' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
           : route.page === 'repos' ? <ReposView me={me} />
+          : route.page === 'history' ? <HistoryPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
@@ -282,6 +286,7 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
           Team{waitingToJoin.length ? ` · ${waitingToJoin.length} ${waitingToJoin.length === 1 ? 'wants' : 'want'} to join` : ''}
         </button>
         <button type="button" className={`link small${route.page === 'box' ? ' current' : ''}`} onClick={() => go({ page: 'box' })}>Your box</button>
+        <button type="button" className={`link small${route.page === 'history' ? ' current' : ''}`} onClick={() => go({ page: 'history' })}>History</button>
         {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
       </div>
       {keyAlert && (

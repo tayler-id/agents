@@ -7,7 +7,7 @@
 
 import { z } from 'zod'
 import {
-  Cursor, ERRORS_MAX, HistorySession, MARK_END, MARK_START, SearchHit, SHOWN_NOTICES, Step,
+  Cursor, ERRORS_MAX, HistorySession, MARK_END, MARK_START, NO_SUCH_SESSION, SearchHit, SHOWN_NOTICES, Step,
   type HistoryKind, type HistoryPage, type HistoryQuery, type SearchPage, type SearchQuery, type SessionFilters, type SessionView, type StepsPage,
 } from '../shared/history.ts'
 import type { SessionId } from '../shared/ids.ts'
@@ -189,7 +189,7 @@ export async function sessionView(person: Person, sessionId: SessionId): Promise
   const row = await maybe(pool,
     `select ${SESSION} as session from sessions s ${JOINS} where s.id = $3 and s.team_id = $1 and ${VISIBLE_SESSION}`,
     [person.team_id, person.id, sessionId])
-  if (!row) throw new HttpError(404, 'no such session')
+  if (!row) throw new HttpError(404, NO_SUCH_SESSION)
   const session = HistorySession.parse(row.session)
   const [first, last, errors] = await Promise.all([
     pool.query(`select e.seq::int as seq from events e where e.session_id = $1 and ${SHOWN_STEP} order by e.seq limit 1`, [sessionId]),
@@ -216,7 +216,7 @@ const StepRow = z.object({
 // The steps of a session from one number to another, in the order they happened.
 // A tool's result is named for the call it answers, since only the call carries the name.
 export async function sessionSteps(person: Person, sessionId: SessionId, range: { from: number; to: number }): Promise<StepsPage> {
-  if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, 'no such session')
+  if (!(await canSeeSession(person, sessionId))) throw new HttpError(404, NO_SUCH_SESSION)
   const { rows } = await pool.query(
     `select e.seq::int as seq, e.kind,
        case when e.kind = 'tool_result' then (select c.tool_name from events c

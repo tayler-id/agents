@@ -16,6 +16,11 @@ export type FolderVisibility = z.infer<typeof FolderVisibility>
 // A folder's absolute path on its Mac, with no trailing slash, so one folder has one spelling.
 export const FolderPath = z.string().min(2).max(4096).startsWith('/').regex(/[^/]$/, 'a folder path has no trailing slash')
 
+// Where a terminal session ran: its folder's name, and the folder inside it the session started in.
+export function placeOf(folderPath: string, cwd: string): string {
+  return `${folderPath.split('/').pop() ?? folderPath}${cwd.slice(folderPath.length)}`
+}
+
 // Whether a path is the folder or inside it. A sibling that shares the folder's
 // name as a prefix, such as /a/repo-old beside /a/repo, is outside it.
 export function insideFolder(folder: string, path: string): boolean {
