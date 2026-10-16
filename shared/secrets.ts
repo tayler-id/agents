@@ -59,13 +59,15 @@ export type SecretSetRow = z.infer<typeof SecretSetRow>
 
 // Every key an agent's plugins name, for the agent's Keys row and for each app's page. Both views are
 // filtered from this one list. `state` is 'set' when the app put a value on the agent's computer and the
-// record still says so, and 'missing' otherwise. A value put on the computer by hand reads as missing.
+// record still says so. It is 'held' when the app did not, and the computer said, when it last connected,
+// that its secrets file holds the name, such as a value put there by hand. It is 'missing' otherwise. A
+// value only in the daemon's environment reads as missing, since a computer reports its file's names alone.
 // `secretId` is the id for the set and remove routes, or null when no secrets row exists yet.
 export const AgentKey = z.object({
   secretId: SecretId.nullable(),
   name: SecretName,
   plugins: z.array(z.string()),
-  state: z.enum(['set', 'missing']),
+  state: z.enum(['set', 'held', 'missing']),
   setAt: z.string().nullable(),
   setBy: z.string().nullable(),
 })

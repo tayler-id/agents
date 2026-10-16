@@ -8,7 +8,7 @@
 import { z } from 'zod'
 import { personFrom } from './auth.ts'
 import { maybe, one, pool } from './db.ts'
-import { linkOf, putOnComputer, removeFromComputer, waitForLink, type Link } from './control.ts'
+import { heldOn, linkOf, putOnComputer, removeFromComputer, waitForLink, type Link } from './control.ts'
 import { parseBody, pathId, problems, type Route } from './http.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { wakeRunner } from './runner.ts'
@@ -168,7 +168,8 @@ async function keysFor(person: Person, only: string | null): Promise<AgentKeys[]
         const held = sets.find((s) => s.instance_id === agent.instance_id && s.name === secret)
         const key = byName.get(secret) ?? {
           secretId: ids.find((i) => i.agent_id === agent.id && i.name === secret)?.id ?? null, name: secret, plugins: [],
-          state: held ? 'set' : 'missing', setAt: held?.set_at.toISOString() ?? null, setBy: held?.login ?? null,
+          state: held ? 'set' : agent.instance_id !== null && heldOn(agent.instance_id).has(secret) ? 'held' : 'missing',
+          setAt: held?.set_at.toISOString() ?? null, setBy: held?.login ?? null,
         }
         if (!key.plugins.includes(plugin.plugin)) key.plugins.push(plugin.plugin)
         byName.set(secret, AgentKey.parse(key))

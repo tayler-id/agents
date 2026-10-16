@@ -26,12 +26,17 @@ export type Answer = Extract<FromDaemon, { id: string }>
 type Waiting = { settle: (outcome: Answer | HttpError) => void }
 // `reported` settles once the record has been compared with what the computer said it holds when this
 // connection opened. It never rejects.
-export type Link = { ws: WebSocket; waiting: Map<string, Waiting>; reported: Promise<void> }
+export type Link = { instanceId: InstanceId; ws: WebSocket; waiting: Map<string, Waiting>; reported: Promise<void> }
 
 const sockets = new WebSocketServer({ noServer: true, maxPayload: LINK_MAX_FRAME_BYTES })
 const links = new Map<InstanceId, Link>()
 // What waits for a computer's connection to come up, by computer.
 const arrivals = new Map<InstanceId, Set<() => void>>()
+// The names each computer said its secrets file holds when it last connected to this API, kept up to date as
+// values are set and removed through it. Names only, never a value. A computer this API has not heard from since
+// it started has no entry, so its keys read as the record has them until it connects.
+const held = new Map<InstanceId, Set<string>>()
+export const heldOn = (instanceId: InstanceId): ReadonlySet<string> => held.get(instanceId) ?? new Set()
 
 // The computer says which secrets it holds. A secret the record says was set on
 // it and it no longer holds is not set, so the app does not say it is. A comparison
@@ -48,7 +53,7 @@ async function forgetUnheld(instanceId: InstanceId, held: string[]): Promise<voi
 function join(instanceId: InstanceId, ws: WebSocket) {
   // A daemon that reconnects replaces its old connection, which may be half open.
   links.get(instanceId)?.ws.terminate()
-  const link: Link = { ws, waiting: new Map(), reported: Promise.resolve() }
+  const link: Link = { instanceId, ws, waiting: new Map(), reported: Promise.resolve() }
   links.set(instanceId, link)
   let heard = Date.now()
   const watch = setInterval(() => {
@@ -66,6 +71,7 @@ function join(instanceId: InstanceId, ws: WebSocket) {
       return
     }
     if (frame.value.type === 'secrets_held') {
+      held.set(instanceId, new Set(frame.value.names))
       link.reported = forgetUnheld(instanceId, frame.value.names)
       return
     }
@@ -132,8 +138,14 @@ function exchange(link: Link, frame: ToDaemon): Promise<Answer> {
   })
 }
 
-export const putOnComputer = (link: Link, name: string, value: string) =>
-  exchange(link, { type: 'secret_put', id: randomUUID(), name, value })
+export async function putOnComputer(link: Link, name: string, value: string): Promise<Answer> {
+  const answer = await exchange(link, { type: 'secret_put', id: randomUUID(), name, value })
+  if (answer.type === 'secret_stored') held.set(link.instanceId, new Set([...heldOn(link.instanceId), name]))
+  return answer
+}
 
-export const removeFromComputer = (link: Link, name: string) =>
-  exchange(link, { type: 'secret_remove', id: randomUUID(), name })
+export async function removeFromComputer(link: Link, name: string): Promise<Answer> {
+  const answer = await exchange(link, { type: 'secret_remove', id: randomUUID(), name })
+  if (answer.type === 'secret_removed') held.set(link.instanceId, new Set([...heldOn(link.instanceId)].filter((n) => n !== name)))
+  return answer
+}

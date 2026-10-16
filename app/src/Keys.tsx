@@ -35,6 +35,7 @@ export function KeysList({ keys, control }: { keys: AgentKey[]; control: (key: A
           <div className="key-head">
             <span className="key-name">{key.name}</span>
             {key.state === 'missing' && <><Dot /><span className="small">Missing</span></>}
+            {key.state === 'held' && <span className="muted small">On the computer, not set from the app</span>}
             <span className="muted small">Used by {key.plugins.join(', ')}</span>
           </div>
           {control(key)}

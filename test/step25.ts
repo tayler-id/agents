@@ -296,6 +296,17 @@ async function main() {
   const missingKey = keysBefore.json.keys?.[0]
   check(keysBefore.status === 200 && keysBefore.json.keys.length === 1 && missingKey.name === 'SENTRY_TOKEN' && missingKey.state === 'missing' && missingKey.plugins.join() === 'sentry' && missingKey.secretId === secretId && keysBefore.json.missing === 1 && keysBefore.json.computer === computer.a,
     `the agent's keys list SENTRY_TOKEN as missing, with the plugin that uses it and a count of 1 missing (${keysBefore.text.slice(0, 160)})`)
+  // A key a person put in the computer's secrets.json by hand is held there, and the computer said so when it connected.
+  const diarist = agentOn('diarist', computer.a)
+  for (const [plugin, secret] of [['diary', 'HAND_PLACED'], ['notes', 'NOT_ANYWHERE']] as const) {
+    const added = await ask(alice, 'POST', `/v1/agents/${diarist}/plugins`, pluginOf(plugin, secret))
+    if (added.status !== 200) throw new Error(`could not add ${plugin}: ${String(added.status)} ${added.text}`)
+  }
+  const diaryKeys = await ask(alice, 'GET', `/v1/agents/${diarist}/keys`)
+  const stateOf = (name: string) => (diaryKeys.json.keys as { name: string; state: string; setAt: string | null }[] | undefined)?.find((k) => k.name === name)
+  check(diaryKeys.status === 200 && stateOf('HAND_PLACED')?.state === 'held' && stateOf('HAND_PLACED')?.setAt === null && stateOf('NOT_ANYWHERE')?.state === 'missing' && diaryKeys.json.missing === 1
+    && !holds(diaryKeys.text, HAND_PLACED),
+  `a key put on the computer by hand is listed as held there, not missing, and only the key the computer lacks counts as missing (${diaryKeys.text.slice(0, 200)})`)
   const summaryBefore = await ask(alice, 'GET', '/v1/keys')
   check(summaryBefore.status === 200 && summaryBefore.json.agents.some((a: { agentId: string; total: number; missing: number }) => a.agentId === scout && a.total === 1 && a.missing === 1), 'the team summary says scout has 1 key and 1 missing')
 
