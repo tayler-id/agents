@@ -13,13 +13,17 @@ export const FOLDER_VISIBILITIES = ['team', 'private'] as const
 export const FolderVisibility = z.enum(FOLDER_VISIBILITIES)
 export type FolderVisibility = z.infer<typeof FolderVisibility>
 
-// A folder's absolute path on its Mac, with no trailing slash, so one folder has one spelling.
-export const FolderPath = z.string().min(2).max(4096).startsWith('/').regex(/[^/]$/, 'a folder path has no trailing slash')
+// A folder's absolute path on its Mac, with no trailing slash, so one folder has
+// one spelling. The root folder holds every folder on the Mac, so it is never one.
+export const FolderPath = z.string().max(4096).startsWith('/')
+  .refine((path) => path !== '/', "the root folder holds every folder on the Mac and can't be connected")
+  .regex(/[^/]$/, 'a folder path has no trailing slash')
 
 // Whether a path is the folder or inside it. A sibling that shares the folder's
-// name as a prefix, such as /a/repo-old beside /a/repo, is outside it.
+// name as a prefix, such as /a/repo-old beside /a/repo, is outside it. Every
+// path is inside the root folder.
 export function insideFolder(folder: string, path: string): boolean {
-  return path === folder || path.startsWith(`${folder}/`)
+  return path === folder || path.startsWith(folder === '/' ? '/' : `${folder}/`)
 }
 
 // Whether a folder is the home folder or holds it. A person's home holds every
@@ -68,8 +72,12 @@ export const MacFolder = z.union([
   z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: FolderRow }),
 ])
 export type MacFolder = z.infer<typeof MacFolder>
-// This Mac's id, its person's home folder, which can't be connected, and its folders, newest first.
-export const MacFolders = z.object({ instanceId: InstanceId, home: FolderPath, folders: z.array(MacFolder) })
+// A folder Claude Code ran in whose path can't be a connected folder's, such as / for a session started there, which
+// the list leaves out, and why.
+export const UnlistedFolder = z.object({ path: z.string(), why: z.string() })
+export type UnlistedFolder = z.infer<typeof UnlistedFolder>
+// This Mac's id, its person's home folder, which can't be connected, its folders, newest first, and the ones left out.
+export const MacFolders = z.object({ instanceId: InstanceId, home: FolderPath, folders: z.array(MacFolder), unlisted: z.array(UnlistedFolder) })
 export type MacFolders = z.infer<typeof MacFolders>
 // The app connects a folder by choosing who sees its sessions, and Off disconnects it.
 export const AppConnect = z.object({ path: FolderPath, visibility: FolderVisibility })

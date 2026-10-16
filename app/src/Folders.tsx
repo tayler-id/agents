@@ -144,6 +144,7 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
       {error && <p className="error small" role="alert">The list may be out of date. {error}</p>}
       {recent.length > 0 && <ul className="folder-list" aria-label="Folders on this Mac">{recent.map(item)}</ul>}
       {!recent.length && <p className="muted">Claude Code hasn't run on this Mac yet. Start a session in a project folder, and the folder shows here.</p>}
+      {value.unlisted.map((left) => <p key={left.path} className="muted small">{left.path} isn't listed, since {left.why}.</p>)}
       {temporary.length > 0 && (
         <details className="temporary">
           <summary>Temporary folders, {temporary.length}</summary>

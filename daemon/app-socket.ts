@@ -16,7 +16,8 @@ import { readBody } from '../shared/body.ts'
 import { messageOf } from '../shared/errors.ts'
 import { listenOnSocket } from '../shared/socket.ts'
 import {
-  AppConnect, DisconnectFolder, insideFolder, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder, type MacFolders,
+  AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder, type MacFolders,
+  type UnlistedFolder,
 } from '../shared/terminal.ts'
 import { ApiError, type Api } from './api.ts'
 import { connectedFolders, connectFolder, disconnectFolder, FolderRefused } from './folders.ts'
@@ -87,14 +88,19 @@ export function serveAppSocket({ home, api, signal }: { home: string; api: Api; 
 
 // This Mac's folders: the ones Claude Code ran in, and the ones connected here,
 // each with how many of its sessions in the record the team can't see now,
-// newest first. Two used at the same moment go in order of their paths.
+// newest first. Two used at the same moment go in order of their paths. One
+// whose path can't be a connected folder's is left out, and the list says why,
+// so one session started in / stops no other folder from being listed.
 async function listFolders(home: string, api: Api): Promise<MacFolders> {
   const { instanceId, folders: connected, hiddenSessions } = await connectedFolders(api)
   // Only a private folder hides sessions from the team. A folder this Mac never connected has none in the record.
   const hidden = (path: string) => hiddenSessions[path] ?? 0
   const rows = new Map<string, MacFolder>()
+  const unlisted: UnlistedFolder[] = []
   for (const used of claudeFolders(realpathSync.native(home))) {
-    rows.set(used.path, { path: used.path, temporary: temporary(used.path), usedAt: used.usedAt.toISOString(), folder: null, hiddenSessions: hidden(used.path) })
+    const path = FolderPath.safeParse(used.path)
+    if (path.success) rows.set(path.data, { path: path.data, temporary: temporary(path.data), usedAt: used.usedAt.toISOString(), folder: null, hiddenSessions: hidden(path.data) })
+    else unlisted.push({ path: used.path, why: path.error.issues[0]?.message ?? 'it is not a folder path' })
   }
   for (const folder of connected) {
     const used = rows.get(folder.path)
@@ -102,7 +108,7 @@ async function listFolders(home: string, api: Api): Promise<MacFolders> {
   }
   const newest = (row: MacFolder) => Date.parse(row.folder === null ? row.usedAt : row.usedAt ?? row.folder.connected_at)
   const folders = [...rows.values()].sort((a, b) => newest(b) - newest(a) || a.path.localeCompare(b.path))
-  return { instanceId, home: realpathSync.native(homedir()), folders }
+  return { instanceId, home: realpathSync.native(homedir()), folders, unlisted }
 }
 
 // What the app is told when nothing changed, with the words it shows.
