@@ -4,6 +4,7 @@ import { act, api, day, messageOf, useSnapshot, useSnapshotOf, type Instance, ty
 import { LinkField } from './LinkField.tsx'
 import { KeyWarning, useTailscaleView } from './Tailscale.tsx'
 import { go } from './App.tsx'
+import { WebmcpSites } from './WebmcpSites.tsx'
 
 // How often a login waiting to join asks again whether it is on a team yet.
 const WAITING_POLL_MS = 5000
@@ -60,6 +61,7 @@ export function TeamPage({ me }: { me: Me }) {
         {admin && <InviteForm tailscale={tailscale} />}
         {admin && <WantsToJoin />}
         {admin && <Invited />}
+        {admin && <WebmcpSites />}
         <h2 className="kicker section">People</h2>
         <ul className="items" aria-label="People">
           {sorted.map((p) => {

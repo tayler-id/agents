@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ASKS_EVERY_TIME } from '../../shared/webmcp.ts'
 import {
   act, api, type Ask,
 } from './data.ts'
@@ -27,17 +28,21 @@ export function AskCard({ ask }: { ask: Ask }) {
 
   if (ask.kind === 'tool_approval') {
     const input = ask.payload.input ?? {}
-    const subject = [input.command, input.file_path, input.path].find((v): v is string => typeof v === 'string') ?? ''
+    // A tool that asks every time shows all of its input, since the person decides on that call alone.
+    const everyTime = ASKS_EVERY_TIME.includes(ask.payload.toolName ?? '')
+    const subject = everyTime ? JSON.stringify(input, null, 2)
+      : [input.command, input.file_path, input.path].find((v): v is string => typeof v === 'string') ?? ''
     return (
       <section className="ask-card" aria-label="Needs approval">
         <p className="kicker"><span aria-hidden="true">⏸</span> Needs approval</p>
         <p><strong>{ask.payload.toolName}</strong>{ask.payload.description ? ` · ${ask.payload.description}` : ''}</p>
         {subject && <pre className="subject">{subject}</pre>}
+        {everyTime && <p className="muted small">This tool asks every time, so there is no Always.</p>}
         <div className="actions">
           <button type="button" className="primary" disabled={busy} onClick={act(() => answer('allow'))}>Allow once</button>
-          <button type="button" disabled={busy} onClick={act(() => answer('always'))}>Always allow</button>
+          {!everyTime && <button type="button" disabled={busy} onClick={act(() => answer('always'))}>Always allow</button>}
           <button type="button" disabled={busy} onClick={act(() => answer('deny'))}>Deny</button>
-          <button type="button" className="ghost" disabled={busy} onClick={act(() => answer('never'))}>Never</button>
+          {!everyTime && <button type="button" className="ghost" disabled={busy} onClick={act(() => answer('never'))}>Never</button>}
         </div>
         {error && <p className="error small" role="alert">{error}</p>}
       </section>
