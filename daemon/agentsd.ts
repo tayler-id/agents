@@ -187,7 +187,7 @@ function agentHome(agentId: string): string {
 function mcpConfig(
   sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null,
   webmcpOrigins: readonly string[],
-): string {
+): { file: string; pluginNames: string[] } {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = { ...plugins }
@@ -208,7 +208,8 @@ function mcpConfig(
     }
   }
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 })
-  return file
+  // A plugin whose name a built-in server took has lost its entry, and its name must not allow the built-in's tools.
+  return { file, pluginNames: Object.keys(plugins).filter((name) => servers[name] === plugins[name]) }
 }
 
 // Documents already sent from task folders, by workspace and path, with their hashes.
@@ -339,17 +340,15 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   // another session, such as a judge's in the same task, may share.
   const hooks = payload.hooks ?? []
   const settings = writeHooks(join(SESSIONS_DIR, `${command.sessionId}.settings.json`), hooks)
-  // A plugin with the name of a server this session has of its own is overwritten in the config,
-  // and its name must not allow the session's own server's tools to run without asking.
-  const ownServers = new Set<string>([...(stage?.isolated ? [] : ['team-record']), ...(stage ? ['stage'] : [TEAM_AGENTS_SERVER]), ...(computer ? [COMPUTER_SERVER] : [])])
+  const mcp = mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null, webmcpOrigins)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', computer && webmcpOrigins.length ? WEB_GUIDE : '', payload.instructions, payload.memory]
       .filter(Boolean).join('\n\n'),
-    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null, webmcpOrigins),
+    mcpConfig: mcp.file,
     // A judge's session gets no team-record tools, so it cannot read the author's session.
     allowedTools: [
-      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).filter((name) => !ownServers.has(name)).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
+      ...(stage?.isolated ? [] : ['mcp__team-record']), ...mcp.pluginNames.map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
       ...(computer ? COMPUTER_TOOLS_ALLOWED : []),
     ],
     acceptEdits: payload.permissions.workspaceWrites,

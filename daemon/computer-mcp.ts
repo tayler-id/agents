@@ -294,7 +294,11 @@ async function browserCall(name: string, args: Record<string, unknown> | undefin
 
 // The tools of a page at a listed origin, read and run in the tab the other browser
 // tools act on, so a person who takes over stops them too.
-const web = webTools(webOrigins, (source) => browserCall('browser_evaluate', { function: source, _meta: { json: true } }))
+const web = webTools(
+  webOrigins,
+  (source) => browserCall('browser_evaluate', { function: source, _meta: { json: true } }),
+  () => browserCall('browser_tabs', { action: 'list' }),
+)
 
 const mcp = new McpServer({ name: 'computer', version: '1.0.0' })
 mcp.server.registerCapabilities({ tools: {} })
