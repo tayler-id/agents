@@ -50,9 +50,9 @@ const agentName = `helper-${id}`
 const WEB_ACT = 'mcp__computer__web_act'
 // How long a control gets to appear before a section gives up, so a missing view fails in seconds.
 const CONTROL_WAIT_MS = 10_000
-// How long a change takes to reach the page through sync. The test instance of the sync service is shared with every
-// other check running on this Mac, and it was slow enough once to take 10 seconds.
-const SYNC_WAIT_S = 30
+// How long the result of an action gets to show on the page. The API answers at once, but the sync service's test
+// instance is shared with every check running on this Mac, and with the machine busy it has taken more than 10 seconds.
+const RESULT_WAIT_S = 30
 
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
@@ -135,35 +135,35 @@ async function runEngine(engine: string, token: string) {
     await section(engine, "the admin's Team page", async () => {
       const page = await open(admin, '/#/team')
       const heading = page.getByRole('heading', { name: 'Sites whose tools agents may use' })
-      check(await visible(page, 'section[aria-label="Team"]', 20) && await heading.isVisible(), `${engine}: an admin sees the list of sites on the Team page`)
+      check(await visible(page, 'section[aria-label="Team"]', RESULT_WAIT_S) && await heading.isVisible(), `${engine}: an admin sees the list of sites on the Team page`)
       await page.getByRole('textbox', { name: 'Site' }).fill('javascript:alert(1)')
       await page.getByRole('button', { name: 'List site' }).click()
-      check(await visible(page, '[role="alert"]', 10, /scheme and a host/), `${engine}: a site that is not a scheme and a host is refused, and the page says what a site looks like`)
+      check(await visible(page, '[role="alert"]', RESULT_WAIT_S, /scheme and a host/), `${engine}: a site that is not a scheme and a host is refused, and the page says what a site looks like`)
       await page.getByRole('textbox', { name: 'Site' }).fill(site)
       await page.getByRole('button', { name: 'List site' }).click()
-      check(await visible(page, 'ul[aria-label="Sites whose tools agents may use"] li', 10, new RegExp(`${pattern(site)}.*listed by ${pattern(admin)}`))
-        && await visible(page, '[role="status"]', 10, /Listed .* Agents use it from their next message/), `${engine}: listing a site shows it on the list with who listed it`)
+      check(await visible(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(`${pattern(site)}.*listed by ${pattern(admin)}`))
+        && await visible(page, '[role="status"]', RESULT_WAIT_S, /Listed .* Agents use it from their next message/), `${engine}: listing a site shows it on the list with who listed it`)
       check(await page.getByRole('textbox', { name: 'Site' }).inputValue() === '', `${engine}: the field empties once the site is listed`)
       await page.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-light.png`) })
       check(await serious(page) === 0, `${engine}: the Team page has no serious accessibility problems`)
 
       const dark = await open(admin, '/#/team', { colorScheme: 'dark' })
-      await visible(dark, 'ul[aria-label="Sites whose tools agents may use"]', 15)
+      await visible(dark, 'ul[aria-label="Sites whose tools agents may use"]', RESULT_WAIT_S)
       await dark.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-dark.png`) })
       const phone = await open(admin, '/#/team', phoneOptions)
-      const phoneListed = await visible(phone, 'ul[aria-label="Sites whose tools agents may use"] li', 15, new RegExp(pattern(site)))
+      const phoneListed = await visible(phone, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(site)))
       const phoneFits = await noSideScroll(phone, ['.page', '.page-body', 'ul[aria-label="Sites whose tools agents may use"]', 'form[aria-label="List a site"]'])
       await phone.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-phone.png`) })
       check(phoneListed && phoneFits, `${engine}: at phone width the list and its form fit without sideways scrolling (listed ${phoneListed}, fits ${phoneFits})`)
 
       await page.getByRole('button', { name: `Remove ${site}` }).click()
-      check(await gone(page, 'ul[aria-label="Sites whose tools agents may use"] li', 10, new RegExp(pattern(site))), `${engine}: removing a site takes it off the list`)
+      check(await gone(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(site))), `${engine}: removing a site takes it off the list`)
     })
 
     // A member sees no such section, and the API refuses their change.
     await section(engine, "the member's Team page", async () => {
       const memberPage = await open(member, '/#/team')
-      await visible(memberPage, 'section[aria-label="Team"]', 20)
+      await visible(memberPage, 'section[aria-label="Team"]', RESULT_WAIT_S)
       check(await memberPage.getByRole('heading', { name: 'Sites whose tools agents may use' }).count() === 0
         && (await post(member, '/v1/team/webmcp-origins', { origin: 'https://member.example.test' })).status === 403,
       `${engine}: a member sees no list of sites, and the API refuses their change`)
@@ -189,7 +189,7 @@ async function runEngine(engine: string, token: string) {
       const chat = await open(admin, `/#/c/${conversationId}`)
       const actCard = chat.locator('section.ask-card', { hasText: WEB_ACT })
       const bashCard = chat.locator('section.ask-card', { hasText: 'echo hello' })
-      check(await visible(chat, 'section.ask-card', 20, new RegExp(WEB_ACT)) && await bashCard.count() === 1, `${engine}: both asks show as cards in the conversation`)
+      check(await visible(chat, 'section.ask-card', RESULT_WAIT_S, new RegExp(WEB_ACT)) && await bashCard.count() === 1, `${engine}: both asks show as cards in the conversation`)
       const buttons = async (card: typeof actCard) => (await card.getByRole('button').allInnerTexts()).map((text) => text.trim())
       const actButtons = await buttons(actCard)
       const bashButtons = await buttons(bashCard)
@@ -203,16 +203,16 @@ async function runEngine(engine: string, token: string) {
       check(await serious(chat) === 0, `${engine}: the conversation with the cards has no serious accessibility problems`)
 
       const darkChat = await open(admin, `/#/c/${conversationId}`, { colorScheme: 'dark' })
-      await visible(darkChat, 'section.ask-card', 15, new RegExp(WEB_ACT))
+      await visible(darkChat, 'section.ask-card', RESULT_WAIT_S, new RegExp(WEB_ACT))
       await darkChat.screenshot({ path: join(SHOTS, `${engine}-webmcp-ask-dark.png`) })
       const phoneChat = await open(admin, `/#/c/${conversationId}`, phoneOptions)
-      const phoneCard = await visible(phoneChat, 'section.ask-card', 15, new RegExp(WEB_ACT))
+      const phoneCard = await visible(phoneChat, 'section.ask-card', RESULT_WAIT_S, new RegExp(WEB_ACT))
       const phoneChatFits = await noSideScroll(phoneChat, ['.messages', '.composer', '.conversation-head', 'section.ask-card', 'section.ask-card pre.subject'])
       await phoneChat.screenshot({ path: join(SHOTS, `${engine}-webmcp-ask-phone.png`) })
       check(phoneCard && phoneChatFits, `${engine}: at phone width the cards fit without sideways scrolling (shown ${phoneCard}, fits ${phoneChatFits})`)
 
       await actCard.getByRole('button', { name: 'Allow once' }).click()
-      check(await gone(chat, 'section.ask-card', SYNC_WAIT_S, new RegExp(WEB_ACT)), `${engine}: allowing the card closes it`)
+      check(await gone(chat, 'section.ask-card', RESULT_WAIT_S, new RegExp(WEB_ACT)), `${engine}: allowing the card closes it`)
       const answered = (await db.query(`select status, answer->>'decision' as decision from asks where session_id = $1 and tool_use_id = $2`, [sessionId, `toolu_act_${engine}_${id}`])).rows[0]
       check(answered?.status === 'answered' && answered.decision === 'allow', `${engine}: the answer is Allow, recorded for that call (${answered?.decision ?? 'none'})`)
     })
