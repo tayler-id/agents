@@ -1,6 +1,6 @@
 // Fit design step 16, the app. A person sets a secret's value in place, from a masked field, sees
-// where it is set and when, replaces it, and removes it after being asked. A computer that is stopped says
-// so and takes nothing, a teammate is told whose computer it is and is offered nothing, and a computer
+// where it is set and when, replaces it, and removes it after being asked. A computer that is stopped is
+// started by the request, and the page says so while it waits. A teammate is told whose computer it is and is offered nothing, and a computer
 // that refuses a value says why in the row and keeps what was typed. Nothing in the app mounts the
 // secrets yet, since the agent panel's card will, so this builds them as a page of their own, under the
 // app's own policy and styles, and drives that page in Chromium, Firefox and WebKit at desktop and phone
@@ -46,6 +46,8 @@ const WIDTHS = { desktop: { width: 1280, height: 820 }, phone: { width: 390, hei
 // How long a page's lists may take to show when it opens. Each reads a shape that Electric makes on the first
 // request, which takes longer while other checks use the same Electric.
 const LISTS_SEC = 45
+// Seconds the API waits for a computer that is not running, where it waits 90 for a person.
+const WAKE_SEC = 8
 
 const id = randomBytes(4).toString('hex')
 const team = `secrets25b-${id}`
@@ -135,7 +137,7 @@ async function main() {
   const bobby = agentOn('bobby', computer.b)
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   buildHost()
-  const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team }, join(home, 'streams'))
+  const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team, AGENTS_SECRET_WAKE_SEC: String(WAKE_SEC) }, join(home, 'streams'))
   const people = await tap(TAP_PORT, { port: PORTS.people })
   try {
     const up = (url: string) => within(30, () => fetch(url).then(() => true, () => false))
@@ -168,6 +170,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
   const second = unique('second')
   const bounced = unique('bounced-by-the-computer')
   const unsent = unique('typed-never-sent')
+  const slept = unique('sent-while-starting')
   const left = unique('typed-then-left')
   const canceled = unique('typed-then-canceled')
   const heardBefore = people.heard.length
@@ -297,26 +300,27 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     check(await visible(page, '.secrets > li', 15, /Not set from the app on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
     await watched(page, 'the first page, at its end')
 
-    // A computer that is stopped says so, and takes no value. Nothing runs on it to report its status, so the check
-    // sets it by hand: running while a value is typed, stopped after, and silent after that.
-    await db.query(`update instances set status = 'online' where name = $1`, [computer.b])
+    // A computer that is stopped is not a reason to refuse. The page offers its controls, the request starts the computer and
+    // waits, and the page says so meanwhile. Nothing here starts the computer, so the wait ends in a refusal that names it.
+    // Nothing runs on the computer to report its status, so the check sets it by hand.
+    await db.query(`update instances set status = 'offline' where name = $1`, [computer.b])
     const stoppedPage = await open(bob, bobby)
     const jiraSet = button(stoppedPage, 'Set value of JIRA_TOKEN')
     const jiraField = stoppedPage.getByLabel('Value of JIRA_TOKEN', { exact: true })
     await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/)
+    check(await jiraSet.isEnabled() && await stoppedPage.locator('.secrets > li p').filter({ hasText: /is stopped/ }).count() === 0, `${engine}: a stopped computer offers the control as usual, with no words about it stopped`)
     await jiraSet.click()
     await jiraField.fill(unsent)
-    await db.query(`update instances set status = 'offline' where name = $1`, [computer.b])
-    check(await visible(stoppedPage, '.secrets > li p', LISTS_SEC, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
-    await jiraField.press('Enter')
-    check(await jiraField.isVisible() && await jiraField.inputValue() === unsent && /Waiting for/.test(await stoppedPage.locator('.secret-edit').innerText()),
-      `${engine}: what was typed before the computer stopped stays in the field, and Enter sends nothing while it waits`)
-    await snap(stoppedPage, 'secrets-stopped-desktop')
     await jiraField.press('Escape')
-    check(await jiraField.count() === 0 && await jiraSet.isDisabled(), `${engine}: and the button to set a value is off while the computer is stopped`)
-    await db.query(`update instances set status = 'stale' where name = $1`, [computer.b])
-    check(await visible(stoppedPage, '.secrets > li p', LISTS_SEC, /has stopped answering the server/) && await jiraSet.isEnabled(),
-      `${engine}: a computer that stopped answering says so, and may still be tried`)
+    check(await jiraField.count() === 0, `${engine}: Esc puts the field away`)
+    await jiraSet.click()
+    await jiraField.fill(slept)
+    await jiraField.press('Enter')
+    check(await visible(stoppedPage, '.secrets > li [role=status]', 5, new RegExp(`Starting ${computer.b}'s computer to save the key`)), `${engine}: while the computer starts, the page says it is starting ${computer.b}'s computer to save the key`)
+    await snap(stoppedPage, 'secrets-starting-desktop')
+    check(await visible(stoppedPage, '.secrets > li .error', WAKE_SEC + 15, new RegExp(`${computer.b} did not start within ${String(WAKE_SEC)} seconds`)) && await jiraField.inputValue() === slept,
+      `${engine}: when it does not start in time the page shows the reason that names it, and the field keeps what was typed`)
+    await jiraField.press('Escape')
     await watched(stoppedPage, 'the stopped computer page, at its end')
 
     // The page sent the value in one request, to the route that sets a value, and made no other request to the secrets routes.
@@ -332,8 +336,8 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && [unsent, left, canceled].some((text) => holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, text)))
     check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is sent as it is typed or when the field is left`)
     const posts = people.heard.slice(heardBefore).flatMap((heard) => (heard.kind === 'request' && heard.method === 'POST' && heard.url.startsWith('/v1/secrets/') ? [heard] : []))
-    check(posts.map((post) => post.url.split('/').pop()).join(' ') === 'value value value remove' && holds(posts[0]?.body ?? '', bounced) && holds(posts[1]?.body ?? '', first) && holds(posts[2]?.body ?? '', second),
-      `${engine}: the page asked to set a value three times and to remove it once, and made no other request to the secrets routes`)
+    check(posts.map((post) => post.url.split('/').pop()).join(' ') === 'value value value remove value' && holds(posts[0]?.body ?? '', bounced) && holds(posts[1]?.body ?? '', first) && holds(posts[2]?.body ?? '', second) && holds(posts[4]?.body ?? '', slept),
+      `${engine}: the page asked to set a value four times and to remove it once, and made no other request to the secrets routes`)
 
     // Phone width: the same page fits the screen, with the field in reach.
     const phone = await open(alice, scout, { viewport: WIDTHS.phone, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })

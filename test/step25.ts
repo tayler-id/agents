@@ -278,6 +278,14 @@ async function main() {
   check((await errors(scoutDm)).some((text) => text.includes("on the agent's page in the app")), "and the message says to set it from the agent's page in the app")
   check(!('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), "the computer's secrets file holds no SENTRY_TOKEN yet")
 
+  // The agent's keys, from its plugins' declared names, before and after a value is set.
+  const keysBefore = await ask(alice, 'GET', `/v1/agents/${scout}/keys`)
+  const missingKey = keysBefore.json.keys?.[0]
+  check(keysBefore.status === 200 && keysBefore.json.keys.length === 1 && missingKey.name === 'SENTRY_TOKEN' && missingKey.state === 'missing' && missingKey.plugins.join() === 'sentry' && missingKey.secretId === secretId && keysBefore.json.missing === 1 && keysBefore.json.computer === computer.a,
+    `the agent's keys list SENTRY_TOKEN as missing, with the plugin that uses it and a count of 1 missing (${keysBefore.text.slice(0, 160)})`)
+  const summaryBefore = await ask(alice, 'GET', '/v1/keys')
+  check(summaryBefore.status === 200 && summaryBefore.json.agents.some((a: { agentId: string; total: number; missing: number }) => a.agentId === scout && a.total === 1 && a.missing === 1), 'the team summary says scout has 1 key and 1 missing')
+
   // Setting a value from the app.
   const valueRoute = `/v1/secrets/${secretId}/value`
   const removeRoute = `/v1/secrets/${secretId}/remove`
@@ -294,6 +302,9 @@ async function main() {
   check(setRow?.set_by === await personId(alice) && Date.now() - new Date(setRow.set_at).getTime() < 60_000, 'the record says who set it on that computer, and when')
   const bobSees = await within(20, async () => (await shapeRows(PEOPLE, bob, 'secret_sets')).rows.some((row) => row.name === 'SENTRY_TOKEN' && row.instance_id === instanceA))
   check(bobSees && !holds(JSON.stringify((await shapeRows(PEOPLE, bob, 'secret_sets')).rows), value.first), 'a teammate sees the name, the computer and the time, and nothing of the value')
+  const keysAfter = await ask(alice, 'GET', `/v1/agents/${scout}/keys`)
+  check(keysAfter.status === 200 && keysAfter.json.keys[0].state === 'set' && typeof keysAfter.json.keys[0].setAt === 'string' && typeof keysAfter.json.keys[0].setBy === 'string' && keysAfter.json.missing === 0 && !holds(keysAfter.text, value.first),
+    `once set, the agent's keys list SENTRY_TOKEN as set, with when and by whom, 0 missing, and never the value (${keysAfter.text.slice(0, 160)})`)
 
   // The other agent, already running, repeats the value, and it is scrubbed at once. No session has started since
   // the value was set, so only the daemon learning the value when it arrives can scrub it.
