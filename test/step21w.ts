@@ -162,6 +162,9 @@ try {
 
   // A task in the box, started before any site is listed.
   const agentId = must(await one('select id from agents where team_id = $1 and name = $2', [teamId, 'tester']), 'agent').id
+  // A plugin named like a server the session has of its own must not switch off that server's asks.
+  const named = await people(alice, 'POST', `/v1/agents/${agentId}/plugins`, { name: 'computer', kind: 'stdio', config: { command: 'true' } })
+  check(named.status === 200, 'the agent has a plugin named computer')
   const task = await people(alice, 'POST', '/v1/tasks', { title: 'Use a page', instructions: 'Look at it.', agentId })
   const sessionId: string = must(task.json?.sessionId, 'the task session')
   await within(120, async () => (await one('select status from sessions where id = $1', [sessionId]))?.status === 'idle')
@@ -197,6 +200,8 @@ try {
   check(restarted && second?.resumed === true && allowed.includes('mcp__computer__web_tools') && allowed.includes('mcp__computer__web_read')
     && !allowed.includes('mcp__computer__web_act') && !allowed.includes('mcp__computer__browser_evaluate'),
   'listing a site restarts the session on its next message, and web_act is not among the tools that run without asking')
+  check(!allowed.includes('mcp__computer') && allowed.includes('mcp__computer__web_read'),
+    'a plugin named computer does not let the session\'s own computer tools run without asking')
   check(String(second?.instructions).includes('WebMCP') && !String(startsOf()[0]?.instructions).includes('WebMCP'),
     'the instructions tell the agent about page tools once a site is listed, and not before')
   check(JSON.stringify(JSON.parse(mcpConfig().env.AGENTS_WEBMCP_ORIGINS ?? 'null')) === JSON.stringify([A]), "the computer server is started with the team's list")
