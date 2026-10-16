@@ -46,6 +46,8 @@ const SCENARIO = {
     { match: 'Please review the launch note.', reply: 'Review: the note reads well.' },
   ],
   calls: [
+    // Holds a turn running on an ask nobody answers, until a check denies it.
+    { match: 'HOLD-TURN', say: 'Held.', calls: [{ tool: CREATE_AGENT_TOOL, input: { name: 'held-never-made' } }] },
     { match: 'Have writer write a note', calls: [send('writer', 'Please write a short note about the launch.')], say: 'I asked writer for the note.' },
     { match: 'writer answered you', say: 'From writer: {answer}', calls: [] },
     { match: 'answered you, in your thread', say: 'Heard back: {answer}', calls: [] },
@@ -120,6 +122,18 @@ const dmWith = async (login: string, agent: string, text: string) => {
   const { conversationId } = await post(login, '/v1/conversations', { kind: 'dm', agent })
   await post(login, `/v1/conversations/${conversationId}/messages`, { text })
   return String(conversationId)
+}
+// Holds the session's turn running: `start` sends it HOLD-TURN, and the turn waits on an ask
+// until the returned function denies it. The agent tools work only while a turn runs.
+const holdTurn = async (sessionId: string, start: () => Promise<unknown>) => {
+  await start()
+  const ask = await within(TURN_SECONDS, async () => (await one(`select a.id from asks a join turns t on t.session_id = a.session_id
+    where a.session_id = $1 and a.status = 'open' and t.status = 'running'`, [sessionId])) !== undefined)
+    ? must(await one(`select id from asks where session_id = $1 and status = 'open'`, [sessionId]), 'the ask holding the turn').id : ''
+  return async () => {
+    await asPerson(PEOPLE, alice, 'POST', `/v1/asks/${ask}/answer`, { decision: 'deny' })
+    await within(TURN_SECONDS, async () => (await one(`select 1 from turns where session_id = $1 and status = 'running'`, [sessionId])) === undefined)
+  }
 }
 // An agent of this check's team, by name.
 const agentNamed = (name: string) => one('select * from agents where name = $1 and team_id = (select team_id from people where login = $2)', [name, alice])
@@ -225,10 +239,14 @@ try {
   check(resultPost.length === 1 && resultPost[0].agent_id === ids.writer && resultPost[0].session_id === taskSession?.id && resultPost[0].asked_agent_id === ids.scout
     && resultPost[0].body === 'Changelog: login fix, faster search, new export.',
   `writer's report on the handed task is also a post in Alice's DM, kind answer, from the task's session, for scout (${resultPost.length} rows)`)
+  const releaseTask = await holdTurn(String(taskSession?.id), () => post(alice, `/v1/sessions/${taskSession?.id}/messages`, { text: 'HOLD-TURN' }))
   const again = await asSession(token, String(taskSession?.id), 'POST', '/v1/team-agents/report', { text: 'Once more.' })
   check(again.status === 409, `a task's result goes back once: a second report is refused (${again.status} ${JSON.stringify(again.json)})`)
+  await releaseTask()
+  const releaseScout = await holdTurn(scoutDm, () => post(alice, `/v1/conversations/${dm}/messages`, { text: 'HOLD-TURN' }))
   const noTask = await asSession(token, scoutDm, 'POST', '/v1/team-agents/report', { text: 'Done.' })
   check(noTask.status === 409, `a session no agent handed a task reports back to nobody (${noTask.status})`)
+  await releaseScout()
 
   // 2b. A task writer does not report on: Alice marks it done, and scout hears.
   await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Hand the glossary to writer.' })
