@@ -7,7 +7,10 @@
 // seat whose agent has a turn not over, whose screen a person holds, or whose
 // last turn was under 15 minutes ago. Once a seat is free of all three, the
 // waiting turn is placed there, and an agent taking a seat back takes the one
-// idle longest. A turn on a pool box takes no seat, as before seats.
+// idle longest. A turn on a pool box takes no seat, as before seats. Then three
+// races on separate connections. Eight agents asking at once for four seats get four.
+// A reclaim meeting a takeover that is not committed yet waits for it. A screen handed
+// back while the agent on that seat is messaged never deadlocks.
 //   node --env-file=.env --env-file=.env.test test/step15h.ts
 
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -54,10 +57,10 @@ try {
     `insert into people (team_id, login, name, role) values ($1, $2, $3, 'admin') returning id, team_id, login, role`, [team, login, name]))
   const bob = await person('bob@mail.test', 'Bob')
   const carol = await person('carol@mail.test', 'Carol')
-  const box = async (name: string, personal: boolean) => String((await one(
+  const box = async (name: string, personal: boolean, owner = bob) => String((await one(
     `insert into instances (team_id, name, kind, owner_id, token_sha256, personal, claimed_by, seat_cap, status, ready, last_seen_at)
      values ($1, $2, 'box', $3, $4, $5, $3, $6, 'online', true, now()) returning id`,
-    [team, name, personal ? bob.id : null, randomBytes(16).toString('hex'), personal, personal ? 4 : 1])).id)
+    [team, name, personal ? owner.id : null, randomBytes(16).toString('hex'), personal, personal ? 4 : 1])).id)
   const computer = await box('box-bob', true)
   const pooled = await box('box-pool', false)
   const agentOn = async (name: string, home: string) => String((await one(
@@ -75,7 +78,7 @@ try {
   }
   const seatOf = (name: string) => q('select n, status, last_turn_at from seats where instance_id = $1 and agent_id = $2', [computer, agentOf(name)])
   // The machine takes the turn's command, then finishes it.
-  const run = async (commandId: string, to: 'handed_over' | 'done') => tx((client) => moveMessages(client, [commandId], to, { instanceId: computer }))
+  const run = async (commandId: string, to: 'handed_over' | 'done', on = computer) => tx((client) => moveMessages(client, [commandId], to, { instanceId: on }))
 
   // Four agents, four seats.
   const firsts = new Map<string, Record<string, unknown>>()
@@ -145,6 +148,66 @@ try {
   const poolSeat = await one('select agent_id, status from seats where instance_id = $1', [pooled])
   check(pipTurn.status === 'placed' && poolSeat.agent_id === null && poolSeat.status === 'free' && poolAgent !== '',
     'a turn on a pool box is placed without taking a seat, so its stages keep their placement')
+
+  // Races. Each runs on its own connections, so the locks decide the outcome.
+  // Eight agents ask for a seat at once on a computer of four.
+  const crowd = await box('box-crowd', true, carol)
+  const crowdNames = Array.from({ length: 8 }, (_, i) => `rush${i}`)
+  for (const name of crowdNames) agents.set(name, await agentOn(name, crowd))
+  await Promise.all(crowdNames.map((name) => message(bob, name)))
+  const seated = await q('select agent_id from seats where instance_id = $1 and agent_id is not null', [crowd])
+  const crowdTurns = await q(`select t.status, t.wait from turns t join sessions x on x.id = t.session_id where x.instance_id = $1 or t.agent_id = any($2)`,
+    [crowd, crowdNames.map(agentOf)])
+  const placedTurns = crowdTurns.filter((turn) => turn.status === 'placed').length
+  const waitingTurns = crowdTurns.filter((turn) => turn.status === 'waiting' && turn.wait === 'seat').length
+  check(seated.length === 4 && new Set(seated.map((seat) => seat.agent_id)).size === 4 && placedTurns === 4 && waitingTurns === 4,
+    `eight agents asking at once for four seats get four seats, one each, and four turns wait (${seated.length} held, ${placedTurns} placed, ${waitingTurns} waiting)`)
+
+  // A reclaim that runs while a person's takeover of the seat is not committed yet
+  // waits for it, then skips the seat.
+  const { takeSeat } = await import('../server/seats.ts')
+  const idleSeat = must((await q(`select s.id, s.agent_id from seats s where s.instance_id = $1 and s.agent_id is not null order by n limit 1`, [crowd]))[0], 'a held seat')
+  for (const turnRow of await q(`select command_id from turns where agent_id = $1 and command_id is not null`, [idleSeat.agent_id])) {
+    await run(String(turnRow.command_id), 'handed_over', crowd)
+    await run(String(turnRow.command_id), 'done', crowd)
+  }
+  await db.query(`update seats set last_turn_at = now() - interval '1 hour' where instance_id = $1`, [crowd])
+  const outsider = await agentOn('outsider', crowd)
+  const taker = await pool.connect()
+  await taker.query('begin')
+  await taker.query('select 1 from seats where id = $1 for update', [idleSeat.id])
+  await taker.query(`insert into screen_takeovers (team_id, instance_id, seat_id, person_id) values ($1, $2, $3, $4)`, [team, crowd, idleSeat.id, carol.id])
+  let reclaimDone = false
+  const reclaim = tx((client) => takeSeat(client, crowd as never, outsider as never)).then((result) => { reclaimDone = true; return result })
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const waitedForTakeover = !reclaimDone
+  await taker.query('commit')
+  taker.release()
+  const reclaimed = await reclaim
+  check(waitedForTakeover && reclaimed.kind === 'busy',
+    "a reclaim that meets an uncommitted takeover waits for it, then leaves that seat to the person and finds every seat busy")
+  await db.query(`update screen_takeovers set ended_at = now(), ended_by = 'handed_back' where seat_id = $1 and ended_at is null`, [idleSeat.id])
+
+  // A person handing a screen back while someone talks to the agent working on
+  // that seat. Both lock the session and the seat, so they must lock them in one order.
+  const { handBackScreen } = await import('../server/screens.ts')
+  const talker = agentOf('rush0')
+  const talkerSeat = must((await q('select id, n from seats where instance_id = $1 and agent_id = $2', [crowd, talker]))[0], "the talker's seat")
+  const talkerSession = must((await q(`select x.id from sessions x join conversations c on c.id = x.conversation_id where x.instance_id = $1 and x.agent_id = $2`, [crowd, talker]))[0], "the talker's session")
+  await db.query(`update sessions set status = 'running', seat_id = $2 where id = $1`, [talkerSession.id, talkerSeat.id])
+  let deadlocks = 0
+  let hits = 0
+  for (let round = 0; round < 12; round++) {
+    await db.query(`insert into screen_takeovers (team_id, instance_id, seat_id, person_id) values ($1, $2, $3, $4)`, [team, crowd, talkerSeat.id, carol.id])
+    const results = await Promise.allSettled([handBackScreen(carol, crowd, talkerSeat.n, null), message(bob, 'rush0')])
+    for (const result of results) {
+      if (result.status === 'rejected') deadlocks += /deadlock/.test(messageOf(result.reason)) ? 1 : 0
+      else hits++
+    }
+    await db.query(`update screen_takeovers set ended_at = now(), ended_by = 'handed_back' where seat_id = $1 and ended_at is null`, [talkerSeat.id])
+    await db.query(`update sessions set status = 'running' where id = $1`, [talkerSession.id])
+  }
+  check(deadlocks === 0 && hits === 24, `a screen handed back while the agent on that seat is messaged never deadlocks (12 rounds, ${deadlocks} deadlocks)`)
 
   await pool.end()
   await db.end()
