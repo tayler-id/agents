@@ -64,10 +64,12 @@ async function inPage(ask: PageAsk): Promise<unknown> {
   if (ask.readOnly && !(hints?.readOnlyHint === true && hints.consequentialHint !== true)) return { status: 'not_read_only' }
   try {
     const running = modelContext.executeTool(tool, ask.input)
-    const stuck = new Promise<null>((resolve) => { setTimeout(() => { resolve(null) }, ask.timeoutMs) })
+    // A symbol, so no result the tool returns can pass for the timer.
+    const timedOut = Symbol('timed out')
+    const stuck = new Promise<symbol>((resolve) => { setTimeout(() => { resolve(timedOut) }, ask.timeoutMs) })
     const output = await Promise.race([running, stuck])
-    if (output !== null) return { status: 'ran', output }
-    // The tool may still fail after the caller has stopped waiting, and nobody is left to hear it.
+    if (output !== timedOut) return { status: 'ran', output }
+    // Nobody waits for the tool any longer, so a failure it reports later would only be an unhandled rejection in the page.
     running.catch(() => undefined)
     return { status: 'timed_out' }
   } catch (error) {

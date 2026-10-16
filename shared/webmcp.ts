@@ -24,14 +24,14 @@ export const WEBMCP_ORIGINS_MAX = 50
 // The longest origin kept. A host name is 253 characters at most.
 const ORIGIN_MAX = 300
 
-export type OriginPattern = { scheme: 'http' | 'https'; host: string; port: string }
+type OriginPattern = { scheme: 'http' | 'https'; host: string; port: string }
 
 const DEFAULT_PORT = { http: '80', https: '443' } as const
 const ENTRY = /^(https?):\/\/(\[[0-9a-f:.]+\]|[a-z0-9][a-z0-9.-]*)(?::([0-9]{1,5}|\*))?$/i
 
 // A listed origin read into its parts. A port left out is the scheme's own,
 // and `*` is any port. Null when the text is not an origin this list takes.
-export function parseOrigin(text: string): OriginPattern | null {
+function parseOrigin(text: string): OriginPattern | null {
   const match = ENTRY.exec(text)
   const scheme = match?.[1]?.toLowerCase()
   const host = match?.[2]?.toLowerCase()
@@ -52,13 +52,13 @@ export function parseOrigin(text: string): OriginPattern | null {
 }
 
 // An origin as the list keeps it. The scheme's own port is left out.
-export function originText({ scheme, host, port }: OriginPattern): string {
+function originText({ scheme, host, port }: OriginPattern): string {
   return `${scheme}://${host}${port === DEFAULT_PORT[scheme] ? '' : `:${port}`}`
 }
 
 // A listed origin, in the one form the list keeps. A port is a number or `*`. One
 // slash after the host is dropped, since a browser shows a bare origin with it.
-export const WebmcpOrigin = z.string().trim().max(ORIGIN_MAX).transform((text, ctx) => {
+const WebmcpOrigin = z.string().trim().max(ORIGIN_MAX).transform((text, ctx) => {
   const pattern = parseOrigin(text.replace(/\/$/, ''))
   if (!pattern) {
     ctx.issues.push({
@@ -69,7 +69,6 @@ export const WebmcpOrigin = z.string().trim().max(ORIGIN_MAX).transform((text, c
   }
   return originText(pattern)
 })
-export type WebmcpOrigin = z.infer<typeof WebmcpOrigin>
 
 // The list as a daemon and the computer server take it.
 export const WebmcpOrigins = z.array(WebmcpOrigin).max(WEBMCP_ORIGINS_MAX)
@@ -96,10 +95,9 @@ export function originAllowed(pageOrigin: string, listed: readonly string[]): bo
 // The list as the API shows it to an admin.
 export const WebmcpOriginId = z.uuid().brand<'WebmcpOriginId'>()
 export type WebmcpOriginId = z.infer<typeof WebmcpOriginId>
-export const WebmcpOriginRow = z.object({
+const WebmcpOriginRow = z.object({
   id: WebmcpOriginId, origin: WebmcpOrigin, addedBy: z.string().nullable(), createdAt: z.string().min(1),
 })
-export type WebmcpOriginRow = z.infer<typeof WebmcpOriginRow>
 export const WebmcpOriginList = z.object({ origins: z.array(WebmcpOriginRow) })
 export type WebmcpOriginList = z.infer<typeof WebmcpOriginList>
 export const AddWebmcpOriginBody = z.object({ origin: WebmcpOrigin })

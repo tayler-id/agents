@@ -101,7 +101,9 @@ const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length 
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
-const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions, p.webmcpOrigins ?? []])
+// The sites the team lists for this agent's browser. A server from before this release sends none.
+const webmcpOriginsOf = (p: MessagePayload) => p.webmcpOrigins ?? []
+const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions, webmcpOriginsOf(p)])
 const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
@@ -311,7 +313,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   // has a skill of that name itself. An isolated session, such as a judge's, gets
   // none of it, since the runner names the only tools a judge may use.
   const computer = stage?.isolated ? null : screen
-  const webmcpOrigins = payload.webmcpOrigins ?? []
+  const webmcpOrigins = webmcpOriginsOf(payload)
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
