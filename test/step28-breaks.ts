@@ -80,8 +80,11 @@ const BREAKS: Break[] = [
     edits: [{ file: TEAM_AGENTS, anchor: "await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [caller.id])", replace: 'void caller' }] },
   { name: 'pair-lock', check: 'step28c', why: "two agents' first messages to each other at the same moment make two threads", red: ["first messages to each other at the same moment make one thread"],
     edits: [{ file: TEAM_AGENTS, anchor: "  await client.query(`select pg_advisory_xact_lock(hashtext('agents-thread:' || $1 || ':' || $2))`, [first, second])\n", replace: '' }] },
-  { name: 'report-lock', check: 'step28c', why: "a task is locked in a way its session's foreign key waits on, so a report and a person's message to the task deadlock", red: ["a report on each task and a person's message to it"],
-    edits: [{ file: TEAM_AGENTS, anchor: 'where t.id = $1 for no key update of t`', replace: 'where t.id = $1 for update of t`' }] },
+  { name: 'report-lock', check: 'step28c', why: "a report locks its task and a person's message locks the task's session, each in a way the other's foreign keys wait on, so the two deadlock", red: ["a report on each task and a person's message to it"],
+    edits: [
+      { file: 'server/session-messages.ts', anchor: "team_id = $2 for no key update'", replace: "team_id = $2 for update'" },
+      { file: TEAM_AGENTS, anchor: 'where t.id = $1 for no key update of t`', replace: 'where t.id = $1 for update of t`' },
+    ] },
   { name: 'send-count', check: 'step28c', why: "an answer passing through a turn counts as one of its sends", red: ["is not one of its sends"],
     edits: [{ file: TEAM_AGENTS, anchor: '(select count(*) from turns where sent_by_turn in (select id from running))', replace: "(select count(*) from turns where answer_to_turn in (select id from running) and source = 'agent')" }] },
   { name: 'tools-scope', check: 'step28c', why: 'a session with no turn running on the machine still gets the agent tools', red: ['gets no agent tools'],
