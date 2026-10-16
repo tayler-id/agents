@@ -72,6 +72,9 @@ const BREAKS: Break[] = [
   // A computer that is away, and what it answers.
   { name: 'never-asks-for-start', check: '25', why: 'a computer that is not running is waited for and never asked to start', red: ['and it asks once for the computer to be started'],
     edits: [{ file: SECRETS, anchor: '  if (!running) await wakeComputer(target)\n', replace: '' }] },
+  { name: 'sleeping-box-left-asleep', check: '25', why: "a key for a person's own box that sleeps asks the runner to tick but leaves the box marked asleep, so nothing starts it",
+    red: ["a key for a person's own box that is asleep has the runner start the box's container", 'and the box is no longer marked asleep', "the value lands in the box's secrets.json"],
+    edits: [{ file: SECRETS, anchor: "  if (target.kind === 'box' && target.personal) await wakeOwnBox(target.instanceId)\n", replace: '' }] },
   { name: 'waits-short-for-stopped', check: '25', why: 'a computer that is not running gets the wait of one reconnecting, not 90 seconds', red: ['a request for a stopped computer waits, then answers 504 with a reason that names the computer'],
     edits: [{ file: SECRETS, anchor: '  const waitMs = running ? LINK_WAIT_MS : WAKE_MS\n', replace: '  const waitMs = LINK_WAIT_MS\n' }] },
   { name: 'answers-409-for-stopped', check: '25', why: 'a stopped computer is refused at once, as before', red: ['a request for a stopped computer waits, then answers 504 with a reason that names the computer', 'it waits the time it is given, and no longer'],

@@ -35,6 +35,7 @@ import { LINK_ANSWER_MS, LINK_PATH, LINK_UNSUPPORTED, LINK_WAIT_MS, ToDaemon, ty
 import { messageOf } from '../shared/errors.ts'
 import { parseJson } from '../shared/json.ts'
 import { bytesOf } from '../shared/websocket.ts'
+import { boxContainer } from '../shared/boxes.ts'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
 import { tap, type Heard, type Tap } from './wiretap.ts'
@@ -53,7 +54,7 @@ const id = randomBytes(4).toString('hex')
 const team = `secrets25-${id}`
 const otherTeam = `secrets25x-${id}`
 const [alice, bob, mallory] = [`alice25-${id}@local`, `bob25-${id}@local`, `mallory25-${id}@local`]
-const computer = { a: `mac-a-${id}`, b: `mac-b-${id}`, c: `mac-c-${id}` }
+const computer = { a: `mac-a-${id}`, b: `mac-b-${id}`, c: `mac-c-${id}`, box: `box-a-${id}` }
 
 // Values a person sets, one for each time. The second holds a quote, a backslash
 // and a letter outside ASCII, so it is stored and found in the form JSON writes it.
@@ -61,7 +62,7 @@ const rand = () => randomBytes(12).toString('hex')
 const value = {
   first: `first25-${rand()}`, second: `second"25\\${rand()}é`, third: `third25-${rand()}`, fourth: `fourth25-${rand()}`,
   fifth: `fifth25-${rand()}`, sixth: `sixth25-${rand()}`, seventh: `seventh25-${rand()}`, eighth: `eighth25-${rand()}`,
-  carl: `carl25-${rand()}`, shadowed: `shadowed25-${rand()}`, ninth: `ninth25-${rand()}`,
+  carl: `carl25-${rand()}`, shadowed: `shadowed25-${rand()}`, ninth: `ninth25-${rand()}`, box: `box25-${rand()}`,
 }
 const SENT = Object.values(value)
 // Seconds the API waits for a computer that is not running, where it waits 90 for a person. Long enough for a daemon to start.
@@ -73,7 +74,12 @@ const CORRUPT_MARK = `corrupt25-${rand()}`
 const HAND_PLACED = `by-hand25-${rand()}`
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step25-')))
-const homes = { a: join(home, 'computer-a'), stand: join(home, 'computer-stand') }
+const homes = { a: join(home, 'computer-a'), stand: join(home, 'computer-stand'), box: join(home, 'computer-box') }
+// The stand-in for Docker that the API's runner calls, what it was asked, and the box containers it has.
+const dockerBin = join(home, 'docker-bin')
+const dockerLog = join(home, 'docker.log')
+const dockerState = join(home, 'docker-state')
+const dockerCalls = () => (existsSync(dockerLog) ? readFileSync(dockerLog, 'utf8').split('\n').filter((line) => line !== '') : [])
 const streamsDir = join(home, 'streams')
 
 const { failures, check } = results()
@@ -190,7 +196,14 @@ async function main() {
 
   await db.connect()
   db.on('error', (error) => { failures.push(`Postgres dropped the check's connection: ${error.message}`) })
-  const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team, AGENTS_SECRET_WAKE_SEC: String(WAKE_SEC) }, streamsDir)
+  // The runner runs for this team, so a person's own box asleep can be started, and its Docker is the stand-in.
+  mkdirSync(dockerBin, { recursive: true })
+  writeFileSync(join(dockerBin, 'docker'), `#!/bin/sh\nexec "${process.execPath}" "${join(ROOT, 'test', 'fake-box-docker.ts')}" "$@"\n`, { mode: 0o755 })
+  writeFileSync(dockerState, '')
+  const api = await startApi(PORTS, {
+    AGENTS_RUNNER: 'on', AGENTS_RUNNER_TEAMS: team, AGENTS_SECRET_WAKE_SEC: String(WAKE_SEC),
+    PATH: `${dockerBin}:${must(process.env.PATH, 'a PATH')}`, STEP25_DOCKER_LOG: dockerLog, STEP25_DOCKER_STATE: dockerState,
+  }, streamsDir)
   closers.push(api.stop)
   logs.push({ name: 'the API', text: api.text })
 
@@ -521,6 +534,29 @@ async function main() {
     `the computer comes up while the request waits, and the request delivers the value and answers 200 (${String(delivered?.status)} ${delivered?.text.slice(0, 100) ?? ''})`)
   check(await linkUp(machines, beforeStart) && (await setRowOf(instanceA))?.set_by === await personId(alice), 'and the record says who set it')
   check((await ask(alice, 'POST', removeRoute)).status === 200 && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), 'and the value is removed again')
+
+  // A person's own box that is asleep. A key for it wakes it the way the runner wakes a box something wants: the runner
+  // starts its container (here the stand-in for Docker), the box's daemon comes up, and the request delivers the value.
+  // This check's daemon plays the box, and starts only once the runner has started the box's container.
+  const boxToken = `box25-${randomBytes(18).toString('hex')}`
+  const boxId = stringOf(must(await one(
+    `insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal, idle_since, stopped_at, status)
+     values ($1, $2, 'box', $3, $4, $3, now(), true, now(), now(), 'offline') returning id`,
+    [teamId, computer.box, await personId(alice), sha(boxToken)]), 'the box').id)
+  writeFileSync(dockerState, `${boxId} exited\n`)
+  const boxie = agentOn('boxie', computer.box)
+  check((await ask(alice, 'POST', `/v1/agents/${boxie}/plugins`, pluginOf('boxtool', 'BOX_TOKEN'))).status === 200, "a plugin that needs BOX_TOKEN is added to boxie, whose computer is alice's own box, asleep")
+  const boxRoute = `/v1/secrets/${await secretIdOf(alice, boxie, 'BOX_TOKEN')}/value`
+  const waking = ask(alice, 'POST', boxRoute, { value: value.box })
+  const containerStarted = await within(WAKE_SEC, async () => dockerCalls().includes(`start ${boxContainer(boxId)}`))
+  check(containerStarted, `a key for a person's own box that is asleep has the runner start the box's container (${dockerCalls().filter((c) => c.includes(boxId)).join('; ') || 'no call for it'})`)
+  check((await one('select stopped_at from instances where id = $1', [boxId]))?.stopped_at === null, 'and the box is no longer marked asleep')
+  if (containerStarted) daemons.push(startDaemon(boxToken, homes.box, THROUGH_TAP, scenario))
+  const woke = await boundedBy(waking, WAKE_SEC + 10, null)
+  const boxFile = join(homes.box, 'secrets.json')
+  check(woke?.status === 200 && existsSync(boxFile) && JSON.parse(readFileSync(boxFile, 'utf8')).BOX_TOKEN === value.box && !holds(woke.text, value.box),
+    `the box's daemon comes up while the request waits, the value lands in the box's secrets.json, and the request answers 200 (${String(woke?.status)} ${woke?.text.slice(0, 120) ?? ''})`)
+  check((await setRowOf(boxId, 'BOX_TOKEN'))?.set_by === await personId(alice), 'and the record says alice set it on her box')
 
   // A teammate's computer, and one with no owner. Neither is running, so a request that the owner rule lets through waits for it.
   check((await ask(bob, 'POST', `/v1/agents/${bobby}/plugins`, pluginOf('jira', 'JIRA_TOKEN'))).status === 200, "a plugin that needs JIRA_TOKEN is added to bobby, whose computer is bob's")

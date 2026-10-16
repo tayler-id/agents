@@ -12,6 +12,7 @@ import { linkOf, putOnComputer, removeFromComputer, waitForLink, type Link } fro
 import { parseBody, pathId, problems, type Route } from './http.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { wakeRunner } from './runner.ts'
+import { wakeOwnBox } from './boxes.ts'
 import { LINK_WAIT_MS, LINK_WAKE_MS } from '../shared/link.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
@@ -35,16 +36,21 @@ const Found = z.object({
   computer: z.string().nullable(),
   owner_id: PersonId.nullable(),
   status: z.enum(['online', 'stale', 'offline']).nullable(),
+  kind: z.enum(['mac', 'box']).nullable(),
+  personal: z.boolean().nullable(),
 })
 
 // The computer a secret's value goes to.
-type Target = { secretId: SecretId; name: string; teamId: Person['team_id']; instanceId: InstanceId; computer: string; status: 'online' | 'stale' | 'offline' }
+type Target = {
+  secretId: SecretId; name: string; teamId: Person['team_id']; instanceId: InstanceId; computer: string
+  status: 'online' | 'stale' | 'offline'; kind: 'mac' | 'box'; personal: boolean
+}
 
 // Where a person's request for a secret leads, or why it cannot. Each refusal
 // says what the person can do.
 async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   const row = await maybe(pool,
-    `select s.name, a.id as agent_id, i.id as instance_id, i.name as computer, i.owner_id, i.status
+    `select s.name, a.id as agent_id, i.id as instance_id, i.name as computer, i.owner_id, i.status, i.kind, i.personal
      from secrets s
      left join agents a on a.id = s.agent_id and a.archived_at is null
      left join instances i on i.id = a.home_instance_id
@@ -53,21 +59,25 @@ async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   const found = Found.parse(row)
   // A secret of a person or the team has no agent, and so no computer to go to. Nor has one whose agent is archived.
   if (!found.agent_id) throw new HttpError(400, "Only a secret an active agent's plugin needs can be set from the app so far.")
-  if (!found.instance_id || !found.computer || !found.status) throw new HttpError(409, 'This agent has no computer to put a secret on.')
+  if (!found.instance_id || !found.computer || !found.status || !found.kind || found.personal === null) throw new HttpError(409, 'This agent has no computer to put a secret on.')
   const named = SettableName.safeParse(found.name)
   if (!named.success) throw new HttpError(400, `This secret's name can't be set from the app (${problems(named.error)}). Name it something else in the plugin.`)
   // A computer with an owner is the owner's. A value put there is readable by every agent on it.
   if (!mayPutOn(found.owner_id, person.id)) {
     throw new HttpError(403, `${found.computer} is a teammate's own computer. Only its owner can set a secret on it.`)
   }
-  return { secretId, name: found.name, teamId: person.team_id, instanceId: found.instance_id, computer: found.computer, status: found.status }
+  return {
+    secretId, name: found.name, teamId: person.team_id, instanceId: found.instance_id, computer: found.computer,
+    status: found.status, kind: found.kind, personal: found.personal,
+  }
 }
 
-// Asks for a computer that is not running to be started. Here the runner's loop starts a box a person or a run
-// holds, on its next tick, and this makes that tick now. Nothing starts a Mac, so a request for one waits out
-// its time for its daemon to come. Step 1 lets a person's idle box sleep, and starts a sleeping box only while
-// something wants it (WANTED in server/boxes.ts), so a request for a key has to say that it does, here.
+// Asks for a computer that is not running to be started. The runner's loop starts a box a person or a run
+// holds, on its next tick, and this makes that tick now. A person's own box that sleeps starts only once
+// its sleep mark is cleared, as for a box something wants, so a request for a key clears it first. Nothing
+// starts a Mac, so a request for one waits out its time for its daemon to come.
 const wakeComputer = async (target: Target): Promise<void> => {
+  if (target.kind === 'box' && target.personal) await wakeOwnBox(target.instanceId)
   console.log(`asking for ${target.computer} to start, since a key waits for it`)
   await wakeRunner()
 }

@@ -287,6 +287,21 @@ export async function releaseBox(client: pg.Pool | pg.PoolClient, runId: string)
 
 const IdleBox = z.object({ id: InstanceId, personal: z.boolean() })
 
+// Wakes a person's own box that sleeps, for a request that needs it running, such
+// as a key set for one of its agents. It clears the sleep mark and starts the box's
+// idle stretch again, as startClaimedBoxes does for a box something wants, so the
+// runner's next tick starts its container and the idle stopper puts it back to
+// sleep later. It takes the row's lock first, the one markAsleep takes, so the two
+// never interleave. Says whether the box was asleep.
+export async function wakeOwnBox(boxId: InstanceId): Promise<boolean> {
+  return tx(async (client) => {
+    await client.query('select 1 from instances where id = $1 for update', [boxId])
+    const woken = await maybe(client,
+      'update instances set stopped_at = null, idle_since = now() where id = $1 and personal and stopped_at is not null returning id', [boxId])
+    return woken !== undefined
+  })
+}
+
 // Marks a person's own box asleep unless something wants it, and says whether it
 // did. A turn placed on the box reads its row with a key share lock, so this waits
 // for each such request to commit, and its second statement then sees the command
