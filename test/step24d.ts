@@ -41,6 +41,18 @@ const AFTER = { name: 'stamp-writes', event: 'PostToolUse', matcher: 'Write', co
 const OTHER = { name: 'skip-bash', event: 'PostToolUse', matcher: 'Bash', command: 'echo should-not-run >> task/hook-log.txt', timeoutSec: null }
 const FINISH = { name: 'finish', event: 'Stop', matcher: null, command: logging(' && echo stopping'), timeoutSec: null }
 const HOOKS = [STARTED, PROMPT, BEFORE, AFTER, OTHER, FINISH]
+// What the daemon writes for them where Claude Code reads hooks, in the order of the hooks' names.
+const command = (hook: { command: string }, timeout?: number) => ({ type: 'command', command: hook.command, ...(timeout === undefined ? {} : { timeout }) })
+const SETTINGS = {
+  hooks: {
+    PreToolUse: [{ matcher: 'Write', hooks: [command(BEFORE)] }],
+    Stop: [{ hooks: [command(FINISH)] }],
+    UserPromptSubmit: [{ hooks: [command(PROMPT, 20)] }],
+    PostToolUse: [{ matcher: 'Bash', hooks: [command(OTHER)] }, { matcher: 'Write', hooks: [command(AFTER)] }],
+    SessionStart: [{ hooks: [command(STARTED)] }],
+  },
+}
+const { Stop: _stopped, ...WITHOUT_STOP } = SETTINGS.hooks
 
 const RULES = [
   { match: 'Write the shipping notes', say: 'Wrote the notes.', write: { file: 'task/notes.md', content: NOTES } },
@@ -159,8 +171,8 @@ try {
   check(new Set([prompt, pre, postInput, finish].map((i) => i?.prompt_id)).size === 1 && new Set([prompt, pre, postInput, finish].map((i) => i?.session_id)).size === 1,
     "all four hooks saw one turn's id and one session's id")
   const workspace = must(await row('select id from workspaces where task_id = $1', [taskId]), "the task's workspace").id
-  const settings = JSON.parse(readFileSync(join(home, 'workspaces', String(workspace), '.claude', 'settings.local.json'), 'utf8'))
-  check(Object.keys(settings.hooks).sort().join() === 'PostToolUse,PreToolUse,SessionStart,Stop,UserPromptSubmit', 'the daemon wrote the hooks into the workspace where Claude Code reads them')
+  const settingsFile = join(home, 'workspaces', String(workspace), '.claude', 'settings.local.json')
+  check(same(JSON.parse(readFileSync(settingsFile, 'utf8')), SETTINGS), 'the daemon wrote the hooks into the workspace where Claude Code reads them, with their matchers and time limits')
 
   // A change to the agent's hooks restarts its session on the next message, as a resume.
   const removed = await as('POST', `/v1/agents/${agent}/hooks/finish/delete`)
@@ -171,6 +183,7 @@ try {
   check(same(later, ['SessionStart:resume', 'UserPromptSubmit']),
     `the restarted session was a resume as Claude Code reports it, ran the hooks it still has, and ran no Stop hook: ${later.join(' > ')}`)
   check((await loggedLines(taskId)).inputs.filter((i) => i.hook_event_name === 'UserPromptSubmit').length === 2, 'the prompt hook logged the second message too')
+  check(same(JSON.parse(readFileSync(settingsFile, 'utf8')), { hooks: WITHOUT_STOP }), 'the restart wrote the file again without the hook that was taken off')
   check(standIn.problems.length === 0, `the stand-in API answered every request: ${standIn.problems.join('; ')}`)
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error))
