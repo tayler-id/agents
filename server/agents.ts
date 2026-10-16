@@ -1,7 +1,8 @@
 // An agent's setup, edited from the app: who it is, its skills, its plugins
-// (MCP servers), its routines, and what it remembers. Templates save an agent's
-// setup so the team can make another like it. Every function runs inside the
-// caller's transaction and checks the agent is on the person's team.
+// (MCP servers), its routines, its hooks, and what it remembers. Templates save
+// an agent's setup so the team can make another like it, and a copy does the
+// same in one step. Every function runs inside the caller's transaction and
+// checks the agent is on the person's team.
 
 import { randomBytes } from 'node:crypto'
 import type pg from 'pg'
@@ -10,16 +11,11 @@ import { many, maybe, one } from './db.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
 import { SECRET_NAME } from '../shared/secrets.ts'
-import { NAME } from '../shared/types.ts'
+import { AgentId, ConversationId } from '../shared/ids.ts'
+import { carriedBy, mayChangeHooks, Recipe, type CopyAsk, type CopyDone, type RecipeMemory } from '../shared/recipe.ts'
+import { AgentHook, NAME, type AgentPlugin, type AgentSkill } from '../shared/types.ts'
 import { TEAM_AGENTS_SERVER, type AcceptsAgents } from '../shared/team-agents.ts'
-import { HttpError, type Person } from './record.ts'
-
-export type Recipe = {
-  title: string | null; role: string | null; instructions: string; model: string | null
-  skills: { name: string; description: string; content: string }[]
-  plugins: { name: string; kind: 'stdio' | 'http'; config: PluginConfig }[]
-  routines: { name: string; prompt: string; schedule: string }[]
-}
+import { HttpError, openDm, scrub, type Person } from './record.ts'
 
 // A plugin is an MCP server. Secret values never enter Postgres: env and header
 // values name a secret, which the daemon on the machine fills in.
@@ -37,14 +33,42 @@ const optional = (value: unknown, field: string, max = 20_000) =>
   value === undefined || value === null || value === '' ? null : text(value, field, max)
 
 export async function agentOf(client: pg.PoolClient, person: Person, agentId: string, lock = false) {
-  const agent = await maybe<{ id: string; name: string; team_id: string; home_instance_id: string | null }>(client,
-    `select id, name, team_id, home_instance_id from agents where id = $1 and team_id = $2 and archived_at is null${lock ? ' for update' : ''}`,
+  const agent = await maybe<{ id: string; name: string; team_id: string; home_instance_id: string | null; owner_id: string | null }>(client,
+    `select id, name, team_id, home_instance_id, owner_id from agents where id = $1 and team_id = $2 and archived_at is null${lock ? ' for update' : ''}`,
     [agentId, person.team_id])
   if (!agent) throw new HttpError(404, 'no such agent')
   return agent
 }
 
 const Home = z.object({ id: InstanceId, personal: z.boolean(), owner_id: PersonId.nullable() })
+
+// The longest name an agent or a hook may have, as NAME in shared/types.ts allows.
+const NAME_LENGTH = 40
+
+// One agent is named at a time on a team, so a name found free is still free when its agent is inserted.
+const lockNames = (client: pg.PoolClient, teamId: string) => client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-names:${teamId}`])
+
+// `base` and `suffix` as a name that fits, with the base cut and the suffix kept.
+const fit = (base: string, suffix: string) => `${base.slice(0, NAME_LENGTH - suffix.length)}${suffix}`
+
+// The first name of `base` + `suffix`, then `suffix-2`, `suffix-3` and on, that no agent of the team has.
+export async function freeName(client: pg.PoolClient, teamId: string, base: string, suffix: string): Promise<string> {
+  await lockNames(client, teamId)
+  for (let n = 1; ; n++) {
+    const name = fit(base, n === 1 ? suffix : `${suffix}-${String(n)}`)
+    if (!(await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [teamId, name]))) return name
+  }
+}
+
+// The machine a new agent goes on when its person names none: their own box, else a Mac of theirs. An agent
+// runs commands on its machine, so one never lands on a teammate's machine without a word.
+export async function defaultMachine(client: pg.PoolClient, person: Person): Promise<string> {
+  const own = await maybe<{ id: string }>(client,
+    `select id from instances where team_id = $1 and owner_id = $2 and (personal or kind = 'mac') order by personal desc, name limit 1`,
+    [person.team_id, person.id])
+  if (!own) throw new HttpError(409, 'You have no machine of your own to put it on. Name a machine.')
+  return own.id
+}
 
 // A new agent, owned by `ownerId`, on its home machine. A person makes one from
 // the app, and an agent makes one once its owner said yes, which `madeBy` names.
@@ -198,6 +222,54 @@ export async function removeItem(client: pg.PoolClient, person: Person, agentId:
   if (!rowCount) throw new HttpError(404, `no such ${kind.slice(0, -1)}`)
 }
 
+// The hooks an agent's setup names, for a session's message and for a recipe.
+export async function hooksOf(client: pg.PoolClient | pg.Pool, agentId: string): Promise<AgentHook[]> {
+  const { rows } = await client.query<AgentHook>(
+    'select name, event, matcher, command, timeout_sec as "timeoutSec" from agent_hooks where agent_id = $1 order by name', [agentId])
+  return rows
+}
+
+// A hook is a command the agent's machine runs, so who may change one is narrower than for a skill.
+async function agentWithHooksAccess(client: pg.PoolClient, person: Person, agentId: string) {
+  const agent = await agentOf(client, person, agentId)
+  if (!mayChangeHooks(person, agent)) {
+    throw new HttpError(403, "Hooks run commands on the agent's machine, so only the agent's owner or a team admin changes them.")
+  }
+  return agent
+}
+
+// A name for a hook that came with none: its event in dashes, then with 2, 3 and on until it is free on the agent.
+async function freeHookName(client: pg.PoolClient, agentId: string, event: unknown): Promise<string> {
+  const base = typeof event === 'string' ? event.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : 'hook'
+  for (let n = 1; ; n++) {
+    const name = fit(base, n === 1 ? '' : `-${String(n)}`)
+    if (!(await maybe(client, 'select 1 from agent_hooks where agent_id = $1 and name = $2', [agentId, name]))) return name
+  }
+}
+
+// Saves a hook under the name it came with, or under one made from its event. Answers with the name.
+export async function saveHook(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>): Promise<string> {
+  const agent = await agentWithHooksAccess(client, person, agentId)
+  const parsed = AgentHook.safeParse(body.name === undefined ? { ...body, name: await freeHookName(client, agent.id, body.event) } : body)
+  if (!parsed.success) throw new HttpError(400, z.prettifyError(parsed.error))
+  const hook = parsed.data
+  // A command is where a pasted key is likeliest to end up, and the record keeps it.
+  if (scrub(hook.command) !== hook.command) {
+    throw new HttpError(400, 'The command holds what looks like a secret value, and the record keeps commands. Keep the value on the machine and have the command read it from the environment.')
+  }
+  await client.query(
+    `insert into agent_hooks (agent_id, name, event, matcher, command, timeout_sec) values ($1, $2, $3, $4, $5, $6)
+     on conflict (agent_id, name) do update set event = excluded.event, matcher = excluded.matcher, command = excluded.command, timeout_sec = excluded.timeout_sec`,
+    [agent.id, hook.name, hook.event, hook.matcher, hook.command, hook.timeoutSec])
+  return hook.name
+}
+
+export async function removeHook(client: pg.PoolClient, person: Person, agentId: string, name: string) {
+  await agentWithHooksAccess(client, person, agentId)
+  const { rowCount } = await client.query('delete from agent_hooks where agent_id = $1 and name = $2', [agentId, name])
+  if (!rowCount) throw new HttpError(404, 'no such hook')
+}
+
 // What an agent keeps about a person or the team: one profile each, and a log a day.
 export async function writeMemory(client: pg.PoolClient, agentId: string, teamId: string, about: { personId: string | null },
   kind: 'profile' | 'log', content: string) {
@@ -242,15 +314,40 @@ export function memoryText(rows: Remembered[]): string {
   return `What you remember (keep it current with the update_memory tool):\n\n${lines.join('\n\n')}`
 }
 
-export async function saveTemplate(client: pg.PoolClient, person: Person, agentId: string, name: string): Promise<{ slug: string; version: number }> {
+// An agent's setup as a recipe. The team's memories come along only when asked
+// for, and what the agent remembers about a person never does. Plugin secrets
+// are names, so no secret value is in it. A row that holds something a recipe can't
+// carry stops the recipe, rather than leaving that part out.
+export async function recipeOf(client: pg.PoolClient, agentId: string, withMemories: boolean): Promise<Recipe> {
+  const agent = await one<{ title: string | null; role: string | null; instructions: string; model: string | null }>(client, 'the agent',
+    'select title, role, instructions, model from agents where id = $1', [agentId])
+  const skills = await many<AgentSkill>(client, 'select name, description, content from skills where agent_id = $1 order by name', [agentId])
+  const plugins = await many<AgentPlugin>(client, 'select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
+  const routines = await many<{ name: string; prompt: string; schedule: string }>(client,
+    `select name, prompt, trigger_config->>'schedule' as schedule from routines where agent_id = $1 order by name`, [agentId])
+  const memories = withMemories ? await teamMemories(client, agentId) : []
+  const recipe = Recipe.safeParse({ ...agent, skills, plugins, routines, hooks: await hooksOf(client, agentId), memories })
+  if (!recipe.success) throw new HttpError(409, `This agent's setup can't be made into a recipe. ${z.prettifyError(recipe.error)}`)
+  return recipe.data
+}
+
+// What an agent remembers about the team, never about a person.
+async function teamMemories(client: pg.PoolClient, agentId: string): Promise<RecipeMemory[]> {
+  const rows = await many<{ kind: 'profile' | 'log'; date: string | null; content: string }>(client,
+    `select kind, log_date::text as date, content from memories where agent_id = $1 and scope = 'team' and content <> '' order by kind desc, log_date`,
+    [agentId])
+  return rows.map((row): RecipeMemory => {
+    if (row.kind === 'profile') return { kind: 'profile', content: row.content }
+    if (row.date === null) throw new Error(`a log of agent ${agentId} has no date`)
+    return { kind: 'log', date: row.date, content: row.content }
+  })
+}
+
+// Saves the agent's setup as a template of the team, named after the agent unless a name is given.
+export async function saveTemplate(client: pg.PoolClient, person: Person, agentId: string, given: string | null): Promise<{ slug: string; version: number }> {
   const agent = await agentOf(client, person, agentId)
-  const full = await one<{ title: string | null; role: string | null; instructions: string; model: string | null }>(client, 'the agent',
-    'select title, role, instructions, model from agents where id = $1', [agent.id])
-  const skills = await many<Recipe['skills'][number]>(client, 'select name, description, content from skills where agent_id = $1 order by name', [agent.id])
-  const plugins = await many<Recipe['plugins'][number]>(client, 'select name, kind, config from plugins where agent_id = $1 order by name', [agent.id])
-  const routines = await many<Recipe['routines'][number]>(client,
-    `select name, prompt, trigger_config->>'schedule' as schedule from routines where agent_id = $1 order by name`, [agent.id])
-  const recipe: Recipe = { ...full, skills, plugins, routines }
+  const name = given ?? agent.name
+  const recipe = await recipeOf(client, agent.id, false)
   const existing = await maybe<{ id: string; version: number; share_slug: string }>(client,
     'select id, version, share_slug from templates where team_id = $1 and name = $2 for update', [person.team_id, name])
   if (existing) {
@@ -263,15 +360,56 @@ export async function saveTemplate(client: pg.PoolClient, person: Person, agentI
   return { slug, version: 1 }
 }
 
-// Gives a new agent a template's setup: who it is, its skills, plugins and routines.
+// Gives an agent a recipe's setup: who it is, its skills, plugins, routines, hooks
+// and the team's memories. Each part goes through the call a person's edit does, so
+// a recipe can't carry anything the agent's page would refuse.
+export async function installRecipe(client: pg.PoolClient, person: Person, agentId: string, recipe: Recipe) {
+  await updateAgent(client, person, agentId, { title: recipe.title, role: recipe.role, instructions: recipe.instructions, model: recipe.model })
+  for (const skill of recipe.skills) await saveSkill(client, person, agentId, skill)
+  for (const plugin of recipe.plugins) await savePlugin(client, person, agentId, plugin)
+  for (const routine of recipe.routines) await saveRoutine(client, person, agentId, routine)
+  for (const hook of recipe.hooks) await saveHook(client, person, agentId, hook)
+  for (const memory of recipe.memories) {
+    await client.query(
+      `insert into memories (team_id, agent_id, scope, kind, log_date, content) values ($1, $2, 'team', $3, $4, $5)`,
+      [person.team_id, agentId, memory.kind, memory.kind === 'log' ? memory.date : null, memory.content])
+  }
+}
+
+// Gives a new agent a template's setup.
 async function install(client: pg.PoolClient, person: Person, agentId: string, slug: string) {
-  const template = await maybe<{ recipe: Recipe }>(client,
+  const template = await maybe<{ recipe: unknown }>(client,
     'select recipe from templates where share_slug = $1 and team_id = $2', [slug, person.team_id])
   if (!template) throw new HttpError(404, 'no such template')
-  const r = template.recipe
-  await client.query('update agents set title = $2, role = $3, instructions = $4, model = $5 where id = $1',
-    [agentId, r.title, r.role, r.instructions, r.model])
-  for (const skill of r.skills) await saveSkill(client, person, agentId, skill)
-  for (const plugin of r.plugins) await savePlugin(client, person, agentId, plugin)
-  for (const routine of r.routines) await saveRoutine(client, person, agentId, routine)
+  const recipe = Recipe.safeParse(template.recipe)
+  if (!recipe.success) throw new HttpError(409, `The template can't be read. ${z.prettifyError(recipe.error)}`)
+  await installRecipe(client, person, agentId, recipe.data)
+}
+
+// Makes a new agent owned by the person, on a machine they may use, with a recipe's
+// setup, and opens their conversation with it. A copy and a file import both come through here.
+// A new agent is made the way the app makes one, so every rule for who may put an agent where holds.
+// A copy records the agent it came from and wears its face, and the person can change that after.
+export async function agentFromRecipe(
+  client: pg.PoolClient, person: Person, where: { name: string; homeInstanceId: string }, recipe: Recipe, copiedFrom: string | null,
+): Promise<CopyDone> {
+  await lockNames(client, person.team_id)
+  const agentId = await createAgent(client, person, { name: where.name, homeInstanceId: where.homeInstanceId })
+  if (copiedFrom !== null) {
+    await client.query('update agents set copied_from_agent_id = $2, avatar = (select avatar from agents where id = $2) where id = $1', [agentId, copiedFrom])
+  }
+  await installRecipe(client, person, agentId, recipe)
+  const conversationId = await openDm(client, person, where.name)
+  return { agentId: AgentId.parse(agentId), name: where.name, conversationId: ConversationId.parse(conversationId), carried: carriedBy(recipe) }
+}
+
+// A new agent with the source agent's setup. It saves no template, so a copy never
+// changes the setups the team keeps as templates.
+export async function copyAgent(client: pg.PoolClient, person: Person, sourceId: string, ask: CopyAsk): Promise<CopyDone> {
+  const source = await agentOf(client, person, sourceId)
+  const recipe = await recipeOf(client, source.id, ask.memories)
+  return agentFromRecipe(client, person, {
+    name: ask.name ?? await freeName(client, person.team_id, source.name, '-copy'),
+    homeInstanceId: ask.homeInstanceId ?? await defaultMachine(client, person),
+  }, recipe, source.id)
 }

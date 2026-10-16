@@ -47,7 +47,7 @@ import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wa
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
 import { syncPipelines } from './pipelines.ts'
-import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, setAcceptsAgents, updateAgent, writeMemory } from './agents.ts'
+import { copyAgent, createAgent, removeHook, removeItem, saveHook, savePlugin, saveRoutine, saveSkill, saveTemplate, setAcceptsAgents, updateAgent, writeMemory } from './agents.ts'
 import { callerOf, delegateTask, listAgents, makeAgent, reportBack, sendToAgent } from './team-agents.ts'
 import { DelegateTask, ReportBack, SendToAgent, SetAccepts } from '../shared/team-agents.ts'
 import { createRoom } from './rooms.ts'
@@ -72,6 +72,9 @@ import { secretRoutes } from './secrets.ts'
 import { controlUpgrade } from './control.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
+import { CopyAsk } from '../shared/recipe.ts'
+import { ImportAsk } from '../shared/recipe-file.ts'
+import { exportRecipe, importRecipe } from './recipe-files.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
@@ -446,10 +449,44 @@ const routes: Route[] = [
     return tx((client) => setAcceptsAgents(client, person, agentId, agents))
   }],
 
+  // Hooks run commands on the agent's machine, so they have routes of their own, and an owner's or admin's check.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    return { ok: true, name: await tx((client) => saveHook(client, person, agentId, body)) }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks/([^/]+)/delete$`), async (req, [agentId, name]) => {
+    const person = await personFrom(req)
+    await tx((client) => removeHook(client, person, agentId, decodeURIComponent(name)))
+    return { ok: true }
+  }],
+
+  // An agent's setup as a file, and a new agent from one. Whether setups leave the team waits on Tayler's decision 11.
+  ['people', 'GET', new RegExp(`^/v1/agents/${UUID}/recipe$`), async (req, [agentId], url) => {
+    const person = await personFrom(req)
+    const memories = url.searchParams.get('memories')
+    if (memories !== 'true' && memories !== 'false') throw new HttpError(400, 'memories must be true or false')
+    return tx((client) => exportRecipe(client, person, agentId, memories === 'true'))
+  }],
+
+  ['people', 'POST', /^\/v1\/agents\/import$/, async (req) => {
+    const person = await personFrom(req)
+    const ask = parsed(ImportAsk, await readJson(req))
+    return tx((client) => importRecipe(client, person, ask))
+  }],
+
+  // A new agent with the setup of this one, owned by the person who asks.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/copy$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const ask = parsed(CopyAsk, await readJson(req))
+    return tx((client) => copyAgent(client, person, agentId, ask))
+  }],
+
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/templates$`), async (req, [agentId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    return tx((client) => saveTemplate(client, person, agentId, text(body.name, 'name')))
+    return tx((client) => saveTemplate(client, person, agentId, body.name === undefined ? null : text(body.name, 'name')))
   }],
 
   // Runs a routine now, as if it had come due.

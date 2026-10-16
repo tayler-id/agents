@@ -12,7 +12,7 @@ import { maybe, one, type Db } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
-import { memoryBlock } from './agents.ts'
+import { hooksOf, memoryBlock } from './agents.ts'
 import { finishTurn, nextTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
@@ -349,12 +349,12 @@ async function postAgentReply(client: pg.PoolClient, session: AgentSession, conv
   return reply.text
 }
 
-// What an agent brings to every session: its skills, its plugins and what it
-// remembers about the people involved and the team.
-export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'memory'>> {
+// What an agent brings to every session: its skills, its plugins, its hooks and
+// what it remembers about the people involved and the team.
+export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'hooks' | 'memory'>> {
   const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
   const memory = await memoryBlock(client, agentId, personIds)
-  return { skills: await skillsOf(client, agentId), plugins, memory: memory || undefined }
+  return { skills: await skillsOf(client, agentId), plugins, hooks: await hooksOf(client, agentId), memory: memory || undefined }
 }
 
 // An agent's skills: its own and the team's.

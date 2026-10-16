@@ -26,7 +26,7 @@ import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { changeMachineSecret, forgetValueIn, heldSecretNames, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeSkills } from './agentfiles.ts'
+import { changeMachineSecret, forgetValueIn, heldSecretNames, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeHooks, writeSkills } from './agentfiles.ts'
 import { linkControl } from './control-link.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -113,7 +113,7 @@ const setups = new Map<string, string>()
 // plugins started with a value that was set again or removed since.
 const usedSecrets = new Map<string, string[]>()
 const staleSecrets = new Set<string>()
-const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions])
+const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.hooks, p.permissions])
 const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
@@ -326,6 +326,9 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
+  // A session sent no hooks runs none, so the file never carries another session's into it.
+  const hooks = payload.hooks ?? []
+  writeHooks(cwd, hooks)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
@@ -338,6 +341,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     acceptEdits: payload.permissions.workspaceWrites,
     // A server before this release sends a stage's budget only in the stage.
     maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
+    hookEvents: hooks.length > 0,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)

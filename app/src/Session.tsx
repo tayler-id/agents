@@ -6,16 +6,19 @@ const LABELS: Record<string, string> = {
   ask: 'Asked', answer: 'Answer', notice: 'Notice', error: 'Error', usage: 'Turn ended',
 }
 
+// The notices a session's list shows. The rest are bookkeeping that stays in the record.
+const SHOWN_NOTICES = new Set<unknown>(['init', 'interrupted', 'screen', 'hook_response'])
+
 // Everything one session did, in order, live.
 export function EventList({ sessionId }: { sessionId: string }) {
   const { rows: events } = useRows<EventRow>('events', { session: sessionId })
   const sorted = useMemo(() => [...events].sort(byNumber((e: EventRow) => e.seq)), [events])
   return (
     <ol className="events" tabIndex={0} aria-label="Events">
-      {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init' || e.body.subtype === 'interrupted' || e.body.subtype === 'screen').map((e) => (
+      {sorted.filter((e) => e.kind !== 'notice' || SHOWN_NOTICES.has(e.body.subtype)).map((e) => (
         <li key={String(e.id)} className={`event ${e.kind}${e.parent_tool_use_id ? ' sub' : ''}`}>
           <div className="meta">
-            <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
+            <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : e.body.subtype === 'hook_response' ? 'Hook' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
             <span className="muted small">{clock(e.created_at)}</span>
           </div>
           {e.text && (e.text.length > 280

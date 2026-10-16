@@ -18,6 +18,9 @@ export type HarnessStart = {
   acceptEdits: boolean
   // Stops the session once it has cost this much, in US dollars.
   maxBudgetUsd?: number
+  // Reports every hook the harness runs, so each lands in the record. Claude Code reports a
+  // SessionStart hook either way, and the rest only when asked.
+  hookEvents: boolean
   // The Claude token this machine's owner signed in with from the app, or null to use the machine's own login.
   oauthToken: string | null
 }
