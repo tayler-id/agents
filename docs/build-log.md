@@ -1162,3 +1162,13 @@ Branch `voice`, from main de6d961. Design in `docs/design/voice.md`. No migratio
   - Voice chat is for one-agent conversations, not rooms.
   - The reply is read by polling the record. Whether an agent's assistant text grows inside one event while it streams was not checked against a real daemon, so sentence-by-sentence may in practice mean event-by-event.
   - Nothing ran on the live system. Nothing starts the speech service at boot.
+
+#### Voice review fixes (2026-10-16)
+
+- **S9.** A turn has a posting phase and a speaking phase. New audio silences only speech, never a turn still being transcribed or posted. A turn ended during posting is queued and posted right after. step24w: 2 new lines, seen red with the abort restored and with the queue dropped.
+- **S10.** The reply is matched to the post's own turn. Its words are the assistant events written after the last earlier turn of the session ended (finished_at) and, once it ended, no later than its own end, compared inside Postgres. The turn's end, not a message row, finishes the reply, and a failed turn says "The agent could not answer that. The chat shows why." (this also answers NV2). step24w: 2 new lines. Seen red without the lower bound and without the wait for earlier turns. Not guarded by any check: the upper bound (a narrow race between reading the turn and reading its events). The model assumes a turn's events are written before the turn ends, as `appendEvents` does.
+- **S11.** step24v makes a 61 second WebM with ffmpeg and expects 413 with the too-long words. Seen red with the WebM length check removed. The `-t` cutoff itself is still unguarded.
+- **NV4.** The service's answer body is now read under the same timeout, so a service that sends headers and stalls gives 504 and its words. step24v has a `stall` line, seen red.
+- **S12, NV3.** The design no longer promises that audio never touches the speech service's disk, and no longer lists a `listening` state.
+- **Left open.** NV1 (ffmpeg before the in-flight cap, `speak` uncapped, polling cost per socket): performance, no failing case shown, and a cap needs a number Tayler should pick. NV5 (nothing run against the real service): needs the two packages. NV6 (`api as VoiceApi` cast in step24v, and the shared API kit's attachment sweep folder, B1): the cast is a test-only cleanup I did not mix in, and B1 belongs to the attachments branch's required-folder fix, after which `test/voice-kit.ts` must set the folder.
+- **Counts.** step24v 29 lines, step24w 41 lines, all green.
