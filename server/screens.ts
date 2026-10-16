@@ -216,11 +216,22 @@ async function move(screen: Screen, event: HandoffEvent, person: { id: PersonId;
   return control
 }
 
+// Tayler's call of 2026-10-16: only a computer's owner and the team's admins
+// may take control of its seats, since a terminal on a seat reads what the
+// computer's daemon holds. Everyone else on the team may watch.
+export const NOT_CONTROLLER = "Only this computer's owner and team admins can take over its screen. You can watch it."
+
 export async function takeScreen(person: Person, instanceId: string, n: SeatNumber, sessionId: SessionId | null): Promise<ScreenControl> {
+  const found = InstanceId.safeParse(instanceId)
+  if (!found.success) throw new HttpError(404, 'no such screen')
+  // Asked first, so a teammate is told why they can't take over before anything about what they can't see.
+  const ours = await maybe(pool, 'select owner_id from instances where id = $1 and team_id = $2', [found.data, person.team_id])
+  if (!ours) throw new HttpError(404, 'no such screen')
+  if (person.role !== 'admin' && ours.owner_id !== person.id) throw new HttpError(403, NOT_CONTROLLER)
   const screen = await watchable(person, instanceId, n)
   if (!boxes.has(screen.instanceId)) throw new HttpError(409, 'The box is not connected, so nobody can take over its screen.')
-  const id = PersonId.parse(person.id)
-  return move(screen, { kind: 'take', personId: id, login: person.login, at: new Date().toISOString() }, { id, login: person.login }, sessionId)
+  const personId = PersonId.parse(person.id)
+  return move(screen, { kind: 'take', personId, login: person.login, at: new Date().toISOString() }, { id: personId, login: person.login }, sessionId)
 }
 
 // Handing back runs no watch rule, so a person cut off from a screen they held

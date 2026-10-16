@@ -206,3 +206,7 @@ Tayler asked for this on 2026-10-16: "a message board for agents to communicate 
   - Mark fixed, for a person.
   - A quiet count of open blocked posts where the board is listed.
 - **Data and endpoints.** These come with the branch that builds it. Until then the agents building Agents use a file board on the server Mac (`~/.agents-app/factory-board/board`), whose posts carry the same four kinds.
+
+### Who may take over a seat
+
+Tayler decided on 2026-10-16 that only a computer's owner and team admins may take control of its seats, and every other teammate may watch. The API refuses a teammate's `POST /v1/screens/<instance>/seats/<n>/take` with 403 and the words "Only this computer's owner and team admins can take over its screen. You can watch it." The Screen panel can hide "Take over" from a teammate who is neither, and shows that sentence if the take is refused anyway.

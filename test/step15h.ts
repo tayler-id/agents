@@ -187,10 +187,10 @@ try {
   await taker.query('begin')
   await taker.query('select 1 from seats where id = $1 for update', [idleSeat.id])
   await taker.query(`insert into screen_takeovers (team_id, instance_id, seat_id, person_id) values ($1, $2, $3, $4)`, [team, crowd, idleSeat.id, carol.id])
-  let reclaimDone = false
-  const reclaim = tx((client) => takeSeat(client, crowd as never, outsider as never)).then((result) => { reclaimDone = true; return result })
+  const progress = { done: false }
+  const reclaim = tx((client) => takeSeat(client, crowd as never, outsider as never)).then((result) => { progress.done = true; return result })
   await new Promise((resolve) => setTimeout(resolve, 400))
-  const waitedForTakeover = !reclaimDone
+  const waitedForTakeover = !progress.done
   await taker.query('commit')
   taker.release()
   const reclaimed = await reclaim
@@ -218,6 +218,31 @@ try {
     await db.query(`update sessions set status = 'running' where id = $1`, [talkerSession.id])
   }
   check(deadlocks === 0 && hits === 24, `a screen handed back while the agent on that seat is messaged never deadlocks (12 rounds, ${deadlocks} deadlocks)`)
+
+  // Only a computer's owner and the team's admins take control of its seats.
+  // The gate comes before the check that the box is connected, which none is
+  // here, so a refused take says why and an allowed one reaches the box check.
+  const { takeScreen, NOT_CONTROLLER } = await import('../server/screens.ts')
+  const dana = Person.parse(await one(`insert into people (team_id, login, name, role) values ($1, 'dana@mail.test', 'Dana', 'member') returning id, team_id, login, role`, [team]))
+  const ella = Person.parse(await one(`insert into people (team_id, login, name, role) values ($1, 'ella@mail.test', 'Ella', 'member') returning id, team_id, login, role`, [team]))
+  const ellaComputer = String((await one(
+    `insert into instances (team_id, name, kind, owner_id, token_sha256, personal, claimed_by, seat_cap, status, ready, last_seen_at)
+     values ($1, 'box-ella', 'box', $2, $3, true, $2, 4, 'online', true, now()) returning id`, [team, ella.id, randomBytes(16).toString('hex')])).id)
+  await db.query('update instances set screen_width = 1280, screen_height = 800 where id = any($1)', [[computer, ellaComputer]])
+  const takeWords = async (who: typeof bob, on: string) => {
+    try {
+      await takeScreen(who, on, 1, null)
+      return 'taken'
+    } catch (error) {
+      return messageOf(error)
+    }
+  }
+  const notConnected = 'The box is not connected, so nobody can take over its screen.'
+  check(await takeWords(dana, computer) === NOT_CONTROLLER && await takeWords(dana, ellaComputer) === NOT_CONTROLLER,
+    `a teammate who owns neither the computer nor is an admin is refused, in the words "${NOT_CONTROLLER}"`)
+  check(await takeWords(ella, ellaComputer) === notConnected, "the computer's owner, a member, is let through to the box")
+  check(await takeWords(carol, ellaComputer) === notConnected && await takeWords(bob, computer) === notConnected, 'a team admin is let through on a computer that is not theirs, and an owner on theirs')
+  check(await takeWords(ella, computer) === NOT_CONTROLLER, "the owner of one computer cannot take another's")
 
   await pool.end()
   await db.end()
