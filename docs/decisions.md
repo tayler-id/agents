@@ -442,6 +442,18 @@ Tayler went with the coordinator's picks on all of these.
 - **The coordinator's pick, which Tayler can change.** Speech runs locally on the server Mac, using the stack Tayler chose for their own voice setup on 2026-09-12: Parakeet for speech to text and Qwen3-TTS for text to speech, with no cloud account. On AWS it runs on the server host.
 - **Status.** Next in line after chat attachments, as agents free up.
 
+### Meetings, calendars and calls
+
+- **Decided by Tayler on 2026-10-16.** Meetings and calls are important. Meetings in the app come first, before agents join outside calls.
+- **The plan.**
+  - Google Calendar and Microsoft 365 connect through sign-in, as connectors. Agents see upcoming meetings, prepare for them and join them.
+  - Meetings in the app are rooms with audio, video and screen sharing, run on the team's own server (LiveKit, open source, self-hosted). People and agents join. An agent hears through speech to text, thinks in Claude Code, and speaks through text to speech, using the voice pieces. It can share its own desktop.
+  - Each person's audio is transcribed separately, so the transcript knows who said what. It is saved in the record like any conversation.
+  - An agent turns the transcript into decisions, action items and a requirements document, and each action item becomes a task with a person's yes, linked to the moment it was said.
+  - Joining Google Meet, Teams or Zoom from an agent's own browser comes after meetings in the app. Phone calls come after that.
+- **Order.** Voice, then calendars with the connectors, then meetings in the app, then outside calls, then phone.
+- **Status.** Designed at this level. Each piece gets its own design section before it is built.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
