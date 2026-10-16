@@ -47,6 +47,33 @@ export const FolderRow = z.object({
 })
 export type FolderRow = z.infer<typeof FolderRow>
 
+// The folder whose choice decides where a session started in `path` goes: the
+// deepest folder holding it that has a choice of its own, connected, or turned
+// Off and kept on this Mac. A folder's own choice wins over the folders it is in.
+// Off wins over a connected row at the same path, so a change that failed between
+// its two steps never sends more. A connected folder that holds `home` decides
+// nothing, since the daemon reads no session in it. None means the session stays
+// on the Mac.
+export type Deciding = { kept: true; path: string } | { kept: false; folder: FolderRow }
+export function decidingFolder(path: string, connected: readonly FolderRow[], kept: readonly string[], home: string): Deciding | null {
+  let found: Deciding | null = null
+  // Two folders that both hold the path are one inside the other, so the longer path is the deeper one.
+  let depth = -1
+  for (const folder of connected) {
+    if (insideFolder(folder.path, path) && !holdsHome(folder.path, home) && folder.path.length > depth) {
+      found = { kept: false, folder }
+      depth = folder.path.length
+    }
+  }
+  for (const off of kept) {
+    if (insideFolder(off, path) && off.length >= depth) {
+      found = { kept: true, path: off }
+      depth = off.length
+    }
+  }
+  return found
+}
+
 // The answer to connecting or disconnecting. `already` is true when there was nothing to change.
 export const FolderAnswer = z.object({ folder: FolderRow, already: z.boolean() })
 export type FolderAnswer = z.infer<typeof FolderAnswer>
@@ -61,15 +88,20 @@ export type FolderList = z.infer<typeof FolderList>
 
 // What this Mac's daemon tells the Agents app on the same Mac, through the socket
 // in daemon/app-socket.ts. Each folder is one Claude Code ran in, with when its
-// newest transcript changed, or one connected here, or both. `hiddenSessions` is
-// how many of its sessions in the record the team can't see now, which choosing
-// Team shows them. A temporary one is inside the system's temporary folders,
-// where tools start Claude Code by the hundred. A folder that isn't connected
-// never leaves the Mac.
+// newest transcript changed, one connected here, or one turned Off here, which
+// the daemon keeps on this Mac, and it can be more than one of those.
+// `hiddenSessions` is how many of its sessions in the record the team can't see
+// now, which choosing Team shows them. A temporary one is inside the system's
+// temporary folders, where tools start Claude Code by the hundred. A folder that
+// isn't connected never leaves the Mac.
 const MacFolderPlace = { path: FolderPath, temporary: z.boolean(), hiddenSessions: z.number().int().min(0) }
 export const MacFolder = z.union([
-  z.object({ ...MacFolderPlace, usedAt: Time, folder: z.null() }),
-  z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: FolderRow }),
+  // Claude Code ran in it, and it has no choice of its own.
+  z.object({ ...MacFolderPlace, usedAt: Time, folder: z.null(), kept: z.literal(false) }),
+  // Connected here.
+  z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: FolderRow, kept: z.literal(false) }),
+  // Turned Off here, so its sessions stay on this Mac whatever folder it is in.
+  z.object({ ...MacFolderPlace, usedAt: Time.nullable(), folder: z.null(), kept: z.literal(true) }),
 ])
 export type MacFolder = z.infer<typeof MacFolder>
 // A folder Claude Code ran in whose path can't be a connected folder's, such as / for a session started there, which
@@ -86,6 +118,10 @@ export type AppConnect = z.infer<typeof AppConnect>
 // The daemon's answer to a connect from the app, with anything that will keep the folder's sessions from landing.
 export const AppConnected = ConnectAnswer.extend({ warnings: z.array(z.string()) })
 export type AppConnected = z.infer<typeof AppConnected>
+// What Off did. `folder` is the folder's row in the record, disconnected now, when it was connected, and `inside` the
+// connected folder it is in, whose sessions it would land with but for its Off. `already` is true when it was off.
+export const OffAnswer = z.object({ folder: FolderRow.nullable(), inside: FolderRow.nullable(), already: z.boolean() })
+export type OffAnswer = z.infer<typeof OffAnswer>
 // The daemon's answer when it changed nothing, in words the app shows as they are.
 export const AppRefusal = z.object({ error: z.string() })
 export type AppRefusal = z.infer<typeof AppRefusal>

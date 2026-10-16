@@ -6,8 +6,10 @@
 //   node daemon/folders.ts disconnect [folder]
 // A folder is the team's when first connected, and --private keeps its sessions
 // to you. Connecting it again keeps whichever it is, unless --private or --team
-// says otherwise. Your home folder, and any folder above it, can't be connected,
-// since it holds every project you have. --json prints the answer as JSON.
+// says otherwise. Disconnecting a folder keeps its sessions on this Mac, even one
+// inside a connected folder, and the daemon keeps that on the Mac. Your home
+// folder, and any folder above it, can't be connected, since it holds every
+// project you have. --json prints the answer as JSON.
 // Exit codes: 0 done, 1 failed and safe to retry, 2 usage, 3 refused with nothing changed.
 // The Agents app on the Mac connects folders through the daemon's socket,
 // daemon/app-socket.ts, which calls the functions exported here.
@@ -16,8 +18,11 @@ import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { messageOf } from '../shared/errors.ts'
-import { ConnectAnswer, FolderAnswer, FolderList, holdsHome, type FolderRow, type FolderVisibility } from '../shared/terminal.ts'
-import { ApiError, apiClient, loadConfig, type Api } from './api.ts'
+import {
+  ConnectAnswer, decidingFolder, FolderAnswer, FolderList, FolderPath, holdsHome, type FolderRow, type FolderVisibility, type OffAnswer,
+} from '../shared/terminal.ts'
+import { ApiError, apiClient, HOME, loadConfig, type Api } from './api.ts'
+import { keep, unkeep } from './kept.ts'
 import { projectName } from './transcripts.ts'
 
 // A connect or disconnect that changed nothing: the folder can't be used as given,
@@ -60,13 +65,16 @@ export type Connected = ConnectAnswer & { path: string; warnings: string[] }
 
 // Connects a folder, or changes who sees its sessions. With no visibility, a
 // folder connected before keeps its own, and a new one is the team's. The
-// warnings say what will keep its sessions from landing.
-export async function connectFolder(api: Api, given: string, visibility: FolderVisibility | undefined): Promise<Connected> {
+// warnings say what will keep its sessions from landing. `home` is the daemon's.
+export async function connectFolder(api: Api, home: string, given: string, visibility: FolderVisibility | undefined): Promise<Connected> {
   const path = folderPath(given, true)
   if (holdsHome(path, realpathSync.native(homedir()))) {
     throw new FolderRefused('home', `${path} is your home folder or holds it, so every Claude Code session you start under it would land in the record.`)
   }
   const answer = ConnectAnswer.parse(await asked(api('POST', '/v1/instance/folders', visibility === undefined ? { path } : { path, visibility })))
+  // The folder's own Team or Just me takes the place of its Off, once the record has it, so a connect that failed
+  // leaves its sessions on the Mac.
+  unkeep(home, path)
   const name = projectName(path)
   const warnings = name.length > LONGEST_NAME
     ? [`the folder's transcript folder name is ${name.length} characters, and Claude Code shortens names past ${LONGEST_NAME}, so its sessions will not land.`]
@@ -74,9 +82,27 @@ export async function connectFolder(api: Api, given: string, visibility: FolderV
   return { ...answer, path, warnings }
 }
 
-export async function disconnectFolder(api: Api, given: string): Promise<FolderAnswer & { path: string }> {
+// Turns a folder Off. Its sessions stay on this Mac from now on, whatever folder
+// it is in is connected, since the daemon keeps the Off here. The record hears of
+// the folder only when it was connected, so the name of one never connected never
+// leaves the Mac. The Off is kept before the record is told, so a disconnect that
+// fails still keeps the folder's sessions here. `home` is the daemon's.
+export async function disconnectFolder(api: Api, home: string, given: string): Promise<OffAnswer & { path: string }> {
   const path = folderPath(given, false)
-  return { ...FolderAnswer.parse(await asked(api('POST', '/v1/instance/folders/disconnect', { path }))), path }
+  const userHome = realpathSync.native(homedir())
+  const { folders } = await connectedFolders(api)
+  const connected = folders.some((folder) => folder.path === path)
+  // The daemon reads nothing in the home folder or a folder above it, so there is nothing there to keep.
+  let keptBefore = true
+  if (!holdsHome(path, userHome)) {
+    const valid = FolderPath.safeParse(path)
+    if (!valid.success) throw new FolderRefused('usage', `${path} can't be turned off: ${valid.error.issues[0]?.message ?? 'it is not a folder path'}.`)
+    keptBefore = keep(home, valid.data)
+  }
+  const folder = connected ? FolderAnswer.parse(await asked(api('POST', '/v1/instance/folders/disconnect', { path }))).folder : null
+  // The connected folder whose sessions this one's would land with but for its Off.
+  const inside = decidingFolder(path, folders.filter((f) => f.path !== path), [], userHome)
+  return { path, folder, inside: inside?.kept === false ? inside.folder : null, already: keptBefore && !connected }
 }
 
 export async function connectedFolders(api: Api): Promise<FolderList> {
@@ -136,7 +162,7 @@ async function main() {
     if (verb === 'connect') {
       // With neither flag, the API keeps the folder's own visibility, so a bare connect never widens a private folder.
       const visibility = flags.has('--private') ? 'private' : flags.has('--team') ? 'team' : undefined
-      const { path, warnings: nameWarnings, ...answer } = await connectFolder(api, folderArg ?? process.cwd(), visibility)
+      const { path, warnings: nameWarnings, ...answer } = await connectFolder(api, HOME, folderArg ?? process.cwd(), visibility)
       const shown = answer.exposed ? ` The team now sees the ${answer.exposed} session${answer.exposed === 1 ? '' : 's'} already in the record from it.` : ''
       const where = whereTranscripts(path)
       const warnings = [...where.warnings, ...nameWarnings]
@@ -146,10 +172,11 @@ async function main() {
         : `ok: connected ${path}. Claude Code sessions you start in it from now on land in the record, and ${who(answer.folder)}.${shown}\n${notes}\nnext: ${SELF} disconnect ${path}`,
       { ...answer, transcripts: where.transcripts, warnings })
     }
-    const { path, ...answer } = await disconnectFolder(api, folderArg ?? process.cwd())
+    const { path, ...answer } = await disconnectFolder(api, HOME, folderArg ?? process.cwd())
+    const inside = answer.inside ? `, though it is inside ${answer.inside.path}, which is connected` : ''
     exit(0, answer.already
       ? `ok: ${path} was already disconnected.\nalready: true`
-      : `ok: disconnected ${path}. Its sessions stay on this Mac from now on.\nnext: ${SELF} connect ${path}`,
+      : `ok: ${answer.folder ? `disconnected ${path}` : `${path} is off`}. Its sessions stay on this Mac from now on${inside}.\nnext: ${SELF} connect ${path}`,
     answer)
   } catch (error) {
     if (error instanceof FolderRefused) {

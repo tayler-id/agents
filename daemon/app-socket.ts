@@ -1,11 +1,11 @@
 // The Unix socket the Agents app on this Mac reaches its daemon through, so a
 // person connects their folders from the app, with no command to type. It lists
-// the folders Claude Code ran in on this Mac and the ones connected here, and
-// connects, changes or disconnects one with the folders command's own
-// functions. Only this macOS user can open it: it sits in a folder of its own
-// with mode 0700, and is 0600 itself. The names of folders that aren't
-// connected go to the app on this Mac and nowhere else. desktop/main.cjs is
-// its client, and docs/design/local-sessions.md the design.
+// the folders Claude Code ran in on this Mac, the ones connected here and the
+// ones turned Off here, and connects, changes or turns off one with the folders
+// command's own functions. Only this macOS user can open it: it sits in a folder
+// of its own, made with mode 0700, and is 0600 itself. The names of folders that
+// aren't connected go to the app on this Mac and nowhere else. desktop/main.cjs
+// is its client, and docs/design/local-sessions.md the design.
 
 import { existsSync, realpathSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -16,11 +16,12 @@ import { readBody } from '../shared/body.ts'
 import { messageOf } from '../shared/errors.ts'
 import { listenOnSocket } from '../shared/socket.ts'
 import {
-  AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppAskFirst, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder,
-  type MacFolders, type UnlistedFolder,
+  AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppAskFirst, type AppConnected, type AppRefusal, type MacFolder, type MacFolders,
+  type OffAnswer, type UnlistedFolder,
 } from '../shared/terminal.ts'
 import { ApiError, type Api } from './api.ts'
 import { connectedFolders, connectFolder, disconnectFolder, folderPath, FolderRefused } from './folders.ts'
+import { keptFolders } from './kept.ts'
 import { claudeFolders } from './transcripts.ts'
 
 // In a folder of its own in the daemon's home. desktop/main.cjs looks for it there.
@@ -81,44 +82,50 @@ export function serveAppSocket({ home, api, signal }: { home: string; api: Api; 
     res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body))
   }
 
-  async function reply(req: IncomingMessage): Promise<MacFolders | AppConnected | FolderAnswer> {
+  async function reply(req: IncomingMessage): Promise<MacFolders | AppConnected | OffAnswer> {
     const route = `${req.method ?? ''} ${req.url ?? ''}`
     if (route === 'GET /folders') return listFolders(home, api)
     if (route === 'POST /folders/connect') {
       const ask = AppConnect.parse(await readJson(req))
       if (ask.visibility === 'team') await askedFirst(api, folderPath(ask.path, true), ask.confirmed)
-      const { path, ...connected } = await connectFolder(api, ask.path, ask.visibility)
+      const { path, ...connected } = await connectFolder(api, home, ask.path, ask.visibility)
       return connected
     }
     if (route === 'POST /folders/disconnect') {
-      const { path, ...answer } = await disconnectFolder(api, DisconnectFolder.parse(await readJson(req)).path)
+      const { path, ...answer } = await disconnectFolder(api, home, DisconnectFolder.parse(await readJson(req)).path)
       return answer
     }
     throw new BadAsk(404, `the daemon has no ${route}`)
   }
 }
 
-// This Mac's folders: the ones Claude Code ran in, and the ones connected here,
-// each with how many of its sessions in the record the team can't see now,
-// newest first. Two used at the same moment go in order of their paths. One
-// whose path can't be a connected folder's is left out, and the list says why,
-// so one session started in / stops no other folder from being listed.
+// This Mac's folders: the ones Claude Code ran in, the ones connected here, and
+// the ones turned Off here, each with how many of its sessions in the record the
+// team can't see now, newest first. Two used at the same moment go in order of
+// their paths. One whose path can't be a connected folder's is left out, and the
+// list says why, so one session started in / stops no other folder from being listed.
 async function listFolders(home: string, api: Api): Promise<MacFolders> {
   const { instanceId, folders: connected, hiddenSessions } = await connectedFolders(api)
+  const kept = keptFolders(home)
   // Only a private folder hides sessions from the team. A folder this Mac never connected has none in the record.
-  const hidden = (path: string) => hiddenSessions[path] ?? 0
-  const rows = new Map<string, MacFolder>()
+  const place = (path: string) => ({ path, temporary: temporary(path), hiddenSessions: hiddenSessions[path] ?? 0 })
+  const used = new Map<string, string>()
   const unlisted: UnlistedFolder[] = []
-  for (const used of claudeFolders(realpathSync.native(home))) {
-    const path = FolderPath.safeParse(used.path)
-    if (path.success) rows.set(path.data, { path: path.data, temporary: temporary(path.data), usedAt: used.usedAt.toISOString(), folder: null, hiddenSessions: hidden(path.data) })
-    else unlisted.push({ path: used.path, why: path.error.issues[0]?.message ?? 'it is not a folder path' })
+  for (const folder of claudeFolders(realpathSync.native(home))) {
+    const path = FolderPath.safeParse(folder.path)
+    if (path.success) used.set(path.data, folder.usedAt.toISOString())
+    else unlisted.push({ path: folder.path, why: path.error.issues[0]?.message ?? 'it is not a folder path' })
   }
-  for (const folder of connected) {
-    const used = rows.get(folder.path)
-    rows.set(folder.path, { path: folder.path, temporary: temporary(folder.path), usedAt: used?.usedAt ?? null, folder, hiddenSessions: hidden(folder.path) })
+  const rows = new Map<string, MacFolder>()
+  for (const [path, usedAt] of used) rows.set(path, { ...place(path), usedAt, folder: null, kept: false })
+  for (const folder of connected) rows.set(folder.path, { ...place(folder.path), usedAt: used.get(folder.path) ?? null, folder, kept: false })
+  // Off wins over a connected row at the same path, as it does in the daemon's reads.
+  for (const path of kept) rows.set(path, { ...place(path), usedAt: used.get(path) ?? null, folder: null, kept: true })
+  // A folder turned Off that Claude Code hasn't run in since has no time, and goes last.
+  const newest = (row: MacFolder) => {
+    const at = row.usedAt ?? row.folder?.connected_at
+    return at === undefined ? 0 : Date.parse(at)
   }
-  const newest = (row: MacFolder) => Date.parse(row.folder === null ? row.usedAt : row.usedAt ?? row.folder.connected_at)
   const folders = [...rows.values()].sort((a, b) => newest(b) - newest(a) || a.path.localeCompare(b.path))
   return { instanceId, home: realpathSync.native(homedir()), folders, unlisted }
 }
