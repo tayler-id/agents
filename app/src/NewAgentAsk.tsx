@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
-import { act, api, messageOf, useSnapshot, type Agent, type Ask, type Person, type Session } from './data.ts'
+import { act, api, messageOf, type Ask } from './data.ts'
 import type { MeView } from '../../shared/onboarding.ts'
-import { NewAgentAsk as Asked } from '../../shared/team-agents.ts'
+import { NewAgentAsk as Asked, NewAgentQuestion } from '../../shared/team-agents.ts'
 
-// An agent asking to make a new agent. Its owner says yes or no to exactly what it
-// asked for, one agent at a time, since the API takes a yes only from them and
-// makes the agent only with it. Everyone else reads whose answer it waits for.
+// A, B, C, for the choices in order.
+const letter = (i: number) => String.fromCharCode('A'.charCodeAt(0) + i)
+
+// An agent asking to make a new agent, as the question the ask carries and a
+// lettered choice for each answer. Only the asking agent's owner chooses, since the
+// API takes a yes only from them, and everyone else reads whose choice it waits for.
 export function NewAgentAsk({ ask }: { ask: Ask }) {
   const [me, setMe] = useState<MeView | null>(null)
   const [busy, setBusy] = useState(false)
@@ -13,14 +16,9 @@ export function NewAgentAsk({ ask }: { ask: Ask }) {
   useEffect(() => {
     api.me().then(setMe, (e: unknown) => { setError(messageOf(e)) })
   }, [])
-  // The ask names its session, whose agent asked, and that agent names its owner.
-  const { rows: sessions } = useSnapshot<Session>('sessions', { of: ask.conversation_id ? 'conversations' : 'tasks' }, 10000)
-  const { rows: agents } = useSnapshot<Agent>('agents', {}, 10000)
-  const { rows: people } = useSnapshot<Person>('people', {}, 30000)
-  const maker = agents.find((a) => a.id === sessions.find((s) => s.id === ask.session_id)?.agent_id)
-  const owner = people.find((p) => p.id === maker?.owner_id)
+  const asked = NewAgentQuestion.safeParse(ask.payload)
   const wanted = Asked.safeParse(ask.payload.input)
-  const answer = async (decision: 'allow' | 'deny') => {
+  const choose = async (decision: string) => {
     setBusy(true)
     setError('')
     try {
@@ -31,23 +29,27 @@ export function NewAgentAsk({ ask }: { ask: Ask }) {
       setBusy(false)
     }
   }
-  const mine = me?.kind === 'member' && maker !== undefined && maker.owner_id === me.person.id
+  if (!asked.success) return <section className="ask-card" aria-label="Asks to make an agent"><p className="error small">This ask did not arrive with its question.</p></section>
+  const { question, choices, answerer } = asked.data
+  const mine = me?.kind === 'member' && me.person.id === answerer.id
   return (
     <section className="ask-card" aria-label="Asks to make an agent">
       <p className="kicker"><span aria-hidden="true">⏸</span> Asks to make an agent</p>
-      {wanted.success ? (
-        <>
-          <p><strong>{maker?.name ?? 'An agent'}</strong> asks to make a new agent, <strong>{wanted.data.name}</strong>, for {owner ? owner.name ?? owner.login : 'its owner'}.</p>
-          {wanted.data.title && <p className="muted small">{wanted.data.title}</p>}
-          {wanted.data.instructions && <pre className="subject">{wanted.data.instructions}</pre>}
-        </>
-      ) : <p>An agent asks to make a new agent, and what it sent does not read as one: {wanted.error.issues[0]?.message ?? 'unreadable'}.</p>}
-      {mine ? (
-        <div className="actions">
-          <button type="button" className="primary" disabled={busy} onClick={act(() => answer('allow'))}>Make it</button>
-          <button type="button" disabled={busy} onClick={act(() => answer('deny'))}>Don't</button>
-        </div>
-      ) : <p className="muted small">Waiting for {owner ? owner.name ?? owner.login : "the agent's owner"} to say yes or no.</p>}
+      <p>{question}</p>
+      {wanted.success && wanted.data.title && <p className="muted small">{wanted.data.title}</p>}
+      {wanted.success && wanted.data.instructions && <pre className="subject">{wanted.data.instructions}</pre>}
+      {mine && (
+        <ol className="choices" aria-label="Choices">
+          {choices.map((choice, i) => (
+            <li key={choice.id}>
+              <button type="button" disabled={busy} onClick={act(() => choose(choice.id))}>
+                <span className="choice-letter" aria-hidden="true">{letter(i)}</span>{choice.label}
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {me !== null && !mine && <p className="muted small">Waiting for {answerer.login} to choose.</p>}
       {error && <p className="error small" role="alert">{error}</p>}
     </section>
   )
