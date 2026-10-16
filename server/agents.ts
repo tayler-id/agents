@@ -10,10 +10,10 @@ import { z } from 'zod'
 import { many, maybe, one } from './db.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
-import { AgentId } from '../shared/ids.ts'
+import { AgentId, ConversationId } from '../shared/ids.ts'
 import { carriedBy, mayChangeHooks, Recipe, type CopyAsk, type CopyDone, type RecipeMemory } from '../shared/recipe.ts'
 import { AgentHook, NAME, type AgentPlugin, type AgentSkill } from '../shared/types.ts'
-import { HttpError, scrub, type Person } from './record.ts'
+import { HttpError, openDm, scrub, type Person } from './record.ts'
 
 const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/
 
@@ -42,38 +42,52 @@ export async function agentOf(client: pg.PoolClient, person: Person, agentId: st
 
 const Home = z.object({ id: InstanceId, personal: z.boolean(), owner_id: PersonId.nullable() })
 
-type NewAgent = {
-  name: string; homeInstanceId: string; title: string | null; role: string | null; instructions: string; model: string | null
-  copiedFrom: string | null
+// The longest name an agent or a hook may have, as NAME in shared/types.ts allows.
+const NAME_LENGTH = 40
+
+// One agent is named at a time on a team, so a name found free is still free when its agent is inserted.
+const lockNames = (client: pg.PoolClient, teamId: string) => client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-names:${teamId}`])
+
+// `base` and `suffix` as a name that fits, with the base cut and the suffix kept.
+const fit = (base: string, suffix: string) => `${base.slice(0, NAME_LENGTH - suffix.length)}${suffix}`
+
+// The first name of `base` + `suffix`, then `suffix-2`, `suffix-3` and on, that no agent of the team has.
+async function freeName(client: pg.PoolClient, teamId: string, base: string, suffix: string): Promise<string> {
+  await lockNames(client, teamId)
+  for (let n = 1; ; n++) {
+    const name = fit(base, n === 1 ? suffix : `${suffix}-${String(n)}`)
+    if (!(await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [teamId, name]))) return name
+  }
 }
 
-// Makes an agent owned by `person` on one of the team's machines. A person's own
-// box takes only its owner's agents, whether the agent is new or a copy.
-async function insertAgent(client: pg.PoolClient, person: Person, agent: NewAgent): Promise<string> {
-  if (!NAME.test(agent.name)) throw new HttpError(400, 'name must be lowercase letters, digits and dashes, starting with a letter')
+// The machine a new agent goes on when its person names none: their own box, else a Mac of theirs. An agent
+// runs commands on its machine, so one never lands on a teammate's machine without a word.
+async function defaultMachine(client: pg.PoolClient, person: Person): Promise<string> {
+  const own = await maybe<{ id: string }>(client,
+    `select id from instances where team_id = $1 and owner_id = $2 and (personal or kind = 'mac') order by personal desc, name limit 1`,
+    [person.team_id, person.id])
+  if (!own) throw new HttpError(409, 'You have no machine of your own to put it on. Name a machine.')
+  return own.id
+}
+
+export async function createAgent(client: pg.PoolClient, person: Person, body: Record<string, unknown>): Promise<string> {
+  const name = text(body.name, 'name', 40)
+  if (!NAME.test(name)) throw new HttpError(400, 'name must be lowercase letters, digits and dashes, starting with a letter')
   const found = await maybe(client,
-    'select id, personal, owner_id from instances where id = $1 and team_id = $2', [agent.homeInstanceId, person.team_id])
+    'select id, personal, owner_id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])
   if (!found) throw new HttpError(404, 'no such machine')
   const home = Home.parse(found)
   // Agents on a person's own box run on that person's Claude sign-in, so only they put agents there.
   if (home.personal && home.owner_id !== person.id) throw new HttpError(403, "That box is a teammate's own. Only they can make agents on it.")
-  const taken = await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [person.team_id, agent.name])
-  if (taken) throw new HttpError(409, `there is already an agent named ${agent.name}`)
-  const made = await one<{ id: string }>(client, 'the new agent',
-    `insert into agents (team_id, name, title, role, instructions, model, home_instance_id, owner_id, visibility, copied_from_agent_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, 'team', $9) returning id`,
-    [person.team_id, agent.name, agent.title, agent.role, agent.instructions, agent.model, home.id, person.id, agent.copiedFrom])
-  return made.id
-}
-
-export async function createAgent(client: pg.PoolClient, person: Person, body: Record<string, unknown>): Promise<string> {
-  const agentId = await insertAgent(client, person, {
-    name: text(body.name, 'name', 40), homeInstanceId: text(body.homeInstanceId, 'homeInstanceId'),
-    title: optional(body.title, 'title', 80), role: optional(body.role, 'role', 200),
-    instructions: optional(body.instructions, 'instructions') ?? '', model: optional(body.model, 'model', 80), copiedFrom: null,
-  })
-  if (typeof body.templateSlug === 'string') await install(client, person, agentId, body.templateSlug)
-  return agentId
+  const taken = await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [person.team_id, name])
+  if (taken) throw new HttpError(409, `there is already an agent named ${name}`)
+  const agent = await one<{ id: string }>(client, 'the new agent',
+    `insert into agents (team_id, name, title, role, instructions, model, home_instance_id, owner_id, visibility)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, 'team') returning id`,
+    [person.team_id, name, optional(body.title, 'title', 80), optional(body.role, 'role', 200),
+      optional(body.instructions, 'instructions') ?? '', optional(body.model, 'model', 80), home.id, person.id])
+  if (typeof body.templateSlug === 'string') await install(client, person, agent.id, body.templateSlug)
+  return agent.id
 }
 
 export async function updateAgent(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>) {
@@ -190,9 +204,19 @@ async function agentWithHooksAccess(client: pg.PoolClient, person: Person, agent
   return agent
 }
 
-export async function saveHook(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>) {
+// A name for a hook that came with none: its event in dashes, then with 2, 3 and on until it is free on the agent.
+async function freeHookName(client: pg.PoolClient, agentId: string, event: unknown): Promise<string> {
+  const base = typeof event === 'string' ? event.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : 'hook'
+  for (let n = 1; ; n++) {
+    const name = fit(base, n === 1 ? '' : `-${String(n)}`)
+    if (!(await maybe(client, 'select 1 from agent_hooks where agent_id = $1 and name = $2', [agentId, name]))) return name
+  }
+}
+
+// Saves a hook under the name it came with, or under one made from its event. Answers with the name.
+export async function saveHook(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>): Promise<string> {
   const agent = await agentWithHooksAccess(client, person, agentId)
-  const parsed = AgentHook.safeParse(body)
+  const parsed = AgentHook.safeParse(body.name === undefined ? { ...body, name: await freeHookName(client, agent.id, body.event) } : body)
   if (!parsed.success) throw new HttpError(400, z.prettifyError(parsed.error))
   const hook = parsed.data
   // A command is where a pasted key is likeliest to end up, and the record keeps it.
@@ -203,6 +227,7 @@ export async function saveHook(client: pg.PoolClient, person: Person, agentId: s
     `insert into agent_hooks (agent_id, name, event, matcher, command, timeout_sec) values ($1, $2, $3, $4, $5, $6)
      on conflict (agent_id, name) do update set event = excluded.event, matcher = excluded.matcher, command = excluded.command, timeout_sec = excluded.timeout_sec`,
     [agent.id, hook.name, hook.event, hook.matcher, hook.command, hook.timeoutSec])
+  return hook.name
 }
 
 export async function removeHook(client: pg.PoolClient, person: Person, agentId: string, name: string) {
@@ -284,8 +309,10 @@ async function teamMemories(client: pg.PoolClient, agentId: string): Promise<Rec
   })
 }
 
-export async function saveTemplate(client: pg.PoolClient, person: Person, agentId: string, name: string): Promise<{ slug: string; version: number }> {
+// Saves the agent's setup as a template of the team, named after the agent unless a name is given.
+export async function saveTemplate(client: pg.PoolClient, person: Person, agentId: string, given: string | null): Promise<{ slug: string; version: number }> {
   const agent = await agentOf(client, person, agentId)
+  const name = given ?? agent.name
   const recipe = await recipeOf(client, agent.id, false)
   const existing = await maybe<{ id: string; version: number; share_slug: string }>(client,
     'select id, version, share_slug from templates where team_id = $1 and name = $2 for update', [person.team_id, name])
@@ -326,20 +353,29 @@ async function install(client: pg.PoolClient, person: Person, agentId: string, s
 }
 
 // Makes a new agent owned by the person, on a machine they may use, with a recipe's
-// setup. A copy and a file import both come through here.
+// setup, and opens their conversation with it. A copy and a file import both come through here.
+// A new agent is made the way the app makes one, so every rule for who may put an agent where holds.
+// A copy records the agent it came from and wears its face, and the person can change that after.
 export async function agentFromRecipe(
   client: pg.PoolClient, person: Person, where: { name: string; homeInstanceId: string }, recipe: Recipe, copiedFrom: string | null,
 ): Promise<CopyDone> {
-  const agentId = await insertAgent(client, person, {
-    name: where.name, homeInstanceId: where.homeInstanceId, title: null, role: null, instructions: '', model: null, copiedFrom,
-  })
+  await lockNames(client, person.team_id)
+  const agentId = await createAgent(client, person, { name: where.name, homeInstanceId: where.homeInstanceId })
+  if (copiedFrom !== null) {
+    await client.query('update agents set copied_from_agent_id = $2, avatar = (select avatar from agents where id = $2) where id = $1', [agentId, copiedFrom])
+  }
   await installRecipe(client, person, agentId, recipe)
-  return { agentId: AgentId.parse(agentId), carried: carriedBy(recipe) }
+  const conversationId = await openDm(client, person, where.name)
+  return { agentId: AgentId.parse(agentId), name: where.name, conversationId: ConversationId.parse(conversationId), carried: carriedBy(recipe) }
 }
 
 // A new agent with the source agent's setup. It saves no template, so a copy never
 // changes the setups the team keeps as templates.
 export async function copyAgent(client: pg.PoolClient, person: Person, sourceId: string, ask: CopyAsk): Promise<CopyDone> {
   const source = await agentOf(client, person, sourceId)
-  return agentFromRecipe(client, person, ask, await recipeOf(client, source.id, ask.memories), source.id)
+  const recipe = await recipeOf(client, source.id, ask.memories)
+  return agentFromRecipe(client, person, {
+    name: ask.name ?? await freeName(client, person.team_id, source.name, '-copy'),
+    homeInstanceId: ask.homeInstanceId ?? await defaultMachine(client, person),
+  }, recipe, source.id)
 }

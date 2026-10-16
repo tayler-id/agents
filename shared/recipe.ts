@@ -5,7 +5,7 @@
 
 import { z } from 'zod'
 import { AgentHook, AgentPlugin, AgentSkill, HookEvent } from './types.ts'
-import { AgentId } from './ids.ts'
+import { AgentId, ConversationId } from './ids.ts'
 import { InstanceId, type TeamRole } from './onboarding.ts'
 
 export const RecipeRoutine = z.object({ name: z.string(), prompt: z.string(), schedule: z.string() })
@@ -36,8 +36,9 @@ export const Recipe = z.object({
 }, { path: ['memories'], message: 'a recipe holds one log for each day' })
 export type Recipe = z.infer<typeof Recipe>
 
-// Asking to copy an agent. `memories` says whether the team's memories come along.
-export const CopyAsk = z.object({ name: z.string(), homeInstanceId: InstanceId, memories: z.boolean() })
+// Asking to copy an agent. Everything is optional, so one tap is enough. With nothing given, the copy is
+// named after the agent, goes on the person's own machine, and carries the team's memories.
+export const CopyAsk = z.object({ name: z.string().optional(), homeInstanceId: InstanceId.optional(), memories: z.boolean().default(true) })
 export type CopyAsk = z.infer<typeof CopyAsk>
 
 // What a new agent got from a recipe, by kind.
@@ -45,7 +46,8 @@ export const Carried = z.object({
   skills: z.number().int(), plugins: z.number().int(), routines: z.number().int(), hooks: z.number().int(), memories: z.number().int(),
 })
 export type Carried = z.infer<typeof Carried>
-export const CopyDone = z.object({ agentId: AgentId, carried: Carried })
+// The new agent, the name it got, the person's conversation with it, and what it carries.
+export const CopyDone = z.object({ agentId: AgentId, name: z.string(), conversationId: ConversationId, carried: Carried })
 export type CopyDone = z.infer<typeof CopyDone>
 
 export const carriedBy = (recipe: Recipe): Carried => ({

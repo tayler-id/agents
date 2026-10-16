@@ -7,7 +7,9 @@
 // machine lacks the value, and the copy stops and says which until Bob sets his own.
 // The copy's hooks run, and what they did is in the record: a notice for each run, and
 // a file a hook wrote in a task's folder as a document. Only an agent's owner or an
-// admin changes its hooks. A template keeps the hooks and no memories.
+// admin changes its hooks. A template keeps the hooks and no memories. A copy asked
+// for with nothing else is named, placed and filled in by the server, so one tap in
+// the app is enough.
 //   node --env-file=.env --env-file=.env.test test/step24.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -26,7 +28,8 @@ const API = `http://127.0.0.1:${PORTS.machines}`
 const PEOPLE = `http://127.0.0.1:${PORTS.people}`
 const id = randomBytes(4).toString('hex')
 const [team, otherTeam] = [`step24-${id}`, `step24x-${id}`]
-const [alice, bob, outsider] = [`alice24-${id}@local`, `bob24-${id}@local`, `out24-${id}@local`]
+// Carol is on the team and has no machine of her own.
+const [alice, bob, carol, outsider] = [`alice24-${id}@local`, `bob24-${id}@local`, `carol24-${id}@local`, `out24-${id}@local`]
 // Alice's machine holds the plugin's secret. Bob's holds a value of his own, set later.
 const ALICE_SECRET = `alice-lucky-${randomBytes(8).toString('hex')}`
 const BOB_SECRET = `bob-lucky-${randomBytes(8).toString('hex')}`
@@ -106,6 +109,7 @@ try {
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, alice)
   node('server/admin.ts', 'add-person', team, bob)
+  node('server/admin.ts', 'add-person', team, carol)
   node('server/admin.ts', 'add-team', otherTeam, outsider)
   node('server/admin.ts', 'add-instance', otherTeam, `mac-x-${id}`, 'mac', outsider)
   const machineA = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-a-${id}`, 'mac', alice))
@@ -148,13 +152,25 @@ try {
   check(bobAdds.status === 403 && /owner or a team admin/.test(bobAdds.json?.error) && outsiderAdds.status === 404
     && Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 0,
   "a teammate who does not own the agent cannot add a hook to it, and nobody from another team can reach it")
-  for (const hook of HOOKS) await as(alice, `/v1/agents/${source}/hooks`, hook)
+  const addedAs: unknown[] = []
+  for (const hook of HOOKS) addedAs.push((await as(alice, `/v1/agents/${source}/hooks`, hook)).json)
   const bobRemoves = await as(bob, `/v1/agents/${source}/hooks/check-stop/delete`)
   const stored = await rows('select name, event, matcher, command, timeout_sec as "timeoutSec" from agent_hooks where agent_id = $1 order by name', [source])
-  check(bobRemoves.status === 403 && same(stored, HOOKS),
-    "the owner's three hooks are stored as sent, and a teammate cannot take one off")
+  check(bobRemoves.status === 403 && same(stored, HOOKS) && same(addedAs, HOOKS.map((hook) => ({ ok: true, name: hook.name }))),
+    "the owner's three hooks are stored as sent and answered by name, and a teammate cannot take one off")
   const seen = await shapeRows(PEOPLE, bob, 'agent_hooks')
   check(seen.rows.filter((r) => r.agent_id === source).length === 3, "teammates read an agent's hooks through the agent_hooks shape")
+  // A hook sent with no name is named after its event, as the app's one-line add sends it.
+  const unnamed = [
+    await as(alice, `/v1/agents/${source}/hooks`, { event: 'SessionStart', command: 'true' }),
+    await as(alice, `/v1/agents/${source}/hooks`, { event: 'SessionStart', command: 'true' }),
+    await as(alice, `/v1/agents/${source}/hooks`, { event: 'PostToolUse', matcher: 'Edit', command: 'true' }),
+  ]
+  const unnamedAs = unnamed.map((answer) => answer.json?.name)
+  check(same(unnamedAs, ['session-start', 'session-start-2', 'post-tool-use']),
+    `a hook sent with no name is named after its event, and the next of an event takes the next free name: ${unnamedAs.join(' ')}`)
+  for (const name of unnamedAs) await as(alice, `/v1/agents/${source}/hooks/${name}/delete`)
+  check(Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 3, 'the hooks made for that are taken off again')
 
   // Alice talks to her agent. The hooks run in its session, on her machine.
   const aliceDm = await dmWith(alice, 'release-notes')
@@ -187,10 +203,11 @@ try {
   await db.query(`update memories set log_date = current_date - 1 where agent_id = $1 and scope = 'person' and kind = 'log'`, [source])
 
   // Bob copies it.
+  const bobId = must(await row('select id from people where login = $1', [bob]), 'Bob').id
   const copied = await as(bob, `/v1/agents/${source}/copy`, { name: 'release-notes-bob', homeInstanceId: macB, memories: true })
   const copy = copied.json?.agentId
   const mine = await agentRow('release-notes-bob')
-  check(copied.status === 200 && mine?.id === copy && mine.owner_id === (await row('select id from people where login = $1', [bob])).id
+  check(copied.status === 200 && mine?.id === copy && mine.owner_id === bobId
     && mine.home_instance_id === macB && mine.copied_from_agent_id === source && mine.title === 'Writes release notes'
     && mine.instructions === 'You write release notes. Keep them short.' && mine.model === 'sonnet',
   `Bob's copy is his own agent on his machine, made from Alice's: ${copied.status} ${JSON.stringify(copied.json)}`)
@@ -228,6 +245,47 @@ try {
   check(Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 3 && (await teamRows(source)).length === 2
     && (await row('select count(*)::int as n from templates where team_id = (select id from teams where name = $1)', [team])).n === 0,
   "copying changes nothing on the source, and saves no template")
+
+  // One tap: a copy asked for with nothing else is named, placed and filled in by the server.
+  const agentsOnTeam = async () => Number((await row('select count(*)::int as n from agents where team_id = (select id from teams where name = $1)', [team])).n)
+  const tap = await as(bob, `/v1/agents/${source}/copy`, {})
+  const tapped = await agentRow('release-notes-copy')
+  check(tap.status === 200 && tap.json?.name === 'release-notes-copy' && tapped?.id === tap.json?.agentId && tapped.owner_id === bobId
+    && tapped.home_instance_id === macB && tapped.copied_from_agent_id === source,
+  `a copy asked for with nothing else is named after the agent, and is Bob's, on his own machine: ${tap.status} ${JSON.stringify(tap.json)}`)
+  check(same(tap.json?.carried, { skills: 1, plugins: 1, routines: 1, hooks: 3, memories: 2 }) && same(await teamRows(tap.json?.agentId), sourceTeam)
+    && (await rows(`select 1 from memories where agent_id = $1 and scope = 'person'`, [tap.json?.agentId])).length === 0,
+  "a copy asked for with nothing else carries the team's memories, and none about a person")
+  const talk = await row(`select c.kind, c.agent_id, (select count(*)::int from conversation_members m where m.conversation_id = c.id and m.person_id = $2) as bob,
+    (select count(*)::int from messages m where m.conversation_id = c.id) as said from conversations c where c.id = $1`, [tap.json?.conversationId, bobId])
+  check(talk?.kind === 'dm' && talk.agent_id === tap.json?.agentId && talk.bob === 1 && talk.said === 0 && await dmWith(bob, 'release-notes-copy') === tap.json?.conversationId,
+  "the answer holds Bob's conversation with the copy, which is new, and is the one a message to the copy goes to")
+  const again = await as(bob, `/v1/agents/${source}/copy`, {})
+  const ofCopy = await as(bob, `/v1/agents/${tap.json?.agentId}/copy`, {})
+  check(again.json?.name === 'release-notes-copy-2' && ofCopy.json?.name === 'release-notes-copy-copy',
+    `the next copy takes the next free name, and a copy of a copy is named after the copy: ${again.json?.name} ${ofCopy.json?.name}`)
+  const together = await Promise.all([1, 2, 3].map(() => as(bob, `/v1/agents/${source}/copy`, { memories: false })))
+  const togetherNames = together.map((answer) => answer.json?.name as string).sort()
+  check(together.every((answer) => answer.status === 200) && new Set(togetherNames).size === 3 && togetherNames.every((n) => /^release-notes-copy-\d+$/.test(n)),
+    `three copies asked for at once get three different names: ${togetherNames.join(' ')}`)
+  const longName = `long-${'x'.repeat(35)}`
+  const longMade = await as(alice, '/v1/agents', { name: longName, homeInstanceId: macA })
+  const longFirst = await as(alice, `/v1/agents/${longMade.json?.agentId}/copy`, {})
+  const longSecond = await as(alice, `/v1/agents/${longMade.json?.agentId}/copy`, {})
+  check(longName.length === 40 && longFirst.json?.name === `${longName.slice(0, 35)}-copy` && longSecond.json?.name === `${longName.slice(0, 33)}-copy-2`,
+    `the name of a copy of an agent with the longest name is cut to fit, and still ends in -copy: ${longFirst.json?.name} ${longSecond.json?.name}`)
+  check((await agentRow(longFirst.json?.name))?.home_instance_id === boxA,
+    "a person with a box of their own and a Mac gets the box for a copy asked for with nothing else")
+  const noName = await as(bob, `/v1/agents/${source}/copy`, { homeInstanceId: macB, memories: false })
+  const noMachine = await as(bob, `/v1/agents/${source}/copy`, { name: 'only-a-name', memories: false })
+  check(noName.status === 200 && /^release-notes-copy-\d+$/.test(noName.json?.name) && noMachine.status === 200 && (await agentRow('only-a-name'))?.home_instance_id === macB,
+    'a copy may be told only the machine, or only the name, and the server fills in the other')
+  const before = await agentsOnTeam()
+  const nowhere = await as(carol, `/v1/agents/${source}/copy`, {})
+  check(nowhere.status === 409 && /no machine of your own/.test(nowhere.json?.error) && await agentsOnTeam() === before,
+    `a person with no machine of their own is told to name one, and no agent is made: ${nowhere.status} ${nowhere.json?.error}`)
+  const mistyped = await as(bob, `/v1/agents/${source}/copy`, { memories: 'yes' })
+  check(mistyped.status === 400 && await agentsOnTeam() === before, 'a copy asked for with a value of the wrong kind is refused, not guessed at')
 
   // What a copy may not do.
   const taken = await as(bob, `/v1/agents/${source}/copy`, { name: 'release-notes-bob', homeInstanceId: macB, memories: false })
@@ -303,6 +361,11 @@ try {
   const template = await row('select recipe from templates where share_slug = $1', [saved.json?.slug])
   check(saved.status === 200 && template?.recipe.hooks?.length === 3 && same(template.recipe.memories, []),
     'a template saved from the agent keeps its hooks and none of its memories')
+  const shared = await as(alice, `/v1/agents/${source}/templates`, {})
+  const sharedAgain = await as(alice, `/v1/agents/${source}/templates`, {})
+  const sharedRow = await row('select name from templates where share_slug = $1', [shared.json?.slug])
+  check(shared.status === 200 && shared.json?.version === 1 && sharedRow?.name === 'release-notes' && sharedAgain.json?.slug === shared.json?.slug && sharedAgain.json?.version === 2,
+    `a template saved with no name is named after the agent, and saving again keeps its link and takes the next version: ${JSON.stringify(shared.json)} ${JSON.stringify(sharedAgain.json)}`)
   const fromTemplate = await as(bob, '/v1/agents', { name: 'from-template', homeInstanceId: macB, templateSlug: saved.json?.slug })
   const templated = await slice(fromTemplate.json?.agentId)
   check(fromTemplate.status === 200 && same(templated.hooks, from.hooks) && (await teamRows(fromTemplate.json?.agentId)).length === 0,

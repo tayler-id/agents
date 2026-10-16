@@ -405,8 +405,7 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks$`), async (req, [agentId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    await tx((client) => saveHook(client, person, agentId, body))
-    return { ok: true }
+    return { ok: true, name: await tx((client) => saveHook(client, person, agentId, body)) }
   }],
 
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks/([^/]+)/delete$`), async (req, [agentId, name]) => {
@@ -425,7 +424,7 @@ const routes: Route[] = [
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/templates$`), async (req, [agentId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    return tx((client) => saveTemplate(client, person, agentId, text(body.name, 'name')))
+    return tx((client) => saveTemplate(client, person, agentId, body.name === undefined ? null : text(body.name, 'name')))
   }],
 
   // Runs a routine now, as if it had come due.
