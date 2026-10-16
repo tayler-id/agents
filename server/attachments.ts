@@ -17,8 +17,18 @@ import { many, maybe, pool, type Db } from './db.ts'
 import { HttpError, scrub, type Person } from './record.ts'
 import { scopedTeams } from './runner.ts'
 
-export const ATTACHMENTS_DIR = process.env.AGENTS_ATTACHMENTS_DIR
-  ?? join(process.env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'attachments')
+// Where the bytes live. Unless the server is told a folder, it is named for the database it serves, so every file
+// in it has its row in that database. A server on agents_test then never reads the live server's folder, and the
+// sweep for files with no row can't take live files for strays.
+const DATABASE_NAME = z.string().regex(/^[A-Za-z0-9_-]+$/, 'a database name of letters, digits, dashes and underscores')
+function attachmentsFolder(env: NodeJS.ProcessEnv): string {
+  if (env.AGENTS_ATTACHMENTS_DIR) return env.AGENTS_ATTACHMENTS_DIR
+  const url = z.url().safeParse(env.DATABASE_URL)
+  const name = url.success ? DATABASE_NAME.safeParse(new URL(url.data).pathname.slice(1)) : null
+  if (!name?.success) throw new Error('DATABASE_URL must name a database, or AGENTS_ATTACHMENTS_DIR a folder, so attachments know where to live')
+  return join(env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'attachments', name.data)
+}
+export const ATTACHMENTS_DIR = attachmentsFolder(process.env)
 
 const fileOf = (id: string) => join(ATTACHMENTS_DIR, id.slice(0, 2), id)
 

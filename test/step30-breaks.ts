@@ -80,6 +80,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'server/api.ts', anchor: "{ attachmentIds: post.attachmentIds ?? [] })", replace: '{})' }] },
   { name: 'room-files', check: 'step30a', why: "a room's agent is never told of the files on a post", red: ["the agent's room turn names the file"],
     edits: [{ file: 'server/rooms.ts', anchor: '${withFiles(m.body, files.filter((f) => f.message_id === m.id))}', replace: '${m.body}' }] },
+  { name: 'folder-shared', check: 'step30a', why: "every database's server keeps its files in one folder, so a test server sweeps the live server's files", red: ["leaves another database's files alone"],
+    edits: [{ file: ATTACHMENTS, anchor: "'attachments', name.data)", replace: "'attachments')" }] },
   // The sweep.
   { name: 'sweep-off', check: 'step30a', why: 'pending uploads are never deleted', red: ['a pending upload older than 24 hours is deleted', 'a stored file with no row is removed after an hour'],
     edits: [{ file: ATTACHMENTS, anchor: '    sweepOnce().catch(', replace: '    Promise.resolve().catch(' }] },

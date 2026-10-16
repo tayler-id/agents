@@ -5,11 +5,12 @@
 // in. The API is real, on ports 8350 to 8352, which no other check uses.
 //   node --env-file=.env --env-file=.env.test test/step30a.ts
 
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { chatSetup, GIF_30x20, JPEG_640x480, PNG, WEBP_100x50 } from './chat-kit.ts'
-import { results, shapeRows, within } from './onboarding-kit.ts'
+import { results, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
 
 const PORTS = { machines: 8350, people: 8351, streams: 8352 }
@@ -216,6 +217,30 @@ try {
   utimesSync(stray, new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000))
   const orphanGone = await within(20, async () => !existsSync(stray))
   check(orphanGone && existsSync(strayNew), 'a stored file with no row is removed after an hour, and a fresh one is left alone')
+
+  // 10. A server told no folder keeps its files in a folder named for its database, and its sweep looks only there.
+  // The old default was one folder for every database, which a server on the test database would have swept clean.
+  const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)
+  const home2 = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step30a-home-')))
+  const liveId = randomUUID()
+  const orphanId = randomUUID()
+  const liveLike = join(home2, 'attachments', liveId.slice(0, 2), liveId)
+  const ownOrphan = join(home2, 'attachments', databaseName, orphanId.slice(0, 2), orphanId)
+  for (const file of [liveLike, ownOrphan]) {
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, 'x')
+    utimesSync(file, new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000))
+  }
+  const second = await startApi({ machines: 8360, people: 8361, streams: 8362 },
+    { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: kit.team, AGENTS_HOME: home2, AGENTS_ATTACHMENTS_DIR: undefined, AGENTS_ATTACHMENT_SWEEP_SECONDS: '1' }, join(home2, 'streams'))
+  try {
+    const sweptOwn = await within(30, async () => !existsSync(ownOrphan))
+    check(sweptOwn && existsSync(liveLike),
+      "a server given no folder sweeps the folder named for its database and leaves another database's files alone")
+  } finally {
+    if (failures.length) console.log(second.text().slice(-1200))
+    await second.stop()
+  }
 } finally {
   if (failures.length) console.log(`\nthe API printed:\n${kit.api.text().slice(-1500)}`)
   await q(`delete from teams where id = $1`, [kit.teamId]).catch((error: unknown) => { console.error(error) })
