@@ -201,7 +201,7 @@ export async function reportBack(client: pg.PoolClient, caller: Caller, ask: Rep
   if (caller.task_id === null) throw new HttpError(409, 'report_back is for a task another agent handed you, and this session serves no task. Say it in your reply instead.')
   const found = await one(client, `task ${caller.task_id}`,
     `select t.id, t.title, t.asked_by_turn, t.done_at is not null as done, a.name as asker
-     from tasks t left join turns r on r.id = t.asked_by_turn left join agents a on a.id = r.agent_id where t.id = $1 for update of t`, [caller.task_id])
+     from tasks t left join turns r on r.id = t.asked_by_turn left join agents a on a.id = r.agent_id where t.id = $1 for no key update of t`, [caller.task_id])
   const task = z.object({ id: TaskId, title: z.string(), asked_by_turn: TurnId.nullable(), done: z.boolean(), asker: z.string().nullable() }).parse(found)
   if (task.asked_by_turn === null || task.asker === null) {
     throw new HttpError(409, 'No agent handed you this task, so nobody waits for a report. Say it in your reply instead.')
