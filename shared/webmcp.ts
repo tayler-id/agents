@@ -56,9 +56,10 @@ export function originText({ scheme, host, port }: OriginPattern): string {
   return `${scheme}://${host}${port === DEFAULT_PORT[scheme] ? '' : `:${port}`}`
 }
 
-// A listed origin, in the one form the list keeps. A port is a number or `*`.
+// A listed origin, in the one form the list keeps. A port is a number or `*`. One
+// slash after the host is dropped, since a browser shows a bare origin with it.
 export const WebmcpOrigin = z.string().trim().max(ORIGIN_MAX).transform((text, ctx) => {
-  const pattern = parseOrigin(text)
+  const pattern = parseOrigin(text.replace(/\/$/, ''))
   if (!pattern) {
     ctx.issues.push({
       code: 'custom', input: text,
