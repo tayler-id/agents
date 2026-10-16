@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { asPerson, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { stopAll } from './computers.ts'
+import { stopStandIns } from './stand-ins.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
 import { CREATE_AGENT_TOOL, MAX_HOPS } from '../shared/team-agents.ts'
@@ -345,6 +346,8 @@ try {
 } finally {
   await stopAll(children.filter((child) => child !== children[0]))
   await stopApi?.()
+  // The clash leaves echo's turns running, and the daemon leaves a busy session's stand-in behind.
+  stopStandIns(home)
   if (failures.length) console.log(`\nthe API's errors:\n${apiLog().split('\n').filter((line) => /error|deadlock|at /i.test(line)).slice(0, 40).join('\n')}`)
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)

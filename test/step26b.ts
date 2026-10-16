@@ -24,6 +24,7 @@ import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { asPerson, results, ROOT, startApi, within } from './onboarding-kit.ts'
 import { stopAll } from './computers.ts'
+import { stopStandIns } from './stand-ins.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
 import { CREATE_AGENT_TOOL } from '../shared/team-agents.ts'
@@ -72,6 +73,8 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step26b-')))
 let stopApi: (() => Promise<void>) | null = null
+// What the API printed, for a failed run to show its errors.
+let apiLog = () => ''
 
 const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows[0]
 const node = (...args: string[]) => execFileSync(process.execPath, ['--env-file=.env', ...args], { cwd: ROOT, encoding: 'utf8' })
@@ -243,6 +246,7 @@ try {
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   const api = await startApi(PORTS, { AGENTS_RUNNER_TEAMS: team }, join(home, 'streams'))
   stopApi = api.stop
+  apiLog = api.text
   await within(20, () => fetch(`${API}/v1/health`).then((res) => res.ok, () => false))
   children.push(spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
@@ -257,6 +261,9 @@ try {
 } finally {
   await stopAll(children)
   await stopApi?.()
+  // The daemon leaves a busy session's stand-in behind, such as one still asking to make an agent.
+  stopStandIns(home)
+  if (failures.length) console.log(`\nthe API's errors:\n${apiLog().split('\n').filter((line) => /error|deadlock|at /i.test(line)).slice(0, 40).join('\n')}`)
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
     rmSync(home, { recursive: true, force: true })
