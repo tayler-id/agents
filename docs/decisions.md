@@ -403,6 +403,17 @@ Tayler went with the coordinator's picks on all of these.
   - A coding computer uses the Claude sign-in of the person whose agent started the job, and team pipelines use the team's account. This is decision 5, option (b).
 - **Status.** Agents working together is being built. Coding computers start once seats are joined to step 1.
 
+### Every agent has its own desktop, with no setup
+
+- **Purpose.** Tayler, 2026-10-16: "every agent just has a desktop I ask the agent to do something on it and it should work". A person never sets up a computer for an agent.
+- **What that means.**
+  - Every person's computer exists by itself. It is made when they join, and now for everyone already on the team. No one presses "Make my box".
+  - A computer signs in to Claude by itself. Until a person signs in their own account, their computer uses the team's account in `~/.agents-app/box-claude-token`, which is Tayler's today. Teammates who join later get their own sign-in through the one download.
+  - Every agent works on its own seat on its person's computer, with no step to put it there. Agents whose home is a Mac move to their person's computer. A Mac keeps the person's own terminal sessions, and later the Mac helper.
+  - Each agent's panel shows its computer: a Computer tab with a live view, Open for full screen, and Watching and Take control, as in the agent app we studied.
+  - The desktop is a real one, with a dock holding a browser, a terminal and a whiteboard, and normal windows.
+- **Status.** Seats are built. Joining them to step 1 comes next, with these defaults, and so do the agent's Computer tab and the desktop.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
