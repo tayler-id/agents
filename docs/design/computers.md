@@ -50,6 +50,7 @@ Every session on a machine with a screen, except a judge's, gets one MCP server,
 | `save_screenshot` | Saves the screen as `checks/<name>.png` in the task's `task` folder, where it becomes an image document on the task. Saves nothing while a page in the browser shows a secret the box holds. |
 | `screen_status` | Who holds the screen, the agent or a person, and its size. |
 | `browser_*` | Playwright MCP 0.0.83's browser tools, proxied with their own schemas, driving the box's Chromium over its DevTools port. `browser_take_screenshot` given a file name refuses as `save_screenshot` does. |
+| `web_tools`, `web_read`, `web_act` | Only when the team lists a site whose pages may offer tools through WebMCP. They list, run and, after a person agrees, run the tools of the page in the agent's tab, and only while that page is at a listed origin. `daemon/web-tools.ts` has them, and the WebMCP part of `docs/design/target-architecture.md` has the design. |
 
 - **Why one server.** A person taking over must stop the agent's use of the screen, through the mouse and keyboard and through the browser's DevTools protocol alike. The `computer` server checks the control state before every action, its own and Playwright's, so one gate covers both. Playwright's tools run in a child process the server starts and talks to over MCP.
 - **Not for judges.** A session the coding framework marks isolated, such as a reviewer's or a verifier's, gets no `computer` server, no standing instructions and no `verify-work` skill. The runner names the only tools a judge may use, a reviewer's being read-only, and the computer would add a browser and a screen to them. No check runs a judge in a box yet, so nothing fails if a judge gets the computer.
@@ -62,6 +63,7 @@ Every session on a machine with a screen, except a judge's, gets one MCP server,
 - `browser_evaluate`, which runs JavaScript with the page's own access, including a logged-in site's cookies and storage.
 - `browser_run_code_unsafe`, which runs code in Playwright's own process.
 - `browser_network_request`, which returns full request and response headers and bodies, where session cookies and tokens live.
+- `web_act`, which runs a tool a page offers, one that changes something included. It asks every time, with no Always or Never, since an answer for all time would cover any page the agent later opens.
 
 The standing instructions also tell agents never to type passwords, payment details or one-time codes, never to submit forms that act on real accounts (purchases, messages to people, deletions, settings changes), and to ask a person to take over for those. Prompts can't enforce that. The box's browser reaches the open web, as Tayler decided on 2026-10-13, so nothing limits which sites it opens.
 

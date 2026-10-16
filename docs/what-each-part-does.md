@@ -604,3 +604,27 @@ The plan is `docs/aws.md`, and the design with its reasons is `docs/design/aws.m
 ### The AWS checks (`test/step11.ts` to `test/step11g.ts`, `test/netlab.ts`, `test/fake-aws.ts`)
 
 - **Solves now.** They cover the machine port's address, boxes on a real `ssh://` Docker host, what a box can reach through the firewall, and through the one in colima's VM on this Mac, the synthesized template, the host scripts against a fake AWS that speaks the real protocols, and a rehearsal of the move on this Mac in which a task resumes on a box restored from the export. None of them needs an AWS account.
+
+## WebMCP in agents' browsers
+
+The design is `docs/design/target-architecture.md`, under "WebMCP, both ways". Build step 21 made the agents' half. The app offering its own actions as tools, step 22, is not built.
+
+### The sites a team lists (`server/webmcp.ts`, `shared/webmcp.ts`, `app/src/WebmcpSites.tsx`, `0018_webmcp_origins.sql`)
+
+- **Solves now.** An agent's browser takes tools from a web page only if the team has listed the page's origin. An admin lists a site on the Team page as a scheme and a host, with a port or a star for any port, such as `http://127.0.0.1:*` for a preview. Every teammate can read the list through the API, and the API refuses a change from anyone but an admin. The list rides in each message to an agent's machine, and a session whose list changed restarts on its next message, so a site added or removed takes effect then. A team lists 50 sites at most, and a team that lists none gives its agents' browsers no page tools at all.
+- **Helps later.** One row for each site is the place for rules that belong to a site, such as which of its tools may run.
+
+### The page tools (`daemon/web-tools.ts`, `daemon/computer-mcp.ts`, `daemon/desktop.ts`)
+
+- **Solves now.** The box's Chromium starts with the feature that gives a page `document.modelContext`, where a page registers its tools for agents. With a site listed, the `computer` server adds three tools. `web_tools` lists the tools of the page open in the agent's tab. `web_read` runs one the page marks read-only, so the agent looks something up without clicking through the page. `web_act` runs any other and asks a person first. All three work only while the tab is at a listed origin. A page at any other origin shows the agent no tools, and Playwright's own collection of page tools stays off for every team, so no snapshot carries an unlisted page's tool text either. A call names the origin `web_tools` gave, and runs only if the tab is still there. A person who takes over the screen stops these tools like the other browser tools. A page's names, descriptions and results reach the agent under a line that says they are the page author's words.
+- **Helps later.** The app's own tools in step 22 can be read through the same `web_tools`, once the preview's origin is listed.
+
+### Asking every time (`ASKS_EVERY_TIME` in `shared/webmcp.ts`, `server/record.ts`, `app/src/Asks.tsx`)
+
+- **Solves now.** `web_act` is not among the tools that run without asking, so Claude asks a person before each call, as it does for page scripts. For a tool on `ASKS_EVERY_TIME` the card offers Allow once and Deny and shows the whole call, the API refuses Always and Never, and no standing rule answers the ask.
+- **Helps later.** Any later tool that must ask each time joins the one list.
+
+### The WebMCP checks (`test/step21w.ts`, `test/step21wb.ts`)
+
+- **Solves now.** `step21w` builds a real box under its own image tag, serves two sites from inside it, and runs the `computer` server the way the daemon's session config starts it. It checks the list's API, that the box's Chromium has the object, that no tool is offered without a site and that listing one restarts the session with it, the three tools against a listed and an unlisted page, the ask for `web_act` and its answer, and the take-over. `step21wb` drives the Team page's list and the approval card in Chromium, Firefox and WebKit, at desktop and phone width.
+- **Helps later.** The sites script is a model for checking the app's own tools against a page in a box.
