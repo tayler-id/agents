@@ -68,6 +68,8 @@ import { AUDIO_POST, voiceRoutes } from './voice.ts'
 import { checkSpeechSettings } from './speech.ts'
 import { kindOf } from './audio.ts'
 import { isVoiceUpgrade, voiceUpgrade } from './voice-chat.ts'
+import { secretRoutes } from './secrets.ts'
+import { controlUpgrade } from './control.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
@@ -769,6 +771,7 @@ const routes: Route[] = [
   ...onboardingRoutes,
   ...boxRoutes,
   ...voiceRoutes,
+  ...secretRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
@@ -943,8 +946,11 @@ if (import.meta.main) {
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
+  // A machine's WebSocket is its control connection or one of its screen's.
+  const machineScreens = screenUpgrades({ audience: 'machines' })
+  const machineUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => { if (!controlUpgrade(req, socket, head)) machineScreens(req, socket, head) }
   for (const host of machineHosts) {
-    createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
+    createServer(serve('machines')).on('upgrade', machineUpgrade)
       .listen(machines, host, () => { console.log(`machines on ${address(host, machines)}`) })
   }
   if (process.env.AGENTS_RUNNER !== 'off') {

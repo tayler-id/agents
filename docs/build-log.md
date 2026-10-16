@@ -1219,3 +1219,13 @@ Branch `attachments`, from main de6d961. Tayler put these first on the list of n
 - **Seen failing.** Three breaks were added to `test/step28-breaks.ts`: the stop note, the answer post, and a chain's start taken from its latest turn. Their runs wait on the checks lock.
 - **Fan-out cap.** Tayler decided on a hard cap of 5 messages and tasks per turn until budgets land. The 6th is refused with a 409 that gives the limit and says to answer with what the agent has. Counted from the turns answering to the sending turn and the tasks it handed over, under a per-turn lock. The `fan-out` break covers it.
 - **Not done.** step28, step28b and the agents-git runs have not run since this change. `app/` is untouched, so `Message` in `app/src/data.ts` does not list the two new columns yet.
+
+### Secrets set from the app (build step 16, 2026-10-16)
+
+A person sets an agent's key from the app and the value goes only to the computer that needs it. Branch `secrets`, migration `0016_secrets.sql`.
+
+- **What was built.** Two routes to set and remove a value, a control connection from each daemon to the API, `secret_sets` for where and when, `SecretValue` as a props-only control, and `AgentSecrets` as the wiring for one agent. `GET /v1/agents/<id>/keys` and `GET /v1/keys` list the keys each agent needs, set or missing, for the Keys row and each app's page. `Keys.tsx` holds the row, the list and the per-app block.
+- **Waking instead of 409.** Setting a key for a computer that is not running asks the runner to run now and holds the request open up to 90 seconds, then answers 200 or a 504 that names the computer. The value stays in memory in that request.
+- **Checks.** `test/step25.ts` (107 checks pass) covers the API and daemon, and `test/step25b.ts` (123 pass) drives the control in three browsers at two widths. `test/step25-breaks.ts` breaks 60 guards one at a time and checks each named line goes red.
+- **What the checks caught.** A leftover break had left `mayPutOn` always true. It was restored, and the `anyone-may-put` and `any-teammate` breaks fail the API and page checks. The keys list first answered 500 on a plugin with no `env`, because Postgres sent null where the schema allowed only absent.
+- **Not done.** Nothing in the app mounts the control or `Keys.tsx` until the agent panel does, and the Keys components have no browser check of their own. A hand-placed value reads as missing in the keys list. No real Claude has used a value set this way. Protected files touched: `daemon/agentsd.ts` and `server/migrations/0016_secrets.sql`.

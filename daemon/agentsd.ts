@@ -13,10 +13,11 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
-import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { envSecrets, makeScrub, MIN_SECRET_LENGTH } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
+import type { FromDaemon, ToDaemon } from '../shared/link.ts'
 import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
 import { MessagePayload, OtherCommand, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
 import { LiveStream } from './live.ts'
@@ -25,7 +26,8 @@ import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
+import { changeMachineSecret, forgetValueIn, heldSecretNames, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeSkills } from './agentfiles.ts'
+import { linkControl } from './control-link.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
 import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
@@ -70,6 +72,9 @@ function ownToken(): string | null {
 
 // What the person's login shell exports, learned once, at start.
 let shellSecrets: [string, string][] = []
+// Values set again or removed from the app, by name. An agent that read one may
+// still repeat it, so it is scrubbed for as long as this daemon runs.
+const retiredSecrets: [string, string][] = []
 // Secrets this machine holds: its environment's, the plugins' in secrets.json,
 // its owner's Claude token and its login shell's. Read again for each new
 // session, so a secret added later is scrubbed too.
@@ -81,6 +86,7 @@ const knownSecrets = (): [string, string][] => {
     ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
     ...signedIn,
     ...shellSecrets,
+    ...retiredSecrets,
   ].sort((a, b) => b[1].length - a[1].length)
 }
 let secrets = knownSecrets()
@@ -103,6 +109,10 @@ const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length 
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
+// The secrets the plugins of each running session take, and the sessions whose
+// plugins started with a value that was set again or removed since.
+const usedSecrets = new Map<string, string[]>()
+const staleSecrets = new Set<string>()
 const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions])
 const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
@@ -304,8 +314,10 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   const plugins = pluginServers(payload.plugins ?? [], machineSecrets(HOME))
   if (plugins.missing.length) {
     throw new Error(`this machine has no value for ${[...new Set(plugins.missing)].join(', ')}, which the agent's plugins need. `
-      + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
+      + `Set it on the agent's page in the app, or in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
+  usedSecrets.set(command.sessionId, pluginSecretNames(payload.plugins ?? []))
+  staleSecrets.delete(command.sessionId)
   // A machine with a screen gives every session its computer, the standing
   // instructions to check work on it, and the verify-work skill, unless the agent
   // has a skill of that name itself. An isolated session, such as a judge's, gets
@@ -353,9 +365,61 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     if (sessions.get(command.sessionId) === session) {
       sessions.delete(command.sessionId)
       setups.delete(command.sessionId)
+      usedSecrets.delete(command.sessionId)
     }
   })()
   return session
+}
+
+// The names of the secrets this computer holds, for the API to match against what
+// it believes it set. A secrets file the daemon cannot read says nothing, so the
+// API keeps what it has.
+function helloSecrets(): FromDaemon | null {
+  try {
+    return { type: 'secrets_held', names: heldSecretNames(HOME) }
+  } catch (error) {
+    console.error(`the secrets file was not reported to the API: ${error instanceof SecretsFileError ? error.message : messageOf(error)}`)
+    return null
+  }
+}
+
+// Sets or removes one secret's value at the API's request, and answers. A value
+// the daemon cannot take is refused with the reason, which never quotes the
+// value or the file. The plugins of a session that started with the value being
+// replaced or removed still hold it, so an idle session is stopped, and one in a
+// turn is restarted with its next message.
+function holdSecret(frame: ToDaemon): FromDaemon {
+  const { id, name } = frame
+  const put = frame.type === 'secret_put'
+  const refused = (reason: string): FromDaemon => {
+    console.error(`secret ${name} was refused: ${reason}`)
+    return { type: 'secret_refused', id, name, reason: reason.slice(0, 500) }
+  }
+  // A plugin's secret is read from the daemon's environment before its secrets file, so a value
+  // stored under a name the environment holds would be set and never used. Saying so is better.
+  if (put && process.env[name] !== undefined) {
+    return refused(`This computer's environment already sets ${name}, and it is read before a value set here. Take it out of the daemon's environment first.`)
+  }
+  try {
+    const { had } = changeMachineSecret(HOME, name, put ? frame.value : null, (gone) => {
+      // A value the scrubber would ignore, or one it already remembers, is not kept again.
+      if (gone.length >= MIN_SECRET_LENGTH && !retiredSecrets.some(([retired, value]) => retired === name && value === gone)) retiredSecrets.push([name, gone])
+      forgetValueIn(SESSIONS_DIR, gone)
+      for (const [sessionId, names] of usedSecrets) {
+        if (!names.includes(name)) continue
+        const session = sessions.get(sessionId)
+        if (session && !session.busy) session.stop()
+        else staleSecrets.add(sessionId)
+      }
+    })
+    secrets = knownSecrets()
+    scrub = makeScrub(secrets)
+    console.log(`secret ${name} ${put ? 'stored' : 'removed'}`)
+    return put ? { type: 'secret_stored', id, name } : { type: 'secret_removed', id, name, had }
+  } catch (error) {
+    // The daemon's own words for a file it will not touch. Anything else is Node's, scrubbed.
+    return refused(error instanceof SecretsFileError ? error.message : `The daemon could not change what this computer holds. ${scrub(messageOf(error))}`)
+  }
 }
 
 // Whether the server still has the workspace's setup queued or running for this machine.
@@ -376,7 +440,8 @@ async function apply(command: Command): Promise<unknown> {
     // A process keeps the setup it started with. Once the agent's instructions,
     // skills, plugins or model change, the next message restarts the session with
     // the new setup, resuming the same conversation. One mid-turn finishes first.
-    if (live?.alive && !live.busy && command.payload.harnessSessionId && setups.get(command.sessionId) !== setupOf(command.payload)) live.stop()
+    if (live?.alive && !live.busy && command.payload.harnessSessionId
+      && (staleSecrets.has(command.sessionId) || setups.get(command.sessionId) !== setupOf(command.payload))) live.stop()
     if (live?.alive) {
       live.send(command.payload.text, [command.id])
       return null
@@ -666,6 +731,8 @@ function followSignIns(signal: AbortSignal) {
 async function shutdown(code: 0 | 1) {
   if (stopping) return
   stopping = true
+  // Closing the connection first tells the API the computer is going, so a key set from here waits for it to start again.
+  control.stop()
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
   for (const [id, session] of sessions) {
@@ -683,6 +750,8 @@ async function shutdown(code: 0 | 1) {
 }
 
 const abort = new AbortController()
+// The API's way to this computer for what must not be stored on the way, such as a secret's value.
+const control = linkControl({ api: config.api, token: config.token, hold: holdSecret, hello: helloSecrets })
 process.on('SIGINT', () => { void shutdown(0) })
 process.on('SIGTERM', () => { void shutdown(0) })
 console.log(`agentsd connected to ${config.api}`)

@@ -176,6 +176,8 @@ const personShapes: Record<string, PersonShape> = {
     }
     return { table: 'turns', where: `conversation_id = $1 and ${waiting}`, params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS }
   },
+  // Where a secret was set from the app and when. Still no value.
+  secret_sets: async (p) => ({ table: 'secret_sets', where: 'team_id = $1', params: [p.team_id] }),
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
