@@ -135,6 +135,9 @@ try {
   // 6. A bob who can see the shared room sees what was sent, and no one's pending uploads.
   const sentTo = await send(alice, conversations.teamRoom, { text: 'for the room', attachmentIds: [(await upload(alice, `/v1/conversations/${conversations.teamRoom}/attachments`, PNG, 'room.png', 'image/png')).json.attachmentId] })
   check(sentTo.status === 200, 'alice posts a picture in the team room')
+  const roomPrompt = await q1(`select e.text from events e join sessions s on s.id = e.session_id where s.conversation_id = $1 and e.kind = 'user' order by e.seq limit 1`, [conversations.teamRoom])
+  check(String(roomPrompt.text).includes('alice-') && String(roomPrompt.text).includes('for the room\n\nAttached files:\n- room.png (image/png, 70 bytes), attachment '),
+    `the agent's room turn names the file under the post that carries it (${JSON.stringify(roomPrompt.text).slice(0, 200)})`)
   const pendingInRoom = (await upload(alice, `/v1/conversations/${conversations.teamRoom}/attachments`, html, 'draft.txt', 'text/plain')).json.attachmentId as string
   const seen = await within(20, async () => {
     const shape = await shapeRows(kit.PEOPLE, bob, 'attachments', { conversation: conversations.teamRoom })
@@ -186,8 +189,8 @@ try {
   const roomFile = await upload(alice, '/v1/attachments', PNG, 'kickoff.png', 'image/png')
   const room = await as(alice, 'POST', '/v1/conversations', { kind: 'room', name: `kickoff-${kit.id}`, people: [], agents: ['scout'], text: 'Kickoff', attachmentIds: [roomFile.json.attachmentId] })
   check(room.status === 200, `a new group chat takes a first post with files (${room.status} ${room.text})`)
-  const roomRow = await q1('select a.conversation_id, a.message_id, m.body from attachments a join messages m on m.id = a.message_id where a.id = $1', [roomFile.json.attachmentId])
-  check(roomRow.conversation_id === room.json.conversationId && roomRow.body === 'Kickoff', 'the file is in the new chat, on its first post')
+  const [roomRow] = await q('select a.conversation_id, a.message_id, m.body from attachments a join messages m on m.id = a.message_id where a.id = $1', [roomFile.json.attachmentId])
+  check(roomRow?.conversation_id === room.json.conversationId && roomRow?.body === 'Kickoff', 'the file is in the new chat, on its first post')
 
   // 9. Pending uploads are deleted after 24 hours, with their bytes. Sent files stay.
   const old = await upload(alice, '/v1/attachments', Buffer.from('forgotten'), 'old.txt', 'text/plain')

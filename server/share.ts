@@ -5,7 +5,7 @@
 import { z } from 'zod'
 import { cleanFileName, type UploadAnswer } from '../shared/attachments.ts'
 import { maybe, pool, tx } from './db.ts'
-import { appendEvents, appendMessage, HttpError, scrub } from './record.ts'
+import { appendEvents, appendMessage, HttpError } from './record.ts'
 import { placeUploads, refuseSecret, removeFiles, saveUpload } from './attachments.ts'
 
 const Sharing = z.object({
@@ -26,7 +26,7 @@ export async function shareFromSession(input: {
   if (!session) throw new HttpError(404, 'no such agent session')
   if (session.judged) throw new HttpError(409, "A judge's session shares nothing, since it works on its own and posts nowhere.")
   refuseSecret(input.bytes)
-  const caption = scrub(input.caption).trim()
+  const caption = input.caption.trim()
   const place = session.conversation_id ? { conversationId: session.conversation_id } : { sessionId: input.sessionId }
   const saved = await saveUpload(pool, { teamId: input.teamId, place, by: { agentId: session.agent_id }, bytes: input.bytes, name: cleanFileName(input.name), declaredType: input.declaredType })
   try {

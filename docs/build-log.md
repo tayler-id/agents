@@ -1146,3 +1146,20 @@ A security fix, so it goes to Tayler. Tayler approved the work on branch `shape-
   - Reading a subset of a shape, which on-demand sync in the client needs, is now refused. Turning it on is Tayler's call. `queryable_columns` is already set for shapes that hide columns, and the refusal is the one line to remove.
   - step4b and step6b, which drive the app in three browsers, did not run. step4b runs real Claude and step6b uses the forge. Firefox and WebKit were not tried.
   - Nothing ran on the live system and nothing is deployed.
+
+### Attachments, reactions and message actions (2026-10-16)
+
+Branch `attachments`, from main de6d961. Tayler put these first on the list of new work. The contract is `docs/design/chat-attachments.md` on branch `ui` and sections 13 and 20 of `docs/ui/feature-briefs.md`. Migration 0025 holds all three parts.
+
+- **Files.** Upload to a chat, a task session or nowhere yet, 25 MB at most, bytes in `AGENTS_ATTACHMENTS_DIR`. A post claims 1 to 10 files. Images are judged by their bytes and served inline, other files download under a sandboxing policy. A pending upload is its uploader's alone and is deleted after 24 hours. A New task and a new chat claim uploads as they are made. A pipeline run does not yet.
+- **Reactions.** One emoji, by a person or an agent, on a message or a task post, idempotent both ways. An agent hears of reactions to its posts once, at the top of its next turn.
+- **Post actions.** Reply, edit by the author with versions kept, delete by the author or an admin, pins. A delete erases the text from the post, its versions and the prompt records behind it.
+- **Decisions.**
+  - A file's upload route takes the raw bytes under the file's type, as the contract says. The API refuses any change that is not JSON, so an upload must carry `X-File-Name`, which no other site can send without a preflight.
+  - Pending uploads are visible only to the uploader, in the shape and on download, which the contract left open.
+  - `share_file` reads only inside the session's working folder, and refuses a file whose text holds a secret. `share_screen` lives in the `computer` server, beside its secret check and the screen socket, and needed three environment lines in `daemon/agentsd.ts`.
+  - A person's files reach the agent through `get_attachment`, not by the daemon placing them before the turn.
+  - A task session's share is a `notice` event with `subtype: 'share'`, so the code that picks an agent's reply never mistakes it for one.
+  - No package was added.
+- **Checks.** step30a (63 lines), step30b (53), step30c (24), on ports 8350 to 8358, no run lock. `test/step30-breaks.ts` has 59 breaks. Each was seen turning the named lines red and the files came back byte for byte. Three first showed a check that crashed instead of failing, and one break was redundant with a second scrub, so I removed the extra scrub in `server/share.ts`. step0, step2 and step10 still pass. Typecheck, lint, names and style are clean.
+- **Not done.** Runs take no attachments. Lock-bound suites were not run, since the lock was held. A reaction on a room's post reaches the agent only in a turn the room gives it. A deleted post's words stay in anything an agent already copied.

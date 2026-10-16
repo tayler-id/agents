@@ -645,3 +645,28 @@ The design is "A scheduler places every turn" in `docs/design/target-architectur
 
 - **Solves now.** It drives the conversation and task views in Chromium, Firefox and WebKit at desktop and phone width against a real API and runner, with a person's box that cannot start because its image does not exist. It expects "Starting your computer" with Docker's words and a Cancel button, the name of a box nobody holds that is offline, a teammate's view naming whose computer is starting, the same line on a task's page, and a quiet turn saying since when. Cancelling takes the line away and cancels the turn. It scans for accessibility problems, checks the phone fit and keeps screenshots in `test/ui-shots`. It uses ports 8150 to 8151 and 8250, so it needs no run lock.
 - **Not done.** WebKit logs three Content Security Policy console errors on the task page, with or without a waiting line, which agentsctl's visual shot reports and which this check does not fail on, since it records page errors only.
+
+### Files in chats and tasks (`server/attachments.ts`, `server/chat-routes.ts`, `server/share.ts`, `shared/attachments.ts`, `daemon/share-client.ts`)
+
+- **Solves now.**
+  - A person attaches files to a chat message or a task message. They upload first (`POST /v1/conversations/{id}/attachments`, `/v1/sessions/{id}/attachments`, or `/v1/attachments` when there is no place yet), then name the files in the post as `attachmentIds`, 1 to 10. A New task or a new chat takes `attachmentIds` and claims the uploads as it is made.
+  - Bytes sit on disk under `AGENTS_ATTACHMENTS_DIR`, one file per row, so Postgres holds none. The cap is 25 MB. An upload nobody sends within 24 hours is deleted, bytes and row, by a sweep in the API.
+  - A PNG, JPEG, WebP or GIF, judged by its bytes, shows inline. Everything else downloads, whatever its sender called it, with a policy that stops it running. Who may open a file follows the chat or task it sits in, and a file nobody has sent yet is its uploader's alone.
+  - The agent's prompt names each attached file and its id. Agents save one with `get_attachment`, share a file from their working folder with `share_file`, and share a screenshot with `share_screen`. In a chat the share is a post by the agent. In a task it is a `notice` event with `subtype: 'share'`.
+  - The `attachments` live shape carries a chat's or a task session's files.
+- **Helps later.** Teach a task records and dictation uploads can use the same store and routes. A pipeline run can claim uploads once the runner puts them in its first stage's session.
+- **Not done.** A pipeline run takes no `attachmentIds` yet, since it has no session until the runner starts a stage. The daemon does not put a person's files in the workspace before the turn. The agent saves them itself with `get_attachment`, which kept the daemon's turn code unchanged.
+
+### Reactions and post actions (`server/reactions.ts`, `server/message-actions.ts`, `shared/reactions.ts`)
+
+- **Solves now.**
+  - Anyone who can see a chat or task puts one emoji on a message or a task post, and takes their own back. Both calls are safe to repeat. Agents react with the `react` tool. A reaction on an agent's post reaches the agent once, at the top of its next turn.
+  - A reply names the post it answers in `replyToMessageId`, and the agent is told which. An author edits their own post and the earlier words stay as versions. The author, or a team admin, deletes a post. The post stays in its place with no text, and its versions, files, reactions, pin and the copies in the agent's prompt records go. Anyone who can see the chat pins a post.
+  - The `reactions` and `pins` live shapes carry them.
+- **Helps later.** A summary or a search can leave deleted posts out by `deleted_at`, and a moderation view can read `deleted_by`.
+- **Not done.** A deleted post's words stay where an agent already copied them, such as its reply, its memory, a room turn's prompt that quoted it, or a task started from it. Editing a post does not change what the agent was told.
+
+### The step 30 checks (`test/step30a.ts`, `test/step30b.ts`, `test/step30c.ts`, `test/step30-breaks.ts`)
+
+- **Solves now.** They run the API on ports 8350 to 8358 against the test database, with no run lock, and drive it the way a person and an agent do. step30a covers upload, serving, the cap, access, claiming and the sweep. step30b covers reactions, reply, edit, delete and pins, and looks for a deleted post's words in every column of the database. step30c starts the real team-record and computer MCP servers and calls the file tools. `step30-breaks.ts` breaks one guard at a time and confirms the named lines go red.
+- **Helps later.** The breaks runner restores each file byte for byte and checks its hash.

@@ -78,6 +78,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'server/api.ts', anchor: "    if (attachmentIds && task.draft) throw new HttpError(400, 'A draft takes no attachments yet. Attach files when the task starts.')\n", replace: '' }] },
   { name: 'first-post', check: 'step30a', why: "a new group chat drops its first post's files", red: ['the file is in the new chat, on its first post'],
     edits: [{ file: 'server/api.ts', anchor: "{ attachmentIds: post.attachmentIds ?? [] })", replace: '{})' }] },
+  { name: 'room-files', check: 'step30a', why: "a room's agent is never told of the files on a post", red: ["the agent's room turn names the file"],
+    edits: [{ file: 'server/rooms.ts', anchor: '${withFiles(m.body, files.filter((f) => f.message_id === m.id))}', replace: '${m.body}' }] },
   // The sweep.
   { name: 'sweep-off', check: 'step30a', why: 'pending uploads are never deleted', red: ['a pending upload older than 24 hours is deleted', 'a stored file with no row is removed after an hour'],
     edits: [{ file: ATTACHMENTS, anchor: '    sweepOnce().catch(', replace: '    Promise.resolve().catch(' }] },
@@ -93,7 +95,7 @@ const BREAKS: Break[] = [
   { name: 'share-secret', check: 'step30c', why: 'an agent shares a file with a secret in it', red: ['a file with a secret in it is refused'],
     edits: [{ file: ATTACHMENTS, anchor: '  if (holdsSecret(bytes)) throw', replace: '  if (false) throw' }] },
   { name: 'caption-scrub', check: 'step30c', why: "an agent's caption goes out unscrubbed", red: ['a secret in a caption is scrubbed'],
-    edits: [{ file: 'server/share.ts', anchor: '  const caption = scrub(input.caption).trim()', replace: '  const caption = input.caption.trim()' }] },
+    edits: [{ file: 'server/record.ts', anchor: '      scrub(message.body), message.sessionId', replace: '      message.body, message.sessionId' }] },
   { name: 'save-other-chat', check: 'step30c', why: "an agent saves a file from a chat that is not its own", red: ['a file from another chat is not available to this session'],
     edits: [{ file: ATTACHMENTS, anchor: '       and (a.conversation_id = s.conversation_id\n', replace: '       and (true or a.conversation_id = s.conversation_id\n' }] },
   { name: 'save-unsent', check: 'step30c', why: "an agent saves a file nobody has sent yet", red: ['a file nobody has sent yet is not available to the agent'],
@@ -124,6 +126,8 @@ const BREAKS: Break[] = [
   { name: 'reaction-repeated', check: 'step30b', why: 'the agent is told of a reaction on every turn', red: ['a reaction is told once'],
     edits: [{ file: REACTIONS, anchor: "  await client.query('update reactions set told_agent_at = now() where id = any($1)', [rows.map((r) => r.id)])\n", replace: '' }] },
   // Reply, edit, delete, pin.
+  { name: 'task-reaction', check: 'step30b', why: "a task's agent is never told of reactions to its posts", red: ["a task's agent is told of a reaction to its post"],
+    edits: [{ file: 'server/session-messages.ts', anchor: '  const reactions = await reactionsNote(client, agent.id, { sessionId })', replace: "  const reactions = ''" }] },
   { name: 'reply-kept', check: 'step30b', why: 'a reply does not keep the post it answers', red: ['a reply stores the post it answers in quoted_message_id'],
     edits: [{ file: 'server/record.ts', anchor: ', quotedMessageId: extras.replyToMessageId,', replace: ',' }] },
   { name: 'reply-unsaid', check: 'step30b', why: 'the agent is not told which post a reply answers', red: ['the agent is told which post a reply answers'],

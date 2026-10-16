@@ -130,9 +130,9 @@ try {
   // In a task's session, the file hangs on a notice event the task page shows.
   const taskTools = await connect('daemon/record-mcp.ts', asSession(tasks.team.sessionId))
   const inTask = await call(taskTools, 'share_file', { path: 'report.txt', caption: 'Task report' })
-  const notice = await q1(`select e.id, e.kind, e.text, e.body from events e where e.session_id = $1 and e.kind = 'notice' and e.body->>'subtype' = 'share'`, [tasks.team.sessionId])
-  const taskFile = await q1('select id, event_id, message_id, session_id, conversation_id from attachments where event_id = $1', [notice.id])
-  check(!inTask.failed && notice.text === 'Task report' && notice.body.caption === 'Task report' && notice.body.attachmentIds[0] === taskFile.id
+  const [notice] = await q(`select e.id, e.kind, e.text, e.body from events e where e.session_id = $1 and e.kind = 'notice' and e.body->>'subtype' = 'share'`, [tasks.team.sessionId])
+  const taskFile = await q1(`select id, event_id, message_id, session_id, conversation_id from attachments where session_id = $1 and name = 'report.txt'`, [tasks.team.sessionId])
+  check(!inTask.failed && notice?.text === 'Task report' && notice.body.caption === 'Task report' && notice.body.attachmentIds[0] === taskFile.id && taskFile.event_id === notice.id
     && taskFile.session_id === tasks.team.sessionId && taskFile.message_id === null && taskFile.conversation_id === null,
     `in a task session a share is a notice event with the caption, carrying the file (${inTask.text})`)
   check((await download(alice, `/v1/attachments/${taskFile.id}`)).status === 200 && (await download(logins.bob, `/v1/attachments/${taskFile.id}`)).status === 200,

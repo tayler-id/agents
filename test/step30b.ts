@@ -119,6 +119,17 @@ try {
   const after = await say(alice, conversations.dm, 'And the third?')
   check(await handedOver(after) === 'And the third?', 'a reaction is told once')
 
+  // A task session's agent hears of reactions to its posts with the next message.
+  const lastSeq = Number((await q1('select last_seq from sessions where id = $1', [tasks.team.sessionId])).last_seq) + 1
+  const said = await q1(`insert into events (team_id, session_id, seq, updated_seq, kind, text, body, client_id) values ($1, $2, $3, $3, 'assistant', 'I fixed the test', '{"text":"I fixed the test"}', 'fix-1') returning id`,
+    [kit.teamId, tasks.team.sessionId, lastSeq])
+  await q('update sessions set last_seq = $2 where id = $1', [tasks.team.sessionId, lastSeq])
+  await react(bob, 'events', said.id as string, THUMB)
+  await as(alice, 'POST', `/v1/sessions/${tasks.team.sessionId}/messages`, { text: 'Thanks, now the docs' })
+  const taskCommand = await q1(`select payload->>'text' as text from commands where session_id = $1 and kind = 'message' order by created_at desc limit 1`, [tasks.team.sessionId])
+  check(taskCommand.text === `Reactions on your posts since your last turn:\n- ${bob} reacted 👍 to your post "I fixed the test"\n\nThanks, now the docs`,
+    `a task's agent is told of a reaction to its post with the next message (${JSON.stringify(taskCommand.text)})`)
+
   // 5. Reply.
   const replyId = await say(bob, conversations.teamRoom, 'Agreed with the plan', { replyToMessageId: aliceRoomPost })
   check((await q1('select quoted_message_id from messages where id = $1', [replyId])).quoted_message_id === aliceRoomPost, 'a reply stores the post it answers in quoted_message_id')
