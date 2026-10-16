@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { go } from './App.tsx'
-import { useSubmit } from './AgentPage.tsx'
+import { useSubmit } from './useSubmit.ts'
 import { act, call, useSnapshot, type Agent, type Instance, type Me } from './data.ts'
 import { machinesFor, startMachine } from './machines.ts'
 import { CopyDone, type Carried } from '../../shared/recipe.ts'
@@ -58,6 +58,7 @@ export function CopyAgent({ agent, me, teamMemories }: { agent: Agent; me: Me; t
         <p className="small muted">
           The copy gets the agent's title, instructions, skills, plugins, routines and hooks. It never gets what the agent remembers about a person, or a secret value.
         </p>
+        {!machines.length && <p className="small muted">There is no machine you can put an agent on yet.</p>}
         <div className="actions">
           <button className="primary" type="submit" disabled={busy || !name || !machines.length}>Copy agent</button>
           {error && <p className="error small" role="alert">{error}</p>}

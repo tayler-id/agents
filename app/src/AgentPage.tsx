@@ -1,4 +1,4 @@
-import { useState, type SyntheticEvent, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { go } from './App.tsx'
 import {
   act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
@@ -6,6 +6,7 @@ import {
 import { Markdown } from './Markdown.tsx'
 import { CopyAgent } from './CopyAgent.tsx'
 import { Hooks } from './Hooks.tsx'
+import { useSubmit } from './useSubmit.ts'
 import { machinesFor, startMachine } from './machines.ts'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
@@ -98,26 +99,6 @@ function Items<T extends { id: string }>({ rows, render, onRemove, empty }: { ro
       {!rows.length && <li className="muted small empty">{empty}</li>}
     </ul>
   )
-}
-
-// A small form that reports its own errors.
-export function useSubmit(action: () => Promise<unknown>, reset: () => void) {
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const submit = async (event: SyntheticEvent) => {
-    event.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      await action()
-      reset()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return { submit, error, busy }
 }
 
 function Profile({ agent }: { agent: Agent & { role?: string | null; instructions?: string } }) {

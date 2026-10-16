@@ -6,6 +6,7 @@
 import { z } from 'zod'
 import { AgentHook, AgentPlugin, AgentSkill, HookEvent } from './types.ts'
 import { AgentId } from './ids.ts'
+import { InstanceId } from './onboarding.ts'
 
 export const RecipeRoutine = z.object({ name: z.string(), prompt: z.string(), schedule: z.string() })
 
@@ -36,7 +37,7 @@ export const Recipe = z.object({
 export type Recipe = z.infer<typeof Recipe>
 
 // Asking to copy an agent. `memories` says whether the team's memories come along.
-export const CopyAsk = z.object({ name: z.string(), homeInstanceId: z.string(), memories: z.boolean() })
+export const CopyAsk = z.object({ name: z.string(), homeInstanceId: InstanceId, memories: z.boolean() })
 export type CopyAsk = z.infer<typeof CopyAsk>
 
 // What a new agent got from a recipe, by kind.

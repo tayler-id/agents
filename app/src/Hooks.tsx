@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { act, call, useSnapshotOf, type Agent, type Me } from './data.ts'
-import { useSubmit } from './AgentPage.tsx'
+import { useSubmit } from './useSubmit.ts'
 import { Done } from '../../shared/onboarding.ts'
 import { HookRow, mayChangeHooks } from '../../shared/recipe.ts'
 import { HOOK_EVENTS, HookEvent, takesMatcher } from '../../shared/types.ts'

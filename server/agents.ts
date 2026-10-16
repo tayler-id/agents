@@ -325,15 +325,21 @@ async function install(client: pg.PoolClient, person: Person, agentId: string, s
   await installRecipe(client, person, agentId, recipe.data)
 }
 
-// Makes a new agent, owned by the person and on a machine they may use, with the
-// source agent's setup. It saves no template, so a copy never changes the setups the
-// team keeps as templates.
-export async function copyAgent(client: pg.PoolClient, person: Person, sourceId: string, ask: CopyAsk): Promise<CopyDone> {
-  const source = await agentOf(client, person, sourceId)
-  const recipe = await recipeOf(client, source.id, ask.memories)
+// Makes a new agent owned by the person, on a machine they may use, with a recipe's
+// setup. A copy and a file import both come through here.
+export async function agentFromRecipe(
+  client: pg.PoolClient, person: Person, where: { name: string; homeInstanceId: string }, recipe: Recipe, copiedFrom: string | null,
+): Promise<CopyDone> {
   const agentId = await insertAgent(client, person, {
-    name: ask.name, homeInstanceId: ask.homeInstanceId, title: null, role: null, instructions: '', model: null, copiedFrom: source.id,
+    name: where.name, homeInstanceId: where.homeInstanceId, title: null, role: null, instructions: '', model: null, copiedFrom,
   })
   await installRecipe(client, person, agentId, recipe)
   return { agentId: AgentId.parse(agentId), carried: carriedBy(recipe) }
+}
+
+// A new agent with the source agent's setup. It saves no template, so a copy never
+// changes the setups the team keeps as templates.
+export async function copyAgent(client: pg.PoolClient, person: Person, sourceId: string, ask: CopyAsk): Promise<CopyDone> {
+  const source = await agentOf(client, person, sourceId)
+  return agentFromRecipe(client, person, ask, await recipeOf(client, source.id, ask.memories), source.id)
 }
