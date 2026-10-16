@@ -12,6 +12,7 @@ import {
 } from '../../shared/onboarding.ts'
 import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
+export type { AttachmentShapeRow as Attachment, PinShapeRow as Pin, ReactionShapeRow as Reaction } from '../../shared/attachments.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'

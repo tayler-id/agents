@@ -6,11 +6,12 @@
 import type { IncomingMessage } from 'node:http'
 import { z } from 'zod'
 import { readBody } from '../shared/body.ts'
-import { dispositionOf, declaredType, MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
+import { dispositionOf, declaredType, MAX_ATTACHMENT_BYTES, type AttachmentRow } from '../shared/attachments.ts'
 import { Emoji } from '../shared/reactions.ts'
+import { EventId, MessageId } from '../shared/ids.ts'
 import { canSeeSession } from './access.ts'
 import { agentScope } from './agent-scope.ts'
-import { attachmentFor, attachmentForSession, readBytes, removeFiles, saveUpload, type AttachmentRow } from './attachments.ts'
+import { attachmentFor, attachmentForSession, readBytes, removeFiles, saveUpload } from './attachments.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { Created, FileAnswer, parseBody, type Route } from './http.ts'
 import { personFrom } from './auth.ts'
@@ -118,19 +119,19 @@ export const chatRoutes: Route[] = [
 
   ['people', 'PUT', new RegExp(`^/v1/messages/${UUID}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'message', id }, emojiInPath(emoji), true))
+    return tx((client) => reactAsPerson(client, person, { kind: 'message', id: MessageId.parse(id) }, emojiInPath(emoji), true))
   }],
   ['people', 'DELETE', new RegExp(`^/v1/messages/${UUID}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'message', id }, emojiInPath(emoji), false))
+    return tx((client) => reactAsPerson(client, person, { kind: 'message', id: MessageId.parse(id) }, emojiInPath(emoji), false))
   }],
   ['people', 'PUT', new RegExp(`^/v1/events/${EVENT}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'event', id }, emojiInPath(emoji), true))
+    return tx((client) => reactAsPerson(client, person, { kind: 'event', id: EventId.parse(id) }, emojiInPath(emoji), true))
   }],
   ['people', 'DELETE', new RegExp(`^/v1/events/${EVENT}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'event', id }, emojiInPath(emoji), false))
+    return tx((client) => reactAsPerson(client, person, { kind: 'event', id: EventId.parse(id) }, emojiInPath(emoji), false))
   }],
 
   // An agent reacts to a post in its chat or its task.
@@ -139,8 +140,8 @@ export const chatRoutes: Route[] = [
     const body = await parseBody(req, ReactBody)
     return tx(async (client) => {
       const session = await one<{ id: string; team_id: string; agent_id: string }>(client, 'the session', 'select id, team_id, agent_id from sessions where id = $1', [sessionId])
-      const target = body.messageId !== undefined ? { kind: 'message' as const, id: body.messageId }
-        : body.eventId !== undefined ? { kind: 'event' as const, id: body.eventId } : await latestPersonPost(client, session.id)
+      const target = body.messageId !== undefined ? { kind: 'message' as const, id: MessageId.parse(body.messageId) }
+        : body.eventId !== undefined ? { kind: 'event' as const, id: EventId.parse(body.eventId) } : await latestPersonPost(client, session.id)
       return reactAsAgent(client, { ...session, team_id: teamId }, target, emojiOf(body.emoji), body.remove !== true)
     })
   }],

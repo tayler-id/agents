@@ -12,7 +12,7 @@ import { hasCode, messageOf } from '../shared/errors.ts'
 import { envSecrets } from '../shared/scrub.ts'
 import { secretsIn } from '../shared/secret-scan.ts'
 import {
-  AttachmentId, cleanFileName, MAX_ATTACHMENT_BYTES, MAX_PENDING_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
+  AttachmentId, AttachmentRow, cleanFileName, MAX_ATTACHMENT_BYTES, MAX_PENDING_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
 } from '../shared/attachments.ts'
 import { canSeeConversation, canSeeSession } from './access.ts'
 import { many, maybe, one, pool, type Db } from './db.ts'
@@ -38,24 +38,6 @@ const fileOf = (id: string) => join(ATTACHMENTS_DIR, id.slice(0, 2), id)
 const columns = (alias: string) => ['id', 'team_id', 'conversation_id', 'session_id', 'message_id', 'kind', 'name', 'media_type', 'width', 'height',
   'added_by_person', 'added_by_agent'].map((c) => `${alias}.${c}`).concat(`${alias}.event_id::text as event_id`, `${alias}.size::int as size`).join(', ')
 const COLUMNS = columns('attachments')
-
-export const AttachmentRow = z.object({
-  id: AttachmentId,
-  team_id: z.uuid(),
-  conversation_id: z.uuid().nullable(),
-  session_id: z.uuid().nullable(),
-  message_id: z.uuid().nullable(),
-  event_id: z.string().nullable(),
-  kind: z.enum(['image', 'file']),
-  name: z.string(),
-  media_type: z.string(),
-  size: z.int(),
-  width: z.int().nullable(),
-  height: z.int().nullable(),
-  added_by_person: z.uuid().nullable(),
-  added_by_agent: z.uuid().nullable(),
-})
-export type AttachmentRow = z.infer<typeof AttachmentRow>
 
 // Where an upload sits: in a chat, in a task's session, or nowhere yet.
 export type Place = { conversationId: string } | { sessionId: string } | null

@@ -3,6 +3,7 @@
 // docs/design/chat-attachments.md on branch ui.
 
 import { z } from 'zod'
+import { AgentId, ConversationId, MessageId, PersonId, SessionId, TeamId } from './ids.ts'
 import { sniffImage, type ImageMediaType } from './documents.ts'
 
 // The most one file may hold. A chat file is a screenshot or a document, and 25 MB
@@ -52,7 +53,7 @@ export function cleanFileName(raw: string): string {
   const last = raw.split(/[\\/]/).pop() ?? ''
   // Format characters such as U+202E turn the name around on screen, so `invoice<U+202E>fdp.exe` would read as a PDF.
   let name = last.replace(/[\p{Cc}\p{Cf}]/gu, '').trim()
-  while (Buffer.byteLength(name) > MAX_NAME_BYTES) name = name.slice(0, -1)
+  while (new TextEncoder().encode(name).length > MAX_NAME_BYTES) name = name.slice(0, -1)
   return name === '' || name === '.' || name === '..' ? 'file' : name
 }
 
@@ -123,3 +124,67 @@ export function dispositionOf(kind: 'inline' | 'attachment', name: string): stri
   const plain = name.replace(/[^\x20-\x7e]|["\\]/g, '_')
   return `${kind}; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`
 }
+
+// A row of attachments as the server reads it, with the bigints cast to numbers and text.
+export const AttachmentRow = z.object({
+  id: AttachmentId,
+  team_id: z.uuid(),
+  conversation_id: z.uuid().nullable(),
+  session_id: z.uuid().nullable(),
+  message_id: z.uuid().nullable(),
+  event_id: z.string().nullable(),
+  kind: z.enum(['image', 'file']),
+  name: z.string(),
+  media_type: z.string(),
+  size: z.int(),
+  width: z.int().nullable(),
+  height: z.int().nullable(),
+  added_by_person: z.uuid().nullable(),
+  added_by_agent: z.uuid().nullable(),
+})
+export type AttachmentRow = z.infer<typeof AttachmentRow>
+
+// The rows of the three live shapes for chats and tasks, as the app reads them. The shapes' columns are these
+// schemas' keys, so a column added here reaches the app and one left out stays on the server. Electric sends a
+// bigint as a bigint.
+export const AttachmentShapeRow = z.object({
+  id: AttachmentId,
+  conversation_id: ConversationId.nullable(),
+  session_id: SessionId.nullable(),
+  message_id: MessageId.nullable(),
+  event_id: z.bigint().nullable(),
+  kind: z.enum(['image', 'file']),
+  name: z.string(),
+  media_type: z.string(),
+  size: z.bigint(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+  added_by_person: PersonId.nullable(),
+  added_by_agent: AgentId.nullable(),
+  created_at: z.string(),
+})
+export type AttachmentShapeRow = z.infer<typeof AttachmentShapeRow>
+
+export const ReactionId = z.uuid().brand<'ReactionId'>()
+export type ReactionId = z.infer<typeof ReactionId>
+export const ReactionShapeRow = z.object({
+  id: ReactionId,
+  conversation_id: ConversationId.nullable(),
+  session_id: SessionId.nullable(),
+  message_id: MessageId.nullable(),
+  event_id: z.bigint().nullable(),
+  emoji: z.string(),
+  person_id: PersonId.nullable(),
+  agent_id: AgentId.nullable(),
+  created_at: z.string(),
+})
+export type ReactionShapeRow = z.infer<typeof ReactionShapeRow>
+
+export const PinShapeRow = z.object({
+  conversation_id: ConversationId,
+  message_id: MessageId,
+  team_id: TeamId,
+  pinned_by: PersonId.nullable(),
+  created_at: z.string(),
+})
+export type PinShapeRow = z.infer<typeof PinShapeRow>
