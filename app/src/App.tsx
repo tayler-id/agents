@@ -148,7 +148,7 @@ function Workspace({ me }: { me: Me }) {
             : route.task ? <TaskView key={route.task} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
-                : route.agent ? <AgentPage key={route.agent} agentId={route.agent} me={me} />
+                : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
                   : route.project ? <ProjectPage key={route.project} projectId={route.project} />
                     : route.terminal ? <TerminalSessionView key={route.terminal} me={me} sessionId={route.terminal} />
                       : route.create === 'agent' ? <NewAgent me={me} />

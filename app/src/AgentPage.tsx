@@ -4,11 +4,10 @@ import {
   act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
-import { AgentSecrets } from './Secrets.tsx'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
 // remembers. Anyone on the team can change it.
-export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
+export function AgentPage({ agentId }: { agentId: string }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
   const { rows: skills } = useSnapshot<Skill>('skills', {}, 4000)
   const { rows: plugins } = useSnapshot<Plugin>('plugins', {}, 4000)
@@ -41,8 +40,6 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
       <div className="page-body">
         {notice && <p className="note-line" role="status">{notice}</p>}
         <Profile agent={agent} />
-
-        <AgentSecrets agent={agent} me={me} />
 
         <h2 className="kicker section">Skills</h2>
         <Items rows={own(skills)} empty="No skills yet" render={(s) => <><strong>{s.name}</strong> <span className="muted small">{s.description}</span></>}
@@ -194,7 +191,7 @@ function PluginForm({ agentId }: { agentId: string }) {
           : <><label htmlFor="plugin-url">URL</label><input id="plugin-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></>}
         <label htmlFor="plugin-secrets">{kind === 'stdio' ? 'Environment' : 'Headers'} from secrets, one per line</label>
         <textarea id="plugin-secrets" rows={2} value={secrets} onChange={(e) => setSecrets(e.target.value)} placeholder="GITHUB_TOKEN=GITHUB_TOKEN" />
-        <p className="small muted">Each names a secret. Save the plugin, then set each value under Secrets, near the top. A value stays on the agent's computer, and the app keeps only its name.</p>
+        <p className="small muted">Each names a secret. Its value stays on the machine, in its environment or ~/.agents-app/secrets.json.</p>
         <div className="actions">
           <button className="primary" type="submit" disabled={busy || !name || (kind === 'stdio' ? !command : !url)}>Save plugin</button>
           {error && <p className="error small" role="alert">{error}</p>}
