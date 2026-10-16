@@ -56,6 +56,9 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
+import { AUDIO_POST, voiceRoutes } from './voice.ts'
+import { checkSpeechSettings } from './speech.ts'
+import { kindOf } from './audio.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
@@ -712,6 +715,7 @@ const routes: Route[] = [
 
   ...onboardingRoutes,
   ...boxRoutes,
+  ...voiceRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
@@ -773,7 +777,8 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     checkAudience(audience, req)
-    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
+    const recording = AUDIO_POST.test(url.pathname) && kindOf(req.headers['content-type']) !== null
+    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !recording && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
     const shape = req.method === 'GET' ? SHAPE.exec(url.pathname)?.[1] : undefined
@@ -847,6 +852,7 @@ if (import.meta.main) {
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
   if (!origins.success) throw new Error(`AGENTS_PEOPLE_ORIGINS must list the origins the app is served from, such as http://agents-server.<tailnet>.ts.net: ${z.prettifyError(origins.error)}`)
+  checkSpeechSettings()
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
