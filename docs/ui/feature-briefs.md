@@ -181,3 +181,15 @@ Tayler asked on 2026-10-16 for "a thumbs up and every other traditional thing" o
 - **Voice reply audio.** It arrives as binary frames on the voice chat's WebSocket and plays through the Web Audio API, with an AudioWorklet loaded from the app's own origin. No `<audio>` element, no blob URL, and no change to the page's policy.
 - **Teach a task.** Stop gets a save or discard choice, with `DELETE /v1/lessons/{id}` to discard. Everyone watching the agent's screen sees that a recording is on. The UI session's proposal in `docs/design/teach-a-task.md` on `ui` is the starting point when Teach a task is built.
 - **Shapes on the chat view.** `reactions` is live. `attachments` and `pins` are read as snapshots every few seconds, which keeps the view at five live shapes. HTTPS, which comes with the connector sign-ins, lets the limit go.
+
+## 21. Updates from inside the app, and hot reload
+
+Tayler asked for this on 2026-10-16.
+
+- **What it does.** Settings > Updates lists what is merged and waiting, with one Update button and who may press it. Pressing it backs up the database, applies migrations, rebuilds, restarts the server and the Mac program, and checks health. When the check fails, it rolls back by itself and says why. Open copies of the app then load the new version by themselves and keep the person's place. The Mac app updates itself.
+- **What the UI needs.**
+  - The waiting changes, each with its title and what it changes for people.
+  - Update, and its progress as steps: backing up, applying, restarting, checking.
+  - The result, or the rollback with its reason.
+  - A quiet line in any open copy when a new version has loaded.
+- **Data and endpoints.** These come when it is built, after the release in its test run.

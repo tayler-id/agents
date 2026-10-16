@@ -472,6 +472,15 @@ Decided by Tayler on 2026-10-16, through the UI session.
   - The owner and admins may teach a team's agent.
   - The learned skill is a draft the person saves in the chat.
 
+### Updating Agents from inside it, with hot reload
+
+- **Asked by Tayler on 2026-10-16:** "we need to start also being able to update the agents app from with in it and hot reload".
+- **What it means.**
+  - An Updates page, in the redesign's Settings > Updates, lists the changes merged and waiting. One Update button runs the framework's deployer (`ops/deploy.ts`). It backs up the database, applies migrations, rebuilds the app and the box image, restarts the API and the daemon, checks health, and rolls back by itself when the check fails. Nobody pastes a restart command.
+  - Open copies of the app load the new version by themselves, keeping the person's place. The Mac app updates itself from the team's server.
+  - Changing Agents from inside it is the move onto the coding framework after seats. A person asks an agent for a change, watches it live in a preview that reloads as the agent works, approves it, and presses Update.
+- **Status.** Comes right after the release that is in its test run, together with the framework move.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
