@@ -56,7 +56,7 @@ export function CopyAgent({ agent, me, teamMemories }: { agent: Agent; me: Me; t
           With the team's memories ({teamMemories})
         </label>
         <p className="small muted">
-          The copy gets the agent's title, instructions, skills, plugins, routines and hooks. It never gets what the agent remembers about a person, or a secret value.
+          The copy gets the agent's title, instructions, skills, plugins, routines and hooks. Its plugins and hooks run commands on the machine you pick, so read them below first. It never gets what the agent remembers about a person, or a secret value.
         </p>
         {!machines.length && <p className="small muted">There is no machine you can put an agent on yet.</p>}
         <div className="actions">
