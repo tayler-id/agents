@@ -187,47 +187,21 @@ Team agents work the same way on a team computer, which has `personal` false, is
 
 ## Visual work in a conversation
 
-Tayler asked for this on 2026-10-15. While a team talks, an agent works on its screen where everyone can see it. It might draw a flow diagram of the software under discussion, open a whiteboard, or show the team's Jira board or a Confluence page in its browser. Everyone in the conversation watches the screen live there, and anyone can take over to point, draw or type, then hand it back.
+Tayler asked for this on 2026-10-16, and corrected it the same day. The live desktop lives in the agent's panel, and the conversation gets screenshots. While a team talks, an agent works on its own desktop. It might draw a flow diagram of the software under discussion on a whiteboard, or open the team's Jira board in its browser. People watch it live and take over in the agent's panel, on its Computer tab. When the agent wants to show something in the conversation, it posts a screenshot of its desktop there, inline, like any attachment.
 
-Today the pieces exist apart. A box has a desktop and a browser, and the Screen panel shows a box's screen with one person at a time taking over (`docs/ui/feature-list.md` 2.22). But the panel opens from a task header or the Session panel, not in the conversation where the talk happens. Every agent on a box shares one screen until seats land. Drawing means dragging shapes with the computer tool. And no real Claude session has used a box's screen yet.
+**What it needs.**
 
-**Data shape.**
-
-```ts
-// screen_shares, new. One agent's screen shown in one conversation.
-type ScreenShare = {
-  id: ScreenShareId
-  team_id: TeamId
-  conversation_id: ConversationId
-  seat_id: SeatId                       // the screen shown, from "Seats"
-  agent_id: AgentId
-  session_id: SessionId                 // the session that showed it
-  started_by: { kind: 'agent' } | { kind: 'person'; person_id: PersonId }
-  started_at: Date
-  ended_at: Date | null
-}
-```
-
-A share is seen only by people who can see its conversation, and the 24-hour privacy rule for screens still applies to the seat.
-
-**Owner.** `server/shares.ts` (new) owns the rows. `daemon/computer-mcp.ts` gains the tools `show_screen` and `stop_showing`, and `draw_diagram`. The conversation view shows a live tile for each open share, using the screen relay in `server/screens.ts` for the seat.
-
-**One action.** Alice, Ben and `scout` talk in a room about the checkout flow.
-
-1. Alice asks `scout` for a flow diagram of the checkout code.
-2. `scout` reads the code in its workspace, calls `draw_diagram` with a Mermaid flowchart, and the whiteboard on its seat opens with the diagram drawn. It calls `show_screen`, and a live tile of its screen appears at the top of the room for everyone.
-3. Ben presses `Take over` on the tile, adds a box for the retry path, and hands it back. `scout`'s screen tools wait while he holds it, as they do today.
-4. `scout` saves the finished board as a document on the room, with its scene file and a screenshot, and calls `stop_showing`.
-
-The same works with any web tool, since the agent's browser is an ordinary browser that shares its person's logins (decision 3). Signed in to Jira once, any of Alice's agents can open the team's board and show it in the room. A connector gives the agent exact reads and writes underneath, and the screen shows people the same board.
-
-**The whiteboard.** The box image gains an open-source whiteboard served inside the box, so a diagram needs no outside account. `draw_diagram` turns a Mermaid description into a whiteboard scene and opens it, so a diagram appears in seconds and people refine it by hand. Adding the whiteboard and its packages changes `box/` and the dependencies, which needs Tayler's yes.
+- The Computer tab in the agent's panel shows a live view of the agent's seat, with Open for full screen, and Watching and Take control. It reuses the screen relay in `server/screens.ts` and the takeover in `shared/screen.ts`.
+- `share_screen({ caption? })` in the team-record tools takes a screenshot of the agent's own seat and posts it into the conversation the session serves, as an attachment. `share_file({ path, caption? })` does the same for a file. Both arrive with chat attachments.
+- A whiteboard sits on every computer's desktop, in the dock beside the browser and the terminal. It is served inside the box, so a diagram needs no outside account.
+- `draw_diagram({ mermaid })` turns a Mermaid description into a whiteboard scene on the agent's screen, so a diagram appears in seconds and people refine it by hand. The agent can still draw with the mouse, as the agent app we studied does in tldraw.
+- Any web tool works the same way, since the agent's browser shares its person's logins (decision 3). Once signed in to Jira, any of Alice's agents can open the team's board. People watch it in the panel, and the agent posts a screenshot to the room. A connector gives the agent exact reads and writes underneath.
 
 **Stays, changes, new.**
 
-- Stays: the screen relay, the takeover state machine in `shared/screen.ts`, each seat's screen, and shared logins.
-- Changes: the Screen panel can also live in a conversation as a tile. At phone width the tile is a compact row that opens the screen full width.
-- New: `screen_shares`, the tools `show_screen`, `stop_showing` and `draw_diagram`, the live tile in conversations, and a whiteboard in the box image.
+- Stays: the screen relay, the takeover state machine, each seat's screen, and shared logins.
+- New: the Computer tab, `share_screen`, `draw_diagram`, and the whiteboard in the box image. The whiteboard changes `box/` and the packages, which Tayler asked for with the desktop and its dock on 2026-10-16.
+- Dropped: a live screen tile inside the conversation, since it repeated the panel.
 
 ## A scheduler places every turn
 
@@ -1361,7 +1335,7 @@ The order follows what each step needs. The door comes first, because every late
 | 0. Land the current branches | Terminal sessions, verification, and the AWS stack, written but switched off. Computers and projects with GitHub landed in `a553744`. | Each branch's own checks and the coordinator's landing gates | nothing |
 | 1. One door for turns | Personal computers stop when idle. A DM to an agent on a stopped computer shows "Starting Alice's computer", then the reply. | A new check stops a personal box, sends a DM, and expects the turn to go from waiting to done with the reply posted, and times the start. It fails on main, where nothing starts a stopped personal box. step1, step10, step14 and the step18 and step20 checks pass unchanged. | 0 |
 | 2. Seats | Two agents on Tayler's computer each show their own screen and browser, working at once. A third takes the seat idle longest, and its logins come back when it returns. | A check built on `test/step15.ts` drives two seats' browsers at once, each screenshot showing its own page. Taking over seat 1 leaves seat 2 working. A third agent at a cap of 2 reclaims the idle seat. `docker stats` records each seat's memory with real Claude. | 1 |
-| 2b. Visual work in a conversation | In a room, Tayler asks an agent for a flow diagram of the code under discussion. Its screen appears in the room with the diagram on its whiteboard. Ben takes over to add a box, hands it back, and the agent carries on. The same works with the team's Jira board open in its browser | A check where the stand-in Claude calls `show_screen` in a room. Two people see the tile, one takes over and hands back, `draw_diagram` draws a given flowchart, `stop_showing` removes the tile, and a person outside a private room sees nothing. Then a try with real Claude in a real discussion | 2 |
+| 2b. Visual work in a conversation | In a room, Tayler asks an agent for a flow diagram of the code under discussion. The agent draws it on its whiteboard, which Tayler watches live in the agent's Computer tab, and Ben takes over there to add a box. The agent then posts a screenshot of the board into the room | A check where the stand-in Claude on a seat calls `draw_diagram` with a given flowchart and then `share_screen`. The room gets one message with an image of the board, a person outside a private room sees neither, and the Computer tab shows that seat live. Then a try with real Claude in a real discussion | 2, chat attachments |
 | 3. The meter | A Usage page shows the week by agent, person, source and token type, moving as turns end | A check drives turns from four sources with the stand-in Claude reporting set token counts, and compares the page's totals with the literal sums | 1 |
 | 4. Budgets and caps | An agent with a $0.50 budget stops after its second turn and asks Tayler to raise it. Raising it lets the turn go. | A check with the stand-in spending $0.30 a turn expects the third turn to wait with an ask, and a cap crossed by two sessions at once to interrupt both | 3 |
 | 5. Notifications on the desktop | An approval card raises a system notification. A stuck turn says so, and so does a sign-in a week from running out. | A check opens an ask and expects a notification for each person who may answer and none for anyone else, a turn silent past the limit to notify its asker, and a sign-in 6 days from running out to notify its person once | 1 |
