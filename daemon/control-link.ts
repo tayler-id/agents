@@ -16,7 +16,9 @@ export type ControlLink = { stop(): void }
 // that says why, never one that quotes the frame.
 export type Hold = (frame: ToDaemon) => FromDaemon
 
-export function linkControl(config: { api: string; token: string; hold: Hold }): ControlLink {
+// `hello` is what the daemon tells the API each time the connection opens, or
+// null when it has nothing to say.
+export function linkControl(config: { api: string; token: string; hold: Hold; hello: () => FromDaemon | null }): ControlLink {
   const url = new URL(LINK_PATH, config.api)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const state: { socket: WebSocket | null; stopping: boolean; reconnectIn: number; failed: boolean } =
@@ -35,6 +37,8 @@ export function linkControl(config: { api: string; token: string; hold: Hold }):
       state.reconnectIn = LINK_RECONNECT_FIRST_MS
       if (state.failed) console.log('control connection to the API is back')
       state.failed = false
+      const hello = config.hello()
+      if (hello) ws.send(JSON.stringify(hello))
     })
     ws.on('ping', () => { heard = Date.now() })
     ws.on('message', (data, isBinary) => {

@@ -10,11 +10,13 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { checkAudience, instanceFrom } from './auth.ts'
+import { pool } from './db.ts'
 import { HttpError } from './record.ts'
 import { takeUpgrade } from './upgrade.ts'
 import { FromDaemon, LINK_ANSWER_MS, LINK_DEAD_MS, LINK_MAX_FRAME_BYTES, LINK_PATH, LINK_PING_MS, LINK_UNSUPPORTED, type ToDaemon } from '../shared/link.ts'
 import { parseJson } from '../shared/json.ts'
 import { InstanceId } from '../shared/onboarding.ts'
+import { messageOf } from '../shared/errors.ts'
 import { bytesOf } from '../shared/websocket.ts'
 
 // A computer's answer to a frame, which names the frame it answers.
@@ -28,6 +30,13 @@ const sockets = new WebSocketServer({ noServer: true, maxPayload: LINK_MAX_FRAME
 const links = new Map<InstanceId, Link>()
 // What waits for a computer's connection to come up, by computer.
 const arrivals = new Map<InstanceId, Set<() => void>>()
+
+// The computer says which secrets it holds. A secret the record says was set on
+// it and it no longer holds is not set, so the app does not say it is.
+function forgetUnheld(instanceId: InstanceId, held: string[]) {
+  pool.query('delete from secret_sets where instance_id = $1 and not (name = any($2))', [instanceId, held])
+    .catch((error: unknown) => { console.error(`control connection of ${instanceId}: could not compare the secrets it holds: ${messageOf(error)}`) })
+}
 
 function join(instanceId: InstanceId, ws: WebSocket) {
   // A daemon that reconnects replaces its old connection, which may be half open.
@@ -47,6 +56,10 @@ function join(instanceId: InstanceId, ws: WebSocket) {
       // A frame from a computer holds names and reasons, but is not echoed.
       console.error(`control connection of ${instanceId}: a frame was refused (${frame ? frame.reason : 'not text'})`)
       ws.close(LINK_UNSUPPORTED, 'the control connection carries the frames of shared/link.ts as JSON text')
+      return
+    }
+    if (frame.value.type === 'secrets_held') {
+      forgetUnheld(instanceId, frame.value.names)
       return
     }
     // An answer to a frame nobody waits for any more, such as one that timed out, is dropped.

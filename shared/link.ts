@@ -44,6 +44,10 @@ export type ToDaemon = z.infer<typeof ToDaemon>
 
 // What a computer answers, and tells the API when it connects.
 export const FromDaemon = z.discriminatedUnion('type', [
+  // The names of the secrets the computer holds, sent each time it connects. The
+  // API forgets that it set one the computer no longer holds, such as after a
+  // box was made again with an empty home.
+  z.object({ type: z.literal('secrets_held'), names: z.array(SecretName) }),
   z.object({ type: z.literal('secret_stored'), id: RequestId, name: SecretName }),
   // `had` is false when the computer held no value under the name.
   z.object({ type: z.literal('secret_removed'), id: RequestId, name: SecretName, had: z.boolean() }),

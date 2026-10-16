@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { hasCode } from '../shared/errors.ts'
+import { SecretName } from '../shared/secrets.ts'
 import { NAME, type AgentPlugin, type AgentSkill, type SecretRef } from '../shared/types.ts'
 
 // Replaces <cwd>/.claude/skills with the agent's skills, so Claude finds them as project skills.
@@ -87,6 +88,13 @@ function writeSecretsFile(home: string, entries: Record<string, unknown>) {
     rmSync(temp, { force: true })
     throw error
   }
+}
+
+// The names of the values the file holds, for the API to compare with what it
+// believes it set. A name the app could not have set, such as one in lowercase,
+// is left out. A file that cannot be read as an object is an error.
+export function heldSecretNames(home: string): string[] {
+  return Object.entries(readSecretsFile(home)).flatMap(([name, value]) => (typeof value === 'string' && SecretName.safeParse(name).success ? [name] : []))
 }
 
 // Sets the value of one name, or removes the name when `value` is null, and says

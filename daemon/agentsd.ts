@@ -26,7 +26,7 @@ import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { changeMachineSecret, forgetValueIn, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeSkills } from './agentfiles.ts'
+import { changeMachineSecret, forgetValueIn, heldSecretNames, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeSkills } from './agentfiles.ts'
 import { linkControl } from './control-link.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
@@ -363,6 +363,18 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     }
   })()
   return session
+}
+
+// The names of the secrets this computer holds, for the API to match against what
+// it believes it set. A secrets file the daemon cannot read says nothing, so the
+// API keeps what it has.
+function helloSecrets(): FromDaemon | null {
+  try {
+    return { type: 'secrets_held', names: heldSecretNames(HOME) }
+  } catch (error) {
+    console.error(`the secrets file was not reported to the API: ${error instanceof SecretsFileError ? error.message : messageOf(error)}`)
+    return null
+  }
 }
 
 // Sets or removes one secret's value at the API's request, and answers. A value
@@ -724,7 +736,7 @@ async function shutdown(code: 0 | 1) {
 
 const abort = new AbortController()
 // The API's way to this computer for what must not be stored on the way, such as a secret's value.
-const control = linkControl({ api: config.api, token: config.token, hold: holdSecret })
+const control = linkControl({ api: config.api, token: config.token, hold: holdSecret, hello: helloSecrets })
 process.on('SIGINT', () => { void shutdown(0) })
 process.on('SIGTERM', () => { void shutdown(0) })
 console.log(`agentsd connected to ${config.api}`)
