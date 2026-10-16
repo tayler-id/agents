@@ -107,13 +107,14 @@ const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
 
-// A box's image sets AGENTS_DESKTOP to the screen's size, with the browsers and
-// Playwright's MCP server beside it. A machine without it, such as a Mac, has no
-// desktop for agents.
+// A box's image sets AGENTS_DESKTOP to the screen's size, with the browsers,
+// Playwright's MCP server and the whiteboard beside it. A machine without it,
+// such as a Mac, has no desktop for agents.
 const DesktopEnv = z.object({
   AGENTS_DESKTOP: ScreenSizeText,
   PLAYWRIGHT_BROWSERS_PATH: z.string().min(1),
   AGENTS_BROWSER_MCP: z.string().min(1),
+  AGENTS_WHITEBOARD: z.string().min(1),
 })
 function desktopEnv(): z.infer<typeof DesktopEnv> | null {
   if (process.env.AGENTS_DESKTOP === undefined) return null
@@ -129,7 +130,7 @@ const desktopConfig = desktopEnv()
 // starts now, and the others as the box's seat rows say.
 const seats: Seats | null = desktopConfig && startSeats({
   size: desktopConfig.AGENTS_DESKTOP, runDir: SCREEN_DIR, home: HOME, browsersPath: desktopConfig.PLAYWRIGHT_BROWSERS_PATH,
-  browserMcp: desktopConfig.AGENTS_BROWSER_MCP, secrets: knownSecrets,
+  whiteboard: desktopConfig.AGENTS_WHITEBOARD, browserMcp: desktopConfig.AGENTS_BROWSER_MCP, secrets: knownSecrets,
   reportUp: async (n, agentId) => {
     const up: SeatUp = { agentId }
     await api('POST', `/v1/instance/seats/${n}/up`, up)

@@ -1,13 +1,14 @@
 // The computer's seats, inside the daemon. A seat is a display, a window
-// manager, a browser and a screen service of its own (daemon/desktop.ts,
-// daemon/screen.ts), numbered as its row in the `seats` table: display :n, its
-// browser's DevTools port 9221 + n, its own sockets and its own browser
-// profile, whose logins every seat shares (daemon/logins.ts). Seat 1 runs
-// whenever the computer runs, and every other seat while an agent holds it. The
-// daemon follows the computer's seat rows, starts and stops seats to match,
-// closes a seat's pages when another agent takes it, and tells the API once a
-// seat is up for its agent. The design is "Seats" in
-// docs/design/target-architecture.md.
+// manager with its dock, a browser and a screen service of its own
+// (daemon/desktop.ts, daemon/dock.ts, daemon/screen.ts), numbered as its row in
+// the `seats` table: display :n, its browser's DevTools port 9221 + n, its own
+// sockets and its own browser profile, whose logins every seat shares
+// (daemon/logins.ts). Every seat's dock opens the one whiteboard the daemon
+// serves (daemon/whiteboard.ts). Seat 1 runs whenever the computer runs, and
+// every other seat while an agent holds it. The daemon follows the computer's
+// seat rows, starts and stops seats to match, closes a seat's pages and windows
+// when another agent takes it, and tells the API once a seat is up for its
+// agent. The design is "Seats" in docs/design/target-architecture.md.
 
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -19,6 +20,7 @@ import { startDesktop, type Desktop } from './desktop.ts'
 import { closePages } from './devtools.ts'
 import { shareLogins } from './logins.ts'
 import { startScreenService, type ScreenService } from './screen.ts'
+import { serveWhiteboard, WHITEBOARD_URL } from './whiteboard.ts'
 
 // Seat n's browser listens for DevTools on this plus n, so seat 1 keeps
 // Chrome's usual 9222, the port a box's one browser had before seats.
@@ -50,6 +52,8 @@ export type SeatsConfig = {
   home: string
   // Playwright's browsers folder, which holds the one Chromium every seat runs.
   browsersPath: string
+  // The whiteboard's files (box/Dockerfile).
+  whiteboard: string
   // Playwright's MCP server, which every session's `computer` server starts.
   browserMcp: string
   // The computer's secrets by name, read again on each use.
@@ -123,6 +127,7 @@ export function startSeats(config: SeatsConfig): Seats {
     const dir = join(config.runDir, `seat-${n}`)
     const desktop = startDesktop({
       size: config.size, display: n, cdpPort: DEVTOOLS_PORT_BASE + n, runDir: dir, profileDir: profileOf(config.home, n), browsersPath: config.browsersPath,
+      whiteboardUrl: WHITEBOARD_URL,
     })
     const seat: Seat = {
       n, desktop, socket: join(dir, 'agent.sock'), service: null, up: Promise.resolve(), desktopUp: false, working: false, stopped: false,
@@ -200,14 +205,21 @@ export function startSeats(config: SeatsConfig): Seats {
         // Another agent took the seat, or the last one let it go.
         seat.holder = row.agent_id
         seat.reported = null
-        seat.cleared = seat.up.then(() => closePages(seat.desktop.cdpUrl)).catch((error: unknown) => {
-          console.error(`seat ${seat.n}: closing the pages the last agent had open: ${messageOf(error)}`)
+        seat.cleared = seat.up.then(() => Promise.all([closePages(seat.desktop.cdpUrl), seat.desktop.closeWindows()])).then(() => undefined, (error: unknown) => {
+          console.error(`seat ${seat.n}: closing the pages and windows the last agent had open: ${messageOf(error)}`)
         })
       }
       if (row.status === 'starting' && seat.reported !== row.agent_id) report(seat, row.agent_id)
     }
   }
 
+  // One whiteboard serves every seat. A box whose loopback already has one,
+  // which only happens to boxes on the host's network, as step 12c runs them,
+  // goes on without its own.
+  const whiteboard = serveWhiteboard(config.whiteboard).catch((error: unknown) => {
+    console.error(`the whiteboard did not start: ${messageOf(error)}`)
+    return null
+  })
   const first = startSeat(FIRST_SEAT, 'unknown')
   return {
     firstUp: first.up,
@@ -243,6 +255,7 @@ export function startSeats(config: SeatsConfig): Seats {
       if (state.retry) clearTimeout(state.retry)
       await logins.stop()
       await Promise.all([...[...running.values()].map(stopSeat), ...stopping.values()])
+      await (await whiteboard)?.stop()
     },
   }
 }

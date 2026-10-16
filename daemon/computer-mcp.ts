@@ -170,9 +170,9 @@ const OWN_TOOLS: Tool[] = [
   {
     name: 'computer',
     title: 'Use your computer',
-    description: 'Use your own computer: a Linux desktop of 1280x800 pixels with a Chromium window, which people on your team can '
-      + 'watch. Each call does one action and returns a screenshot taken after it. Coordinates are [x, y] in screen pixels '
-      + 'from the top left. Clicks act at `coordinate`, or where the cursor is when it is left out, and `text` holds keys '
+    description: 'Use your own computer, a Linux desktop of 1280x800 pixels that people on your team can watch. It has a '
+      + 'Chromium window, and a dock along the bottom that opens a terminal and a whiteboard. Each call does one action and '
+      + 'returns a screenshot taken after it. Coordinates are [x, y] in screen pixels from the top left. Clicks act at `coordinate`, or where the cursor is when it is left out, and `text` holds keys '
       + 'such as "shift" during a click or scroll. `key` presses keys in xdotool form, such as "Return" or "ctrl+l". For web '
       + 'pages the browser_ tools are faster and more exact. Use this for anything they cannot do, and to see the whole '
       + 'screen. While a person has taken over the screen, every action is refused until they hand it back.',
