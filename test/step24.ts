@@ -107,13 +107,14 @@ try {
   node('server/admin.ts', 'add-team', team, alice)
   node('server/admin.ts', 'add-person', team, bob)
   node('server/admin.ts', 'add-team', otherTeam, outsider)
+  node('server/admin.ts', 'add-instance', otherTeam, `mac-x-${id}`, 'mac', outsider)
   const machineA = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-a-${id}`, 'mac', alice))
   const machineB = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-b-${id}`, 'mac', bob))
   // Alice's own box. Nothing runs on it, and the runner starts a box only when a person holds it.
   node('server/admin.ts', 'add-instance', team, `box-a-${id}`, 'box', alice)
   await db.query(`update instances set personal = true where name = $1`, [`box-a-${id}`])
   const idOf = async (name: string) => must(await row('select id from instances where name = $1', [name]), name).id
-  const [macA, macB, boxA] = [await idOf(`mac-a-${id}`), await idOf(`mac-b-${id}`), await idOf(`box-a-${id}`)]
+  const [macA, macB, boxA, macX] = [await idOf(`mac-a-${id}`), await idOf(`mac-b-${id}`), await idOf(`box-a-${id}`), await idOf(`mac-x-${id}`)]
   for (const home of [homeA, homeB]) writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
   writeFileSync(join(homeA, 'secrets.json'), JSON.stringify({ LUCKY_TOKEN: ALICE_SECRET }), { mode: 0o600 })
   api = await startApi(PORTS, { AGENTS_RUNNER_TEAMS: team }, join(homeA, 'streams'))
@@ -235,6 +236,8 @@ try {
   const onBox = await as(bob, `/v1/agents/${source}/copy`, { name: 'on-alices-box', homeInstanceId: boxA, memories: false })
   check(onBox.status === 403 && /teammate's own/.test(onBox.json?.error) && !(await agentRow('on-alices-box')),
     "a copy cannot go on a teammate's own box, where agents run on that teammate's sign-in")
+  const elsewhere = await as(bob, `/v1/agents/${source}/copy`, { name: 'on-another-team', homeInstanceId: macX, memories: false })
+  check(elsewhere.status === 404 && elsewhere.json?.error === 'no such machine' && !(await agentRow('on-another-team')), "a copy cannot go on another team's machine")
   const stranger = await as(outsider, `/v1/agents/${source}/copy`, { name: 'taken-from-away', homeInstanceId: macB, memories: true })
   check(stranger.status === 404 && stranger.json?.error === 'no such agent', "a person from another team cannot copy the agent")
   await db.query(`insert into plugins (agent_id, name, kind, config) values ($1, 'leaky', 'stdio', $2)`,
