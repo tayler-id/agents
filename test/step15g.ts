@@ -205,8 +205,14 @@ try {
   const typed = await within(10, async () => tryDocker('exec', container, 'cat', '/home/agent/terminal-check') === word)
   check(typed, 'what the agent types into the terminal runs there')
 
-  // Alt+Tab switches between the terminal and the browser.
-  const terminalShows = async () => hexOf((await screen(tools)).at(...terminal.middle)) === TERMINAL_BACKGROUND
+  // Alt+Tab switches between the terminal and the browser. The screenshot draws
+  // the pointer where the agent last clicked, the terminal's middle, so the
+  // check reads points around it.
+  const probes = [[-150, 0], [150, 0], [0, -100], [0, 100]].map(([dx = 0, dy = 0]) => [terminal.middle[0] + dx, terminal.middle[1] + dy] as const)
+  const terminalShows = async () => {
+    const pixels = await screen(tools)
+    return probes.every((probe) => hexOf(pixels.at(...probe)) === TERMINAL_BACKGROUND)
+  }
   await act(tools, { action: 'key', text: 'alt+Tab' })
   const behind = await within(5, async () => !(await terminalShows()))
   await act(tools, { action: 'key', text: 'alt+Tab' })
@@ -238,10 +244,11 @@ try {
   const [width, height] = [Number(size?.[1]), Number(size?.[2])]
   check(Math.abs(width - (DRAG.to[0] - DRAG.from[0])) <= 2 && Math.abs(height - (DRAG.to[1] - DRAG.from[1])) <= 2,
     `the agent's drag with the computer tool draws a rectangle that size on the whiteboard (${width}x${height})`)
-  // The rectangle's top edge shows on screen, with white inside it.
+  // The rectangle's top edge shows on screen, with white inside it, a quarter of
+  // the way along, clear of the handle Excalidraw draws at the edge's middle.
   const edgeShown = await within(10, async () => {
     const pixels = await screen(tools)
-    const x = (DRAG.from[0] + DRAG.to[0]) / 2
+    const x = DRAG.from[0] + (DRAG.to[0] - DRAG.from[0]) / 4
     const edge = Array.from({ length: 13 }, (_, i) => pixels.at(x, DRAG.from[1] - 6 + i)).some(([r, g, b]) => r + g + b < 200)
     const inside = pixels.at(x, (DRAG.from[1] + DRAG.to[1]) / 2)
     return edge && inside.every((value) => value > 240)
