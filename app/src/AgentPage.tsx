@@ -4,10 +4,12 @@ import {
   act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { AgentAccepts } from './AgentAccepts.tsx'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
-// remembers. Anyone on the team can change it.
-export function AgentPage({ agentId }: { agentId: string }) {
+// remembers. Anyone on the team can change it, except which other agents may
+// message it, which its owner decides.
+export function AgentPage({ me, agentId }: { me: Me; agentId: string }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
   const { rows: skills } = useSnapshot<Skill>('skills', {}, 4000)
   const { rows: plugins } = useSnapshot<Plugin>('plugins', {}, 4000)
@@ -40,6 +42,7 @@ export function AgentPage({ agentId }: { agentId: string }) {
       <div className="page-body">
         {notice && <p className="note-line" role="status">{notice}</p>}
         <Profile agent={agent} />
+        <AgentAccepts key={agent.id} me={me} agent={agent} people={people} />
 
         <h2 className="kicker section">Skills</h2>
         <Items rows={own(skills)} empty="No skills yet" render={(s) => <><strong>{s.name}</strong> <span className="muted small">{s.description}</span></>}

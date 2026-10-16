@@ -2,13 +2,16 @@ import { useState } from 'react'
 import {
   act, api, type Ask,
 } from './data.ts'
+import { NewAgentAsk } from './NewAgentAsk.tsx'
+import { CREATE_AGENT_TOOL } from '../../shared/team-agents.ts'
 
 const OPTION_LABELS: Record<string, string> = {
   approve: 'Approve', reject: 'Reject', retry: 'Try again', stop: 'Stop, I will take over',
 }
 
 // Anything waiting on a person. A tool approval offers allow and deny; a
-// pipeline's gate or hand-off offers its own options, with an optional note.
+// pipeline's gate or hand-off offers its own options, with an optional note. An
+// agent asking to make an agent has a card of its own, for its owner.
 export function AskCard({ ask }: { ask: Ask }) {
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
@@ -25,6 +28,7 @@ export function AskCard({ ask }: { ask: Ask }) {
     }
   }
 
+  if (ask.kind === 'tool_approval' && ask.payload.toolName === CREATE_AGENT_TOOL) return <NewAgentAsk ask={ask} />
   if (ask.kind === 'tool_approval') {
     const input = ask.payload.input ?? {}
     const subject = [input.command, input.file_path, input.path].find((v): v is string => typeof v === 'string') ?? ''

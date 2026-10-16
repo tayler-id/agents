@@ -148,6 +148,7 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line); background: var(--bg); }
+.thread-note { padding: 12px 20px 16px; border-top: 1px solid var(--line); }
 .composer textarea:focus { outline: none; border-color: var(--text); }
 .composer textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; min-height: 44px; }
 .composer .error { grid-column: 1 / -1; }
