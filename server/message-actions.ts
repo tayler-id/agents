@@ -93,7 +93,7 @@ export async function deleteMessage(client: pg.PoolClient, person: Person, messa
   const author = post.speaker === 'person' && post.person_id === person.id
   if (!author && person.role !== 'admin') throw new HttpError(403, 'Only the author or a team admin can delete a post.')
   const versions = (await client.query<{ body: string }>('select body from message_versions where message_id = $1', [messageId])).rows.map((r) => r.body)
-  const texts = [post.body, ...versions].filter((t): t is string => t !== null && t !== '')
+  const texts = [post.body, ...versions].filter((t) => t !== '')
   await client.query(`update messages set body = '', deleted_at = now(), deleted_by = $2 where id = $1`, [messageId, person.id])
   await client.query('delete from message_versions where message_id = $1', [messageId])
   await client.query('delete from reactions where message_id = $1', [messageId])
