@@ -130,12 +130,17 @@ const personShapes: Record<string, PersonShape> = {
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
   secrets: async (p) => ({ table: 'secrets', where: 'team_id = $1', params: [p.team_id] }),
-  // A conversation's turns that wait for their machine, or that run and have gone
-  // quiet, for the line it shows. Never the prompt each turn carries.
-  turn_waits: async (p, args) => ({
-    table: 'turns', where: `conversation_id = $1 and (status = 'waiting' or (status = 'running' and stuck_since is not null))`,
-    params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS,
-  }),
+  // A conversation's turns, or a task's, that wait for their machine, or that run
+  // and have gone quiet, for the line it shows. Never the prompt each turn carries.
+  turn_waits: async (p, args) => {
+    const waiting = `(status = 'waiting' or (status = 'running' and stuck_since is not null))`
+    if (args.has('task')) {
+      const task = arg(args, 'task')
+      if (!(await canSeeTask(p, task))) throw new HttpError(404, 'no such task')
+      return { table: 'turns', where: `task_id = $1 and ${waiting}`, params: [task], columns: TURN_WAIT_COLUMNS }
+    }
+    return { table: 'turns', where: `conversation_id = $1 and ${waiting}`, params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS }
+  },
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],

@@ -16,12 +16,12 @@ import { forge, repoPath } from './forge.ts'
 import { recordVersion } from './pipelines.ts'
 import { appendEvents, skillsOf } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
-import { requestTurn } from './scheduler.ts'
+import { requestTurn, signalSession } from './scheduler.ts'
 import { memoryText } from './agents.ts'
 import { nameIn, pickSessions, recordFindings, recordStudyFindings, sentence } from './evidence.ts'
 import { editInstructions, editsOf, insertHunks, planPipelineHunks, proposeHunks, settleHunks, withLine, writePrompt } from './hunks.ts'
 import { FindingId, JudgeReport, Picked, ProposalHunk, SessionReplay, Verdict, type RunScore, type SessionScore } from '../shared/evidence.ts'
-import { AgentId, PipelineId, ProposalId, RunId, type TeamId } from '../shared/ids.ts'
+import { AgentId, PipelineId, ProposalId, RunId, SessionId, type TeamId } from '../shared/ids.ts'
 import type { Pipeline, Report, Stage } from '../shared/pipeline.ts'
 import type { AgentSkill, MessagePayload } from '../shared/types.ts'
 
@@ -296,9 +296,6 @@ async function replayMemory(client: pg.PoolClient, agentId: AgentId, people: str
   return memoryText(profiles.map((p) => ({ scope: 'person', login: p.login, kind: 'profile', log_date: null, content: p.content }))) || undefined
 }
 
-const stopSession = (client: pg.PoolClient, sessionId: string, kind: 'stop' | 'interrupt') => client.query(
-  `insert into commands (team_id, instance_id, session_id, kind) select team_id, instance_id, id, $2 from sessions where id = $1`, [sessionId, kind])
-
 // Starts the proposal's replays on the agent's home machine, as many cases as fit
 // in what the run has left of its cap. Returns how many replays it started. None
 // when the change writes no text, since a check changes nothing a replay could
@@ -329,7 +326,7 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
   await client.query(
     `update session_replays set superseded_at = now(), status = case when status = 'running' then 'failed' else status end
      where proposal_id = $1 and superseded_at is null`, [proposalId])
-  for (const r of running) await stopSession(client, r.session_id, 'stop')
+  for (const r of running) await signalSession(client, SessionId.parse(r.session_id), 'stop')
 
   const edits = editsOf(hunks)
   const added = new Map<string, string[]>()
@@ -402,7 +399,7 @@ export async function startSessionReplays(client: pg.PoolClient, teamId: TeamId,
       permissions: CONVERSATION_PERMISSIONS, text, agentId, harness: agent.harness, model: agent.model, instructions: setup.instructions, harnessSessionId: null,
       workspaceId: workspace.id, skills: setup.skills, plugins: [], memory: await replayMemory(client, agentId, people, setup.added), maxBudgetUsd: REPLAY_BUDGET_USD,
     }
-    await requestTurn(client, { source: 'pipeline', teamId, agentId, runId }, { sessionId: session.id, seq, payload })
+    await requestTurn(client, { source: 'pipeline', teamId, agentId, runId }, { sessionId: SessionId.parse(session.id), seq, payload })
   }
   return runs.length
 }
@@ -425,8 +422,8 @@ export async function advanceSessionReplays(client: pg.PoolClient, proposalId: P
     if (!done && !r.failed && !r.ended && !r.late) continue
     await client.query(`update session_replays set status = $2, reply = $3, replied_at = now() where id = $1`,
       [r.id, done ? 'replied' : 'failed', done ? r.reply : null])
-    if (r.late) await stopSession(client, r.session_id, 'interrupt')
-    await stopSession(client, r.session_id, 'stop')
+    if (r.late) await signalSession(client, SessionId.parse(r.session_id), 'interrupt')
+    await signalSession(client, SessionId.parse(r.session_id), 'stop')
     left--
   }
   return left
@@ -438,7 +435,7 @@ export async function stopSessionReplays(client: pg.PoolClient, runId: string) {
     `update session_replays set status = 'failed' where status = 'running' and superseded_at is null
        and proposal_id in (select id from proposals where run_id = $1)
      returning id, session_id`, [runId])
-  for (const r of running) await stopSession(client, r.session_id, 'stop')
+  for (const r of running) await signalSession(client, SessionId.parse(r.session_id), 'stop')
 }
 
 // A proposal's live replays, with what the judge reads about each case.

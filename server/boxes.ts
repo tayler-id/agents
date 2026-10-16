@@ -287,6 +287,22 @@ export async function releaseBox(client: pg.Pool | pg.PoolClient, runId: string)
 
 const IdleBox = z.object({ id: InstanceId, personal: z.boolean() })
 
+// Marks a person's own box asleep unless something wants it, and says whether it
+// did. A turn placed on the box reads its row with a key share lock, so this waits
+// for each such request to commit, and its second statement then sees the command
+// that request wrote and leaves the box awake. A request that arrives while this
+// holds the row waits for the mark, and then reads the box as asleep. Without the
+// lock the statement reads a snapshot that cannot see a command still being
+// written, and the box is stopped with a turn on its way to it.
+export async function markAsleep(boxId: InstanceId): Promise<boolean> {
+  return tx(async (client) => {
+    await client.query('select 1 from instances where id = $1 for update', [boxId])
+    const marked = await maybe(client,
+      `update instances i set stopped_at = coalesce(stopped_at, now()) where id = $2 and not ${WANTED} returning id`, [OPEN_LOGINS, boxId])
+    return marked !== undefined
+  })
+}
+
 // Stops boxes with nothing to do. A box nobody holds stops once it has been idle
 // for AGENTS_BOX_IDLE_MIN. A person's own box stops once that long has passed
 // since it was made or woken and since its last turn ended. It is marked asleep
@@ -306,9 +322,7 @@ export async function stopIdleBoxes(teamIds: string[] | null) {
   const states = rows.some((box) => box.personal) ? await boxStates() : new Map<string, ContainerState>()
   for (const box of rows) {
     if (box.personal) {
-      const asleep = await maybe(pool,
-        `update instances i set stopped_at = coalesce(stopped_at, now()) where id = $2 and not ${WANTED} returning id`, [OPEN_LOGINS, box.id])
-      if (!asleep || states.get(box.id) !== 'running') continue
+      if (!(await markAsleep(box.id)) || states.get(box.id) !== 'running') continue
     }
     await docker(['stop', boxContainer(box.id)]).catch((error: unknown) => { console.error(`stopping box ${box.id}:`, messageOf(error)) })
   }

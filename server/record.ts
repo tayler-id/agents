@@ -7,17 +7,17 @@ import { basename } from 'node:path'
 import type pg from 'pg'
 import { z } from 'zod'
 import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
-import type { BlobId } from '../shared/ids.ts'
+import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
 import { memoryBlock } from './agents.ts'
-import { finishTurn, PASS, queueTurns } from './rooms.ts'
+import { finishTurn, nextTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
-import { requestTurn } from './scheduler.ts'
+import { requestTurn, signalSession } from './scheduler.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -208,16 +208,28 @@ export async function answerAsk(
   })
 }
 
-// Asks the session's machine to stop the current turn.
+// Asks the session's machine to stop the current turn, and cancels any turn of the
+// session that is still waiting for its machine. A room goes on to its next turn.
 export async function interruptSession(client: pg.PoolClient, sessionId: string) {
-  const session = await maybe<{ team_id: string; instance_id: string; folder_id: string | null }>(client,
-    'select team_id, instance_id, folder_id from sessions where id = $1', [sessionId])
+  const session = await maybe<{ conversation_id: string | null; folder_id: string | null }>(client,
+    'select conversation_id, folder_id from sessions where id = $1', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
   // The daemon reads a terminal session. It doesn't run it, so it can't stop it.
   if (session.folder_id !== null) throw new HttpError(409, 'A terminal session is stopped from its terminal, not from the app.')
-  await client.query(
-    `insert into commands (team_id, instance_id, session_id, kind) values ($1, $2, $3, 'interrupt')`,
-    [session.team_id, session.instance_id, sessionId])
+  await signalSession(client, SessionId.parse(sessionId), 'interrupt')
+  if (session.conversation_id && await maybe(client, `select 1 from conversations where id = $1 and kind = 'room'`, [session.conversation_id])) {
+    await nextTurn(client, session.conversation_id)
+  }
+}
+
+// Tells a person their message was not sent, when the turn that carried it can
+// never be placed. The session fails with the reason, as it does when its machine
+// cannot hand it a message, and a room's line moves on to the next agent.
+export async function reportUnplaceableTurn(client: pg.PoolClient, turn: { turnId: string; sessionId: string; reason: string }) {
+  await appendEvents(client, turn.sessionId, {
+    events: [{ clientId: `turn:${turn.turnId}:unplaceable`, kind: 'error', text: turn.reason, body: { turnId: turn.turnId, reason: turn.reason } }],
+    status: 'failed',
+  })
 }
 
 // In a terminal session only what the person writes carries their author, so its
@@ -365,8 +377,9 @@ export async function sendPersonMessage(
     permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await requestTurn(client, { source: 'person', teamId: person.team_id, agentId: agent.id, askedBy: person.id, conversationId },
-    { sessionId: session.id, seq, payload })
+  await requestTurn(client, {
+    source: 'person', teamId: person.team_id, agentId: AgentId.parse(agent.id), askedBy: person.id, conversationId: ConversationId.parse(conversationId),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
   return { messageId: message.id, seq: message.seq }
 }
 

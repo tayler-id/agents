@@ -7,6 +7,7 @@ import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, HttpError, scrub, type Person } from './record.ts'
 import { CONVERSATION_PERMISSIONS, WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { requestTurn } from './scheduler.ts'
+import { AgentId, SessionId, TaskId, TeamId } from '../shared/ids.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 // It runs once the workspace is set up, since the machine handles a session's commands in order.
@@ -39,6 +40,7 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
     text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: session.workspace_id ?? undefined, ...(await agentKit(client, agent.id, [person.id])),
   }
-  await requestTurn(client, { source: 'person', teamId: session.team_id, agentId: agent.id, askedBy: person.id, taskId: session.task_id },
-    { sessionId: session.id, seq, payload })
+  await requestTurn(client, {
+    source: 'person', teamId: TeamId.parse(session.team_id), agentId: AgentId.parse(agent.id), askedBy: person.id, taskId: TaskId.parse(session.task_id),
+  }, { sessionId: SessionId.parse(session.id), seq, payload })
 }
