@@ -144,18 +144,27 @@ async function watchable(person: Person, instanceId: string, n: SeatNumber): Pro
 }
 
 // A notice in each session working on the seat, and in the one the person was
-// looking at, so the record shows who had the screen and when.
-async function noteSessions(client: pg.PoolClient, screen: Screen, sessionId: SessionId | null, takeoverId: ScreenTakeoverId,
+// looking at, so the record shows who had the screen and when. The sessions come
+// from `lockSessions`, which locks them before the seat, as a turn's placement does.
+async function noteSessions(client: pg.PoolClient, sessions: SessionId[], takeoverId: ScreenTakeoverId,
   action: HandoffEvent['kind'], text: string, author: string | null) {
-  const sessions = await many(client,
-    `select id from sessions where instance_id = $1 and archived_at is null
-       and ((status = any($2) and (seat_id = $4 or (seat_id is null and $5::int = $6::int))) or id = $3)`,
-    [screen.instanceId, WORKING, sessionId, screen.seatId, screen.n, FIRST_SEAT])
   for (const session of sessions) {
-    await appendEvents(client, SessionId.parse(session.id), {
+    await appendEvents(client, session, {
       events: [{ clientId: `screen:${takeoverId}:${action}`, kind: 'notice', text, body: { subtype: 'screen', action, takeoverId } }],
     }, author)
   }
+}
+
+// The sessions working on a seat, and the one the person was looking at, locked in
+// id order. A turn's placement locks its session and then the computer's seats, so
+// a change to a seat's screen must lock sessions before the seat or the two deadlock.
+async function lockSessions(client: pg.PoolClient, screen: Screen, sessionId: SessionId | null): Promise<SessionId[]> {
+  const rows = await many(client,
+    `select id from sessions where instance_id = $1 and archived_at is null
+       and ((status = any($2) and (seat_id = $4 or (seat_id is null and $5::int = $6::int))) or id = $3)
+     order by id for update`,
+    [screen.instanceId, WORKING, sessionId, screen.seatId, screen.n, FIRST_SEAT])
+  return rows.map((row) => SessionId.parse(row.id))
 }
 
 // The notice in the record when a person's hold on a screen ends.
@@ -174,6 +183,8 @@ function endNotice(event: HandoffEvent, login: string): string {
 // takeover row it opens or closes, then tells the box and the viewers.
 async function move(screen: Screen, event: HandoffEvent, person: { id: PersonId; login: string }, sessionId: SessionId | null): Promise<ScreenControl> {
   const control = await tx(async (client) => {
+    // Sessions first, then the seat, the order a turn's placement takes them in.
+    const sessions = await lockSessions(client, screen, sessionId)
     // One change to a seat's screen at a time.
     await client.query('select 1 from seats where id = $1 for update', [screen.seatId])
     const step = handoff(await readControl(client, screen.seatId), event)
@@ -186,7 +197,7 @@ async function move(screen: Screen, event: HandoffEvent, person: { id: PersonId;
           `insert into screen_takeovers (team_id, instance_id, seat_id, person_id, session_id, started_at)
            select team_id, instance_id, id, $2, $3, $4 from seats where id = $1 returning id`,
           [screen.seatId, person.id, sessionId, step.control.since])
-        await noteSessions(client, screen, sessionId, ScreenTakeoverId.parse(row.id), 'take', `${person.login} took over the screen`, person.id)
+        await noteSessions(client, sessions, ScreenTakeoverId.parse(row.id), 'take', `${person.login} took over the screen`, person.id)
         break
       }
       case 'handed_back':
@@ -194,7 +205,7 @@ async function move(screen: Screen, event: HandoffEvent, person: { id: PersonId;
         const row = await one(client, 'the open takeover',
           `update screen_takeovers set ended_at = now(), ended_by = $2 where seat_id = $1 and ended_at is null returning id`,
           [screen.seatId, step.change])
-        await noteSessions(client, screen, sessionId, ScreenTakeoverId.parse(row.id), event.kind, endNotice(event, person.login),
+        await noteSessions(client, sessions, ScreenTakeoverId.parse(row.id), event.kind, endNotice(event, person.login),
           step.change === 'handed_back' ? person.id : null)
         break
       }
