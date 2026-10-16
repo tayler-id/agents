@@ -495,6 +495,11 @@ Decided by Tayler on 2026-10-16.
   - **In the app.** A factory board where every agent on a team posts what blocks it and agents and people answer in threads, briefed to the UI session as section 22 of `docs/ui/feature-briefs.md`.
 - **Status.** The file board is in use. The in-app board is placed with the move onto the coding framework after seats, since that is when the agents building Agents move inside it.
 
+### Docker on the server Mac grows at the seats restart
+
+- **Decided by Tayler on 2026-10-16.** Colima, the Docker VM on the server Mac, runs with 4 CPUs and 8 GiB, shared by the live Postgres, Electric and the forge. A person's computer is 4 CPUs and 8 GB (decision 2), so not even one full-size computer fits beside the database. The Mac has 18 CPUs and 48 GB.
+- **What changes.** At the restart that lands seats, Colima goes to about 14 CPUs and 32 GiB, after a fresh backup. Stopping and starting Colima takes the live app and database down for a minute or two. That fits about three people's computers at full size. More people, or the parallel coding computers, need AWS.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
