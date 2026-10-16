@@ -1,7 +1,7 @@
 import { useCallback, useId, useState } from 'react'
 import { z } from 'zod'
 import {
-  AppConnected, AppRefusal, FolderAnswer, FolderRow, holdsHome, insideFolder, MacFolders, type FolderVisibility, type MacFolder,
+  AppAskFirst, AppConnected, AppRefusal, decidingFolder, FolderRow, holdsHome, insideFolder, MacFolders, OffAnswer, type FolderVisibility, type MacFolder,
 } from '../../shared/terminal.ts'
 import { act, day, messageOf, usePolled, useSnapshot, useSnapshotOf, type Instance, type Me } from './data.ts'
 
@@ -9,7 +9,7 @@ import { act, day, messageOf, usePolled, useSnapshot, useSnapshotOf, type Instan
 // Every answer is outside data, read through its schema.
 type MacBridge = {
   list: () => Promise<unknown>
-  connect: (path: string, visibility: FolderVisibility) => Promise<unknown>
+  connect: (path: string, visibility: FolderVisibility, confirmed?: number) => Promise<unknown>
   disconnect: (path: string) => Promise<unknown>
 }
 declare global {
@@ -26,10 +26,9 @@ const LIST_EVERY_MS = 10_000
 // How often the record's connected folders are read again.
 const CONNECTED_EVERY_MS = 10_000
 
-// Off disconnects a folder, and the other two connect it with who sees its sessions.
+// Off keeps a folder's sessions on this Mac, and the other two connect it with who sees its sessions.
 type Choice = 'off' | FolderVisibility
 const CHOICES: { choice: Choice; label: string }[] = [{ choice: 'off', label: 'Off' }, { choice: 'team', label: 'Team' }, { choice: 'private', label: 'Just me' }]
-const chosen = (row: MacFolder): Choice => (row.folder === null ? 'off' : row.folder.visibility)
 
 // One ask of this Mac's daemon. A refusal or a failure throws with the daemon's words.
 async function asked<S extends z.ZodType>(schema: S, answer: Promise<unknown>): Promise<z.output<S>> {
@@ -38,23 +37,60 @@ async function asked<S extends z.ZodType>(schema: S, answer: Promise<unknown>): 
   return schema.parse(body)
 }
 
+// A connect's answer. Team that would show the team sessions in the record they can't see now comes back as their
+// count, for the row to ask about.
+async function connectAnswer(answer: Promise<unknown>): Promise<AppConnected | AppAskFirst> {
+  const { status, body } = BridgeAnswer.parse(await answer)
+  if (status === 200) return AppConnected.parse(body)
+  const askFirst = AppAskFirst.safeParse(body)
+  if (status === 409 && askFirst.success) return askFirst.data
+  throw new Error(AppRefusal.parse(body).error)
+}
+
 const nameOf = (path: string) => path.split('/').pop() ?? path
 const shortPath = (path: string, home: string) => (insideFolder(home, path) ? `~${path.slice(home.length)}` : path)
 const whoSees = (visibility: FolderVisibility) => (visibility === 'team' ? 'the team sees' : 'only you see')
 const sessions = (n: number) => `${n} session${n === 1 ? '' : 's'}`
 
-// What the page says after a folder was connected or changed.
-function connectedText(name: string, before: Choice, done: AppConnected): string {
+// What the page says after a folder was connected or changed. A folder whose sessions landed through another one
+// wasn't connected itself, and connecting it changes nothing about the ones already in the record.
+function connectedText(name: string, wasConnected: boolean, done: AppConnected): string {
   const text = done.already ? `${name} was already connected, and ${whoSees(done.folder.visibility)} its sessions.`
-    : before === 'off' ? `Connected ${name}. Claude Code sessions you start in it from now on land in the record, and ${whoSees(done.folder.visibility)} them.`
+    : !wasConnected ? `Connected ${name}. Claude Code sessions you start in it from now on land in the record, and ${whoSees(done.folder.visibility)} them.`
         + (done.exposed ? ` The team also sees the ${sessions(done.exposed)} already in the record from it.` : '')
       : done.folder.visibility === 'team' ? `The team sees ${name}'s sessions now${done.exposed ? `, and the ${sessions(done.exposed)} already in the record from it` : ''}.`
         : `Only you see ${name}'s sessions now, the ones already in the record too.`
   return [text, ...done.warnings.map((warning) => `Warning: ${warning}`)].join(' ')
 }
 
-const disconnectedText = (name: string, done: FolderAnswer) => (done.already ? `${name} was already disconnected.`
-  : `Disconnected ${name}. Sessions you start in it from now on stay on this Mac, and the ones already in the record stay there.`)
+// What the page says after Off.
+function offText(name: string, done: OffAnswer): string {
+  if (done.already) return `${name} was already off.`
+  const inside = done.inside ? `, though it is inside ${nameOf(done.inside.path)}, which ${whoSees(done.inside.visibility)}` : ''
+  return `${done.folder ? `Disconnected ${name}.` : `${name} is off.`} Sessions you start in it from now on stay on this Mac${inside}. The ones already in the record stay there.`
+}
+
+// What a folder's control shows before any change: the choice that decides where
+// its sessions go, its own or that of the connected folder they land through, and
+// a note when that choice isn't its own, or when Off keeps them here though a
+// connected folder holds it.
+function shownFor(row: MacFolder, connected: FolderRow[], kept: string[], home: string): { current: Choice; note: string | null } {
+  const deciding = decidingFolder(row.path, connected, kept, home)
+  if (deciding === null) return { current: 'off', note: null }
+  if (!deciding.kept) {
+    const { folder } = deciding
+    return { current: folder.visibility, note: folder.path === row.path ? null : `Its sessions land through ${nameOf(folder.path)}, which ${whoSees(folder.visibility)}.` }
+  }
+  // The connected folder it is in, whose sessions it would land with but for Off.
+  const above = decidingFolder(row.path, connected.filter((c) => c.path !== row.path), [], home)
+  if (above?.kept !== false) return { current: 'off', note: null }
+  return {
+    current: 'off',
+    note: deciding.path === row.path
+      ? `Its sessions stay on this Mac, though it is inside ${nameOf(above.folder.path)}, which ${whoSees(above.folder.visibility)}.`
+      : `Its sessions stay on this Mac, since ${nameOf(deciding.path)} is off.`,
+  }
+}
 
 // Where a person connects the folders whose Claude Code sessions land in the record.
 // In the desktop app it lists this Mac's folders, each with its control. In a
@@ -67,7 +103,8 @@ export function FoldersPage({ me }: { me: Me }) {
           <p className="kicker">Terminal sessions</p>
           <h1>Terminal folders</h1>
           <p className="muted small">
-            Claude Code sessions you start in a connected folder land in the team's record. Team shows them to everyone on the team, and Just me keeps them to you.
+            Claude Code sessions you start in a connected folder land in the team's record. Team shows them to everyone on the team, Just me keeps them
+            to you, and Off keeps them on this Mac, even in a folder inside a connected one.
           </p>
         </div>
       </header>
@@ -90,28 +127,23 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const [said, setSaid] = useState<Said | null>(null)
   const [asking, setAsking] = useState<Asking | null>(null)
 
-  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team asks first
-  // whenever it would show the team sessions in the record they can't see now, counted afresh, unless the person
-  // just said yes to that.
-  const choose = act(async (row: MacFolder, choice: Choice, confirmed: boolean) => {
-    const before = chosen(row)
+  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team that would
+  // show the team sessions in the record they can't see now comes back from the daemon with their count, and the row
+  // asks. Yes sends that count back, and the daemon takes Team only when it still finds that many.
+  const choose = act(async (row: MacFolder, before: Choice, choice: Choice, confirmed?: number) => {
     if (choice === before) return
     const name = nameOf(row.path)
     setBusy(row.path)
     setSaid(null)
     setAsking(null)
     try {
-      if (choice === 'team' && !confirmed) {
-        const now = (await asked(MacFolders, bridge.list())).folders.find((r) => r.path === row.path)
-        if (now && now.hiddenSessions > 0) {
-          setAsking({ path: row.path, sessions: now.hiddenSessions })
-          return
-        }
+      if (choice === 'off') {
+        setSaid({ path: row.path, text: offText(name, await asked(OffAnswer, bridge.disconnect(row.path))), failed: false })
+        return
       }
-      const text = choice === 'off'
-        ? disconnectedText(name, await asked(FolderAnswer, bridge.disconnect(row.path)))
-        : connectedText(name, before, await asked(AppConnected, bridge.connect(row.path, choice)))
-      setSaid({ path: row.path, text, failed: false })
+      const done = await connectAnswer(bridge.connect(row.path, choice, confirmed))
+      if ('hiddenSessions' in done) setAsking({ path: row.path, sessions: done.hiddenSessions })
+      else setSaid({ path: row.path, text: connectedText(name, row.folder !== null, done), failed: false })
     } catch (e) {
       setSaid({ path: row.path, text: messageOf(e), failed: true })
     } finally {
@@ -130,11 +162,16 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
     setSaid({ path: row.path, text: `Nothing changed. Only you see ${nameOf(row.path)}'s sessions.`, failed: false })
   }
   const connected = value.folders.flatMap((row) => (row.folder ? [row.folder] : []))
-  const item = (row: MacFolder) => (
-    <FolderItem key={row.path} row={row} home={value.home} connected={connected} busy={busy !== null} working={busy === row.path}
-      said={said?.path === row.path ? said : null} asking={asking?.path === row.path && chosen(row) !== 'team' ? asking.sessions : null}
-      onChoose={(choice) => { choose(row, choice, false) }} onConfirm={() => { choose(row, 'team', true) }} onKeep={() => { keep(row) }} />
-  )
+  const kept = value.folders.flatMap((row) => (row.kept ? [row.path] : []))
+  const item = (row: MacFolder) => {
+    const { current, note } = shownFor(row, connected, kept, value.home)
+    return (
+      <FolderItem key={row.path} row={row} home={value.home} current={current} note={note} busy={busy !== null} working={busy === row.path}
+        said={said?.path === row.path ? said : null} asking={asking?.path === row.path && current !== 'team' ? asking.sessions : null}
+        onChoose={(choice) => { choose(row, current, choice) }}
+        onConfirm={() => { choose(row, current, 'team', asking?.path === row.path ? asking.sessions : undefined) }} onKeep={() => { keep(row) }} />
+    )
+  }
   const recent = value.folders.filter((row) => !row.temporary)
   const temporary = value.folders.filter((row) => row.temporary)
   return (
@@ -144,6 +181,7 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
       {error && <p className="error small" role="alert">The list may be out of date. {error}</p>}
       {recent.length > 0 && <ul className="folder-list" aria-label="Folders on this Mac">{recent.map(item)}</ul>}
       {!recent.length && <p className="muted">Claude Code hasn't run on this Mac yet. Start a session in a project folder, and the folder shows here.</p>}
+      {value.unlisted.map((left) => <p key={left.path} className="muted small">{left.path} isn't listed, since {left.why}.</p>)}
       {temporary.length > 0 && (
         <details className="temporary">
           <summary>Temporary folders, {temporary.length}</summary>
@@ -156,18 +194,13 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   )
 }
 
-function FolderItem({ row, home, connected, busy, working, said, asking, onChoose, onConfirm, onKeep }: {
-  row: MacFolder; home: string; connected: FolderRow[]; busy: boolean; working: boolean; said: Said | null
+function FolderItem({ row, home, current, note, busy, working, said, asking, onChoose, onConfirm, onKeep }: {
+  row: MacFolder; home: string; current: Choice; note: string | null; busy: boolean; working: boolean; said: Said | null
   asking: number | null; onChoose: (choice: Choice) => void; onConfirm: () => void; onKeep: () => void
 }) {
   const questionId = useId()
   const name = nameOf(row.path)
-  const current = chosen(row)
   const isHome = holdsHome(row.path, home)
-  // The deepest connected folder this one is inside, whose sessions this one's land with. The home folder's never land.
-  const through = row.folder === null
-    ? connected.filter((c) => c.path !== row.path && insideFolder(c.path, row.path) && !holdsHome(c.path, home)).sort((a, b) => b.path.length - a.path.length)[0]
-    : undefined
   return (
     <li aria-busy={working}>
       <div className="folder-place">
@@ -187,7 +220,7 @@ function FolderItem({ row, home, connected, busy, working, said, asking, onChoos
           {row.path === home ? 'Your home folder holds every project you have' : 'It holds your home folder, and with it every project you have'}, so it can't be connected. Connect a project inside it.
         </p>
       )}
-      {through && <p className="folder-note muted small">Its sessions land through {nameOf(through.path)}, which {whoSees(through.visibility)}.</p>}
+      {note && <p className="folder-note muted small">{note}</p>}
       {asking !== null && (
         <div className="folder-note confirm" role="group" aria-labelledby={questionId}>
           <span className="small" id={questionId}>Show the team the {sessions(asking)} already in the record from {name}?</span>
