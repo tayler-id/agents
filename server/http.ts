@@ -4,6 +4,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { z } from 'zod'
 import { HttpError } from './record.ts'
+import { readBody as readWhole } from '../shared/body.ts'
 import { MAX_BODY_BYTES } from '../shared/types.ts'
 
 // People reach the API only through tailscale serve, on a Unix socket. Machines,
@@ -17,16 +18,7 @@ export type Params = readonly [string, string, string]
 export type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown>
 export type Route = [Audience, string, RegExp, Handler]
 
-export async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'body too large')
-    chunks.push(chunk)
-  }
-  return Buffer.concat(chunks)
-}
+export const readBody = (req: IncomingMessage): Promise<Buffer> => readWhole(req, MAX_BODY_BYTES, () => new HttpError(413, 'body too large'))
 
 export async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const body = await readBody(req)

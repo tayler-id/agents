@@ -7,12 +7,14 @@
 // connected go to the app on this Mac and nowhere else. desktop/main.cjs is
 // its client, and docs/design/local-sessions.md the design.
 
-import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { z } from 'zod'
+import { readBody } from '../shared/body.ts'
 import { messageOf } from '../shared/errors.ts'
+import { listenOnSocket } from '../shared/socket.ts'
 import {
   AppConnect, DisconnectFolder, insideFolder, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder, type MacFolders,
 } from '../shared/terminal.ts'
@@ -24,8 +26,8 @@ import { claudeFolders } from './transcripts.ts'
 export const appSocketPath = (home: string) => join(home, 'run', 'app.sock')
 // macOS cuts a socket's path at this many bytes, so the app would look for it where it isn't.
 const LONGEST_SOCKET_PATH = 103
-// The app sends a folder's path and one word, so a body larger than this is a mistake.
-const MAX_BODY_BYTES = 64 * 1024
+// The app sends a folder's path and one word, so an ask larger than this is a mistake.
+const LARGEST_ASK_BYTES = 64 * 1024
 
 // The system's temporary folders, where tools and checks start Claude Code by
 // the hundred, so the app sets them apart. /var/folders holds each macOS user's own.
@@ -45,31 +47,21 @@ class BadAsk extends Error {
 // reported, and the rest of the daemon goes on without it.
 export function serveAppSocket({ home, api, signal }: { home: string; api: Api; signal: AbortSignal }): void {
   const socket = appSocketPath(home)
-  const unserved = (why: string) => { console.error(`app socket ${socket}: ${why}. The Agents app on this Mac can't reach the daemon.`) }
-  try {
-    if (Buffer.byteLength(socket) > LONGEST_SOCKET_PATH) throw new Error(`its path is longer than the ${LONGEST_SOCKET_PATH} bytes macOS allows`)
-    mkdirSync(dirname(socket), { recursive: true, mode: 0o700 })
-    // A folder made before with another mode gets this one. One that isn't this user's can't be changed, and stops it here.
-    chmodSync(dirname(socket), 0o700)
-    // A socket left by a daemon that stopped without closing it.
-    rmSync(socket, { force: true })
-  } catch (error) {
-    unserved(messageOf(error))
+  const unserved = (why: string) => { console.error(`app socket ${socket}: ${why}. The Agents app on this Mac can't reach this daemon.`) }
+  if (Buffer.byteLength(socket) > LONGEST_SOCKET_PATH) {
+    unserved(`its path is longer than the ${LONGEST_SOCKET_PATH} bytes macOS allows`)
     return
   }
   const server = createServer((req, res) => {
     answer(req, res).catch((error: unknown) => { console.error(`app socket: answering ${req.method ?? ''} ${req.url ?? ''}: ${messageOf(error)}`) })
   })
-  server.on('error', (error) => { unserved(error.message) })
-  server.listen(socket, () => {
-    try {
-      chmodSync(socket, 0o600)
-      console.log(`app socket at ${socket}`)
-    } catch (error) {
-      unserved(messageOf(error))
-      server.close()
-    }
-  })
+  // A socket a crashed daemon left is replaced. One another daemon on this home still serves is left alone, and this
+  // daemon serves none, so a second daemon can't take the app from the first.
+  listenOnSocket(server, socket).then(() => {
+    server.on('error', (error) => { unserved(error.message) })
+    if (signal.aborted) server.close()
+    else console.log(`app socket at ${socket}`)
+  }, (error: unknown) => { unserved(messageOf(error)) })
   signal.addEventListener('abort', () => { server.close() }, { once: true })
 
   async function answer(req: IncomingMessage, res: ServerResponse) {
@@ -126,23 +118,11 @@ function refusal(error: unknown): [number, AppRefusal] {
   return [500, { error: messageOf(error) }]
 }
 
-function readJson(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    // Past the limit the rest is read and dropped, so the answer still reaches the app.
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > MAX_BODY_BYTES) reject(new BadAsk(413, `an ask of the daemon is at most ${MAX_BODY_BYTES} bytes`))
-      else chunks.push(chunk)
-    })
-    req.on('end', () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-      } catch (error) {
-        reject(new BadAsk(400, `the ask is not JSON: ${messageOf(error)}`))
-      }
-    })
-    req.on('error', reject)
-  })
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const body = await readBody(req, LARGEST_ASK_BYTES, () => new BadAsk(413, `an ask of the daemon is at most ${LARGEST_ASK_BYTES} bytes`))
+  try {
+    return JSON.parse(body.toString('utf8'))
+  } catch (error) {
+    throw new BadAsk(400, `the ask is not JSON: ${messageOf(error)}`)
+  }
 }
