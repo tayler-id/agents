@@ -19,7 +19,7 @@ import { sameInput } from './durability.ts'
 import { AgentId, ConversationId, SessionId, TaskId, TeamId, TurnId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import {
-  AcceptsAgents, CREATE_AGENT_TOOL, MAX_HOPS, NewAgentAsk,
+  AcceptsAgents, CREATE_AGENT_TOOL, MAX_HOPS, MAX_SENDS_PER_TURN, NewAgentAsk,
   type AgentMade, type DelegateTask, type MessageSent, type Reported, type ReportBack, type SendToAgent, type TaskHanded, type TeamAgents,
 } from '../shared/team-agents.ts'
 
@@ -106,6 +106,19 @@ async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin:
   return hops
 }
 
+// Refuses the send or hand-off that would be a turn's 6th. Messages the turn sent
+// are the turns that answer to it, and tasks it handed over name it as theirs. Two
+// sends at once wait for each other on the turn's lock, so neither slips past.
+async function checkFanout(client: pg.PoolClient, turn: { id: TurnId }) {
+  await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [turn.id])
+  const sent = await one<{ n: number }>(client, 'the count of what the turn sent',
+    `select ((select count(*) from turns where answer_to_turn = $1 and source = 'agent')
+          + (select count(*) from tasks where asked_by_turn = $1))::int as n`, [turn.id])
+  if (sent.n >= MAX_SENDS_PER_TURN) {
+    throw new HttpError(409, `This turn has sent ${MAX_SENDS_PER_TURN} messages and tasks already, and one turn sends at most ${MAX_SENDS_PER_TURN}, so nothing was sent. Answer with what you have.`)
+  }
+}
+
 // The agent a message or a task goes to, when it may.
 async function reachable(client: pg.PoolClient, caller: Caller, name: string): Promise<Target & { home_instance_id: InstanceId }> {
   const found = await maybe(client, `${TARGET} and a.name = $2`, [caller.team_id, name])
@@ -145,6 +158,7 @@ async function threadOf(client: pg.PoolClient, teamId: TeamId, a: AgentId, b: Ag
 export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent> {
   const turn = await sendingTurn(client, caller)
   const hops = await nextHop(caller, turn)
+  await checkFanout(client, turn)
   const target = await reachable(client, caller, ask.to)
   const threadId = await threadOf(client, caller.team_id, caller.agent_id, target.id)
   const message = await appendMessage(client, threadId, {
@@ -165,6 +179,7 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
 export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded> {
   const turn = await sendingTurn(client, caller)
   const hops = await nextHop(caller, turn)
+  await checkFanout(client, turn)
   const target = await reachable(client, caller, ask.to)
   const task = z.object({ id: TaskId }).parse(await one(client, 'the handed-over task',
     `insert into tasks (team_id, slug, title, instructions, owner_id, agent_id, source, asked_by_turn)

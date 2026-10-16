@@ -45,6 +45,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'server/agent-turns.ts', anchor: '  if (waiting.hops !== 0 || waiting.conversationId === null) return\n', replace: '  return\n' }] },
   { name: 'origin-last-hop', check: 'step28', why: "a chain's start is taken to be the conversation of its latest turn, so a stop note lands in an agents thread, even for a chain that started in a task", red: ['the DM where the relay started shows one note', 'no thread between agents got a stop note', 'posted no answer and no stop note anywhere'],
     edits: [{ file: 'server/agent-turns.ts', anchor: 'export const CHAIN_ORIGIN = `coalesce(origin_conversation_id, case when hops = 0 then conversation_id end)`', replace: 'export const CHAIN_ORIGIN = `conversation_id`' }] },
+  { name: 'fan-out', check: 'step28', why: 'one turn starts any number of chains', red: ['a turn that tries 6 sends gets 5 through and the 6th refused'],
+    edits: [{ file: TEAM_AGENTS, anchor: '  if (sent.n >= MAX_SENDS_PER_TURN) {', replace: '  if (false) {' }] },
   { name: 'room', check: 'step28', why: "an agent in a room messages other agents, and the answer comes back outside the room's turns", red: ['an agent in a room is told it cannot message other agents yet'],
     edits: [{ file: TEAM_AGENTS, anchor: "  if (caller.conversation_kind === 'room') throw new HttpError(409, 'Agents in a room cannot message other agents yet. Say what you need in the room instead.')\n", replace: '' }] },
   // Answers and results going back.

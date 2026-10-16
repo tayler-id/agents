@@ -13,6 +13,11 @@ import { TaskFields, TEXT_MAX } from './work.ts'
 // task from a turn is one hop more than that turn.
 export const MAX_HOPS = 4
 
+// One turn sends at most this many messages and handed-over tasks together, Tayler's
+// call on 2026-10-16, until budgets land. Each one starts a chain on its owner's
+// account, so depth alone does not bound what a turn can start.
+export const MAX_SENDS_PER_TURN = 5
+
 // The MCP server each session but a pipeline stage's gets, beside team-record.
 export const TEAM_AGENTS_SERVER = 'team-agents'
 const tool = (name: string) => `mcp__${TEAM_AGENTS_SERVER}__${name}`

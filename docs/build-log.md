@@ -1164,4 +1164,5 @@ A reviewer on another model read the branch at 40acec7. The coordinator asked me
   - The stop note is written on its own connection before the 409, since the request's transaction rolls back. Its client id is the refused turn's, so the same turn asking again writes one note.
   - The result of a handed task posts when the agent reports back, and when a person marks the task done, with the agent's last words.
 - **Seen failing.** Three breaks were added to `test/step28-breaks.ts`: the stop note, the answer post, and a chain's start taken from its latest turn. Their runs wait on the checks lock.
+- **Fan-out cap.** Tayler decided on a hard cap of 5 messages and tasks per turn until budgets land. The 6th is refused with a 409 that gives the limit and says to answer with what the agent has. Counted from the turns answering to the sending turn and the tasks it handed over, under a per-turn lock. The `fan-out` break covers it.
 - **Not done.** step28, step28b and the agents-git runs have not run since this change. `app/` is untouched, so `Message` in `app/src/data.ts` does not list the two new columns yet.

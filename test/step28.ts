@@ -22,7 +22,7 @@ import { stopAll } from './computers.ts'
 import { stopStandIns } from './stand-ins.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
-import { CREATE_AGENT_TOOL, MAX_HOPS } from '../shared/team-agents.ts'
+import { CREATE_AGENT_TOOL, MAX_HOPS, MAX_SENDS_PER_TURN } from '../shared/team-agents.ts'
 
 const PORTS = { machines: 8310, people: 8311, streams: 8312 }
 const API = `http://127.0.0.1:${PORTS.machines}`
@@ -63,6 +63,7 @@ const SCENARIO = {
     }] },
     { match: 'Make a second helper', say: 'Asked to make helper2.', calls: [{ tool: CREATE_AGENT_TOOL, input: { name: 'helper2' } }] },
     { match: 'Who is on the team', say: 'Listed them.', calls: [{ tool: 'mcp__team-agents__list_agents', input: {} }] },
+    { match: 'Fan out to writer', say: 'Sent them all.', calls: Array.from({ length: 6 }, (_, i) => send('writer', `Fan-out note ${i + 1}.`)) },
     { match: 'Ask critic for a review', say: 'Asked critic.', calls: [send('critic', 'Please review the launch note.')] },
     { match: 'Ask critic again for a review', say: 'Asked critic again.', calls: [send('critic', 'Please review the launch note.')] },
     { match: 'Ask writer from the room', say: 'Tried writer.', calls: [send('writer', 'Hello from the room.')] },
@@ -354,6 +355,23 @@ try {
   const postsAfter = Number((await one(`select count(*)::int as n from messages where kind <> 'post' and team_id = (select team_id from people where login = $1)`, [alice]))?.n)
   check(taskRelay.taskId !== undefined && refusedAgain && taskSettled && postsAfter === postsBefore,
     `a relay started in a task was refused at hop ${MAX_HOPS + 1} again and posted no answer and no stop note anywhere (${postsBefore} before, ${postsAfter} after)`)
+
+  // 6c. One turn sends at most MAX_SENDS_PER_TURN messages and tasks. The sixth is refused.
+  await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Fan out to writer.' })
+  const fanned = await within(TURN_SECONDS, async () => {
+    const last = await toolResult(scoutDm, 'mcp__team-agents__send_to_agent')
+    return last?.is_error === 'true' && last.text.includes('sent 5 messages')
+  })
+  const fanTurn = await one(`select t.id from turns t join events e on e.id = t.event_id where t.session_id = $1 and e.text = 'Fan out to writer.'`, [scoutDm])
+  const fanSent = await one(`select count(*)::int as n from turns where answer_to_turn = $1`, [fanTurn?.id])
+  const fanRefusal = await toolResult(scoutDm, 'mcp__team-agents__send_to_agent')
+  check(fanned && Number(fanSent?.n) === MAX_SENDS_PER_TURN && fanRefusal?.text.includes(`at most ${MAX_SENDS_PER_TURN}`) && fanRefusal.text.includes('Answer with what you have'),
+    `a turn that tries 6 sends gets ${MAX_SENDS_PER_TURN} through and the 6th refused, with the limit and what to do (${fanSent?.n} sent, ${fanRefusal?.text})`)
+  await within(RELAY_SECONDS, async () => {
+    const open = await one(`select count(*)::int as n from turns where team_id = (select team_id from people where login = $1)
+      and (status not in ('done', 'failed', 'cancelled') or (answer_to_turn is not null and answer_sent_at is null))`, [alice])
+    return Number(open?.n) === 0
+  })
 
   // 7. Answers end turns in DMs while people type in them. A person's post and a
   // turn's end in one DM, at the same moment, both go through.
