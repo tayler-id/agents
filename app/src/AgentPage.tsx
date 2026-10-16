@@ -4,6 +4,7 @@ import {
   act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { AgentSecrets } from './Secrets.tsx'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
 // remembers. Anyone on the team can change it.
@@ -54,6 +55,8 @@ export function AgentPage({ agentId }: { agentId: string }) {
           )}
         </>} onRemove={(p) => api.removeItem(agentId, 'plugins', p.name)} />
         <PluginForm agentId={agentId} />
+
+        <AgentSecrets agent={agent} />
 
         <h2 className="kicker section">Routines</h2>
         <Items rows={own(routines)} empty="No routines yet" render={(r) => <>
