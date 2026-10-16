@@ -59,7 +59,7 @@ const BREAKS: Break[] = [
   { name: 'shape-hooks-team', checks: ['step24'], why: 'a person on another team reads an agent\'s hooks', red: ["a person on another team reads none of the agent's hooks"],
     edits: [{ file: 'server/sync.ts', anchor: "table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)'", replace: "table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id <> $1)'" }] },
   { name: 'kit-hooks', checks: ['step24', 'step24d'], why: 'a message carries no hooks', red: ['the daemon wrote the hooks where Claude Code reads them', "a hook's run is in the record", "each hook ran under Claude Code's own name"],
-    edits: [{ file: 'server/record.ts', anchor: 'hooks: await hooksOf(client, agentId), memory: memory || undefined }', replace: 'memory: memory || undefined }' }] },
+    edits: [{ file: 'server/record.ts', anchor: 'hooks: await hooksOf(client, agentId), memory: memory || undefined,', replace: 'memory: memory || undefined,' }] },
   { name: 'write-hooks', checks: ['step24', 'step24d'], why: 'the daemon does not write the settings file', red: ['the daemon wrote the hooks where Claude Code reads them', "a hook's run is in the record", "each hook ran under Claude Code's own name"],
     edits: [{ file: DAEMON, anchor: '  writeHooks(cwd, hooks)\n', replace: '' }] },
   { name: 'matcher-groups', checks: ['step24', 'step24d'], why: 'the settings file loses each hook\'s matcher', red: ['grouped by event and matcher', 'the hook for Bash left nothing in the log', 'with their matchers and time limits'],
@@ -67,7 +67,7 @@ const BREAKS: Break[] = [
   { name: 'settings-kept', checks: ['step24'], why: 'an agent with no hooks keeps its old settings file', red: ['an agent with no hooks has no settings file'],
     edits: [{ file: FILES, anchor: '    rmSync(file, { force: true })\n', replace: '' }] },
   { name: 'setup-hooks', checks: ['step24', 'step24d'], why: 'a running session does not restart for changed hooks', red: ['taking a hook off the agent takes it from the file of the session that was already running', 'the restarted session was a resume'],
-    edits: [{ file: DAEMON, anchor: 'p.plugins, p.hooks, p.permissions]', replace: 'p.plugins, p.permissions]' }] },
+    edits: [{ file: DAEMON, anchor: 'p.plugins, p.hooks, p.permissions,', replace: 'p.plugins, p.permissions,' }] },
   // How a hook's run reaches the record.
   { name: 'hook-flag', checks: ['step24', 'step24d'], why: 'Claude Code is not asked to report hook runs', red: ["a hook's run is in the record", 'a hook that fails is in the record too', "each hook ran under Claude Code's own name"],
     edits: [{ file: CLAUDE, anchor: "    if (options.hookEvents) args.push('--include-hook-events')\n", replace: '' }] },
@@ -100,11 +100,11 @@ const BREAKS: Break[] = [
     edits: [{ file: AGENTS, anchor: '  const name = given ?? agent.name\n', replace: "  const name = given ?? 'template'\n" }] },
   // Where a copy may go, what it is called, and what it records.
   { name: 'copy-personal-box', checks: ['step24'], why: 'a copy may go on a teammate\'s own box', red: ["a copy cannot go on a teammate's own box"],
-    edits: [{ file: AGENTS, anchor: 'if (home.personal && home.owner_id !== person.id)', replace: 'if (false)' }] },
+    edits: [{ file: AGENTS, anchor: 'if (home.personal && home.owner_id !== agent.ownerId)', replace: 'if (false)' }] },
   { name: 'machine-any-team', checks: ['step24'], why: "a copy may go on another team's machine", red: ["a copy cannot go on another team's machine"],
-    edits: [{ file: AGENTS, anchor: "'select id, personal, owner_id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])", replace: "'select id, personal, owner_id from instances where id = $1 and $2::uuid is not null', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])" }] },
+    edits: [{ file: AGENTS, anchor: "'select id, personal, owner_id from instances where id = $1 and team_id = $2', [agent.homeInstanceId, agent.teamId])", replace: "'select id, personal, owner_id from instances where id = $1 and $2::uuid is not null', [agent.homeInstanceId, agent.teamId])" }] },
   { name: 'copy-name-taken', checks: ['step24'], why: 'a copy may take another agent\'s name', red: ['a copy needs a name no agent has'],
-    edits: [{ file: AGENTS, anchor: '  if (taken) throw new HttpError(409, `there is already an agent named ${name}`)\n', replace: '' }] },
+    edits: [{ file: AGENTS, anchor: '  if (taken) throw new HttpError(409, `there is already an agent named ${agent.name}`)\n', replace: '' }] },
   { name: 'copy-provenance', checks: ['step24'], why: 'a copy does not record where it came from', red: ["Bob's copy is his own agent on his machine, made from Alice's"],
     edits: [{ file: AGENTS, anchor: '  if (copiedFrom !== null) {\n', replace: '  if (false) {\n' }] },
   { name: 'copy-avatar', checks: ['step24'], why: 'a copy does not wear the face of the agent it came from', red: ['a copy wears the face of the agent it was copied from'],
@@ -159,7 +159,7 @@ const BREAKS: Break[] = [
   { name: 'ui-hook-added', checks: ['step24b'], why: 'the page does not say what the new hook was named', red: ['the page says what it was named'],
     edits: [{ file: HOOKS_UI, anchor: '        {added && <p className="muted small" role="status">Added {added}.</p>}\n', replace: '' }] },
   { name: 'ui-hook-line', checks: ['step24b'], why: 'the session panel leaves out a hook\'s run', red: ["the session lists the hook's run"],
-    edits: [{ file: 'app/src/Session.tsx', anchor: "new Set<unknown>(['init', 'interrupted', 'screen', 'hook_response'])", replace: "new Set<unknown>(['init', 'interrupted', 'screen'])" }] },
+    edits: [{ file: 'shared/history.ts', anchor: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen', 'hook_response'] as const", replace: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen'] as const" }] },
 ]
 
 // The recipe file's breaks. They go with step24c and the files it checks, and can be left out with them.
