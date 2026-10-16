@@ -182,6 +182,8 @@ try {
   }
   check(await remember('team', 'profile', TEAM_PROFILE) && await remember('team', 'log', TEAM_LOG)
     && await remember(alice, 'profile', ABOUT_ALICE) && await remember(bob, 'log', ABOUT_BOB), "the agent keeps memories of the team, of Alice and of Bob")
+  // A log about a person from an earlier day, so it is no copy of the team's log of today.
+  await db.query(`update memories set log_date = current_date - 1 where agent_id = $1 and scope = 'person' and kind = 'log'`, [source])
 
   // Bob copies it.
   const copied = await as(bob, `/v1/agents/${source}/copy`, { name: 'release-notes-bob', homeInstanceId: macB, memories: true })
