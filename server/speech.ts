@@ -47,10 +47,10 @@ function service(): URL {
 
 // A request to the service. A refused or dropped connection means it is not running. Waiting too
 // long and an error from the service each get their own words.
-async function ask(path: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function ask(path: string, init: RequestInit, timeoutMs: number, cancel?: AbortSignal): Promise<Response> {
   let response: Response
   try {
-    response = await fetch(new URL(path, service()), { ...init, signal: AbortSignal.timeout(timeoutMs) })
+    response = await fetch(new URL(path, service()), { ...init, signal: cancel ? AbortSignal.any([cancel, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) })
   } catch (error) {
     if (error instanceof Error && error.name === 'TimeoutError') throw new HttpError(504, SPEECH_WORDS.tooSlow)
     throw new HttpError(503, SPEECH_WORDS.notRunning)
@@ -112,10 +112,10 @@ function pcmOf(wav: Buffer): Buffer {
 }
 
 // One sentence as 16-bit little-endian mono PCM at VOICE_OUT_RATE.
-export async function speak(sentence: string): Promise<Buffer> {
+export async function speak(sentence: string, cancel?: AbortSignal): Promise<Buffer> {
   const response = await ask('/v1/audio/speech', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: TTS_MODEL, input: sentence, voice: TTS_VOICE, lang_code: TTS_LANGUAGE, response_format: 'wav' }),
-  }, TTS_TIMEOUT_MS)
+  }, TTS_TIMEOUT_MS, cancel)
   return pcmOf(Buffer.from(await response.arrayBuffer()))
 }

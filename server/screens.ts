@@ -343,7 +343,7 @@ function waitingViewer(tunnelId: string, instance: Instance): Viewer {
   return viewer
 }
 
-function refuse(socket: Duplex, status: number, message: string) {
+export function refuse(socket: Duplex, status: number, message: string) {
   const body = JSON.stringify({ error: message })
   // HTTP allows an empty reason phrase, for a status Node has no name for.
   socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ''}\r\nconnection: close\r\ncontent-type: application/json\r\n`

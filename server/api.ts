@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
@@ -59,6 +60,7 @@ import { boxRoutes } from './box-routes.ts'
 import { AUDIO_POST, voiceRoutes } from './voice.ts'
 import { checkSpeechSettings } from './speech.ts'
 import { kindOf } from './audio.ts'
+import { isVoiceUpgrade, voiceUpgrade } from './voice-chat.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
@@ -859,7 +861,14 @@ if (import.meta.main) {
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
   // A socket an API that stopped left behind is replaced. One a running API still serves stops this one, since taking it
   // over would send people here instead. tailscaled runs as this user, so the socket's mode 0600 lets it in.
-  await listenOnSocket(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
+  const peopleOrigins = new Set(origins.data)
+  const screens = screenUpgrades({ audience: 'people', origins: peopleOrigins })
+  // Screens and voice chat are the two WebSockets people open.
+  const peopleUpgrades = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (isVoiceUpgrade(req)) void voiceUpgrade(peopleOrigins, req, socket, head)
+    else screens(req, socket, head)
+  }
+  await listenOnSocket(createServer(serve('people')).on('upgrade', peopleUpgrades), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()
