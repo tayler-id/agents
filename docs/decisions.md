@@ -481,6 +481,13 @@ Decided by Tayler on 2026-10-16, through the UI session.
   - Changing Agents from inside it is the move onto the coding framework after seats. A person asks an agent for a change, watches it live in a preview that reloads as the agent works, approves it, and presses Update.
 - **Status.** Comes right after the release that is in its test run, together with the framework move.
 
+### Setups leaving the team, and a cap on fan-out
+
+Decided by Tayler on 2026-10-16.
+
+- **Decision 11 is (b).** A setup can leave the team as an export and import file. There is no public gallery and no share link. This unblocks agent-copies' export and import.
+- **One turn sends at most 5 messages and tasks** until budgets land. This adds to the 4-hop limit on a chain's depth, and the check lives in `server/team-agents.ts` on the agents-together branch.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
