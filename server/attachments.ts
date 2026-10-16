@@ -9,12 +9,14 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { hasCode, messageOf } from '../shared/errors.ts'
+import { envSecrets } from '../shared/scrub.ts'
+import { secretsIn } from '../shared/secret-scan.ts'
 import {
   AttachmentId, cleanFileName, MAX_ATTACHMENT_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
 } from '../shared/attachments.ts'
 import { canSeeConversation, canSeeSession } from './access.ts'
 import { many, maybe, pool, type Db } from './db.ts'
-import { HttpError, scrub, type Person } from './record.ts'
+import { HttpError, type Person } from './record.ts'
 import { scopedTeams } from './runner.ts'
 
 // Where the bytes live. Unless the server is told a folder, it is named for the database it serves, so every file
@@ -173,16 +175,10 @@ export async function removeFiles(ids: readonly string[]) {
   await Promise.all(ids.map((id) => rm(fileOf(id), { force: true })))
 }
 
-// Whether a file's text holds a secret value this server knows, so an agent can't share one.
-export function holdsSecret(bytes: Buffer): boolean {
-  if (bytes.includes(0)) return false
-  const text = bytes.toString('utf8')
-  return scrub(text) !== text
-}
-
-// A file an agent shares can't be sent unless its text is clean.
+// A file an agent shares can't be sent if its bytes hold a secret this server knows. The machine checks
+// the secrets only it knows before the file is sent (daemon/share-guard.ts), and this is the second look.
 export function refuseSecret(bytes: Buffer) {
-  if (holdsSecret(bytes)) throw new HttpError(400, 'That file holds a secret this team keeps, so it was not shared.')
+  if (secretsIn(bytes, envSecrets(process.env)).length > 0) throw new HttpError(400, 'That file holds a secret this team keeps, so it was not shared.')
 }
 
 // Files that sit in the store with no row, from an upload that crashed between the two. A file is

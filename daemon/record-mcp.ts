@@ -11,7 +11,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
 import { ReadyAnswer } from '../shared/work.ts'
-import { saveShared, shareBytes } from './share-client.ts'
+import { saveShared, secretsHeld, shareBytes } from './share-client.ts'
 
 const API = process.env.AGENTS_API ?? 'http://127.0.0.1:7700'
 const TOKEN = process.env.AGENTS_TOKEN ?? ''
@@ -171,7 +171,7 @@ server.registerTool('share_file', {
   title: 'Share a file',
   description: 'Post a file from your working folder into the chat or task you are working in, so the people there can see or download it. '
     + 'A picture shows inline, and any other file downloads. The path is relative to your working folder, and nothing outside it can be shared. '
-    + 'A file that holds a secret value is refused.',
+    + 'A file that holds a secret value this machine keeps, in any form, is refused.',
   inputSchema: { path: z.string().min(1).describe('The file, in your working folder'), caption: z.string().max(2000).optional().describe('What to say with it') },
 }, async ({ path, caption }) => {
   const root = await realpath(process.cwd())
@@ -181,7 +181,10 @@ server.registerTool('share_file', {
   const info = await stat(file)
   if (!info.isFile()) throw new Error(`${path} is not a file.`)
   if (info.size > MAX_ATTACHMENT_BYTES) throw new Error(`${path} is ${info.size} bytes, and a file can be ${MAX_ATTACHMENT_BYTES} at most.`)
-  const shared = await shareBytes(here, { bytes: await readFile(file), name: basename(file), contentType: 'application/octet-stream', caption: caption ?? '' })
+  const bytes = await readFile(file)
+  const held = await secretsHeld(process.env.AGENTS_SHARE_GUARD, bytes, root)
+  if (held.length) throw new Error(`That file holds ${held.join(', ')}, which this machine keeps secret, so it was not shared.`)
+  const shared = await shareBytes(here, { bytes, name: basename(file), contentType: 'application/octet-stream', caption: caption ?? '' })
   return text(`Shared ${shared.name} (${shared.kind}, ${shared.size} bytes).`)
 })
 
