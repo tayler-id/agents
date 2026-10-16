@@ -23,9 +23,14 @@ export const LINK_DEAD_MS = 45_000
 // the daemon back before the wait runs out.
 export const LINK_RECONNECT_FIRST_MS = 1_000
 export const LINK_RECONNECT_MAX_MS = 8_000
-// How long setting a value waits for a computer whose connection is not up yet.
-// Nothing here starts a stopped computer, so this covers a daemon reconnecting.
+// How long setting a value waits for a computer that reports it is running and has
+// no connection yet, such as a daemon reconnecting after the API restarted.
 export const LINK_WAIT_MS = 12_000
+// How long it waits for a computer that is not running. The API asks for it to be
+// started and holds the request open, since a person should not have to set a
+// computer up or ask again. A box's desktop takes up to 30 seconds to come up, and
+// the rest is room for a slow start.
+export const LINK_WAKE_MS = 90_000
 // How long a computer gets to answer a frame. It writes a small file.
 export const LINK_ANSWER_MS = 10_000
 // The largest frame. A value of SECRET_VALUE_MAX_BYTES with every character

@@ -725,7 +725,7 @@ function followSignIns(signal: AbortSignal) {
 async function shutdown(code: 0 | 1) {
   if (stopping) return
   stopping = true
-  // The API takes the computer for stopped from here, and refuses a secret for it.
+  // Closing the connection first tells the API the computer is going, so a key set from here waits for it to start again.
   control.stop()
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)

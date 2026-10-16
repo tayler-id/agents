@@ -11,13 +11,20 @@ import { maybe, one, pool } from './db.ts'
 import { linkOf, putOnComputer, removeFromComputer, waitForLink, type Link } from './control.ts'
 import { parseBody, pathId, problems, type Route } from './http.ts'
 import { HttpError, scrub, type Person } from './record.ts'
-import { LINK_WAIT_MS } from '../shared/link.ts'
+import { wakeRunner } from './runner.ts'
+import { LINK_WAIT_MS, LINK_WAKE_MS } from '../shared/link.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { mayPutOn, SecretId, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
 import { SetSecretBody, SettableName } from '../shared/secret-rules.ts'
 
 const UUID = '([0-9a-f-]{36})'
+
+// Seconds a request waits for a computer that is not running to come up. A check shortens it.
+const WakeSeconds = z.coerce.number().positive().default(LINK_WAKE_MS / 1000)
+const wakeSeconds = WakeSeconds.safeParse(process.env.AGENTS_SECRET_WAKE_SEC)
+if (!wakeSeconds.success) throw new Error('AGENTS_SECRET_WAKE_SEC must be a number of seconds above 0')
+const WAKE_MS = wakeSeconds.data * 1000
 
 // A secret, the agent that needs it and the computer that agent runs on. Each
 // part of the agent and the computer is null when the secret has none.
@@ -56,31 +63,38 @@ async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   return { secretId, name: found.name, teamId: person.team_id, instanceId: found.instance_id, computer: found.computer, status: found.status }
 }
 
-// The computer's control connection. A computer that is stopped, or has stopped
-// answering, has none and gets none: nothing here starts it, and nothing holds
-// the value until it is back. One that reports in but has no connection yet may
-// be reconnecting after the API restarted, so it gets a short wait.
-async function linkTo(target: Target): Promise<Link> {
+// Asks for a computer that is not running to be started. Here the runner's loop starts a box a person or a run
+// holds, on its next tick, and this makes that tick now. Nothing starts a Mac, so a request for one waits out
+// its time for its daemon to come. Step 1 lets a person's idle box sleep, and starts a sleeping box only while
+// something wants it (WANTED in server/boxes.ts), so a request for a key has to say that it does, here.
+const wakeComputer = async (target: Target): Promise<void> => {
+  console.log(`asking for ${target.computer} to start, since a key waits for it`)
+  await wakeRunner()
+}
+
+// The computer's control connection, and the wait for it when it is not up. A computer that reports it is
+// running may be reconnecting after the API restarted, so it is waited for a moment. One that is not running
+// is asked to start and waited for until it has had time to, since a person should not have to set a computer
+// up or try again. The value is held in this request while it waits, and nowhere else.
+async function linkTo(target: Target, did: 'saved' | 'removed'): Promise<Link> {
   const present = linkOf(target.instanceId)
   if (present) return present
-  if (target.status === 'offline') {
-    throw new HttpError(409, `${target.computer} is stopped, so it can't take a secret now. Start it, then set the value again.`)
+  const running = target.status === 'online'
+  if (!running) await wakeComputer(target)
+  const waitMs = running ? LINK_WAIT_MS : WAKE_MS
+  const arrived = await waitForLink(target.instanceId, waitMs)
+  if (arrived) return arrived
+  if (running) {
+    throw new HttpError(504, `${target.computer} is running, but its connection for keys is not up. Try again in a moment. A daemon from before this version has to be updated first.`)
   }
-  if (target.status === 'stale') {
-    throw new HttpError(409, `${target.computer} has stopped answering the server, so it can't take a secret now. Try again once it is back.`)
-  }
-  const arrived = await waitForLink(target.instanceId, LINK_WAIT_MS)
-  if (!arrived) {
-    throw new HttpError(409, `${target.computer} is running, but its connection for secrets is not up. Try again in a moment. A daemon from before this version has to be updated first.`)
-  }
-  return arrived
+  throw new HttpError(504, `${target.computer} did not start within ${String(Math.round(waitMs / 1000))} seconds, so the key was not ${did}. Try again once it is running.`)
 }
 
 // Puts the value on the agent's computer, and records where and when. The value
 // is read from the request and sent on, and is in no other place.
 export async function setSecret(person: Person, secretId: SecretId, value: string): Promise<SecretStored> {
   const target = await targetOf(person, secretId)
-  const link = await linkTo(target)
+  const link = await linkTo(target, 'saved')
   const answer = await putOnComputer(link, target.name, value)
   if (answer.type === 'secret_refused') throw new HttpError(409, `${target.computer} would not take it. ${scrub(answer.reason)}`)
   if (answer.type !== 'secret_stored') throw new HttpError(502, `${target.computer} answered a request to set a value with something else.`)
@@ -101,7 +115,7 @@ export async function setSecret(person: Person, secretId: SecretId, value: strin
 // stays, since the plugin still needs it.
 export async function removeSecret(person: Person, secretId: SecretId): Promise<SecretRemoved> {
   const target = await targetOf(person, secretId)
-  const answer = await removeFromComputer(await linkTo(target), target.name)
+  const answer = await removeFromComputer(await linkTo(target, 'removed'), target.name)
   if (answer.type === 'secret_refused') throw new HttpError(409, `${target.computer} would not remove it. ${scrub(answer.reason)}`)
   if (answer.type !== 'secret_removed') throw new HttpError(502, `${target.computer} answered a request to remove a value with something else.`)
   await pool.query('delete from secret_sets where instance_id = $1 and name = $2', [target.instanceId, target.name])
