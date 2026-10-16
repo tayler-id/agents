@@ -943,7 +943,7 @@ A value is 8 bytes to 4 KiB, since the scrubber ignores anything under 8 charact
 - Each frame carries a request id, since two requests for one name can be in flight. The daemon also sends the names it holds each time it connects, and the API drops a row for a name the computer lacks.
 - A computer whose connection is not up gets 12 seconds, where the plan says 30. Nothing on this branch starts a stopped computer, which step 1 does, so a stopped one is refused at once and the 12 seconds cover a daemon reconnecting. Step 1 raises it when it can.
 - The card in the conversation is not built. A missing secret still stops the agent, and its stopped line now says to set the value on the agent's page.
-- A computer with an owner takes values only from its owner, and one with no owner takes them from any teammate. A teammate sees whose computer it is and gets no control.
+- A computer with an owner takes values only from its owner. One with no owner, such as a team box, takes none, since any teammate's run may use it and read what is there. A teammate sees whose computer it is and gets no control.
 - There is no form. The value reads as text, Set value or Replace value opens a masked field in place, Enter sends it, and Esc or Cancel puts it away. Leaving the field sends nothing, since the app never holds a value and cannot put one back.
 - A daemon refuses a value for a name its own environment sets, and says why, since the environment is read before the secrets file and the value would never be used.
 - The row says "Not set from the app" where the plan says "not set". The app knows only what it set, and a value put on the computer by hand works too.

@@ -558,15 +558,19 @@ async function main() {
     `the box's daemon comes up while the request waits, the value lands in the box's secrets.json, and the request answers 200 (${String(woke?.status)} ${woke?.text.slice(0, 120) ?? ''})`)
   check((await setRowOf(boxId, 'BOX_TOKEN'))?.set_by === await personId(alice), 'and the record says alice set it on her box')
 
-  // A teammate's computer, and one with no owner. Neither is running, so a request that the owner rule lets through waits for it.
+  // A teammate's computer, and one with no owner. Any teammate's run may use a computer with no owner, and read what
+  // is put there, so neither takes alice's value. The refusal comes at once, without waiting for the computer.
   check((await ask(bob, 'POST', `/v1/agents/${bobby}/plugins`, pluginOf('jira', 'JIRA_TOKEN'))).status === 200, "a plugin that needs JIRA_TOKEN is added to bobby, whose computer is bob's")
   const jira = await secretIdOf(bob, bobby, 'JIRA_TOKEN')
   const notAlices = await ask(alice, 'POST', `/v1/secrets/${jira}/value`, { value: value.eighth })
   check(notAlices.status === 403, `another person cannot set a value on a teammate's computer (${String(notAlices.status)})`)
   await db.query('update instances set owner_id = null where name = $1', [computer.b])
+  const ownerlessAt = Date.now()
   const ownerless = await ask(alice, 'POST', `/v1/secrets/${jira}/value`, { value: value.eighth })
+  const ownerlessFor = (Date.now() - ownerlessAt) / 1000
   await db.query('update instances set owner_id = $2 where name = $1', [computer.b, await personId(bob)])
-  check(ownerless.status === 504 && ownerless.json.error.includes(computer.b), `a computer with no owner takes a value from any teammate, here waited for and not reached because nothing starts it (${String(ownerless.status)} ${String(ownerless.json.error)})`)
+  check(ownerless.status === 403 && ownerless.json.error.includes(computer.b) && ownerless.json.error.includes('no owner') && ownerlessFor < 3 && !holds(ownerless.text, value.eighth),
+    `a computer with no owner takes no value, and the refusal says why at once (${String(ownerless.status)} ${String(ownerless.json.error)}, ${ownerlessFor.toFixed(1)} s)`)
 
   // What the API does with a computer's answers, with the check playing the daemon of a third computer.
   check((await ask(alice, 'POST', `/v1/agents/${carl}/plugins`, pluginOf('crm', 'CARL_TOKEN'))).status === 200, 'a plugin that needs CARL_TOKEN is added to carl, whose computer has no daemon here')

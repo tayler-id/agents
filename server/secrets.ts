@@ -63,6 +63,9 @@ async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   const named = SettableName.safeParse(found.name)
   if (!named.success) throw new HttpError(400, `This secret's name can't be set from the app (${problems(named.error)}). Name it something else in the plugin.`)
   // A computer with an owner is the owner's. A value put there is readable by every agent on it.
+  if (found.owner_id === null) {
+    throw new HttpError(403, `${found.computer} is a team computer with no owner. Any teammate's run may use it and read a value put there, so keys are set only on a person's own computer.`)
+  }
   if (!mayPutOn(found.owner_id, person.id)) {
     throw new HttpError(403, `${found.computer} is a teammate's own computer. Only its owner can set a secret on it.`)
   }

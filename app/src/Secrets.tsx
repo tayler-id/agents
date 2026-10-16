@@ -37,7 +37,8 @@ function useMe(): { me: Me | null; problem: string } {
 function blockedOf(computer: Instance | undefined, person: string, login: (id: string) => string): string | null {
   if (!computer) return 'This agent has no computer, so a value cannot be set.'
   const owner = computer.owner_id
-  if (owner !== null && !mayPutOn(owner, person)) return `${computer.name} is ${login(owner)}'s own computer, so only they can set a value on it.`
+  if (owner === null) return `${computer.name} is a team computer with no owner, so a key is not set on it from the app.`
+  if (!mayPutOn(owner, person)) return `${computer.name} is ${login(owner)}'s own computer, so only they can set a value on it.`
   return null
 }
 
