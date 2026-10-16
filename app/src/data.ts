@@ -31,6 +31,8 @@ export type Instance = Row & {
   screen_width: number | null; screen_height: number | null
   // When a person's own box went to sleep for having nothing to do. It wakes when something needs it.
   stopped_at: string | null
+  // How many seats the box has, one for each agent at work on it at once.
+  seat_cap: number
 }
 export type Conversation = Row & {
   id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
