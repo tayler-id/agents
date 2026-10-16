@@ -1,16 +1,16 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type SyntheticEvent, type ReactNode } from 'react'
 import { go } from './App.tsx'
 import {
-  act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
+  act, api, clock, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
-import { CopyAgent } from './CopyAgent.tsx'
-import { Hooks } from './Hooks.tsx'
-import { useSubmit } from './useSubmit.ts'
-import { machinesFor, startMachine } from './machines.ts'
+import { CreateCopy } from './agent/CreateCopy.tsx'
+import { Hooks } from './agent/Hooks.tsx'
+import { copyAgent, removeHook, saveHook } from './agent/copies.ts'
+import { HookRow, mayChangeHooks } from '../../shared/recipe.ts'
 
-// One agent's setup: who it is, its skills, plugins, routines and hooks, and what
-// it remembers. Anyone on the team can change it, except its hooks, which only its
+// One agent's setup: who it is, its skills, plugins, routines and hooks, and what it
+// remembers. Anyone on the team can change it, except its hooks, which only its
 // owner or a team admin changes.
 export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
@@ -19,14 +19,13 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
   const { rows: routines } = useSnapshot<Routine>('routines', {}, 4000)
   const { rows: memories } = useSnapshot<Memory>('memories', {}, 6000)
   const { rows: people } = useSnapshot<Person>('people', {}, 30000)
+  const { rows: hooks, error: hooksError } = useSnapshotOf(HookRow, 'agent_hooks', {}, 4000)
   const agent = agents.find((a) => a.id === agentId)
   const [notice, setNotice] = useState('')
-  const [copying, setCopying] = useState(false)
   if (!agent) return <section className="page"><p className="muted">Loading the agent…</p></section>
 
   const own = <T extends { agent_id: string | null }>(rows: T[]) => rows.filter((r) => r.agent_id === agentId)
   const login = (id: string | null) => people.find((p) => p.id === id)?.login ?? 'someone'
-  const teamMemories = own(memories).filter((m) => m.scope === 'team').length
   const template = async () => {
     const { version } = await api.saveTemplate(agentId, agent.name)
     setNotice(`Saved as the template "${agent.name}", version ${version}.`)
@@ -42,13 +41,12 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
         </div>
         <div className="head-actions">
           <button type="button" className="ghost" onClick={act(async () => go({ conversation: (await api.openDm(agent.name)).conversationId }))}>Message</button>
-          <button type="button" className="ghost" aria-expanded={copying} aria-controls="copy-agent" onClick={() => { setCopying(!copying) }}>Copy</button>
+          <CreateCopy create={() => copyAgent(agentId)} opened={(copy) => { go({ agent: copy.agentId }) }} />
           <button type="button" className="ghost" onClick={act(template)}>Save as template</button>
         </div>
       </header>
       <div className="page-body">
         {notice && <p className="note-line" role="status">{notice}</p>}
-        {copying && <CopyAgent agent={agent} me={me} teamMemories={teamMemories} />}
         <Profile agent={agent} />
 
         <h2 className="kicker section">Skills</h2>
@@ -72,7 +70,10 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
         </>} onRemove={(r) => api.removeItem(agentId, 'routines', r.name)} />
         <RoutineForm agentId={agentId} />
 
-        <Hooks agent={agent} me={me} />
+        <h2 className="kicker section">Hooks</h2>
+        {hooksError && <p className="error small" role="alert">{hooksError}</p>}
+        <Hooks agentName={agent.name} hooks={own(hooks)} canChange={mayChangeHooks(me.person, agent)}
+          actions={{ save: (ask) => saveHook(agentId, ask), remove: (name) => removeHook(agentId, name) }} />
 
         <h2 className="kicker section">What it remembers</h2>
         <ul className="memories" aria-label="Memory">
@@ -101,6 +102,26 @@ function Items<T extends { id: string }>({ rows, render, onRemove, empty }: { ro
       {!rows.length && <li className="muted small empty">{empty}</li>}
     </ul>
   )
+}
+
+// A small form that reports its own errors.
+function useSubmit(action: () => Promise<unknown>, reset: () => void) {
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event: SyntheticEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await action()
+      reset()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return { submit, error, busy }
 }
 
 function Profile({ agent }: { agent: Agent & { role?: string | null; instructions?: string } }) {
@@ -229,8 +250,8 @@ export function NewAgent({ me }: { me: Me }) {
   const [template, setTemplate] = useState('')
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
-  const machines = machinesFor(instances, me)
-  const chosen = home || startMachine(machines)
+  const machines = instances.filter((i) => (i.kind === 'mac' || i.claimed_by) && (!i.personal || i.owner_id === me.person.id))
+  const chosen = home || (machines.find((i) => i.personal) ?? machines[0])?.id
   const { submit, error, busy } = useSubmit(async () => {
     const { agentId } = await api.createAgent({
       name, homeInstanceId: chosen, title, instructions, templateSlug: template || undefined,

@@ -114,11 +114,12 @@ try {
   node('server/admin.ts', 'add-instance', otherTeam, `mac-x-${id}`, 'mac', outsider)
   const machineA = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-a-${id}`, 'mac', alice))
   const machineB = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-b-${id}`, 'mac', bob))
-  // Alice's own box. Nothing runs on it, and the runner starts a box only when a person holds it.
-  node('server/admin.ts', 'add-instance', team, `box-a-${id}`, 'box', alice)
-  await db.query(`update instances set personal = true where name = $1`, [`box-a-${id}`])
+  // Alice's own box. Nothing runs on it, and the runner starts a box only when a person holds it. Its name sorts
+  // after her Mac's, so a copy goes there by the box being hers and personal, and not by its name.
+  node('server/admin.ts', 'add-instance', team, `zbox-a-${id}`, 'box', alice)
+  await db.query(`update instances set personal = true where name = $1`, [`zbox-a-${id}`])
   const idOf = async (name: string) => must(await row('select id from instances where name = $1', [name]), name).id
-  const [macA, macB, boxA, macX] = [await idOf(`mac-a-${id}`), await idOf(`mac-b-${id}`), await idOf(`box-a-${id}`), await idOf(`mac-x-${id}`)]
+  const [macA, macB, boxA, macX] = [await idOf(`mac-a-${id}`), await idOf(`mac-b-${id}`), await idOf(`zbox-a-${id}`), await idOf(`mac-x-${id}`)]
   for (const home of [homeA, homeB]) writeFileSync(join(home, 'scenario.json'), JSON.stringify(SCENARIO))
   writeFileSync(join(homeA, 'secrets.json'), JSON.stringify({ LUCKY_TOKEN: ALICE_SECRET }), { mode: 0o600 })
   api = await startApi(PORTS, { AGENTS_RUNNER_TEAMS: team }, join(homeA, 'streams'))

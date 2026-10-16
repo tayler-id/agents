@@ -55,6 +55,11 @@ export const carriedBy = (recipe: Recipe): Carried => ({
   hooks: recipe.hooks.length, memories: recipe.memories.length,
 })
 
+// Saving a hook. With no name, the server names the hook after its event and answers with the name.
+export type HookAsk = Omit<z.input<typeof AgentHook>, 'name'> & { name?: string }
+export const HookSaved = z.object({ ok: z.literal(true), name: z.string() })
+export type HookSaved = z.infer<typeof HookSaved>
+
 // An agent_hooks row as the app reads it through the agent_hooks shape.
 export const HookRow = z.object({
   id: z.string(), agent_id: z.string(), name: z.string(), event: HookEvent, matcher: z.string().nullable(), command: z.string(),

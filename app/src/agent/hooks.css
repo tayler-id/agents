@@ -1,0 +1,17 @@
+/* An agent's hooks: hairline-divided rows, then one line to add another. A chosen
+   event is a brighter surface with a check and heavier type, never an outline. */
+.hooks { display: grid; gap: 8px; min-width: 0; }
+.hooks-list { list-style: none; margin: 0; padding: 0; }
+.hooks-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.hooks-what { display: grid; gap: 2px; min-width: 0; }
+.hooks-what p, .hooks-command { overflow-wrap: anywhere; }
+.hooks-add { display: grid; gap: 8px; max-width: 620px; }
+.hooks-when { display: flex; flex-wrap: wrap; gap: 6px; }
+.hooks-chip { background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 12.5px; }
+.hooks-chip[aria-pressed="true"], .hooks-chip[aria-pressed="true"]:hover:not(:disabled) { background: var(--surface); font-weight: 600; }
+.hooks-field {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 0;
+}
+.hooks-field:focus { outline: none; border-color: var(--text); }
+.hooks-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.hooks-open { justify-self: start; }
