@@ -92,7 +92,7 @@ const BREAKS: Break[] = [
   { name: 'bookkeeping-in-steps', check: '26', why: 'a replay shows bookkeeping notices as steps', red: ['bookkeeping is left out of the steps'],
     edits: [{ file: HISTORY, anchor: 'e.seq between $2 and $3 and ${SHOWN_STEP}', replace: 'e.seq between $2 and $3' }] },
   { name: 'more-notices-shown', check: '26', why: 'a hook notice counts as a step', red: ['bookkeeping notices are not steps', 'bookkeeping is left out of the steps'],
-    edits: [{ file: SHARED, anchor: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen'] as const", replace: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen', 'hook_started'] as const" }] },
+    edits: [{ file: SHARED, anchor: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen', 'hook_response'] as const", replace: "export const SHOWN_NOTICES = ['init', 'interrupted', 'screen', 'hook_response', 'hook_started'] as const" }] },
   { name: 'drafts-listed', check: '26', why: 'a task saved to start later is listed as a session', red: ['a draft task has a session that has not run'],
     edits: [{ file: HISTORY, anchor: "`s.status <> 'draft'`, ", replace: '' }] },
   { name: 'nonsense-cursor-fails', check: '26', why: 'a cursor that names no time or row is a server failure', red: ['a cursor that fits its pattern and names no time or row is refused'],
