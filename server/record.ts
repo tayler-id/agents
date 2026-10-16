@@ -385,20 +385,21 @@ export async function sendPersonMessage(
   if (!message.fresh) return { messageId: message.id, seq: message.seq }
   const files = extras.attachmentIds?.length ? await pendingUploads(client, person, extras.attachmentIds, { conversationId }) : []
   if (files.length) await placeUploads(client, files.map((f) => f.id), { conversationId, messageId: message.id })
+  // A reply must name a post in this chat, in a room as well. A room's prompt lists the posts without their quotes.
   const reply = extras.replyToMessageId ? await replyContext(client, conversationId, extras.replyToMessageId) : ''
-  // What the agent reads is the words, the post they answer, and the files.
-  const prompt = withFiles([reply, text].filter(Boolean).join(' '), files)
   if (conversation.kind === 'room') {
     await queueTurns(client, person, conversationId, text)
     return { messageId: message.id, seq: message.seq }
   }
+  // What the agent reads is the words, the post they answer, and the files.
+  const prompt = withFiles([reply, text].filter(Boolean).join(' '), files)
 
   const agent = await one<Agent>(client, 'the agent of the conversation',
     'select id, home_instance_id, harness, model, instructions from agents where id = $1', [conversation.agent_id])
   if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
   const session = await conversationSession(client, person.team_id, person.id, conversationId, agent)
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id, ...(extras.replyToMessageId ? { quotedMessageId: extras.replyToMessageId } : {}) }, text: prompt }],
+    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id, ...(prompt === text ? {} : { said: text }), ...(extras.replyToMessageId ? { quotedMessageId: extras.replyToMessageId } : {}) }, text: prompt }],
   }, person.id)
   if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 

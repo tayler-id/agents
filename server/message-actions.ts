@@ -107,7 +107,7 @@ export async function deleteMessage(client: pg.PoolClient, person: Person, messa
 export async function setPin(client: pg.PoolClient, person: Person, conversationId: string, messageId: string, on: boolean): Promise<{ pinned: boolean }> {
   if (!(await canSeeConversation(person, conversationId))) throw new HttpError(404, 'no such conversation')
   const post = await maybe<{ deleted: boolean }>(client,
-    'select deleted_at is not null as deleted from messages where id = $1 and conversation_id = $2', [messageId, conversationId])
+    'select deleted_at is not null as deleted from messages where id = $1 and conversation_id = $2 for share', [messageId, conversationId])
   if (!post) throw new HttpError(404, 'no such post in this chat')
   if (on) {
     if (post.deleted) throw new HttpError(409, 'That post was deleted.')

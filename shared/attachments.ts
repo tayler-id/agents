@@ -12,8 +12,11 @@ export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 export const MAX_ATTACHMENTS_PER_POST = 10
 // An upload that no post carries is deleted after this long.
 export const PENDING_HOURS = 24
-// Longest file name kept, in bytes. Most file systems stop at 255.
-const MAX_NAME_BYTES = 255
+// The most bytes one person may have waiting to be sent. Eight full-size files fit, enough for any post, and a client
+// stuck in a retry loop can't fill the server's disk with 24 hours of uploads.
+export const MAX_PENDING_BYTES = 8 * MAX_ATTACHMENT_BYTES
+// Longest file name kept, in bytes. Most file systems stop at 255, and a saved copy adds a 9-byte prefix.
+const MAX_NAME_BYTES = 240
 
 export const AttachmentId = z.uuid().brand<'AttachmentId'>()
 export type AttachmentId = z.infer<typeof AttachmentId>
@@ -47,7 +50,8 @@ export type UploadAnswer = z.infer<typeof UploadAnswer>
 // to put in a download header: no folders, no control characters, at most 255 bytes.
 export function cleanFileName(raw: string): string {
   const last = raw.split(/[\\/]/).pop() ?? ''
-  let name = last.replace(/\p{Cc}/gu, '').trim()
+  // Format characters such as U+202E turn the name around on screen, so `invoice<U+202E>fdp.exe` would read as a PDF.
+  let name = last.replace(/[\p{Cc}\p{Cf}]/gu, '').trim()
   while (Buffer.byteLength(name) > MAX_NAME_BYTES) name = name.slice(0, -1)
   return name === '' || name === '.' || name === '..' ? 'file' : name
 }

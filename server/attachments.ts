@@ -12,10 +12,10 @@ import { hasCode, messageOf } from '../shared/errors.ts'
 import { envSecrets } from '../shared/scrub.ts'
 import { secretsIn } from '../shared/secret-scan.ts'
 import {
-  AttachmentId, cleanFileName, MAX_ATTACHMENT_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
+  AttachmentId, cleanFileName, MAX_ATTACHMENT_BYTES, MAX_PENDING_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
 } from '../shared/attachments.ts'
 import { canSeeConversation, canSeeSession } from './access.ts'
-import { many, maybe, pool, type Db } from './db.ts'
+import { many, maybe, one, pool, type Db } from './db.ts'
 import { HttpError, type Person } from './record.ts'
 import { scopedTeams } from './runner.ts'
 
@@ -68,6 +68,12 @@ export async function saveUpload(db: Db, input: {
 }): Promise<UploadAnswer> {
   if (input.bytes.length === 0) throw new HttpError(400, 'That file is empty.')
   if (input.bytes.length > MAX_ATTACHMENT_BYTES) throw new HttpError(413, `A file can be ${MAX_ATTACHMENT_BYTES} bytes at most.`)
+  // Counted before the write and not under a lock, so two uploads at once can pass together by one file.
+  if ('personId' in input.by) {
+    const held = await one<{ bytes: string }>(db, 'what the person has waiting',
+      `select coalesce(sum(size), 0) as bytes from attachments where added_by_person = $1 and message_id is null and event_id is null`, [input.by.personId])
+    if (Number(held.bytes) + input.bytes.length > MAX_PENDING_BYTES) throw new HttpError(409, 'Too many files are waiting to be sent. Send them in a post first.')
+  }
   const sorted = sortUpload(input.bytes, input.declaredType)
   const id = AttachmentId.parse(randomUUID())
   const name = cleanFileName(input.name)
@@ -200,7 +206,12 @@ async function sweepOnce() {
     const names = await readdir(join(ATTACHMENTS_DIR, shard))
     const old: string[] = []
     for (const name of names) {
-      if ((await stat(join(ATTACHMENTS_DIR, shard, name))).mtimeMs < Date.now() - ORPHAN_GRACE_MS) old.push(name)
+      // A file a delete removed since the listing is gone, which is what the sweep wants.
+      const info = await stat(join(ATTACHMENTS_DIR, shard, name)).catch((error: unknown) => {
+        if (hasCode(error, 'ENOENT')) return null
+        throw error
+      })
+      if (info && info.mtimeMs < Date.now() - ORPHAN_GRACE_MS) old.push(name)
     }
     if (old.length === 0) continue
     const kept = new Set((await many<{ id: string }>(pool, 'select id from attachments where id = any($1::uuid[])', [old.filter((n) => z.uuid().safeParse(n).success)])).map((r) => r.id))

@@ -16,7 +16,7 @@ type Post = { team_id: string; conversation_id: string | null; session_id: strin
 async function postOf(client: pg.PoolClient, teamId: string, target: ReactionTarget): Promise<Post | undefined> {
   return target.kind === 'message'
     ? maybe<Post>(client,
-      'select team_id, conversation_id, null::uuid as session_id, deleted_at is not null as deleted from messages where id = $1 and team_id = $2', [target.id, teamId])
+      'select team_id, conversation_id, null::uuid as session_id, deleted_at is not null as deleted from messages where id = $1 and team_id = $2 for share', [target.id, teamId])
     // Only a task's session has posts to react to. A chat's session holds the prompts behind its messages.
     : maybe<Post>(client,
       `select e.team_id, null::uuid as conversation_id, e.session_id, false as deleted

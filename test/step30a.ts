@@ -133,6 +133,7 @@ try {
   check(typeof event.text === 'string' && event.text.startsWith('look at these\n\nAttached files:\n- shot ñ.png (image/png, ')
     && event.text.includes(`attachment ${idOfPng}`) && event.text.includes('get_attachment'),
     `the agent's prompt names each file and the tool that saves it (${JSON.stringify(event.text).slice(0, 200)})`)
+  check(event.body.said === 'look at these' && event.body.messageId === sent.json.messageId, "the event keeps the person's own words beside the prompt")
   const command = await q1(`select c.payload->>'text' as text from commands c join events e on e.id = c.event_id where c.kind = 'message' and e.client_id = $1`,
     [`message:${sent.json.messageId}`])
   check(typeof command.text === 'string' && command.text.includes(`attachment ${gif}`), 'the message command to the machine carries the same words')
@@ -196,6 +197,18 @@ try {
   check(room.status === 200, `a new group chat takes a first post with files (${room.status} ${room.text})`)
   const [roomRow] = await q('select a.conversation_id, a.message_id, m.body from attachments a join messages m on m.id = a.message_id where a.id = $1', [roomFile.json.attachmentId])
   check(roomRow?.conversation_id === room.json.conversationId && roomRow?.body === 'Kickoff', 'the file is in the new chat, on its first post')
+
+  // File names are cleaned at the edge. A format character that reverses text is dropped, and the name leaves room for a prefix.
+  const spoof = await upload(alice, `/v1/conversations/${conversations.dm}/attachments`, html, 'invoice\u202Efdp.exe', 'text/plain')
+  const long = await upload(alice, `/v1/conversations/${conversations.dm}/attachments`, html, `${'x'.repeat(250)}.txt`, 'text/plain')
+  check(spoof.json.name === 'invoicefdp.exe' && Buffer.byteLength(long.json.name) <= 240, `a right-to-left mark is dropped from a name, and a long name is cut to 240 bytes (${spoof.json.name}, ${Buffer.byteLength(long.json.name)})`)
+
+  // One person can't keep more than 200 MB waiting to be sent.
+  const statuses: number[] = []
+  for (let i = 0; i < 7; i++) statuses.push((await upload(carol, '/v1/attachments', Buffer.alloc(MAX_ATTACHMENT_BYTES, i + 1), `bulk-${i}.bin`)).status)
+  const refusedBulk = await upload(carol, '/v1/attachments', Buffer.alloc(MAX_ATTACHMENT_BYTES, 99), 'one-more.bin')
+  check(statuses.filter((s) => s === 201).length === 7 && refusedBulk.status === 409 && refusedBulk.json.error === 'Too many files are waiting to be sent. Send them in a post first.',
+    `a person's pending uploads stop at 200 MB: seven 25 MB files in, the next refused (${statuses.join(',')}, ${refusedBulk.text})`)
 
   // A new chat's first post, sent again after a dropped answer, is one post.
   const open = () => as(alice, 'POST', '/v1/conversations', { kind: 'dm', agent: 'scout', text: 'Hello, once', clientId: 'first-post-1' })
