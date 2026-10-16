@@ -645,3 +645,27 @@ The design is "A scheduler places every turn" in `docs/design/target-architectur
 
 - **Solves now.** It drives the conversation and task views in Chromium, Firefox and WebKit at desktop and phone width against a real API and runner, with a person's box that cannot start because its image does not exist. It expects "Starting your computer" with Docker's words and a Cancel button, the name of a box nobody holds that is offline, a teammate's view naming whose computer is starting, the same line on a task's page, and a quiet turn saying since when. Cancelling takes the line away and cancels the turn. It scans for accessibility problems, checks the phone fit and keeps screenshots in `test/ui-shots`. It uses ports 8150 to 8151 and 8250, so it needs no run lock.
 - **Not done.** WebKit logs three Content Security Policy console errors on the task page, with or without a waiting line, which agentsctl's visual shot reports and which this check does not fail on, since it records page errors only.
+
+## Voice
+
+### The speech service client (`server/speech.ts`, `server/audio.ts`, `shared/voice.ts`)
+
+- **Solves now.** The API reaches speech to text and speech through one file. `transcribe` sends a WAV to the service on the server Mac and returns the words. `speak` sends a sentence and returns 24 kHz PCM. A service that is missing, down, slow or confused becomes a status and a sentence a person reads, not "fetch failed". `audio.ts` reads a recording, checks its type from its first bytes and its length from its own chunks, and converts WebM to WAV with ffmpeg. `shared/voice.ts` holds the limits, the sentences and the voice chat message shapes.
+- **Helps later.** Meetings call the same two functions for each person's audio.
+- **Not done.** Nothing starts the speech service. Tayler starts it by hand with the command in `docs/design/voice.md`, and it needs two Python packages that are not installed yet (see the build log).
+
+### Dictation (`server/voice.ts`)
+
+- **Solves now.** `POST /v1/transcribe` takes a signed-in person's WAV or WebM recording, at most 10 MB and 60 s, and returns `{ text }`. Nothing is stored.
+- **Helps later.** The microphone in the message box calls it.
+
+### Voice chat (`server/voice-chat.ts`, `server/sentences.ts`)
+
+- **Solves now.** A WebSocket at `/v1/voice/conversations/{id}` turns a person's audio into a message to the agent in a one-agent conversation, and speaks the agent's reply back one sentence at a time as each is written. The person's words and the agent's reply are saved as text, as for typing. Talking over the agent silences it.
+- **Helps later.** Meetings reuse the speaking half for an agent that joins a call.
+- **Not done.** The page has to decide when a turn ends, since the API does not detect silence. No partial transcript while the person talks.
+
+### The voice checks (`test/step24v.ts`, `test/step24w.ts`, `test/fake-speech.ts`, `test/voice-kit.ts`, `test/fixtures/dictation.wav`)
+
+- **Solves now.** They run the API on ports 8340 to 8346 against a stand-in for the speech service, with no lock and no real speech models. The fixture is a 3 second recording of a known sentence, which Parakeet read back exactly when run once by hand.
+- **Not done.** No check runs against the real speech service.

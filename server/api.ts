@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
 import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
@@ -56,6 +57,10 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
+import { AUDIO_POST, voiceRoutes } from './voice.ts'
+import { checkSpeechSettings } from './speech.ts'
+import { kindOf } from './audio.ts'
+import { isVoiceUpgrade, voiceUpgrade } from './voice-chat.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
@@ -712,6 +717,7 @@ const routes: Route[] = [
 
   ...onboardingRoutes,
   ...boxRoutes,
+  ...voiceRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
@@ -773,7 +779,8 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     checkAudience(audience, req)
-    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
+    const recording = AUDIO_POST.test(url.pathname) && kindOf(req.headers['content-type']) !== null
+    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !recording && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
     const shape = req.method === 'GET' ? SHAPE.exec(url.pathname)?.[1] : undefined
@@ -847,13 +854,21 @@ if (import.meta.main) {
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
   if (!origins.success) throw new Error(`AGENTS_PEOPLE_ORIGINS must list the origins the app is served from, such as http://agents-server.<tailnet>.ts.net: ${z.prettifyError(origins.error)}`)
+  checkSpeechSettings()
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
   // A socket an API that stopped left behind is replaced. One a running API still serves stops this one, since taking it
   // over would send people here instead. tailscaled runs as this user, so the socket's mode 0600 lets it in.
-  await listenOnSocket(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
+  const peopleOrigins = new Set(origins.data)
+  const screens = screenUpgrades({ audience: 'people', origins: peopleOrigins })
+  // Screens and voice chat are the two WebSockets people open.
+  const peopleUpgrades = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (isVoiceUpgrade(req)) void voiceUpgrade(peopleOrigins, req, socket, head)
+    else screens(req, socket, head)
+  }
+  await listenOnSocket(createServer(serve('people')).on('upgrade', peopleUpgrades), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()
