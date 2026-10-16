@@ -161,6 +161,8 @@ try {
     "the owner's three hooks are stored as sent and answered by name, and a teammate cannot take one off")
   const seen = await shapeRows(PEOPLE, bob, 'agent_hooks')
   check(seen.rows.filter((r) => r.agent_id === source).length === 3, "teammates read an agent's hooks through the agent_hooks shape")
+  const outsiderSees = await shapeRows(PEOPLE, outsider, 'agent_hooks')
+  check(outsiderSees.rows.every((r) => r.agent_id !== source), "a person on another team reads none of the agent's hooks")
   // A hook sent with no name is named after its event, as the app's one-line add sends it.
   const unnamed = [
     await as(alice, `/v1/agents/${source}/hooks`, { event: 'SessionStart', command: 'true' }),
@@ -172,6 +174,14 @@ try {
     `a hook sent with no name is named after its event, and the next of an event takes the next free name: ${unnamedAs.join(' ')}`)
   for (const name of unnamedAs) await as(alice, `/v1/agents/${source}/hooks/${name}/delete`)
   check(Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 3, 'the hooks made for that are taken off again')
+  // A hook saved under the name of one the agent has changes that one, and taking off one it has not is a 404.
+  await as(alice, `/v1/agents/${source}/hooks`, { name: 'scratch', event: 'Stop', command: 'echo first' })
+  const changed = await as(alice, `/v1/agents/${source}/hooks`, { name: 'scratch', event: 'SessionStart', command: 'echo second' })
+  const scratch = await rows(`select event, command from agent_hooks where agent_id = $1 and name = 'scratch'`, [source])
+  const missing = await as(alice, `/v1/agents/${source}/hooks/nothing-here/delete`)
+  await as(alice, `/v1/agents/${source}/hooks/scratch/delete`)
+  check(changed.status === 200 && same(scratch, [{ event: 'SessionStart', command: 'echo second' }]) && missing.status === 404,
+    'a hook saved under the name of one the agent has changes that one, and taking off one it has not says so')
 
   // Alice talks to her agent. The hooks run in its session, on her machine.
   const aliceDm = await dmWith(alice, 'release-notes')
@@ -205,6 +215,9 @@ try {
 
   // Bob copies it.
   const bobId = must(await row('select id from people where login = $1', [bob]), 'Bob').id
+  // The agent's face, which a copy wears until its owner changes it. Nothing on this branch sets one, so the check writes it.
+  const AVATAR = { hue: 210, eyes: 'round' }
+  await db.query('update agents set avatar = $2 where id = $1', [source, JSON.stringify(AVATAR)])
   const copied = await as(bob, `/v1/agents/${source}/copy`, { name: 'release-notes-bob', homeInstanceId: macB, memories: true })
   const copy = copied.json?.agentId
   const mine = await agentRow('release-notes-bob')
@@ -214,6 +227,7 @@ try {
   `Bob's copy is his own agent on his machine, made from Alice's: ${copied.status} ${JSON.stringify(copied.json)}`)
   check(same(copied.json?.carried, { skills: 1, plugins: 1, routines: 1, hooks: 3, memories: 2 }),
     `the copy says what it carried: ${JSON.stringify(copied.json?.carried)}`)
+  check(same(mine?.avatar, AVATAR), "a copy wears the face of the agent it was copied from")
   // One query at a time, since a client runs one.
   const slice = async (agentId: string) => ({
     skills: await rows('select name, description, content from skills where agent_id = $1 order by name', [agentId]),

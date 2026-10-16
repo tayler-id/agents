@@ -49,9 +49,15 @@ const BREAKS: Break[] = [
     edits: [{ file: TYPES, anchor: 'timeoutSec: z.number().int().min(1).max(HOOK_TIMEOUT_MAX_SEC)', replace: 'timeoutSec: z.number().int().min(0).max(HOOK_TIMEOUT_MAX_SEC)' }] },
   { name: 'hook-default-name', checks: ['step24'], why: 'a hook sent with no name is named hook, whatever its event', red: ['a hook sent with no name is named after its event'],
     edits: [{ file: AGENTS, anchor: "  const base = typeof event === 'string' ? event.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : 'hook'", replace: "  const base = 'hook'" }] },
+  { name: 'hook-upsert', checks: ['step24'], why: 'a hook saved under a name the agent has is dropped', red: ['a hook saved under the name of one the agent has changes that one'],
+    edits: [{ file: AGENTS, anchor: 'on conflict (agent_id, name) do update set event = excluded.event, matcher = excluded.matcher, command = excluded.command, timeout_sec = excluded.timeout_sec', replace: 'on conflict (agent_id, name) do nothing' }] },
+  { name: 'hook-delete-missing', checks: ['step24'], why: 'taking off a hook the agent has not says it worked', red: ['taking off one it has not says so'],
+    edits: [{ file: AGENTS, anchor: "  if (!rowCount) throw new HttpError(404, 'no such hook')\n", replace: '' }] },
   // How hooks reach a session.
   { name: 'shape-hooks', checks: ['step24'], why: 'teammates cannot read an agent\'s hooks', red: ['teammates read an agent\'s hooks through the agent_hooks shape'],
     edits: [{ file: 'server/sync.ts', anchor: "  agent_hooks: async (p) => ({ table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),\n", replace: '' }] },
+  { name: 'shape-hooks-team', checks: ['step24'], why: 'a person on another team reads an agent\'s hooks', red: ["a person on another team reads none of the agent's hooks"],
+    edits: [{ file: 'server/sync.ts', anchor: "table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)'", replace: "table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id <> $1)'" }] },
   { name: 'kit-hooks', checks: ['step24', 'step24d'], why: 'a message carries no hooks', red: ['the daemon wrote the hooks where Claude Code reads them', "a hook's run is in the record", "each hook ran under Claude Code's own name"],
     edits: [{ file: 'server/record.ts', anchor: 'hooks: await hooksOf(client, agentId), memory: memory || undefined }', replace: 'memory: memory || undefined }' }] },
   { name: 'write-hooks', checks: ['step24', 'step24d'], why: 'the daemon does not write the settings file', red: ['the daemon wrote the hooks where Claude Code reads them', "a hook's run is in the record", "each hook ran under Claude Code's own name"],
@@ -101,6 +107,8 @@ const BREAKS: Break[] = [
     edits: [{ file: AGENTS, anchor: '  if (taken) throw new HttpError(409, `there is already an agent named ${name}`)\n', replace: '' }] },
   { name: 'copy-provenance', checks: ['step24'], why: 'a copy does not record where it came from', red: ["Bob's copy is his own agent on his machine, made from Alice's"],
     edits: [{ file: AGENTS, anchor: '  if (copiedFrom !== null) {\n', replace: '  if (false) {\n' }] },
+  { name: 'copy-avatar', checks: ['step24'], why: 'a copy does not wear the face of the agent it came from', red: ['a copy wears the face of the agent it was copied from'],
+    edits: [{ file: AGENTS, anchor: 'copied_from_agent_id = $2, avatar = (select avatar from agents where id = $2) where id = $1', replace: 'copied_from_agent_id = $2 where id = $1' }] },
   { name: 'copy-conversation', checks: ['step24'], why: 'the answer holds some other id for the conversation', red: ["the answer holds Bob's conversation with the copy"],
     edits: [{ file: AGENTS, anchor: 'conversationId: ConversationId.parse(conversationId)', replace: 'conversationId: ConversationId.parse(agentId)' }] },
   // What a copy asked for with nothing else gets.
@@ -148,6 +156,8 @@ const BREAKS: Break[] = [
     edits: [{ file: COPY_UI, anchor: '    if (made) opened(made)\n', replace: '' }] },
   { name: 'ui-provenance', checks: ['step24b'], why: 'the copy does not say where it came from', red: ['saying which agent it was copied from'],
     edits: [{ file: PAGE, anchor: '{agent.copied_from_agent_id && <p className="muted small">Copied from', replace: '{false && <p className="muted small">Copied from' }] },
+  { name: 'ui-hook-added', checks: ['step24b'], why: 'the page does not say what the new hook was named', red: ['the page says what it was named'],
+    edits: [{ file: HOOKS_UI, anchor: '        {added && <p className="muted small" role="status">Added {added}.</p>}\n', replace: '' }] },
   { name: 'ui-hook-line', checks: ['step24b'], why: 'the session panel leaves out a hook\'s run', red: ["the session lists the hook's run"],
     edits: [{ file: 'app/src/Session.tsx', anchor: "new Set<unknown>(['init', 'interrupted', 'screen', 'hook_response'])", replace: "new Set<unknown>(['init', 'interrupted', 'screen'])" }] },
 ]

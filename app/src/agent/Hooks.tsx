@@ -6,12 +6,12 @@
 // a command, and everyone else reads them.
 
 import { useEffect, useRef, useState } from 'react'
-import type { HookAsk, HookRow } from '../../../shared/recipe.ts'
+import type { HookAsk, HookRow, HookSaved } from '../../../shared/recipe.ts'
 import { HOOK_EVENTS, takesMatcher, type HookEvent } from '../../../shared/types.ts'
 import { useAttempt } from './attempt.ts'
 import './hooks.css'
 
-export type HookActions = { save: (ask: HookAsk) => Promise<unknown>; remove: (name: string) => Promise<unknown> }
+export type HookActions = { save: (ask: HookAsk) => Promise<HookSaved>; remove: (name: string) => Promise<unknown> }
 
 // What each event means in plain words. A new event is a type error until it has its words.
 const WHEN: Record<HookEvent, string> = {
@@ -60,6 +60,8 @@ function AddHook({ agentName, save }: { agentName: string; save: HookActions['sa
   const [event, setEvent] = useState<HookEvent>('UserPromptSubmit')
   const [tools, setTools] = useState('')
   const [command, setCommand] = useState('')
+  // The name the server gave the hook just added, said until the person opens the line again, since the list catches up a few seconds later.
+  const [added, setAdded] = useState('')
   const { busy, problem, attempt } = useAttempt()
   const opener = useRef<HTMLButtonElement>(null)
   const commandField = useRef<HTMLInputElement>(null)
@@ -74,12 +76,20 @@ function AddHook({ agentName, save }: { agentName: string; save: HookActions['sa
   const add = async () => {
     const saved = await attempt(() => save({ event, command, matcher: takesMatcher(event) && tools.trim() ? tools.trim() : null }))
     if (saved === null) return
+    setAdded(saved.name)
     setCommand('')
     setTools('')
     setOpen(false)
   }
 
-  if (!open) return <button ref={opener} type="button" className="ghost hooks-open" onClick={() => { setOpen(true) }}>Add a hook</button>
+  if (!open) {
+    return (
+      <>
+        <button ref={opener} type="button" className="ghost hooks-open" onClick={() => { setAdded(''); setOpen(true) }}>Add a hook</button>
+        {added && <p className="muted small" role="status">Added {added}.</p>}
+      </>
+    )
+  }
   return (
     <div className="hooks-add" role="group" aria-label="Add a hook">
       <div className="hooks-when" role="group" aria-label="When it runs">

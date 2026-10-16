@@ -124,8 +124,8 @@ async function run(engine: string) {
     await add.getByLabel('Command to run').fill('mkdir -p task && echo noted >> task/hook-log.txt')
     await add.getByRole('button', { name: 'Add hook', exact: true }).click()
     check(await visible(page, 'div.hooks li.hooks-row', 15, /user-prompt-submit.*A message arrives.*hook-log\.txt/s)
-      && await within(5, async () => await add.count() === 0) && await within(5, () => focused(addHook)),
-    `${engine}: a hook added from the page shows in the list under the name made from its event, and the line closes`)
+      && await within(5, async () => await add.count() === 0) && await within(5, () => focused(addHook)) && await visible(page, 'div.hooks [role="status"]', 5, /Added user-prompt-submit\./),
+    `${engine}: a hook added from the page shows in the list under the name made from its event, the line closes, and the page says what it was named`)
     // A tool event takes the tools it applies to, and Enter in the command adds the hook.
     await addHook.click()
     await add.getByRole('button', { name: 'After a tool runs' }).click()
