@@ -78,7 +78,7 @@ async function sendingTurn(client: pg.PoolClient, caller: Caller): Promise<{ id:
   if (caller.stage !== null) throw new HttpError(403, 'A pipeline stage does not message other agents.')
   if (caller.conversation_kind === 'room') throw new HttpError(409, 'Agents in a room cannot message other agents yet. Say what you need in the room instead.')
   if (caller.visibility === 'private') {
-    throw new HttpError(409, "This conversation is private, and a thread between agents is read by the whole team, so nothing was sent.")
+    throw new HttpError(409, 'The work this session serves is private, and what agents send each other is read by the whole team, so nothing was sent.')
   }
   const turn = await maybe(client,
     `select id, hops from turns where session_id = $1 and status = 'running' order by hops desc, requested_at desc, id desc limit 1`, [caller.id])
@@ -86,18 +86,24 @@ async function sendingTurn(client: pg.PoolClient, caller: Caller): Promise<{ id:
   return z.object({ id: TurnId, hops: z.number().int() }).parse(turn)
 }
 
-// The agent a message or a task goes to, when it may.
-async function reachable(client: pg.PoolClient, caller: Caller, name: string, hops: number): Promise<Target & { home_instance_id: InstanceId }> {
+// The hop a message or a task from `turn` would be, when the chain has room for it.
+function nextHop(turn: { hops: number }): number {
+  const hops = turn.hops + 1
   if (hops > MAX_HOPS) {
     throw new HttpError(409, `This would be hop ${hops} of the chain, and a chain of agents stops after ${MAX_HOPS} hops, so nothing was sent. Answer with what you have.`)
   }
+  return hops
+}
+
+// The agent a message or a task goes to, when it may.
+async function reachable(client: pg.PoolClient, caller: Caller, name: string): Promise<Target & { home_instance_id: InstanceId }> {
   const found = await maybe(client, `${TARGET} and a.name = $2`, [caller.team_id, name])
   if (!found) throw new HttpError(404, `No agent on your team is named ${name}. list_agents shows who is.`)
   const target = Target.parse(found)
   if (target.id === caller.agent_id) throw new HttpError(400, `${name} is you.`)
   if (!mayMessage(caller, target)) {
     throw new HttpError(403, target.owner_login === null
-      ? `${name} has no owner, and takes messages only from its own agents until an admin lets the team's agents message it.`
+      ? `${name} has no owner, so it takes no messages from agents until an admin lets the team's agents message it.`
       : `${name} is ${target.owner_login}'s agent, and ${target.owner_login} has not let other people's agents message it. They can allow it on ${name}'s page.`)
   }
   const home = target.home_instance_id
@@ -127,8 +133,8 @@ async function threadOf(client: pg.PoolClient, teamId: TeamId, a: AgentId, b: Ag
 // comes back to the sending turn's session when the other agent's turn ends.
 export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent> {
   const turn = await sendingTurn(client, caller)
-  const hops = turn.hops + 1
-  const target = await reachable(client, caller, ask.to, hops)
+  const hops = nextHop(turn)
+  const target = await reachable(client, caller, ask.to)
   const threadId = await threadOf(client, caller.team_id, caller.agent_id, target.id)
   const message = await appendMessage(client, threadId, {
     speaker: 'agent', agentId: caller.agent_id, body: ask.text, clientId: `agent:${randomUUID()}`, sessionId: caller.id,
@@ -147,8 +153,8 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
 // handed it over when its agent reports back or a person marks it done.
 export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded> {
   const turn = await sendingTurn(client, caller)
-  const hops = turn.hops + 1
-  const target = await reachable(client, caller, ask.to, hops)
+  const hops = nextHop(turn)
+  const target = await reachable(client, caller, ask.to)
   const task = z.object({ id: TaskId }).parse(await one(client, 'the handed-over task',
     `insert into tasks (team_id, slug, title, instructions, owner_id, agent_id, source, asked_by_turn)
      values ($1, $2, $3, $4, $5, $6, 'agent', $7) returning id`,

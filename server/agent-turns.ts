@@ -51,6 +51,9 @@ export async function sendAgentTurn(client: pg.PoolClient, sessionId: SessionId,
   throw new Error(`session ${session.id} serves neither a conversation nor a task`)
 }
 
+// The turn that handed a task over: where its result goes, and what that turn answers.
+const HandingOver = z.object({ session_id: SessionId, answer_to_turn: TurnId.nullable(), hops: z.number().int() })
+
 // A handed-over task's result goes to the turn of the agent that handed it over,
 // as a delegation turn in that agent's session, which then answers what that
 // turn answered. `fromSession` is the task's session.
@@ -62,7 +65,6 @@ export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskI
   if (turnId === null) throw new Error(`the result of task ${task.id} was recorded already, with a client id made just now`)
   return turnId
 }
-const HandingOver = z.object({ session_id: SessionId, answer_to_turn: TurnId.nullable(), hops: z.number().int() })
 
 // A person marked a task done. When an agent handed it over, its result goes back
 // as its agent's last words on it, since the agent did not report back.
