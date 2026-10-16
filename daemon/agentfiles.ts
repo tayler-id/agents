@@ -2,10 +2,13 @@
 // Claude Code skill files in the session's folder. Its plugins become MCP
 // servers in the session's MCP config, with secrets filled in from this machine:
 // its environment first, then $AGENTS_HOME/secrets.json. Secret values never leave
-// the machine.
+// the machine. A person sets or removes one from the app, and the API sends it
+// over the control connection to the functions below, which keep the file.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+import { hasCode } from '../shared/errors.ts'
 import { NAME, type AgentPlugin, type AgentSkill, type SecretRef } from '../shared/types.ts'
 
 // Replaces <cwd>/.claude/skills with the agent's skills, so Claude finds them as project skills.
@@ -22,15 +25,113 @@ export function writeSkills(cwd: string, skills: AgentSkill[]) {
   }
 }
 
+const SECRETS_FILE = 'secrets.json'
+
 export function machineSecrets(home: string): Record<string, string> {
   let file: unknown
   try {
-    file = JSON.parse(readFileSync(join(home, 'secrets.json'), 'utf8'))
+    file = JSON.parse(readFileSync(join(home, SECRETS_FILE), 'utf8'))
   } catch {
     return {}
   }
   if (typeof file !== 'object' || file === null) return {}
   return Object.fromEntries(Object.entries(file).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+}
+
+// Why the file cannot be changed. Its words are written here and never quote
+// the file, which holds other secrets.
+export class SecretsFileError extends Error {}
+
+// Every entry of the file as it is, including any that is not a string. A file
+// that is not there holds nothing, and so does an empty one. One that is there
+// and cannot be read as an object is an error, and is never rewritten, since
+// rewriting it would lose whatever a person put in it.
+function readSecretsFile(home: string): Record<string, unknown> {
+  let text: string
+  try {
+    text = readFileSync(join(home, SECRETS_FILE), 'utf8')
+  } catch (error) {
+    if (hasCode(error, 'ENOENT')) return {}
+    throw error
+  }
+  if (!text.trim()) return {}
+  let file: unknown
+  try {
+    file = JSON.parse(text)
+  } catch {
+    throw new SecretsFileError(`${SECRETS_FILE} is not valid JSON, so the daemon left it alone.`)
+  }
+  if (typeof file !== 'object' || file === null || Array.isArray(file)) {
+    throw new SecretsFileError(`${SECRETS_FILE} does not hold names and values, so the daemon left it alone.`)
+  }
+  return Object.fromEntries(Object.entries(file))
+}
+
+// Replaces the file whole, readable by its owner alone. The new content is
+// written and flushed beside it first, so a crash leaves the old file or the new
+// one and never half of either.
+function writeSecretsFile(home: string, entries: Record<string, unknown>) {
+  mkdirSync(home, { recursive: true, mode: 0o700 })
+  const file = join(home, SECRETS_FILE)
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    const fd = openSync(temp, 'wx', 0o600)
+    try {
+      writeSync(fd, `${JSON.stringify(entries, null, 2)}\n`)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(temp, file)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
+}
+
+// Sets the value of one name, or removes the name when `value` is null, and says
+// whether the file held the name. `forget` is given the value being replaced or
+// removed, if there is one, before anything is written. If it throws, the file
+// is as it was, so the same request can be made again.
+export function changeMachineSecret(home: string, name: string, value: string | null, forget: (gone: string) => void): { had: boolean } {
+  const entries = readSecretsFile(home)
+  const had = Object.hasOwn(entries, name)
+  const before = entries[name]
+  if (typeof before === 'string' && before !== value) forget(before)
+  if (value === null) {
+    if (!had) return { had }
+    delete entries[name]
+  } else {
+    entries[name] = value
+  }
+  writeSecretsFile(home, entries)
+  return { had }
+}
+
+// Deletes each session's MCP config in `dir` that holds `value`. A config holds
+// the values its plugins were started with, so a value set again or removed is
+// gone from the computer only when the configs that held it are. The next message
+// to a session writes its config again. A value sits in the file as JSON writes
+// it, with quotes, backslashes and control characters escaped.
+export function forgetValueIn(dir: string, value: string) {
+  const needle = JSON.stringify(value).slice(1, -1)
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch (error) {
+    // No session has started on this computer yet, so there are no configs.
+    if (hasCode(error, 'ENOENT')) return
+    throw error
+  }
+  for (const name of names.filter((entry) => entry.endsWith('.mcp.json'))) {
+    const file = join(dir, name)
+    if (readFileSync(file, 'utf8').includes(needle)) rmSync(file)
+  }
+}
+
+// The names of the secrets the plugins take.
+export function pluginSecretNames(plugins: AgentPlugin[]): string[] {
+  return [...new Set(plugins.flatMap((plugin) => Object.values(plugin.kind === 'stdio' ? plugin.config.env ?? {} : plugin.config.headers ?? {}).map((ref) => ref.secret)))]
 }
 
 // The plugins as MCP server entries, and any secret names this machine lacks.
