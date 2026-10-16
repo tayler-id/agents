@@ -568,6 +568,8 @@ type Recipe = {                                   // changed. Today's fields, th
 - The copy's first message places no turn on a seat, since the door and seats are other steps. It runs where any message to the agent runs.
 - Nothing promotes a memory about a person to the team's, offers a Mac's own Claude Code setup as a recipe, or adds recall and sort tools to memory.
 
+Export and import are built too, in files of their own, as decision 11's option (b), which Tayler chose on 2026-10-16.
+
 ## People's own machines
 
 Today a Mac runs the same daemon as a box (`daemon/agentsd.ts`), and agents can live there. Commands on a Mac ask first (`server/permissions.ts`). The desktop app is an Electron window on the server's tailnet address (`desktop/main.cjs`). On the terminal sessions branch, a person connects a folder with `daemon/folders.ts`, and `daemon/transcripts.ts` reads Claude Code's transcripts for sessions started there into the record (`server/migrations/0013_local_sessions.sql` there, with `connected_folders`, `sessions.folder_id` and `sessions.cwd`). The Mac computer-use helper is a design only, in `docs/design/computers.md`. `approval_rules.instance_id` exists, and no tool uses it.
