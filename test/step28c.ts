@@ -196,6 +196,33 @@ try {
   const alive = await asSession(yDm.session, 'GET', '/v1/team-agents')
   check(idleSession !== '' && listed.status === 403 && reported.status === 403 && alive.status === 200,
     `a session with no turn running on the machine gets no agent tools, and one with a turn running does (${listed.status} ${reported.status}, then ${alive.status})`)
+
+  // 5. Sends at the same moment from one turn stop at the cap, and two agents' first messages to
+  // each other at the same moment make one thread. The pair lock and the fan-out lock hold these.
+  const burst = await parkInDm('burster', await make('burster'))
+  const bursts = await Promise.all(Array.from({ length: MAX_SENDS_PER_TURN + 3 }, (_, k) =>
+    asSession(burst.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: `Burst ${k}.` })))
+  const passedBurst = bursts.filter((b) => b.status === 200).length
+  check(burst.held && passedBurst === MAX_SENDS_PER_TURN && bursts.filter((b) => b.status === 409).length === 3,
+    `${bursts.length} sends from one turn at the same moment: ${passedBurst} went through and ${bursts.length - passedBurst} were refused (${bursts.map((b) => b.status).join(' ')})`)
+  const [p1, p2] = [await make('pone'), await make('ptwo')]
+  const [one1, two1] = [await parkInDm('pone', p1), await parkInDm('ptwo', p2)]
+  const firsts = await Promise.all([
+    asSession(one1.session, 'POST', '/v1/team-agents/messages', { to: 'ptwo', text: 'First one.' }),
+    asSession(two1.session, 'POST', '/v1/team-agents/messages', { to: 'pone', text: 'First two.' }),
+  ])
+  const threads = await all(`select c.id from conversations c where c.kind = 'agents'
+    and exists (select 1 from conversation_members m where m.conversation_id = c.id and m.agent_id = $1)
+    and exists (select 1 from conversation_members m where m.conversation_id = c.id and m.agent_id = $2)`, [p1, p2])
+  check(firsts.every((f) => f.status === 200) && threads.length === 1,
+    `two agents' first messages to each other at the same moment make one thread (${threads.length} threads, ${firsts.map((f) => f.status).join(' ')})`)
+
+  // 6. What an agent says in private work is not copied into a thread the team reads.
+  const secret = await parkInDm('secretive', await make('secretive'))
+  await db.query(`update conversations set visibility = 'private' where id = $1`, [secret.dm])
+  const leaked = await asSession(secret.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: 'Private work, passed on.' })
+  check(secret.held && leaked.status === 409 && JSON.stringify(leaked.json).includes('private'),
+    `an agent in private work sends nothing to another agent (${leaked.status} ${JSON.stringify(leaked.json)})`)
   check(!/deadlock detected/.test(apiLog()), 'the API reported no deadlock')
 } catch (error) {
   failures.push(messageOf(error))
