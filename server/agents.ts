@@ -396,8 +396,11 @@ export async function saveTemplate(client: pg.PoolClient, person: Person, agentI
 // Gives an agent a recipe's setup: who it is, its skills, plugins, routines, hooks
 // and the team's memories. Each part goes through the call a person's edit does, so
 // a recipe can't carry anything the agent's page would refuse.
-export async function installRecipe(client: pg.PoolClient, person: Person, agentId: string, recipe: Recipe) {
-  if (recipe.hooks.length > 0 || recipe.plugins.length > 0) await mustRunOn(client, person, agentId)
+// `plugins` says whether the recipe's plugins are held to the machine's owner too, as a copy's and an import's are. A
+// template's plugins are not, since on main a person could start an agent from a template with plugins on any
+// machine they could make an agent on. Holding them is a change only Tayler makes. Hooks are held either way.
+export async function installRecipe(client: pg.PoolClient, person: Person, agentId: string, recipe: Recipe, plugins: 'held' | 'as-before') {
+  if (recipe.hooks.length > 0 || (plugins === 'held' && recipe.plugins.length > 0)) await mustRunOn(client, person, agentId)
   await updateAgent(client, person, agentId, { title: recipe.title, role: recipe.role, instructions: recipe.instructions, model: recipe.model })
   for (const skill of recipe.skills) await saveSkill(client, person, agentId, skill)
   for (const plugin of recipe.plugins) await savePlugin(client, person, agentId, plugin)
@@ -417,7 +420,7 @@ async function install(client: pg.PoolClient, person: Person, agentId: string, s
   if (!template) throw new HttpError(404, 'no such template')
   const recipe = Recipe.safeParse(template.recipe)
   if (!recipe.success) throw new HttpError(409, `The template can't be read. ${z.prettifyError(recipe.error)}`)
-  await installRecipe(client, person, agentId, recipe.data)
+  await installRecipe(client, person, agentId, recipe.data, 'as-before')
 }
 
 // Makes a new agent owned by the person, on a machine they may use, with a recipe's
@@ -432,7 +435,7 @@ export async function agentFromRecipe(
   if (copiedFrom !== null) {
     await client.query('update agents set copied_from_agent_id = $2, avatar = (select avatar from agents where id = $2) where id = $1', [agentId, copiedFrom])
   }
-  await installRecipe(client, person, agentId, recipe)
+  await installRecipe(client, person, agentId, recipe, 'held')
   const conversationId = await openDm(client, person, where.name)
   return { agentId: AgentId.parse(agentId), name: where.name, conversationId: ConversationId.parse(conversationId), carried: carriedBy(recipe) }
 }

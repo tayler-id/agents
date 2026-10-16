@@ -50,7 +50,7 @@ const BREAKS: Break[] = [
   { name: 'hooks-on-teammates-mac', checks: ['step24'], why: "an agent's owner puts hooks on a teammate's Mac", red: ["Bob makes a blank agent on Alice's Mac, as before, but cannot add a hook to it"],
     edits: [{ file: AGENTS, anchor: '  await mustRunOn(client, person, agent.id)\n', replace: '' }] },
   { name: 'recipe-on-teammates-mac', checks: ['step24c'], why: "an import's plugins go on a teammate's Mac", red: ["an import with plugins and no hooks cannot go on a teammate's Mac either"],
-    edits: [{ file: AGENTS, anchor: '  if (recipe.hooks.length > 0 || recipe.plugins.length > 0) await mustRunOn(client, person, agentId)\n', replace: '' }] },
+    edits: [{ file: AGENTS, anchor: "  if (recipe.hooks.length > 0 || (plugins === 'held' && recipe.plugins.length > 0)) await mustRunOn(client, person, agentId)\n", replace: '' }] },
   { name: 'admin-no-exception', checks: ['step24'], why: "an admin cannot put hooks or plugins on a teammate's Mac", red: ["an admin may put a copy with hooks and plugins on a teammate's Mac"],
     edits: [{ file: RECIPE, anchor: "  return person.role === 'admin' || machineOwner === null || machineOwner === person.id\n", replace: '  return machineOwner === null || machineOwner === person.id\n' }] },
   { name: 'hook-secret', checks: ['step24'], why: 'a command that holds a key is stored', red: ['a command that holds a secret value is refused'],
