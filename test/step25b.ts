@@ -1,7 +1,8 @@
 // Fit design step 16, the app. An agent's page lists the secrets its plugins name.
 // A person sets one in a masked field, sees where it is set and when, replaces it,
 // and removes it after being asked. A computer that is stopped says so, and a
-// teammate who may not set a value on someone else's computer is told why. This
+// teammate is told whose computer it is and is offered no field. A computer that refuses a
+// value says why in the row, and keeps what was typed. This
 // drives the page in Chromium, Firefox and WebKit at desktop and phone width
 // against a real API and daemon, with a pass-through in front of the people port
 // that keeps every request the page makes, so the check can say the value left
@@ -12,7 +13,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -58,6 +59,8 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
 const shots: string[] = []
 const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows[0]
+// A value read from a row, as the text it must be.
+const stringOf = (value: unknown): string => z.string().parse(value)
 
 // The node running this check comes first on the PATH, so the stand-in for Claude runs on it.
 const env = (extra: Record<string, string>): NodeJS.ProcessEnv => ({ ...process.env, PATH: `${dirname(process.execPath)}:${must(process.env.PATH, 'a PATH')}`, ...extra })
@@ -122,7 +125,7 @@ async function main() {
       cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'],
       env: env({ AGENTS_API: `http://127.0.0.1:${String(PORTS.machines)}`, AGENTS_TOKEN: macA.token, AGENTS_HOME: homeA, AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(home, 'scenario.json') }),
     }))
-    const instanceA = must(await one('select id from instances where name = $1', [computer.a]), 'the first computer').id as string
+    const instanceA = stringOf(must(await one('select id from instances where name = $1', [computer.a]), 'the first computer').id)
     // The control connection is up a moment after the machine reports in.
     const ready = await within(30, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'online')
     if (!ready) throw new Error('the daemon never reported in')
@@ -142,7 +145,7 @@ async function main() {
 async function run(engine: string, scout: string, bobby: string, people: Tap) {
   const first = `ui-first-${engine}-${randomBytes(10).toString('hex')}`
   const second = `ui-second-${engine}-${randomBytes(10).toString('hex')}`
-  const typed = `typed-by-bob-${engine}-${randomBytes(10).toString('hex')}`
+  const bounced = `bounced-by-the-computer-${engine}-${randomBytes(10).toString('hex')}`
   const unsent = `typed-never-sent-${engine}-${randomBytes(10).toString('hex')}`
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
@@ -160,7 +163,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const line = row(page, 'SENTRY_TOKEN')
     const listed = await visible(page, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
     if (!listed) console.log(`      the page showed:\n${(await page.locator('.page-body').innerText().catch(() => '(no page body)')).split('\n').slice(-12).join('\n')}`)
-    check(listed && /Not set on mac-a/.test(await line.innerText()), `${engine}: an agent's page lists the secret its plugin names, and says it is not set on the agent's computer`)
+    check(listed && /Not set from the app on mac-a/.test(await line.innerText()), `${engine}: an agent's page lists the secret its plugin names, and says it is not set on the agent's computer`)
     check(await page.getByRole('heading', { name: 'Secrets' }).isVisible() && /goes to mac-a.* and nowhere else/.test(await page.locator('.page-body').innerText()), `${engine}: and says where a value goes`)
     await shot(page, `${engine}-secrets-not-set-desktop`)
     check(await serious(page) === 0, `${engine}: the page has no serious accessibility problems`)
@@ -170,6 +173,21 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     check(await page.getByRole('form', { name: 'Set SENTRY_TOKEN' }).isVisible(), `${engine}: the row offers to set the value`)
     check(await field.getAttribute('type') === 'password' && await field.getAttribute('autocomplete') === 'off', `${engine}: the value is typed in a masked field`)
     check(await page.getByRole('button', { name: 'Set value' }).isDisabled(), `${engine}: Set value waits for a value to be typed`)
+
+    // A computer that refuses the value, here because its folder cannot be written, says why in the row. What was
+    // typed stays in the field, and nothing is written on the computer.
+    const fileBefore = existsSync(secretsFile) ? readFileSync(secretsFile, 'utf8') : null
+    await field.fill(bounced)
+    chmodSync(homeA, 0o500)
+    try {
+      await page.getByRole('button', { name: 'Set value' }).click()
+      check(await visible(page, '.secrets > li [role="alert"]', 15, /could not change what this computer holds/), `${engine}: a computer that refuses the value says why in the row`)
+    } finally {
+      chmodSync(homeA, 0o700)
+    }
+    check(await field.inputValue() === bounced && (existsSync(secretsFile) ? readFileSync(secretsFile, 'utf8') : null) === fileBefore,
+      `${engine}: what was typed stays in the field, and the computer is as it was`)
+
     await field.fill(first)
     check(!holds(await page.locator('body').innerText(), first), `${engine}: what is typed is not on the page as text`)
     await page.getByRole('button', { name: 'Set value' }).click()
@@ -185,13 +203,12 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     await page.reload()
     check(await visible(page, '.secrets > li', LISTS_SEC, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: opened again, the row names the person who set it`)
 
-    // A teammate sees it, and may not change it on someone else's computer.
+    // A teammate sees it, and is offered no way to change it on someone else's computer.
     const bobsPage = await open(bob, scout)
     check(await visible(bobsPage, '.secrets > li', LISTS_SEC, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: a teammate sees where it is set and by whom, and not the value`)
-    await bobsPage.getByLabel('Value of SENTRY_TOKEN').fill(typed)
-    await bobsPage.getByRole('button', { name: 'Replace value' }).click()
-    check(await visible(bobsPage, '.secrets > li [role="alert"]', 15, /teammate's own computer/), `${engine}: a teammate who tries to change it is told the computer is someone else's`)
-    check(JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === first, `${engine}: and the computer is unchanged`)
+    check(await visible(bobsPage, '.secrets > li p', 15, new RegExp(`is ${alice}'s own computer, so only they can set a value on it`)), `${engine}: and is told whose computer it is`)
+    check(await bobsPage.getByLabel('Value of SENTRY_TOKEN').count() === 0 && await bobsPage.getByRole('button', { name: /^(Set|Replace) value$/ }).count() === 0,
+      `${engine}: with no field or button to change it`)
     await shot(bobsPage, `${engine}-secrets-teammate-desktop`)
 
     // Replacing, and removing after being asked.
@@ -205,7 +222,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     check(JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === second && /Set on mac-a/.test(await row(page, 'SENTRY_TOKEN').innerText()), `${engine}: Keep leaves the value where it is`)
     await line.getByRole('button', { name: 'Remove', exact: true }).click()
     await line.getByRole('button', { name: 'Yes, remove' }).click()
-    check(await visible(page, '.secrets > li', 15, /Not set on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
+    check(await visible(page, '.secrets > li', 15, /Not set from the app on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
 
     // A computer that is stopped says so, and takes no value. Nothing runs on it to report its status, so the check
     // sets it by hand: running while a value is typed, and stopped after.
@@ -226,8 +243,11 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const sentFirst = requests[0]
     check(requests.length === 1 && sentFirst?.method === 'POST' && /^\/v1\/secrets\/[0-9a-f-]{36}\/value$/.test(sentFirst.url) && holds(sentFirst.body, first) && !holds(sentFirst.url, first) && !holds(JSON.stringify(sentFirst.headers), first),
       `${engine}: the value left the page in one request, in the body of the post that sets it`)
-    const echoed = people.heard.filter((heard) => heard.kind === 'response' && [first, second, typed].some((text) => holds(heard.body, text)))
+    const echoed = people.heard.filter((heard) => heard.kind === 'response' && [first, second, bounced].some((text) => holds(heard.body, text)))
     check(echoed.length === 0, `${engine}: no answer the API sent holds a value`)
+    const bouncedPosts = people.heard.filter((heard) => heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, bounced))
+    check(bouncedPosts.length === 1 && bouncedPosts[0]?.kind === 'request' && /^\/v1\/secrets\/[0-9a-f-]{36}\/value$/.test(bouncedPosts[0].url) && holds(bouncedPosts[0].body, bounced),
+      `${engine}: the value the computer refused left the page once, in the body of the post that asked`)
     const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, unsent))
     check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is saved as it is typed`)
 

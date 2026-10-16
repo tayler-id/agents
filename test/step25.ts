@@ -12,7 +12,9 @@
 // starts the plugin. Setting it again replaces it, and an agent in the middle of
 // a turn restarts with its next message. A value removed from the app is gone
 // from the computer. A stopped computer, an unreadable or unwritable secrets
-// file, a reserved name and a teammate's computer each refuse and store nothing.
+// file, a reserved name, a name the daemon's environment already sets and a teammate's
+// computer each refuse and store nothing. A value set as a computer connects survives the
+// record's comparison with what the computer says it holds.
 // An agent that repeats a value is scrubbed at once, a removed value too.
 //   node --env-file=.env --env-file=.env.test test/step25.ts
 
@@ -27,7 +29,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import pg from 'pg'
 import WebSocket, { WebSocketServer } from 'ws'
 import { z } from 'zod'
-import { LINK_ANSWER_MS, LINK_PATH, LINK_UNSUPPORTED, LINK_WAIT_MS, ToDaemon } from '../shared/link.ts'
+import { LINK_ANSWER_MS, LINK_PATH, LINK_UNSUPPORTED, LINK_WAIT_MS, ToDaemon, type FromDaemon } from '../shared/link.ts'
 import { messageOf } from '../shared/errors.ts'
 import { parseJson } from '../shared/json.ts'
 import { bytesOf } from '../shared/websocket.ts'
@@ -57,9 +59,11 @@ const rand = () => randomBytes(12).toString('hex')
 const value = {
   first: `first25-${rand()}`, second: `second"25\\${rand()}é`, third: `third25-${rand()}`, fourth: `fourth25-${rand()}`,
   fifth: `fifth25-${rand()}`, sixth: `sixth25-${rand()}`, seventh: `seventh25-${rand()}`, eighth: `eighth25-${rand()}`,
-  carl: `carl25-${rand()}`,
+  carl: `carl25-${rand()}`, shadowed: `shadowed25-${rand()}`,
 }
 const SENT = Object.values(value)
+// What the daemon's environment holds under ENV_HELD_TOKEN, which a value set from the app could never replace.
+const ENV_HELD = `held-by-the-environment25-${rand()}`
 const BAD_MARK = `badframe25-${rand()}`
 const CORRUPT_MARK = `corrupt25-${rand()}`
 const HAND_PLACED = `by-hand25-${rand()}`
@@ -76,6 +80,8 @@ const closers: (() => Promise<void>)[] = []
 const logs: { name: string; text: () => string }[] = []
 const one = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows[0]
 const all = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows
+// A value read from a row or an answer, as the text it must be.
+const stringOf = (value: unknown): string => z.string().parse(value)
 
 // The node running this check comes first on the PATH, so the stand-in for Claude
 // (which starts with `env node`) runs on it and not on whatever else the PATH holds.
@@ -91,11 +97,11 @@ const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 // A daemon on a computer, with what it printed kept. Its Claude is the stand-in
 // that holds a message asking it to work slowly.
 type Daemon = { text: () => string; stop: () => Promise<void> }
-function startDaemon(token: string, agentsHome: string, api: string, scenario: string): Daemon {
+function startDaemon(token: string, agentsHome: string, api: string, scenario: string, extra: Record<string, string> = {}): Daemon {
   const log: string[] = []
   const child = spawn(process.execPath, ['daemon/agentsd.ts'], {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
-    env: env({ AGENTS_API: api, AGENTS_TOKEN: token, AGENTS_HOME: agentsHome, AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude-slow.ts'), AGENTS_FAKE_SCENARIO: scenario }),
+    env: env({ AGENTS_API: api, AGENTS_TOKEN: token, AGENTS_HOME: agentsHome, AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude-slow.ts'), AGENTS_FAKE_SCENARIO: scenario, ...extra }),
   })
   for (const stream of [child.stdout, child.stderr]) stream.setEncoding('utf8').on('data', (text: string) => { log.push(text) })
   const exited = new Promise<void>((resolve) => child.once('exit', () => { resolve() }))
@@ -196,10 +202,10 @@ async function main() {
   const odd = agentOn('odd', computer.a)
   const bobby = agentOn('bobby', computer.b)
   const carl = agentOn('carl', computer.c)
-  const instanceA = must(await one('select id from instances where name = $1', [computer.a]), 'the first computer').id as string
-  const instanceC = must(await one('select id from instances where name = $1', [computer.c]), 'the third computer').id as string
-  const teamId = must(await one('select id from teams where name = $1', [team]), 'the team').id as string
-  const personId = async (login: string) => must(await one('select id from people where login = $1', [login]), login).id as string
+  const instanceA = stringOf(must(await one('select id from instances where name = $1', [computer.a]), 'the first computer').id)
+  const instanceC = stringOf(must(await one('select id from instances where name = $1', [computer.c]), 'the third computer').id)
+  const teamId = stringOf(must(await one('select id from teams where name = $1', [team]), 'the team').id)
+  const personId = async (login: string) => stringOf(must(await one('select id from people where login = $1', [login]), login).id)
 
   // The stand-in for Claude repeats a value when asked for it.
   const scenario = join(home, 'scenario.json')
@@ -213,7 +219,7 @@ async function main() {
   check(true, 'the API starts, and the app reaches it through the pass-through')
 
   const linkUp = (tapped: Tap, from: number) => within(40, async () => tapped.heard.slice(from).some((h) => h.kind === 'server-bytes' && h.url === LINK_PATH && h.text.startsWith('HTTP/1.1 101')))
-  const daemons = [startDaemon(macA.token, homes.a, THROUGH_TAP, scenario)]
+  const daemons = [startDaemon(macA.token, homes.a, THROUGH_TAP, scenario, { ENV_HELD_TOKEN: ENV_HELD })]
   const opened = await linkUp(machines, 0) && await within(20, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'online')
   check(opened, "the computer's daemon starts, reports in, and opens its control connection to the API")
   if (!opened) throw new Error('the daemon never opened its control connection, so nothing after it can run')
@@ -231,15 +237,15 @@ async function main() {
     return must(found, `${name}'s row`).id
   }
   const secretId = await secretIdOf(alice, scout, 'SENTRY_TOKEN')
-  const dm = async (agent: string, who = alice) => (await ask(who, 'POST', '/v1/conversations', { kind: 'dm', agent })).json.conversationId as string
+  const dm = async (agent: string, who = alice) => stringOf((await ask(who, 'POST', '/v1/conversations', { kind: 'dm', agent })).json.conversationId)
   const say = async (conversation: string, text: string, who = alice) => {
     const sent = await ask(who, 'POST', `/v1/conversations/${conversation}/messages`, { text })
     if (sent.status !== 200) throw new Error(`could not say "${text}": ${String(sent.status)} ${sent.text}`)
   }
   const replies = async (conversation: string): Promise<string[]> =>
-    (await all(`select body from messages where conversation_id = $1 and speaker = 'agent' order by seq`, [conversation])).map((row) => row.body as string)
+    (await all(`select body from messages where conversation_id = $1 and speaker = 'agent' order by seq`, [conversation])).map((row) => stringOf(row.body))
   const errors = async (conversation: string): Promise<string[]> => (await all(
-    `select e.text from events e join sessions s on s.id = e.session_id where s.conversation_id = $1 and e.kind = 'error' order by e.seq`, [conversation])).map((row) => row.text as string)
+    `select e.text from events e join sessions s on s.id = e.session_id where s.conversation_id = $1 and e.kind = 'error' order by e.seq`, [conversation])).map((row) => stringOf(row.text))
   // Says something to an agent and returns its next reply, or null if none comes.
   const exchange = async (conversation: string, text: string): Promise<string | null> => {
     const before = (await replies(conversation)).length
@@ -293,7 +299,7 @@ async function main() {
 
   // The agent's next message starts with the plugin, which gets the value.
   const scoutReplied = await exchange(scoutDm, 'hello again') === 'fake reply'
-  const scoutSession = (await one('select id from sessions where conversation_id = $1 and agent_id = $2 order by created_at desc limit 1', [scoutDm, scout])).id as string
+  const scoutSession = stringOf((await one('select id from sessions where conversation_id = $1 and agent_id = $2 order by created_at desc limit 1', [scoutDm, scout])).id)
   const McpConfig = z.object({ mcpServers: z.record(z.string(), z.looseObject({ command: z.string().optional(), args: z.array(z.string()).optional(), env: z.record(z.string(), z.string()).optional() })) })
   const configFile = `sessions/${scoutSession}.mcp.json`
   const startsOf = (agent: string) => readFileSync(join(homes.a, 'agents', agent, '.fake', 'starts.jsonl'), 'utf8').trim().split('\n')
@@ -329,7 +335,7 @@ async function main() {
   const onComputer = filesHolding(homes.a, value.first)
   check(onComputer.join() === ['secrets.json', configFile].sort().join(),
     `on the computer the value is in its secrets file and the config that starts the plugin, and no other file (${onComputer.join(', ')})`)
-  check(daemons[0]?.text().includes('secret SENTRY_TOKEN stored') === true, 'the daemon logs the name it stored and nothing else')
+  check(daemons[0]?.text().includes('secret SENTRY_TOKEN stored') === true, 'the daemon logs the name it stored')
 
   // A teammate, a stranger and values that cannot be set.
   const bobTries = await ask(bob, 'POST', valueRoute, { value: value.third })
@@ -357,11 +363,19 @@ async function main() {
   check(reserved.every((answer) => answer.status === 400 && /can't be set from the app/.test(answer.json.error))
     && /itself/.test(reserved[0]?.json.error) && /AGENTS_/.test(reserved[1]?.json.error) && /proxy/.test(reserved[2]?.json.error),
   `a name the computer uses for itself, one the daemon owns and a proxy setting are refused, each with why (${reserved.map((a) => String(a.json.error)).join(' | ')})`)
-  const personal = (await one(`insert into secrets (team_id, scope, person_id, name, stored_in) values ($1, 'person', $2, 'PERSONAL_TOKEN', 'machine') returning id`, [teamId, await personId(alice)])).id as string
+  const personal = stringOf((await one(`insert into secrets (team_id, scope, person_id, name, stored_in) values ($1, 'person', $2, 'PERSONAL_TOKEN', 'machine') returning id`, [teamId, await personId(alice)])).id)
   const personalTries = await ask(alice, 'POST', `/v1/secrets/${personal}/value`, { value: value.third })
   check(personalTries.status === 400 && /agent's plugin/.test(personalTries.json.error), `a secret that belongs to no agent is refused (${String(personalTries.status)})`)
   const putFrames = machines.heard.filter((h) => h.kind === 'server-bytes' && h.url === LINK_PATH && h.text.includes('"secret_put"')).length
   check(putFrames === 1, `only the one value that could be set was sent to the computer (${String(putFrames)} secret_put frame)`)
+
+  // A name the daemon's environment already sets. The environment is read before the secrets file, so a value
+  // stored here would be set and never used, and the computer says so instead.
+  check((await ask(alice, 'POST', `/v1/agents/${odd}/plugins`, pluginOf('envy', 'ENV_HELD_TOKEN'))).status === 200, 'a plugin that needs ENV_HELD_TOKEN is added to odd')
+  const shadowed = await ask(alice, 'POST', `/v1/secrets/${await secretIdOf(alice, odd, 'ENV_HELD_TOKEN')}/value`, { value: value.shadowed })
+  check(shadowed.status === 409 && /environment already sets ENV_HELD_TOKEN/.test(shadowed.json.error) && !holds(shadowed.text, value.shadowed)
+    && !('ENV_HELD_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))) && (await all('select 1 from secret_sets where instance_id = $1 and name = $2', [instanceA, 'ENV_HELD_TOKEN'])).length === 0,
+  `a value for a name the daemon's environment already sets is refused with why, and stored nowhere (${String(shadowed.status)} ${String(shadowed.json.error)})`)
 
   // Setting it again replaces the value, and the old one is gone from the computer.
   const holdingFirst = harnessPid(homes.a, scoutSession)
@@ -465,7 +479,7 @@ async function main() {
   // While it is stopped the value is lost from its home, as when a box is made again with an empty volume.
   writeFileSync(secretsFile, JSON.stringify({ HAND_PLACED }), { mode: 0o600 })
   const beforeRestart = machines.heard.length
-  daemons.push(startDaemon(macA.token, homes.a, THROUGH_TAP, scenario))
+  daemons.push(startDaemon(macA.token, homes.a, THROUGH_TAP, scenario, { ENV_HELD_TOKEN: ENV_HELD }))
   check(await linkUp(machines, beforeRestart) && await within(30, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'online'), 'the computer starts again and opens its connection')
   check(!holds(readFileSync(secretsFile, 'utf8'), value.eighth) && carrying(value.eighth).every((c) => c.heard.kind === 'request'), 'nothing was kept or sent for it while it was stopped')
   check(await within(20, async () => (await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 0),
@@ -489,10 +503,11 @@ async function main() {
   check((await ask(alice, 'POST', `/v1/agents/${carl}/plugins`, pluginOf('crm', 'CARL_TOKEN'))).status === 200, 'a plugin that needs CARL_TOKEN is added to carl, whose computer has no daemon here')
   const carlRoute = `/v1/secrets/${await secretIdOf(alice, carl, 'CARL_TOKEN')}`
   const received: ToDaemon[] = []
-  // Connects as the third computer and answers each frame the way `behave` says.
-  const playDaemon = async (behave: (ws: WebSocket, frame: ToDaemon) => void) => {
+  // Connects as the third computer, says what it holds if `hello` is given, and answers each frame the way `behave` says.
+  const playDaemon = async (behave: (ws: WebSocket, frame: ToDaemon) => void, hello?: FromDaemon) => {
     const link = await probe({ authorization: `Bearer ${macC.token}` })
     if (link.refusedWith !== null) throw new Error(`the third computer's connection was refused with ${String(link.refusedWith)}`)
+    if (hello) link.ws.send(JSON.stringify(hello))
     link.ws.on('message', (data) => {
       const frame = parseJson(ToDaemon, bytesOf(data).toString('utf8'))
       if (!frame.ok) return
@@ -511,6 +526,40 @@ async function main() {
   check(carlRemove.status === 200 && carlRemove.json.had === true && received[1]?.type === 'secret_remove' && await lines() === 0, 'and the secret_remove frame, and records that the value is gone')
   obliging.close()
   await boundedBy(closedWith(obliging), 5, 0)
+
+  // A computer lists the secrets it holds when it connects, and the record drops each row for a name that is not
+  // listed. A value set while that comparison is under way has to survive it. The check holds a lock on one row,
+  // so the comparison cannot finish until the check lets it.
+  const aliceId = await personId(alice)
+  for (const name of ['KEPT_ONE', 'LOCKED_ONE']) await db.query('insert into secret_sets (team_id, instance_id, name, set_by) values ($1, $2, $3, $4)', [teamId, instanceC, name, aliceId])
+  const holder = new pg.Client({ connectionString: process.env.DATABASE_URL })
+  closers.push(async () => {
+    await holder.query('rollback').catch(() => undefined)
+    await holder.end().catch(() => undefined)
+  })
+  await holder.connect()
+  await holder.query('begin')
+  await holder.query('select 1 from secret_sets where instance_id = $1 and name = $2 for update', [instanceC, 'LOCKED_ONE'])
+  const framesBefore = received.length
+  const reporting = await playDaemon((ws, frame) => { ws.send(JSON.stringify({ type: 'secret_stored', id: frame.id, name: frame.name })) }, { type: 'secrets_held', names: ['KEPT_ONE'] })
+  check(await within(10, async () => (await one(`select 1 from pg_stat_activity where wait_event_type = 'Lock' and query like 'delete from secret_sets%'`)) !== undefined),
+    "the record's comparison with a computer's list waits on a row that another transaction holds")
+  const settingDuring = ask(alice, 'POST', `${carlRoute}/value`, { value: value.carl })
+  const answered = { during: false }
+  void settingDuring.then(() => { answered.during = true }, () => { answered.during = true })
+  check(await within(10, async () => received.length > framesBefore), 'a value is set on the computer while the comparison waits, and the computer stores it')
+  // Nothing can be waited for when what has to be seen is nothing happening.
+  await sleep(1000)
+  check(!answered.during && await lines() === 2, 'the set waits for the comparison, and no row is written before it has finished')
+  await holder.query('rollback')
+  const afterComparison = await boundedBy(settingDuring, 15, null)
+  const kept = (await all('select name from secret_sets where instance_id = $1 order by name', [instanceC])).map((row) => String(row.name)).join()
+  check(afterComparison?.status === 200 && kept === 'CARL_TOKEN,KEPT_ONE',
+    `once the comparison has finished the set is recorded, a name the computer lists is kept and one it does not is dropped (${String(afterComparison?.status)} ${kept})`)
+  await holder.end()
+  reporting.close()
+  await boundedBy(closedWith(reporting), 5, 0)
+  await db.query('delete from secret_sets where instance_id = $1', [instanceC])
 
   const wrong = await playDaemon((ws, frame) => { ws.send(JSON.stringify({ type: 'secret_removed', id: frame.id, name: frame.name, had: true })) })
   const wrongAnswer = await ask(alice, 'POST', `${carlRoute}/value`, { value: value.carl })
