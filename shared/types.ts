@@ -79,6 +79,30 @@ export const AgentPlugin = z.discriminatedUnion('kind', [
 ])
 export type AgentPlugin = z.infer<typeof AgentPlugin>
 
+// The Claude Code hooks an agent's setup can name. A hook runs a command on the
+// agent's machine when its event happens. The two tool events can say which tools
+// they apply to, and the others take no matcher.
+export const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop'] as const
+export const HookEvent = z.enum(HOOK_EVENTS)
+export type HookEvent = z.infer<typeof HookEvent>
+const TOOL_HOOK_EVENTS: readonly HookEvent[] = ['PreToolUse', 'PostToolUse']
+export const takesMatcher = (event: HookEvent) => TOOL_HOOK_EVENTS.includes(event)
+// Claude Code's own default for a hook is 60 seconds. The longest one may be given is
+// ten minutes, since a hook holds up the turn it runs in.
+export const HOOK_TIMEOUT_MAX_SEC = 600
+export const HOOK_COMMAND_MAX = 2000
+export const HOOK_MATCHER_MAX = 200
+export const AgentHook = z.object({
+  name: z.string().regex(NAME, 'a hook name is lowercase letters, digits and dashes'),
+  event: HookEvent,
+  matcher: z.string().min(1).max(HOOK_MATCHER_MAX).nullable().default(null),
+  command: z.string().trim().min(1).max(HOOK_COMMAND_MAX),
+  timeoutSec: z.number().int().min(1).max(HOOK_TIMEOUT_MAX_SEC).nullable().default(null),
+}).refine((hook) => hook.matcher === null || takesMatcher(hook.event), {
+  path: ['matcher'], message: 'only PreToolUse and PostToolUse hooks name the tools they apply to',
+})
+export type AgentHook = z.infer<typeof AgentHook>
+
 // A pipeline stage's session: the outcomes its report_result tool accepts, the
 // tools it may use without asking, and the most it may spend. The budget is
 // required, so a stage payload without one fails the daemon's parse instead of
@@ -106,9 +130,11 @@ export const MessagePayload = z.object({
   stage: StageSpec.optional(),
   // The most the session may spend, for a pipeline stage or a replay.
   maxBudgetUsd: z.number().optional(),
-  // The agent's skills, its plugins (MCP servers) and what it remembers.
+  // The agent's skills, its plugins (MCP servers), its hooks and what it remembers.
+  // A session sent no hooks, such as a pipeline stage's, runs none.
   skills: z.array(AgentSkill).optional(),
   plugins: z.array(AgentPlugin).optional(),
+  hooks: z.array(AgentHook).optional(),
   memory: z.string().optional(),
 })
 export type MessagePayload = z.infer<typeof MessagePayload>
