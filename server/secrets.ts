@@ -14,7 +14,8 @@ import { HttpError, scrub, type Person } from './record.ts'
 import { LINK_WAIT_MS } from '../shared/link.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
-import { SecretId, SetSecretBody, SettableName, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
+import { SecretId, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
+import { SetSecretBody, SettableName } from '../shared/secret-rules.ts'
 
 const UUID = '([0-9a-f-]{36})'
 
@@ -22,8 +23,6 @@ const UUID = '([0-9a-f-]{36})'
 // part of the agent and the computer is null when the secret has none.
 const Found = z.object({
   name: z.string(),
-  scope: z.enum(['person', 'team', 'agent']),
-  stored_in: z.string(),
   agent_id: AgentId.nullable(),
   instance_id: InstanceId.nullable(),
   computer: z.string().nullable(),
@@ -38,17 +37,15 @@ type Target = { secretId: SecretId; name: string; teamId: Person['team_id']; ins
 // says what the person can do.
 async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
   const row = await maybe(pool,
-    `select s.name, s.scope, s.stored_in, a.id as agent_id, i.id as instance_id, i.name as computer, i.owner_id, i.status
+    `select s.name, a.id as agent_id, i.id as instance_id, i.name as computer, i.owner_id, i.status
      from secrets s
      left join agents a on a.id = s.agent_id and a.archived_at is null
      left join instances i on i.id = a.home_instance_id
      where s.id = $1 and s.team_id = $2`, [secretId, person.team_id])
   if (!row) throw new HttpError(404, 'no such secret')
   const found = Found.parse(row)
-  // A secret of a person or the team has no agent, and so no computer to go to.
-  if (found.scope !== 'agent') throw new HttpError(400, "Only a secret an agent's plugin needs can be set from the app so far.")
-  if (found.stored_in !== 'machine') throw new HttpError(400, 'This secret is kept where the app cannot set it.')
-  if (!found.agent_id) throw new HttpError(404, 'no such agent')
+  // A secret of a person or the team has no agent, and so no computer to go to. Nor has one whose agent is archived.
+  if (!found.agent_id) throw new HttpError(400, "Only a secret an active agent's plugin needs can be set from the app so far.")
   if (!found.instance_id || !found.computer || !found.status) throw new HttpError(409, 'This agent has no computer to put a secret on.')
   const named = SettableName.safeParse(found.name)
   if (!named.success) throw new HttpError(400, `This secret's name can't be set from the app (${problems(named.error)}). Name it something else in the plugin.`)

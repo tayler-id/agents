@@ -5,7 +5,8 @@
 // set from the app" in docs/design/target-architecture.md.
 
 import { z } from 'zod'
-import { SecretName, SecretValue, SettableName } from './secrets.ts'
+import { SecretName } from './secrets.ts'
+import { SecretValue, SettableName } from './secret-rules.ts'
 
 export const LINK_PATH = '/v1/instance/control'
 
