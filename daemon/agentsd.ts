@@ -338,6 +338,9 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   // A session sent no hooks runs none, so the file never carries another session's into it.
   const hooks = payload.hooks ?? []
   writeHooks(cwd, hooks)
+  // A plugin with the name of a server this session has of its own is overwritten in the config,
+  // and its name must not allow the session's own server's tools to run without asking.
+  const ownServers = new Set<string>([...(stage?.isolated ? [] : ['team-record']), ...(stage ? ['stage'] : [TEAM_AGENTS_SERVER]), ...(computer ? [COMPUTER_SERVER] : [])])
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
     instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', computer && webmcpOrigins.length ? WEB_GUIDE : '', payload.instructions, payload.memory]
@@ -345,7 +348,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null, webmcpOrigins),
     // A judge's session gets no team-record tools, so it cannot read the author's session.
     allowedTools: [
-      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
+      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).filter((name) => !ownServers.has(name)).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
       ...(computer ? COMPUTER_TOOLS_ALLOWED : []),
     ],
     acceptEdits: payload.permissions.workspaceWrites,
