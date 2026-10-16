@@ -294,16 +294,16 @@ async function sendDocuments(sessionId: string, workspaceId: string) {
 
 // The seat a session runs on, as the API answers and records it: null on a
 // machine without seats, and for a session that gets no computer, such as a judge's.
-async function seatOf(command: Extract<Command, { kind: 'message' }>): Promise<SeatNumber | null> {
-  if (!seats || command.payload.stage?.isolated) return null
-  return SessionSeat.parse(await api('POST', `/v1/instance/sessions/${command.sessionId}/seat`, {})).seat
+async function seatOf(command: Extract<Command, { kind: 'message' }>): Promise<SessionSeat> {
+  if (!seats || command.payload.stage?.isolated) return { seat: null, agentId: null }
+  return SessionSeat.parse(await api('POST', `/v1/instance/sessions/${command.sessionId}/seat`, {}))
 }
 
 // That seat's computer, once it is up.
-async function computerOf(seat: SeatNumber | null): Promise<SeatComputer | null> {
+async function computerOf({ seat, agentId }: SessionSeat): Promise<SeatComputer | null> {
   if (seat === null) return null
   if (!seats) throw new Error(`the API placed a session on seat ${seat} of a machine without seats`)
-  return seats.computer(seat)
+  return seats.computer(seat, agentId)
 }
 
 function startSession(command: Extract<Command, { kind: 'message' }>, seat: SeatNumber | null, computer: SeatComputer | null): HarnessSession {
@@ -389,7 +389,8 @@ async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'suite') return checker.suite(command.payload)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
-    const seat = await seatOf(command)
+    const place = await seatOf(command)
+    const seat = place.seat
     // A process keeps the setup it started with. Once the agent's instructions,
     // skills, plugins, model or seat change, the next message restarts the
     // session with the new setup, resuming the same conversation. One mid-turn
@@ -401,7 +402,7 @@ async function apply(command: Command): Promise<unknown> {
     }
     const { workspaceId } = command.payload
     if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
-    startSession(command, seat, await computerOf(seat)).send(command.payload.text, [command.id])
+    startSession(command, seat, await computerOf(place)).send(command.payload.text, [command.id])
     return null
   }
   if (command.kind === 'stop') {
@@ -482,8 +483,8 @@ function resume(turn: unknown) {
   console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
   inOrder(command.sessionId, async () => {
     try {
-      const seat = await seatOf(command)
-      startSession(command, seat, await computerOf(seat)).send(command.payload.text, covers)
+      const place = await seatOf(command)
+      startSession(command, place.seat, await computerOf(place)).send(command.payload.text, covers)
     } catch (error) {
       failTurn(command.sessionId, covers, messageOf(error))
     }

@@ -12,7 +12,7 @@ import { many, maybe, one } from './db.ts'
 import { HttpError } from './record.ts'
 import { AgentId, SeatId, type SessionId } from '../shared/ids.ts'
 import { movesInto, type InstanceId } from '../shared/onboarding.ts'
-import { FIRST_SEAT, SEAT_MOVES, SeatNumber, SeatRow } from '../shared/seats.ts'
+import { FIRST_SEAT, SEAT_MOVES, SeatNumber, SeatRow, type SessionSeat } from '../shared/seats.ts'
 import { UNFINISHED_TURNS } from '../shared/turns.ts'
 
 // An idle agent keeps its seat this long after its last turn there, so an agent
@@ -71,7 +71,7 @@ const SeatOf = z.object({ id: SeatId, n: SeatNumber, agent_id: AgentId.nullable(
 // on a box ran before seats. It is recorded on the session, for the screen's
 // privacy rule and the app's Screen button. Null on a machine without seats,
 // such as a Mac.
-export async function sessionSeat(client: pg.PoolClient, instanceId: InstanceId, sessionId: SessionId): Promise<SeatNumber | null> {
+export async function sessionSeat(client: pg.PoolClient, instanceId: InstanceId, sessionId: SessionId): Promise<SessionSeat> {
   const session = await maybe(client, 'select agent_id from sessions where id = $1 and instance_id = $2', [sessionId, instanceId])
   if (!session) throw new HttpError(404, 'no such session on this machine')
   const { agent_id: agentId } = SessionAgent.parse(session)
@@ -79,9 +79,9 @@ export async function sessionSeat(client: pg.PoolClient, instanceId: InstanceId,
     [instanceId, agentId, FIRST_SEAT])).map((row) => SeatOf.parse(row))
   const held = seats.find((seat) => agentId !== null && seat.agent_id === agentId)
   const seat = held ?? seats.find((s) => s.n === FIRST_SEAT)
-  if (!seat) return null
+  if (!seat) return { seat: null, agentId: null }
   await client.query('update sessions set seat_id = $2 where id = $1', [sessionId, seat.id])
-  return seat.n
+  return { seat: seat.n, agentId: held ? agentId : null }
 }
 
 // A machine reports a seat up for the agent it started it for. Only a seat

@@ -67,8 +67,11 @@ export type Seats = {
   firstUp: Promise<void>
   // The computer's seat rows, each time they change.
   follow(rows: SeatRow[]): void
-  // Seat n's computer once it is up, for a session that runs on it.
-  computer(n: SeatNumber): Promise<SeatComputer>
+  // Seat n's computer once it is up, for a session that runs on it. With the agent
+  // the API gave the seat to, it waits until the rows name that agent as the holder
+  // and the last agent's pages are closed, since the rows reach the box by their own
+  // stream and can come after the API's answer.
+  computer(n: SeatNumber, agentId: AgentId | null): Promise<SeatComputer>
   // Who holds a seat's screen, as the API last said.
   setControl(n: SeatNumber, control: ScreenControl): void
   // A running seat's Xvnc socket, for a person's Screen view, or null.
@@ -228,11 +231,11 @@ export function startSeats(config: SeatsConfig): Seats {
       for (const row of next) rows.set(row.n, row)
       settle()
     },
-    async computer(n) {
+    async computer(n, agentId) {
       const deadline = Date.now() + SEAT_WAIT_MS
       for (;;) {
         const seat = running.get(n)
-        if (seat?.working) {
+        if (seat?.working && (agentId === null || seat.holder === agentId)) {
           await seat.cleared
           return { n, socket: seat.socket, cdpUrl: seat.desktop.cdpUrl, browserMcp: config.browserMcp }
         }

@@ -15,7 +15,7 @@ export const seatRoutes: Route[] = [
   // A machine starting a session, or handing it a message, asks which seat it runs on.
   ['machines', 'POST', new RegExp(`^/v1/instance/sessions/${UUID}/seat$`), async (req, [sessionId]): Promise<SessionSeat> => {
     const instanceId = InstanceId.parse((await instanceFrom(req)).id)
-    return { seat: await tx((client) => sessionSeat(client, instanceId, pathId(SessionId, sessionId))) }
+    return tx((client) => sessionSeat(client, instanceId, pathId(SessionId, sessionId)))
   }],
 
   // A machine's seat is up for the agent it started it for.

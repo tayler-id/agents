@@ -47,8 +47,10 @@ export const SEAT_MOVES = {
 } as const satisfies Record<SeatStatus, readonly SeatStatus[]>
 
 // The seat a session runs on, as the API answers its machine: a number, or
-// null on a machine without seats.
-export const SessionSeat = z.object({ seat: SeatNumber.nullable() })
+// null on a machine without seats. With it comes the agent the seat is held by,
+// which the machine waits to see as the holder before it starts the session
+// there, so the last agent's pages are gone first. Null when no agent holds it.
+export const SessionSeat = z.object({ seat: SeatNumber.nullable(), agentId: AgentId.nullable() })
 export type SessionSeat = z.infer<typeof SessionSeat>
 
 // A machine's report that a seat is up for the agent it was started for.
