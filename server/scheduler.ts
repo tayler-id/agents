@@ -126,7 +126,9 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
   // Every turn of a session is its agent's, so they take one seat, or wait for one
   // while every seat is busy. The seat is the agent's from now on, for this turn and
   // the next, until the reclaim rule gives it to another agent.
-  if (machine.takes_work && machine.seated && machine.agent_id !== null
+  // A session that gets no computer, such as a judge's, takes no seat and never waits for one.
+  const seatless = turns.every((turn) => MessagePayload.safeParse(turn.payload).data?.stage?.isolated === true)
+  if (machine.takes_work && machine.seated && machine.agent_id !== null && !seatless
     && (await takeSeat(client, machine.id, machine.agent_id)).kind === 'busy') {
     await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
     for (const turn of turns) {

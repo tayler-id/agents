@@ -279,6 +279,9 @@ try {
   await act(tools2, { action: 'left_click', coordinate: dockButton('Whiteboard') })
   const seat2Windows = await within(20, async () => onDisplay(container, 2, 'xterm').length === 1
     && pagesOf(container, 2).some((page) => page.url === WHITEBOARD_URL))
+  if (!(seat2?.n === 2 && seat2.status === 'ready' && seat2Windows)) {
+    console.log(`      seat 2 row ${JSON.stringify(seat2)}, windows ${seat2Windows}, jwm ${onDisplay(container, 2, 'jwm').length}, xterm ${onDisplay(container, 2, 'xterm').length}, seat 1 xterm ${onDisplay(container, 1, 'xterm').length}`)
+  }
   check(seat2?.n === 2 && seat2.status === 'ready' && onDisplay(container, 2, 'jwm').length === 1 && seat2Windows && onDisplay(container, 1, 'xterm').length === 1,
     "a second agent's task takes seat 2, whose own dock opens a terminal and the whiteboard on seat 2's screen only")
 
@@ -304,13 +307,17 @@ try {
   const machine = must(await one('select name, personal, owner_id, seat_cap from instances where id = $1', [instanceId]), 'the computer')
   const line = waiting ? turnLine(TurnWaitRow.parse(await turnOf()), { name: String(machine.name), personal: Boolean(machine.personal), owner_id: String(machine.owner_id), seat_cap: Number(machine.seat_cap) },
     bobId, { name: 'Bob', login: bob }, (time) => time) : '(no wait)'
-  check(waiting && line === 'Waiting for a seat on your computer, 2 of 2 busy', `a third agent's turn waits for a seat while both are busy ("${line}")`)
+  check(waiting && line === 'Waiting for a seat on your computer, 2 of 2 held', `a third agent's turn waits for a seat while both are busy ("${line}")`)
 
   // Painter's seat has been idle longer than the reclaim rule asks, so the
   // runner gives it to the waiting turn, and seat 1 is cleared for it.
   await db.query(`update seats set last_turn_at = now() - make_interval(mins => $3 + 1) where instance_id = $1 and agent_id = $2`, [instanceId, painterId, RECLAIM_IDLE_MIN])
   const ran = await within(120, async () => (await one('select status from turns where session_id = $1 order by requested_at desc limit 1', [inkerSession]))?.status === 'done')
   const seat1 = await one('select agent_id, status from seats where instance_id = $1 and n = 1', [instanceId])
+  if (!(ran && seat1?.agent_id === inkerId && seat1.status === 'ready')) {
+    console.log(`      inker turn done ${ran}, seat 1 row ${JSON.stringify(seat1)}`)
+  }
+  console.log(`      seat 1 after reclaim: xterm ${onDisplay(container, 1, 'xterm').length}, whiteboard ${pagesOf(container, 1).some((page) => page.url === WHITEBOARD_URL)}, jwm ${onDisplay(container, 1, 'jwm').length}`)
   check(ran && seat1?.agent_id === inkerId && seat1.status === 'ready' && onDisplay(container, 1, 'xterm').length === 0
     && !pagesOf(container, 1).some((page) => page.url === WHITEBOARD_URL) && onDisplay(container, 1, 'jwm').length === 1,
   "once painter's seat has been idle long enough, the waiting turn takes it back and runs there, without painter's terminal and whiteboard, and the dock stays")

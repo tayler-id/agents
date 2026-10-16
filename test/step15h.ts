@@ -105,8 +105,18 @@ try {
     viewer, { name: 'Bob', login: bob.login }, (time) => time)
   check(eveTurn.status === 'waiting' && eveTurn.wait === 'seat' && eveTurn.command_id === null && (await seatOf('eve')).length === 0,
     "a fifth agent's turn waits for a seat, with no command, while all four are busy")
-  check(line(bob.id) === 'Waiting for a seat on your computer, 4 of 4 busy' && line(carol.id) === "Waiting for a seat on Bob's computer, 4 of 4 busy",
+  check(line(bob.id) === 'Waiting for a seat on your computer, 4 of 4 held' && line(carol.id) === "Waiting for a seat on Bob's computer, 4 of 4 held",
     `its waiting line says so (Bob reads "${line(bob.id)}", Carol "${line(carol.id)}")`)
+
+  // A judge's session gets no computer, so its turn takes no seat and never waits for one.
+  agents.set('judge', await agentOn('judge', computer))
+  const judgeTurn = await message(bob, 'judge')
+  const waited = judgeTurn.status === 'waiting' && judgeTurn.wait === 'seat'
+  await db.query(`update turns set payload = payload || '{"stage":{"outcomes":["done"],"allow":[],"maxBudgetUsd":1,"isolated":true}}'::jsonb where id = $1`, [judgeTurn.id])
+  await placeWaitingTurns(null, async () => { throw new Error('no turn should be given up on here') })
+  const judged = await one('select status, command_id from turns where id = $1', [judgeTurn.id])
+  check(waited && judged.status === 'placed' && judged.command_id !== null && (await seatOf('judge')).length === 0,
+    'an isolated session, such as a judge, is placed with every seat held and takes no seat')
 
   // The reclaim rule: ann's turn is over, but her last one was moments ago.
   const giveUp = async () => { throw new Error('no turn should be given up on here') }

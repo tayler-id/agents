@@ -173,7 +173,7 @@ Secrets for one agent live in its seat's own files. A person sets one from the a
 3. The scheduler places the turn. The daemon starts the session with the `computer` MCP server pointed at `:4` and port 9225.
 4. Alice opens Screen on `scout`'s page, and the API pairs her with seat 4's tunnel. If she takes over, seats 1 to 3 keep working.
 
-When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 busy".
+When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 held".
 
 A Mac has no seats. Its agents run without a screen, as today, until the helper gives it one (see "People's own machines").
 

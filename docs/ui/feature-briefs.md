@@ -55,7 +55,7 @@ Status words: **live** is in the running app, **landing** is in its final test r
 ## 3. Seats and every agent's own desktop
 
 - **What it does.** Every agent has its own desktop with no setup. Each person's computer, 8 GB and 4 CPUs, exists by itself and holds 4 seats, one per working agent, each with its own screen and browser. A person's logins are shared across their seats, so logging in once logs in every agent. Agents that lived on the Mac move to their person's computer. The desktop gets a dock with a browser, a terminal and a whiteboard, and normal windows.
-- **How it works.** When an agent needs to work, it takes a free seat. When all four are busy, its turn waits with "Waiting for a seat on <name>'s computer, 4 of 4 busy". A seat whose agent has been idle longest is reclaimed. One agent's private work hides only its own seat's screen.
+- **How it works.** When an agent needs to work, it takes a free seat. When all four are busy, its turn waits with "Waiting for a seat on <name>'s computer, 4 of 4 held". A seat whose agent has been idle longest is reclaimed. One agent's private work hides only its own seat's screen.
 - **What the UI needs.**
   - The seat-waiting line, which arrives as another wait reason in section 1.
   - On the computer's page, the seats and which agent holds each.
@@ -177,7 +177,7 @@ Tayler asked on 2026-10-16 for "a thumbs up and every other traditional thing" o
 
 - **Shape arguments.** `attachments` and `reactions` take `{ conversation: id }` or `{ session: id }`, the way `turn_waits` takes `{ conversation }` or `{ task }`.
 - **Setting a key while the computer sleeps.** The API wakes the computer, holds the request until the key is delivered, for up to 90 s, and answers 200. Meanwhile the UI shows "Starting <name>'s computer to save the key". A timeout answers 504 with a reason. No 409, and no retry by the person.
-- **Seats' waiting line.** The `seat` wait reason arrives with the join of seats to the scheduler, so "Waiting for a seat on <name>'s computer, 4 of 4 busy" shows through the waiting line in section 1.
+- **Seats' waiting line.** The `seat` wait reason arrives with the join of seats to the scheduler, so "Waiting for a seat on <name>'s computer, 4 of 4 held" shows through the waiting line in section 1.
 - **Voice reply audio.** It arrives as binary frames on the voice chat's WebSocket and plays through the Web Audio API, with an AudioWorklet loaded from the app's own origin. No `<audio>` element, no blob URL, and no change to the page's policy.
 - **Teach a task.** Stop gets a save or discard choice, with `DELETE /v1/lessons/{id}` to discard. Everyone watching the agent's screen sees that a recording is on. The UI session's proposal in `docs/design/teach-a-task.md` on `ui` is the starting point when Teach a task is built.
 - **Shapes on the chat view.** `reactions` is live. `attachments` and `pins` are read as snapshots every few seconds, which keeps the view at five live shapes. HTTPS, which comes with the connector sign-ins, lets the limit go.

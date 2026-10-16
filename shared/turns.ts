@@ -67,9 +67,9 @@ export function turnLine(turn: TurnWaitRow, machine: { name: string; personal: b
   viewer: string, owner: { name: string | null; login: string } | undefined, clock: (time: string) => string): string {
   if (turn.status === 'running') return `No new step since ${clock(turn.stuck_since)}. It may be stuck.`
   if (turn.wait === 'seat') {
-    // A turn waits for a seat only while every seat is busy.
+    // A turn waits for a seat only while every seat is held.
     if (!machine) return 'Waiting for a free seat'
-    const busy = `${machine.seat_cap} of ${machine.seat_cap} busy`
+    const busy = `${machine.seat_cap} of ${machine.seat_cap} held`
     if (!machine.personal || !machine.owner_id) return `Waiting for a seat on ${machine.name}, ${busy}`
     if (machine.owner_id === viewer) return `Waiting for a seat on your computer, ${busy}`
     return owner ? `Waiting for a seat on ${owner.name ?? owner.login}'s computer, ${busy}` : `Waiting for a seat on ${machine.name}, ${busy}`
