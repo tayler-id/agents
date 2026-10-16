@@ -79,7 +79,7 @@ export function AgentSecrets({ agentId }: { agentId: string }) {
                     {secret.description && <span className="muted small">{secret.description}</span>}
                   </div>
                   <SecretValue
-                    name={secret.name} computer={computer?.name ?? 'its computer'} held={held} blocked={blockedOf(computer, me.person.id, login)} asleep={computer !== undefined && computer.status !== 'online'}
+                    name={secret.name} computer={computer?.name ?? 'its computer'} held={held} blocked={blockedOf(computer, me.person.id, login)} asleep={computer !== undefined && computer.kind === 'box' && computer.status !== 'online'}
                     set={async (value) => new Date((await call(SecretStored, 'POST', `/v1/secrets/${secret.id}/value`, { value })).setAt)}
                     remove={async () => { await call(SecretRemoved, 'POST', `/v1/secrets/${secret.id}/remove`, {}) }}
                   />

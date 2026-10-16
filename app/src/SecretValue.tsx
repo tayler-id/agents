@@ -23,7 +23,8 @@ type Props = {
   held: SecretHeld | null
   // Why no one here may put a value on the computer, in words, or null. The words show, and no control does.
   blocked: string | null
-  // Whether the computer is not running. A request for one starts it first, and the control says so while it waits.
+  // Whether the computer is a box that is not running. A request for one starts it first, and the control says so
+  // while it waits. A Mac is never asleep here, since nothing starts a Mac and a request for one is refused at once.
   asleep: boolean
   // Puts a value on the computer and answers with when it took it. Rejects with the reason it did not.
   set: (value: string) => Promise<Date>

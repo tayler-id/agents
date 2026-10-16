@@ -52,7 +52,7 @@ const WAKE_SEC = 8
 const id = randomBytes(4).toString('hex')
 const team = `secrets25b-${id}`
 const [alice, bob] = [`alice25b-${id}@local`, `bob25b-${id}@local`]
-const computer = { a: `mac-a-${id}`, b: `mac-b-${id}` }
+const computer = { a: `mac-a-${id}`, b: `mac-b-${id}`, box: `box-b-${id}` }
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step25b-')))
 const homeA = join(home, 'computer-a')
 const secretsFile = join(homeA, 'secrets.json')
@@ -135,6 +135,12 @@ async function main() {
   const agentOn = (name: string, on: string) => z.object({ agentId: z.string() }).parse(JSON.parse(admin('add-agent', team, name, on, '', 'You help.'))).agentId
   const scout = agentOn('scout', computer.a)
   const bobby = agentOn('bobby', computer.b)
+  // Bob's own box, asleep, with nothing to start it, since the runner is off here.
+  const bobId = stringOf(must(await one('select id from people where login = $1', [bob]), 'bob').id)
+  const teamId = stringOf(must(await one('select id from teams where name = $1', [team]), 'the team').id)
+  await db.query(`insert into instances (team_id, name, kind, owner_id, token_sha256, claimed_by, claimed_at, personal, idle_since, stopped_at, status)
+    values ($1, $2, 'box', $3, $4, $3, now(), true, now(), now(), 'offline')`, [teamId, computer.box, bobId, randomBytes(32).toString('hex')])
+  const boxy = agentOn('boxy', computer.box)
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
   buildHost()
   const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team, AGENTS_SECRET_WAKE_SEC: String(WAKE_SEC) }, join(home, 'streams'))
@@ -152,25 +158,26 @@ async function main() {
     const ready = await within(30, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'online')
     if (!ready) throw new Error('the daemon never reported in')
     const plugin = (secret: string) => ({ name: 'sentry', kind: 'stdio', config: { command: process.execPath, args: ['sentry.js'], env: { TOKEN: { secret } } } })
-    for (const [who, agent, secret] of [[alice, scout, 'SENTRY_TOKEN'], [bob, bobby, 'JIRA_TOKEN']] as const) {
+    for (const [who, agent, secret] of [[alice, scout, 'SENTRY_TOKEN'], [bob, bobby, 'JIRA_TOKEN'], [bob, boxy, 'BOXY_TOKEN']] as const) {
       const saved = await asPerson(PEOPLE, who, 'POST', `/v1/agents/${agent}/plugins`, plugin(secret))
       if (saved.status !== 200) throw new Error(`could not add the plugin: ${String(saved.status)} ${saved.text}`)
     }
     for (const who of [alice, bob]) await within(20, async () => (await shapeRows(PEOPLE, who, 'secrets')).rows.length >= 1)
-    for (const engine of engines) await run(engine, scout, bobby, people)
+    for (const engine of engines) await run(engine, scout, bobby, boxy, people)
   } finally {
     await people.close()
     await api.stop()
   }
 }
 
-async function run(engine: string, scout: string, bobby: string, people: Tap) {
+async function run(engine: string, scout: string, bobby: string, boxy: string, people: Tap) {
   const unique = (word: string) => `ui-${word}-${engine}-${randomBytes(10).toString('hex')}`
   const first = unique('first')
   const second = unique('second')
   const bounced = unique('bounced-by-the-computer')
   const unsent = unique('typed-never-sent')
   const slept = unique('sent-while-starting')
+  const boxed = unique('sent-while-the-box-starts')
   const left = unique('typed-then-left')
   const canceled = unique('typed-then-canceled')
   const heardBefore = people.heard.length
@@ -300,9 +307,8 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     check(await visible(page, '.secrets > li', 15, /Not set from the app on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
     await watched(page, 'the first page, at its end')
 
-    // A computer that is stopped is not a reason to refuse. The page offers its controls, the request starts the computer and
-    // waits, and the page says so meanwhile. Nothing here starts the computer, so the wait ends in a refusal that names it.
-    // Nothing runs on the computer to report its status, so the check sets it by hand.
+    // A Mac that is not connected is not a reason to hide the control. Nothing starts a Mac, so the request is refused at
+    // once, and the page never says the Mac is starting. Nothing runs on the Mac to report its status, so the check sets it.
     await db.query(`update instances set status = 'offline' where name = $1`, [computer.b])
     const stoppedPage = await open(bob, bobby)
     const jiraSet = button(stoppedPage, 'Set value of JIRA_TOKEN')
@@ -316,12 +322,27 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     await jiraSet.click()
     await jiraField.fill(slept)
     await jiraField.press('Enter')
-    check(await visible(stoppedPage, '.secrets > li [role=status]', 5, new RegExp(`Starting ${computer.b}'s computer to save the key`)), `${engine}: while the computer starts, the page says it is starting ${computer.b}'s computer to save the key`)
-    await snap(stoppedPage, 'secrets-starting-desktop')
-    check(await visible(stoppedPage, '.secrets > li .error', WAKE_SEC + 15, new RegExp(`${computer.b} did not start within ${String(WAKE_SEC)} seconds`)) && await jiraField.inputValue() === slept,
-      `${engine}: when it does not start in time the page shows the reason that names it, and the field keeps what was typed`)
+    check(await visible(stoppedPage, '.secrets > li .error', 5, new RegExp(`${computer.b} is not connected`)) && await jiraField.inputValue() === slept
+      && await stoppedPage.locator('.secrets > li [role=status]').filter({ hasText: /Starting/ }).count() === 0,
+    `${engine}: a Mac that is not connected is refused at once with a reason that names it, the page never says it is starting, and the field keeps what was typed`)
     await jiraField.press('Escape')
     await watched(stoppedPage, 'the stopped computer page, at its end')
+
+    // Bob's own box is asleep. The request asks for it to start and waits, and the page says so meanwhile. Nothing here
+    // starts it, so the wait ends in a refusal that names it.
+    const boxPage = await open(bob, boxy)
+    const boxySet = button(boxPage, 'Set value of BOXY_TOKEN')
+    const boxyField = boxPage.getByLabel('Value of BOXY_TOKEN', { exact: true })
+    await visible(boxPage, '.secrets > li', LISTS_SEC, /BOXY_TOKEN/)
+    await boxySet.click()
+    await boxyField.fill(boxed)
+    await boxyField.press('Enter')
+    check(await visible(boxPage, '.secrets > li [role=status]', 5, new RegExp(`Starting ${computer.box}'s computer to save the key`)), `${engine}: while the box starts, the page says it is starting ${computer.box}'s computer to save the key`)
+    await snap(boxPage, 'secrets-starting-desktop')
+    check(await visible(boxPage, '.secrets > li .error', WAKE_SEC + 15, new RegExp(`${computer.box} did not start within ${String(WAKE_SEC)} seconds`)) && await boxyField.inputValue() === boxed,
+      `${engine}: when it does not start in time the page shows the reason that names it, and the field keeps what was typed`)
+    await boxyField.press('Escape')
+    await watched(boxPage, 'the sleeping box page, at its end')
 
     // The page sent the value in one request, to the route that sets a value, and made no other request to the secrets routes.
     const requests = people.heard.flatMap((heard) => (heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, first) ? [heard] : []))
@@ -336,8 +357,9 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && [unsent, left, canceled].some((text) => holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, text)))
     check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is sent as it is typed or when the field is left`)
     const posts = people.heard.slice(heardBefore).flatMap((heard) => (heard.kind === 'request' && heard.method === 'POST' && heard.url.startsWith('/v1/secrets/') ? [heard] : []))
-    check(posts.map((post) => post.url.split('/').pop()).join(' ') === 'value value value remove value' && holds(posts[0]?.body ?? '', bounced) && holds(posts[1]?.body ?? '', first) && holds(posts[2]?.body ?? '', second) && holds(posts[4]?.body ?? '', slept),
-      `${engine}: the page asked to set a value four times and to remove it once, and made no other request to the secrets routes`)
+    check(posts.map((post) => post.url.split('/').pop()).join(' ') === 'value value value remove value value' && holds(posts[0]?.body ?? '', bounced) && holds(posts[1]?.body ?? '', first) && holds(posts[2]?.body ?? '', second)
+      && holds(posts[4]?.body ?? '', slept) && holds(posts[5]?.body ?? '', boxed),
+    `${engine}: the page asked to set a value five times and to remove it once, and made no other request to the secrets routes`)
 
     // Phone width: the same page fits the screen, with the field in reach.
     const phone = await open(alice, scout, { viewport: WIDTHS.phone, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })

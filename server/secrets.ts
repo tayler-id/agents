@@ -77,8 +77,7 @@ async function targetOf(person: Person, secretId: SecretId): Promise<Target> {
 
 // Asks for a computer that is not running to be started. The runner's loop starts a box a person or a run
 // holds, on its next tick, and this makes that tick now. A person's own box that sleeps starts only once
-// its sleep mark is cleared, as for a box something wants, so a request for a key clears it first. Nothing
-// starts a Mac, so a request for one waits out its time for its daemon to come.
+// its sleep mark is cleared, as for a box something wants, so a request for a key clears it first.
 const wakeComputer = async (target: Target): Promise<void> => {
   if (target.kind === 'box' && target.personal) await wakeOwnBox(target.instanceId)
   console.log(`asking for ${target.computer} to start, since a key waits for it`)
@@ -86,13 +85,17 @@ const wakeComputer = async (target: Target): Promise<void> => {
 }
 
 // The computer's control connection, and the wait for it when it is not up. A computer that reports it is
-// running may be reconnecting after the API restarted, so it is waited for a moment. One that is not running
+// running may be reconnecting after the API restarted, so it is waited for a moment. A box that is not running
 // is asked to start and waited for until it has had time to, since a person should not have to set a computer
-// up or try again. The value is held in this request while it waits, and nowhere else.
+// up or try again. Nothing starts a Mac, so one that is not running is refused at once. The value is held in
+// this request while it waits, and nowhere else.
 async function linkTo(target: Target, did: 'saved' | 'removed'): Promise<Link> {
   const present = linkOf(target.instanceId)
   if (present) return present
   const running = target.status === 'online'
+  if (!running && target.kind === 'mac') {
+    throw new HttpError(409, `${target.computer} is not connected, so the key was not ${did}. Nothing here can start a Mac. Open Agents on it, then try again.`)
+  }
   if (!running) await wakeComputer(target)
   const waitMs = running ? LINK_WAIT_MS : WAKE_MS
   const arrived = await waitForLink(target.instanceId, waitMs)

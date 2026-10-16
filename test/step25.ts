@@ -492,8 +492,8 @@ async function main() {
   const removedAgain = await ask(alice, 'POST', removeRoute)
   check(removedAgain.status === 200 && removedAgain.json.had === false, 'removing it again changes nothing and says so')
 
-  // A computer that is not running is asked to start, and the request waits for it. Nothing here starts it, so the wait
-  // runs out in a refusal that names the computer, and nothing is kept for when it starts.
+  // A Mac that is not connected is refused at once. Nothing starts a Mac, so a request does not wait for one or ask for
+  // it to start, and nothing is kept for when it connects.
   const startAsks = (name: string) => api.text().split('\n').filter((line) => line.includes(`asking for ${name} to start`)).length
   check((await ask(alice, 'POST', valueRoute, { value: value.seventh })).status === 200, 'a value is set again while the computer runs')
   await daemons[0]?.stop()
@@ -502,14 +502,17 @@ async function main() {
   const stoppedAt = Date.now()
   const stopped = await ask(alice, 'POST', valueRoute, { value: value.eighth })
   const stoppedFor = (Date.now() - stoppedAt) / 1000
-  check(stopped.status === 504 && stopped.json.error.includes(computer.a) && stopped.json.error.includes(`within ${String(WAKE_SEC)} seconds`) && stopped.json.error.includes('not saved') && !holds(stopped.text, value.eighth),
-    `a request for a stopped computer waits, then answers 504 with a reason that names the computer (${String(stopped.status)} ${String(stopped.json.error)})`)
-  check(stoppedFor >= WAKE_SEC - 0.5 && stoppedFor < WAKE_SEC + 5, `it waits the time it is given, and no longer (${stoppedFor.toFixed(1)} s of ${String(WAKE_SEC)})`)
-  check(startAsks(computer.a) === askedBefore + 1, 'and it asks once for the computer to be started')
+  check(stopped.status === 409 && stopped.json.error.includes(computer.a) && stopped.json.error.includes('not connected') && stopped.json.error.includes('not saved') && !holds(stopped.text, value.eighth),
+    `a request for a Mac that is not connected answers 409 with a reason that names it (${String(stopped.status)} ${String(stopped.json.error)})`)
+  check(stoppedFor < 3, `it answers at once, without waiting for the Mac (${stoppedFor.toFixed(1)} s)`)
+  check(startAsks(computer.a) === askedBefore, 'and it asks nothing to start the Mac')
   await db.query(`update instances set status = 'stale' where id = $1`, [instanceA])
+  const silentAt = Date.now()
   const silentRemove = await ask(alice, 'POST', removeRoute)
-  check(silentRemove.status === 504 && silentRemove.json.error.includes(computer.a) && silentRemove.json.error.includes('not removed') && (await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 1,
-    `a computer that stopped answering is waited for the same way, and removing from it ends in a 504 that names it, with the record still saying the value is set (${String(silentRemove.status)} ${String(silentRemove.json.error)})`)
+  const silentFor = (Date.now() - silentAt) / 1000
+  check(silentRemove.status === 409 && silentRemove.json.error.includes(computer.a) && silentRemove.json.error.includes('not removed') && silentFor < 3
+    && (await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 1,
+  `a Mac that stopped answering is refused the same way, and removing from it answers 409 at once, with the record still saying the value is set (${String(silentRemove.status)} ${String(silentRemove.json.error)})`)
   // While it is stopped the value is lost from its home, as when a box is made again with an empty volume.
   writeFileSync(secretsFile, JSON.stringify({ HAND_PLACED }), { mode: 0o600 })
   const beforeRestart = machines.heard.length
@@ -520,20 +523,6 @@ async function main() {
     'the computer says what it holds when it connects, and the record stops saying a value is set that it lost')
   check((await ask(alice, 'POST', valueRoute, { value: value.eighth })).status === 200 && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.eighth, 'and the value is set once it runs')
   check((await ask(alice, 'POST', removeRoute)).status === 200 && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), 'and removed')
-
-  // A computer that starts while a request waits gets the value the request held. This check's own daemon plays the start.
-  await daemons.at(-1)?.stop()
-  check(await within(20, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'offline'), 'the computer is stopped again')
-  const askedAgain = startAsks(computer.a)
-  const holding = ask(alice, 'POST', valueRoute, { value: value.ninth })
-  check(await within(10, async () => startAsks(computer.a) > askedAgain), 'a person sets a value, and the API asks for the computer to be started')
-  const beforeStart = machines.heard.length
-  daemons.push(startDaemon(macA.token, homes.a, THROUGH_TAP, scenario, { ENV_HELD_TOKEN: ENV_HELD }))
-  const delivered = await boundedBy(holding, WAKE_SEC + 10, null)
-  check(delivered?.status === 200 && delivered.json.name === 'SENTRY_TOKEN' && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.ninth && !holds(delivered.text, value.ninth),
-    `the computer comes up while the request waits, and the request delivers the value and answers 200 (${String(delivered?.status)} ${delivered?.text.slice(0, 100) ?? ''})`)
-  check(await linkUp(machines, beforeStart) && (await setRowOf(instanceA))?.set_by === await personId(alice), 'and the record says who set it')
-  check((await ask(alice, 'POST', removeRoute)).status === 200 && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), 'and the value is removed again')
 
   // A person's own box that is asleep. A key for it wakes it the way the runner wakes a box something wants: the runner
   // starts its container (here the stand-in for Docker), the box's daemon comes up, and the request delivers the value.
@@ -557,6 +546,20 @@ async function main() {
   check(woke?.status === 200 && existsSync(boxFile) && JSON.parse(readFileSync(boxFile, 'utf8')).BOX_TOKEN === value.box && !holds(woke.text, value.box),
     `the box's daemon comes up while the request waits, the value lands in the box's secrets.json, and the request answers 200 (${String(woke?.status)} ${woke?.text.slice(0, 120) ?? ''})`)
   check((await setRowOf(boxId, 'BOX_TOKEN'))?.set_by === await personId(alice), 'and the record says alice set it on her box')
+  // The box goes to sleep again, and this time no daemon comes up. The request waits the time it is given, then
+  // answers 504 with a reason that names the box, and nothing is kept for when it starts.
+  if (containerStarted) await daemons.at(-1)?.stop()
+  check(await within(20, async () => (await one('select status from instances where id = $1', [boxId]))?.status === 'offline'), 'the box is stopped again')
+  await db.query('update instances set stopped_at = now() where id = $1', [boxId])
+  writeFileSync(dockerState, `${boxId} exited\n`)
+  const boxAskedBefore = startAsks(computer.box)
+  const lateAt = Date.now()
+  const late = await ask(alice, 'POST', boxRoute, { value: value.ninth })
+  const lateFor = (Date.now() - lateAt) / 1000
+  check(late.status === 504 && late.json.error.includes(computer.box) && late.json.error.includes(`within ${String(WAKE_SEC)} seconds`) && late.json.error.includes('not saved') && !holds(late.text, value.ninth),
+    `a box that does not come up in time is waited for, then answers 504 with a reason that names it (${String(late.status)} ${String(late.json.error)})`)
+  check(lateFor >= WAKE_SEC - 0.5 && lateFor < WAKE_SEC + 3, `it waits the time it is given, and no longer (${lateFor.toFixed(1)} s of ${String(WAKE_SEC)})`)
+  check(startAsks(computer.box) === boxAskedBefore + 1, 'and it asks once for the box to be started')
 
   // A teammate's computer, and one with no owner. Any teammate's run may use a computer with no owner, and read what
   // is put there, so neither takes alice's value. The refusal comes at once, without waiting for the computer.
