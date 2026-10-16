@@ -132,20 +132,21 @@ async function boxStates(): Promise<Map<string, ContainerState>> {
   return new Map(out.split('\n').filter((line) => line !== '').map((line) => BoxLine.parse(line)))
 }
 
-const BoxKind = z.object({ personal: z.boolean(), seat_cap: z.int().positive(), cpus: z.int().positive(), memory_gib: z.int().positive() })
+const BoxSize = z.object({ seat_cap: z.int().positive(), cpus: z.int().positive(), memory_gib: z.int().positive() })
 
 // Starts a fresh container for the box from the current image, on the box's volume.
 // The token is new each time, since only its hash is kept. It changes only after
 // the old container is gone, so a container that is still running keeps working.
-// A person's own box never gets the team's Claude token: it runs Claude on its
-// owner's own sign-in.
+// Every box signs in to Claude with the team's token, so a person's own computer
+// works before its owner signs in. Once they have, its daemon runs Claude on
+// their own token instead (daemon/claude.ts).
 async function runContainer(client: pg.Pool | pg.PoolClient, instanceId: string) {
   await docker(['rm', '-f', boxContainer(instanceId)])
   const token = `machine_${randomBytes(24).toString('base64url')}`
   await client.query('update instances set token_sha256 = $2 where id = $1', [instanceId, sha256(token)])
-  const box = BoxKind.parse(await one(client, 'the box', 'select personal, seat_cap, cpus, memory_gib from instances where id = $1', [instanceId]))
+  const box = BoxSize.parse(await one(client, 'the box', 'select seat_cap, cpus, memory_gib from instances where id = $1', [instanceId]))
   const secrets: Record<string, string> = { AGENTS_TOKEN: token }
-  if (!box.personal && existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
+  if (existsSync(CLAUDE_TOKEN_FILE)) secrets.CLAUDE_CODE_OAUTH_TOKEN = readFileSync(CLAUDE_TOKEN_FILE, 'utf8').trim()
   // Without NET_RAW a box cannot put raw frames on the shared bridge, such as ARP
   // replies that claim another box's address, and cannot capture packets or run
   // raw-socket scans. A ping an agent installs still works, through ICMP sockets.
