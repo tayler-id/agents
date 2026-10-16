@@ -159,7 +159,7 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
 export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queued: TurnId }, prompt: Prompt): Promise<TurnId> {
   // Placing takes the session's row first, as appending its prompt did, and as the
   // runner's loop does, so the two never wait on each other.
-  await client.query('select 1 from sessions where id = $1 for update', [prompt.sessionId])
+  await client.query('select 1 from sessions where id = $1 for no key update', [prompt.sessionId])
   const event = await one<{ id: string }>(client, 'the turn\'s prompt in its session',
     'select id from events where session_id = $1 and seq = $2', [prompt.sessionId, prompt.seq])
   const payload = JSON.stringify(prompt.payload)
