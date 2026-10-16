@@ -10,7 +10,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { dirname, join } from 'node:path'
 import { hasCode } from '../shared/errors.ts'
 import { SecretName } from '../shared/secrets.ts'
-import { NAME, type AgentHook, type AgentPlugin, type AgentSkill, type SecretRef } from '../shared/types.ts'
+import { NAME, type AgentHook, type AgentPlugin, type AgentSkill, type HookEvent, type SecretRef } from '../shared/types.ts'
 
 // Replaces <cwd>/.claude/skills with the agent's skills, so Claude finds them as project skills.
 export function writeSkills(cwd: string, skills: AgentSkill[]) {
@@ -32,6 +32,18 @@ const SECRETS_FILE = 'secrets.json'
 // tools a PreToolUse or PostToolUse group applies to, and the other events take none.
 type HookGroup = { matcher?: string; hooks: { type: 'command'; command: string; timeout?: number }[] }
 
+// Claude Code takes what a PreToolUse hook prints as the person's answer to an ask, such as allow, and what a
+// Stop or SubagentStop hook prints, or its exit code 2, as an order to keep the turn running. A hook must not
+// answer for the person or run a turn on, so for those events the command runs in a subshell whose output goes
+// to stderr, where the record still keeps it, and a stop hook's 2 counts as a failure. A PreToolUse hook that
+// exits 2 still blocks its tool, which asks less of the person, not more.
+const ANSWERS_FOR_THE_PERSON: readonly HookEvent[] = ['PreToolUse', 'Stop', 'SubagentStop']
+export function guardedCommand(event: HookEvent, command: string): string {
+  if (!ANSWERS_FOR_THE_PERSON.includes(event)) return command
+  const run = `(\n${command}\n) 1>&2`
+  return event === 'PreToolUse' ? run : `${run}; code=$?; if [ "$code" -eq 2 ]; then exit 1; fi; exit "$code"`
+}
+
 // The hooks as Claude Code reads them, grouped by event and then by matcher.
 export function claudeHooks(hooks: AgentHook[]): Record<string, HookGroup[]> {
   const byEvent: Record<string, HookGroup[]> = {}
@@ -43,7 +55,7 @@ export function claudeHooks(hooks: AgentHook[]): Record<string, HookGroup[]> {
       group = matcher === undefined ? { hooks: [] } : { matcher, hooks: [] }
       groups.push(group)
     }
-    group.hooks.push({ type: 'command', command: hook.command, ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })
+    group.hooks.push({ type: 'command', command: guardedCommand(hook.event, hook.command), ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })
   }
   return byEvent
 }

@@ -74,6 +74,8 @@ const BREAKS: Break[] = [
     edits: [{ file: 'server/record.ts', anchor: 'hooks: await hooksOf(client, agentId), memory: memory || undefined,', replace: 'memory: memory || undefined,' }] },
   { name: 'write-hooks', checks: ['step24', 'step24d'], why: 'the daemon does not write the settings file', red: ['the daemon wrote the hooks where Claude Code reads them', "a hook's run is in the record", "each hook ran under Claude Code's own name"],
     edits: [{ file: DAEMON, anchor: '  const settings = writeHooks(join(SESSIONS_DIR, `${command.sessionId}.settings.json`), hooks)\n', replace: '  const settings = null\n' }] },
+  { name: 'hooks-answer-for-person', checks: ['step24d'], why: 'a PreToolUse hook answers an ask for the person, and a Stop hook keeps the turn running', red: ['a PreToolUse hook that says allow does not answer for the person', 'a Stop hook that says block does not keep the turn running'],
+    edits: [{ file: FILES, anchor: '  if (!ANSWERS_FOR_THE_PERSON.includes(event)) return command\n', replace: '  if (event) return command\n' }] },
   { name: 'hooks-in-shared-folder', checks: ['step24', 'step24d'], why: "the daemon writes a session's hooks into its folder, which other sessions share", red: ["with nothing in the agent's folder", "and nothing into the task's workspace"],
     edits: [{ file: DAEMON, anchor: '  const settings = writeHooks(join(SESSIONS_DIR, `${command.sessionId}.settings.json`), hooks)\n', replace: "  const settings = writeHooks(join(cwd, '.claude', 'settings.local.json'), hooks)\n" }] },
   { name: 'matcher-groups', checks: ['step24', 'step24d'], why: 'the settings file loses each hook\'s matcher', red: ['grouped by event and matcher', 'the hook for Bash left nothing in the log', 'with their matchers and time limits'],
@@ -88,7 +90,7 @@ const BREAKS: Break[] = [
   { name: 'hook-line', checks: ['step24', 'step24d'], why: 'a hook run is a notice named only by its subtype', red: ["a hook's run is in the record, with what it printed", 'each run is a notice that says what the hook did and printed'],
     edits: [{ file: CLAUDE, anchor: "  if (type === 'system' && subtype === 'hook_response') return { events: [hookEvent(clientId, line, rest)], raw }\n", replace: '' }] },
   { name: 'timeout-dropped', checks: ['step24', 'step24d'], why: "the settings file loses each hook's time limit", red: ['grouped by event and matcher', 'with their matchers and time limits'],
-    edits: [{ file: FILES, anchor: "    group.hooks.push({ type: 'command', command: hook.command, ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })", replace: "    group.hooks.push({ type: 'command', command: hook.command })" }] },
+    edits: [{ file: FILES, anchor: "    group.hooks.push({ type: 'command', command: guardedCommand(hook.event, hook.command), ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })", replace: "    group.hooks.push({ type: 'command', command: guardedCommand(hook.event, hook.command) })" }] },
   { name: 'outcome-flattened', checks: ['step24', 'step24d'], why: 'a hook that failed reads as one that finished', red: ['a hook that fails is in the record too', 'a hook that exits 3 is a notice with its exit code'],
     edits: [{ file: CLAUDE, anchor: "  const verdict = outcome === 'success' ? 'finished'", replace: "  const verdict = outcome !== 'cancelled' ? 'finished'" }] },
   // What a copy carries, and what it does not.

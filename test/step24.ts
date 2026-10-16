@@ -22,6 +22,7 @@ import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
 import { asPerson, foundInDatabase, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
+import { guardedCommand } from '../daemon/agentfiles.ts'
 
 const PORTS = { machines: 7891, people: 7991, streams: 7892 }
 const API = `http://127.0.0.1:${PORTS.machines}`
@@ -52,7 +53,8 @@ const HOOKS = [STOP, PROMPT, WRITE]
 // What Claude Code reads for them, grouped by event and matcher.
 const SETTINGS = {
   hooks: {
-    Stop: [{ hooks: [{ type: 'command', command: STOP.command }] }],
+    // A Stop hook's command is written guarded, so it cannot keep a turn running (daemon/agentfiles.ts).
+    Stop: [{ hooks: [{ type: 'command', command: guardedCommand('Stop', STOP.command) }] }],
     UserPromptSubmit: [{ hooks: [{ type: 'command', command: PROMPT.command, timeout: 20 }] }],
     PostToolUse: [{ matcher: 'Write', hooks: [{ type: 'command', command: WRITE.command }] }],
   },
