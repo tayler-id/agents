@@ -75,9 +75,10 @@ Each part, the problem it solves now, and what it makes possible later. I update
 - **Solves now.** Colima, Tailscale and the API start on their own after a reboot.
 - **Helps later.** Teammates can count on the server being up.
 
-### Live reading: Electric and the sync proxy (`server/sync.ts`)
+### Live reading: Electric and the sync proxy (`server/sync.ts`, `test/step2c.ts`)
 
 - **Solves now.** The app and the daemons read Postgres live over plain HTTP. Electric follows Postgres's change log like a read replica and streams new rows. The proxy in front of it picks the table and the filter from who is asking, so a person sees only their team, minus private conversations and tasks they are not in. A client never names its own filter.
+- **What a client's read may carry.** The proxy passes on `offset`, `handle`, `live` and `cursor` and drops every other key. A read with a subset key gets 400, because Electric lets a subset's filter name a column the shape hides. A shape that lists its `columns` also sends them as `queryable_columns`, so Electric would refuse such a filter itself. `test/step2c.ts` checks the refusal through the instances shape, and that live reads, their cursor and the 409 for a replaced shape still work.
 - **Helps later.** Every new list in the app is one more named shape. Runs, stages, pipelines, documents and proposals came in phase 2 and 3 this way.
 - **Watch for.** Electric 1.8.1 never sends a row that moves into a filter ORing two subqueries. Sessions are therefore two shapes, one for conversations and one for tasks, and `check:step2` fails if a session started after a view opened does not arrive whole. Every live shape holds one of the browser's six connections over plain HTTP, so the sidebar polls instead.
 
