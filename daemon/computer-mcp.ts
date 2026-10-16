@@ -277,9 +277,11 @@ mcp.server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToo
   if (name === 'computer') return computer(args)
   if (name === 'save_screenshot') return saveScreenshot(args)
   if (name === 'screen_status') return screenStatus()
-  if (webOrigins.length && name === WEB_TOOL_LIST) return web.list()
-  if (webOrigins.length && name === WEB_TOOL_READ) return web.read(args)
-  if (webOrigins.length && name === WEB_TOOL_ACT) return web.act(args)
+  if (webOrigins.length) {
+    if (name === WEB_TOOL_LIST) return web.list()
+    if (name === WEB_TOOL_READ) return web.read(args)
+    if (name === WEB_TOOL_ACT) return web.act(args)
+  }
   if ((await browserTools).some((tool) => tool.name === name)) {
     // Given a file name, Playwright's screenshot tool saves where the name says,
     // which can be the task folder, where an image becomes a document. Without

@@ -65,7 +65,7 @@ export const BROWSER_TOOLS_THAT_ASK = [
   'browser_evaluate', 'browser_run_code_unsafe',
   // Full request and response headers and bodies, where session cookies and tokens live.
   'browser_network_request',
-  // Runs any tool a page offers, including ones that change something. Only the ones the page marks read-only are left to web_read.
+  // Runs any tool a page offers, one that changes something included. web_read runs the read-only ones without asking.
   WEB_TOOL_ACT,
 ]
 export const COMPUTER_TOOLS_ALLOWED = [...own, ...browserAllowed].map((tool) => `mcp__${COMPUTER_SERVER}__${tool}`)
