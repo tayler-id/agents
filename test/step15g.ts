@@ -27,7 +27,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { must } from './must.ts'
 import { ROOT, IMAGE, MACHINE_PORT, SCREEN, within, docker, tryDocker, boxCheckEnv, peopleSocket, textOf, imageOf, stopAll } from './computers.ts'
 import { servePeople } from './people.ts'
-import { dockButton, measure, pixelsOf, seatMemory, seatTools, type Pixels } from './seats.ts'
+import { desktopTokenReaders, dockButton, measure, pixelsOf, seatMemory, seatTools, type Pixels } from './seats.ts'
 import { DOCK_HEIGHT, TERMINAL_BACKGROUND } from '../daemon/dock.ts'
 import { DRAWING_KEY, WHITEBOARD_URL } from '../daemon/whiteboard.ts'
 import { TURN_WAIT_COLUMNS, TurnWaitRow, turnLine } from '../shared/turns.ts'
@@ -284,6 +284,12 @@ try {
   }
   check(seat2?.n === 2 && seat2.status === 'ready' && onDisplay(container, 2, 'jwm').length === 1 && seat2Windows && onDisplay(container, 1, 'xterm').length === 1,
     "a second agent's task takes seat 2, whose own dock opens a terminal and the whiteboard on seat 2's screen only")
+
+  // Every desktop process on both seats sees none of the daemon's tokens: both
+  // seats' Xvnc, JWM and browser, and both terminals.
+  const readers = desktopTokenReaders(container)
+  check(readers.read >= 8 && readers.leaking.length === 0,
+    `every Xvnc, JWM, browser and terminal on both seats sees none of the daemon's tokens (${readers.read} read, ${readers.leaking.join(', ') || 'none seen'})`)
 
   // Both seats, each with a terminal and the whiteboard, worked at once.
   const working = await measure(container, async () => {

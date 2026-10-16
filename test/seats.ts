@@ -30,6 +30,18 @@ export async function seatTools(container: string, sessionId: string, cwd: strin
   return { client, env: server.env }
 }
 
+// Every process of a computer's desktops: each seat's Xvnc, window manager and
+// browser, and every terminal window. The names of the tokens in their
+// environments, never the values, with how many processes were read. The
+// browser's pattern is written so the shell that runs the scan does not match it.
+export function desktopTokenReaders(container: string): { read: number; leaking: string[] } {
+  const out = docker('exec', container, 'sh', '-c',
+    `for p in $(pgrep -x Xvnc; pgrep -x jwm; pgrep -x xterm; pgrep -f '[r]emote-debugging-port'); do
+       echo "read $p"; tr '\\0' '\\n' < /proc/$p/environ | cut -d= -f1 | grep 'TOKEN$' | sed "s/^/leak $p /"; done; true`)
+  const lines = out.split('\n').filter(Boolean)
+  return { read: lines.filter((line) => line.startsWith('read ')).length, leaking: lines.filter((line) => line.startsWith('leak ')) }
+}
+
 // A page that fills a seat's browser with one color, named for the seat.
 export const seatPage = (title: string, color: string) => `data:text/html;charset=utf-8,${encodeURIComponent(
   `<!doctype html><title>${title}</title><style>html,body{margin:0;height:100%;background:${color}}</style><h1>${title}</h1>`)}`
