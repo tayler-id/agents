@@ -3,8 +3,11 @@
 // on a screen, how to read a screenshot's pixels, where the dock's buttons are,
 // and how much memory a computer and each of its seats hold.
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { inflateSync } from 'node:zlib'
+import pg from 'pg'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { docker, SCREEN, within } from './computers.ts'
@@ -134,3 +137,32 @@ export async function measure(container: string, during: () => Promise<unknown>)
   return { peak: Math.round(Math.max(...samples.map((s) => s.mib))), cpu: Math.round(Math.max(...samples.map((s) => s.cpu))), seats }
 }
 export const seatMemory = (container: string): Record<string, number> => JSON.parse(docker('exec', container, 'node', '-e', SEAT_MEMORY))
+
+// A Postgres 17 of a check's own, in a throwaway container on a free port of
+// this Mac's loopback, so no shared database changes. `url` resolves once it
+// takes connections, and `remove` takes the container away, with its data.
+export function ownPostgres(name: string): { url: Promise<string>; remove(): void } {
+  const password = randomBytes(12).toString('hex')
+  const url = (async () => {
+    docker('run', '-d', '--rm', '--name', name, '-e', `POSTGRES_PASSWORD=${password}`, '-p', '127.0.0.1::5432', 'postgres:17')
+    const port = /:(\d+)$/.exec(docker('port', name, '5432/tcp').split('\n')[0] ?? '')?.[1]
+    if (port === undefined) throw new Error(`${name} published no port`)
+    const address = `postgres://postgres:${password}@127.0.0.1:${port}/postgres`
+    // While the image sets the database up, its Postgres takes no TCP connections,
+    // so the first one that answers is the one that stays up.
+    const deadline = Date.now() + 60_000
+    for (;;) {
+      const probe = new pg.Client({ connectionString: address })
+      const answered = await probe.connect().then(() => probe.query('select 1').then(() => true), () => false)
+      await probe.end().catch(() => undefined)
+      if (answered) return address
+      if (Date.now() > deadline) throw new Error(`${name} did not take connections within 60s`)
+      await sleep(500)
+    }
+  })()
+  return {
+    url,
+    // It was started with --rm, so its data goes with it. A container that never started is no error.
+    remove: () => { execFileSync('docker', ['rm', '-f', name], { stdio: 'ignore' }) },
+  }
+}

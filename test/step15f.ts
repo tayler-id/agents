@@ -3,50 +3,28 @@
 // computer, on a Postgres of its own in a throwaway container, so no shared
 // database changes. The migrations before it make the schema, the check adds
 // people, Macs, boxes and agents, and the migration runs twice: the first run
-// makes the computers and moves the agents, and the second changes nothing.
-// Then a moved agent's conversation goes on at its new home through
-// conversationSession, unless its turn on the Mac is still running.
+// makes the computers, asleep, and moves the agents, and the second changes
+// nothing. Then a moved agent's conversation goes on at its new home through
+// conversationSession, unless its session on the Mac is still working or has
+// a turn that is not over.
 //   node --env-file=.env --env-file=.env.test test/step15f.ts
 
-import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 import pg from 'pg'
 import { must } from './must.ts'
+import { ownPostgres } from './seats.ts'
 import { messageOf } from '../shared/errors.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const MIGRATIONS = join(ROOT, 'server', 'migrations')
-const id = randomBytes(4).toString('hex')
-const container = `seats-mig-${id}`
-const password = randomBytes(12).toString('hex')
 const failures: string[] = []
+const postgres = ownPostgres(`seats-mig-${randomBytes(4).toString('hex')}`)
 
 function check(ok: unknown, label: string) {
   console.log(`${ok ? 'pass' : 'FAIL'}  ${label}`)
   if (!ok) failures.push(label)
-}
-
-const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8' }).trim()
-
-// A Postgres 17 of the check's own, on a free port of this Mac's loopback.
-async function startPostgres(): Promise<string> {
-  docker('run', '-d', '--rm', '--name', container, '-e', `POSTGRES_PASSWORD=${password}`, '-p', '127.0.0.1::5432', 'postgres:17')
-  const port = must(/:(\d+)$/.exec(docker('port', container, '5432/tcp').split('\n')[0] ?? '')?.[1], "the check's Postgres port")
-  const url = `postgres://postgres:${password}@127.0.0.1:${port}/postgres`
-  // While the image sets the database up, its Postgres takes no TCP connections,
-  // so the first one that answers is the one that stays up.
-  const deadline = Date.now() + 60_000
-  for (;;) {
-    const probe = new pg.Client({ connectionString: url })
-    const answered = await probe.connect().then(() => probe.query('select 1').then(() => true), () => false)
-    await probe.end().catch(() => undefined)
-    if (answered) return url
-    if (Date.now() > deadline) throw new Error("the check's Postgres did not start within 60s")
-    await sleep(500)
-  }
 }
 
 type Row = Record<string, unknown>
@@ -54,7 +32,7 @@ type Row = Record<string, unknown>
 try {
   const files = readdirSync(MIGRATIONS).filter((file) => file.endsWith('.sql')).sort()
   const mine = must(files.find((file) => file.endsWith('_own_computers.sql')), 'the migration that gives every person a computer')
-  const url = await startPostgres()
+  const url = await postgres.url
   // The server code below talks to this Postgres too.
   process.env.DATABASE_URL = url
   const db = new pg.Client({ connectionString: url })
@@ -104,7 +82,7 @@ try {
   }
 
   await run(mine)
-  const computers = await q(`select owner_id, name, kind, claimed_by, seat_cap, cpus, memory_gib, team_id,
+  const computers = await q(`select owner_id, name, kind, claimed_by, seat_cap, cpus, memory_gib, team_id, stopped_at is not null as asleep,
       (select count(*)::int from seats s where s.instance_id = i.id) as seats
     from instances i where personal order by name`)
   const of = (owner: string) => computers.filter((computer) => computer.owner_id === owner)
@@ -115,8 +93,8 @@ try {
   `each is named as joining names one, past names that are taken (${JSON.stringify(Object.values(names).flat())})`)
   const made = computers.filter((computer) => computer.owner_id !== bob)
   check(made.length === 6 && made.every((computer) => computer.kind === 'box' && computer.claimed_by === computer.owner_id && computer.seat_cap === 4 && computer.cpus === 4
-    && computer.memory_gib === 8 && computer.seats === 4),
-  `each of the ${made.length} new ones is a person's computer, held by its owner, with 4 seats, 4 CPUs and 8 GiB`)
+    && computer.memory_gib === 8 && computer.seats === 4 && computer.asleep === true),
+  `each of the ${made.length} new ones is a person's computer, held by its owner, with 4 seats, 4 CPUs and 8 GiB, asleep until something needs it`)
   check(of(frank)[0]?.team_id === other && of(alice)[0]?.team_id === team, "each is on its owner's team")
 
   const homes = async () => Object.fromEntries((await db.query<{ id: string; home_instance_id: string | null }>('select id, home_instance_id from agents order by id')).rows
@@ -165,20 +143,20 @@ try {
   const stillBusy = await next(busyDm, agents.ownOwner, carolComputer)
   check(stillBusy.id === busyOnMac && (await one('select archived_at from sessions where id = $1', [busyOnMac])).archived_at === null,
     "a conversation whose turn is still running on the Mac stays there until the turn ends")
+  // An idle session whose next turn is asked for but not yet placed stays too.
   await db.query(`update sessions set status = 'idle' where id = $1`, [busyOnMac])
-  check((await next(busyDm, agents.ownOwner, carolComputer)).instance_id === carolComputer, 'once that turn ends, the conversation moves to the computer')
+  const turn = String((await one(`insert into turns (team_id, agent_id, conversation_id, source, session_id, status)
+    values ($1, $2, $3, 'person', $4, 'queued') returning id`, [team, agents.ownOwner, busyDm, busyOnMac])).id)
+  check((await next(busyDm, agents.ownOwner, carolComputer)).id === busyOnMac, 'a conversation with a turn not yet over on the Mac stays there too')
+  await db.query(`update turns set status = 'cancelled' where id = $1`, [turn])
+  check((await next(busyDm, agents.ownOwner, carolComputer)).instance_id === carolComputer, 'once its turns end, the conversation moves to the computer')
   await serverPool.end()
   await db.end()
 } catch (error) {
   failures.push(messageOf(error))
   console.error(`FAIL  ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
 } finally {
-  // The container goes whatever happened. It was started with --rm, so its volume goes with it.
-  try {
-    docker('rm', '-f', container)
-  } catch {
-    // It never started.
-  }
+  postgres.remove()
 }
 
 console.log(failures.length ? `\n${failures.length} failed` : '\nall passed (the check\'s Postgres removed)')
