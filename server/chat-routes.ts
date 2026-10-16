@@ -57,17 +57,21 @@ const emojiInPath = (value: string): string => {
 
 
 // How a file is served. An image the bytes show is inline, and everything else is a download, so an
-// uploaded page or SVG never runs on the app's origin. The file never changes, so it may be kept.
-async function served(row: AttachmentRow, forceDownload: boolean): Promise<FileAnswer> {
+// uploaded page or SVG never runs on the app's origin. A browser may keep a file but must ask first, so a
+// deleted post's file or a chat a person has left stops opening at once, and an unchanged file answers 304.
+async function served(row: AttachmentRow, forceDownload: boolean, ifNoneMatch: string | undefined): Promise<FileAnswer> {
   const inline = row.kind === 'image' && !forceDownload
-  return new FileAnswer(await readBytes(row), {
+  const headers = {
     'content-type': row.media_type,
     'x-file-name': encodeURIComponent(row.name),
     'content-disposition': dispositionOf(inline ? 'inline' : 'attachment', row.name),
-    'cache-control': 'private, max-age=31536000, immutable',
+    'cache-control': 'private, no-cache',
+    etag: `"${row.id}"`,
     'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; sandbox",
-  })
+  }
+  if (ifNoneMatch === headers.etag) return new FileAnswer(Buffer.alloc(0), headers, 304)
+  return new FileAnswer(await readBytes(row), headers)
 }
 
 const Edit = z.object({ text: z.string() })
@@ -96,13 +100,13 @@ export const chatRoutes: Route[] = [
 
   ['people', 'GET', new RegExp(`^/v1/attachments/${UUID}$`), async (req, [id], url) => {
     const person = await personFrom(req)
-    return served(await attachmentFor(person, id), url.searchParams.get('download') === '1')
+    return served(await attachmentFor(person, id), url.searchParams.get('download') === '1', req.headers['if-none-match'])
   }],
 
   // The same bytes for an agent, to save in its working folder.
   ['machines', 'GET', new RegExp(`^/v1/record/attachments/${UUID}$`), async (req, [id], url) => {
     const { teamId, sessionId } = await agentScope(req, url)
-    return served(await attachmentForSession(teamId, sessionId, id), true)
+    return served(await attachmentForSession(teamId, sessionId, id), true, undefined)
   }],
 
   // An agent posts a file or a screenshot into its chat, or onto its task's page.

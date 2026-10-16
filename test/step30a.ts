@@ -47,6 +47,10 @@ try {
     `the PNG comes back inline as image/png with the same bytes (${inline.status} ${inline.headers.get('content-disposition')})`)
   check((inline.headers.get('content-disposition') ?? '').includes("filename*=UTF-8''shot%20%C3%B1.png"),
     `its download name keeps the ñ, encoded (${inline.headers.get('content-disposition')})`)
+  check(inline.headers.get('cache-control') === 'private, no-cache' && inline.headers.get('etag') === `"${idOfPng}"`, 'a file may be kept but must be asked about again, with its id as its tag')
+  const unchanged = await fetch(`${kit.PEOPLE}/v1/attachments/${idOfPng}`, { headers: { 'tailscale-user-login': alice, 'if-none-match': `"${idOfPng}"` } })
+  const strangerTag = await fetch(`${kit.PEOPLE}/v1/attachments/${idOfPng}`, { headers: { 'tailscale-user-login': bob, 'if-none-match': `"${idOfPng}"` } })
+  check(unchanged.status === 304 && strangerTag.status === 404, `asking again with the tag answers 304 for alice, and 404 for a person who may not open it (${unchanged.status}, ${strangerTag.status})`)
   const forced = await download(alice, `/v1/attachments/${idOfPng}?download=1`)
   check(/^attachment;/.test(forced.headers.get('content-disposition') ?? '') && forced.bytes.equals(PNG), '?download=1 downloads the image too')
 

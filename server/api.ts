@@ -813,7 +813,7 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)
-    if (result instanceof FileAnswer) return void res.writeHead(200, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
+    if (result instanceof FileAnswer) return void res.writeHead(result.status, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
     const created = result instanceof Created
     res.writeHead(created ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(created ? result.body : result))
   } catch (error) {

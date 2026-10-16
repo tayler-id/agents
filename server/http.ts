@@ -29,9 +29,11 @@ export class Created {
 export class FileAnswer {
   readonly bytes: Buffer
   readonly headers: Record<string, string>
-  constructor(bytes: Buffer, headers: Record<string, string>) {
+  readonly status: 200 | 304
+  constructor(bytes: Buffer, headers: Record<string, string>, status: 200 | 304 = 200) {
     this.bytes = bytes
     this.headers = headers
+    this.status = status
   }
 }
 
