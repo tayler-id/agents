@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { isUniqueViolation, many, maybe, one, tx } from './db.ts'
+import { isUniqueViolation, many, maybe, one } from './db.ts'
 import { appendMessage, conversationSession, HttpError, scrub } from './record.ts'
 import { insertAgent } from './agents.ts'
 import { slugOf } from './tasks.ts'
@@ -86,24 +86,24 @@ async function sendingTurn(client: pg.PoolClient, caller: Caller): Promise<{ id:
   return z.object({ id: TurnId, hops: z.number().int(), origin: ConversationId.nullable() }).parse(turn)
 }
 
-// The hop a message or a task from `turn` would be, when the chain has room for it.
-// A refusal puts a note in the conversation the chain started in, if it started in
-// one, and that note is written on its own connection so it stays when the
-// request's transaction rolls back. Asking again after the same turn's refusal
-// writes nothing new, since the note's client id is the turn's.
-async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin: ConversationId | null }): Promise<number> {
+// What a send or a hand-off answers when the chain has no room: the words for the agent,
+// which the route turns into a 409 once the request's transaction has committed, so the
+// note below stays.
+export type Refusal = { refused: string }
+
+// The hop a message or a task from `turn` would be, when the chain has room for it. A refusal
+// puts a note in the conversation the chain started in, if it started in one. Asking again
+// after the same turn's refusal writes nothing new, since the note's client id is the turn's.
+async function nextHop(client: pg.PoolClient, caller: Caller, turn: { id: TurnId; hops: number; origin: ConversationId | null }): Promise<{ hops: number } | Refusal> {
   const hops = turn.hops + 1
-  if (hops > MAX_HOPS) {
-    if (turn.origin !== null) {
-      const origin = turn.origin
-      await tx((client) => appendMessage(client, origin, {
-        speaker: 'agent', agentId: caller.agent_id, body: `${caller.name} stopped a chain of agents at ${MAX_HOPS} hops`,
-        clientId: `chain-stopped:${turn.id}`, kind: 'chain_stopped',
-      }))
-    }
-    throw new HttpError(409, `This would be hop ${hops} of the chain, and a chain of agents stops after ${MAX_HOPS} hops, so nothing was sent. Answer with what you have.`)
+  if (hops <= MAX_HOPS) return { hops }
+  if (turn.origin !== null) {
+    await appendMessage(client, turn.origin, {
+      speaker: 'agent', agentId: caller.agent_id, body: `${caller.name} stopped a chain of agents at ${MAX_HOPS} hops`,
+      clientId: `chain-stopped:${turn.id}`, kind: 'chain_stopped',
+    })
   }
-  return hops
+  return { refused: `This would be hop ${hops} of the chain, and a chain of agents stops after ${MAX_HOPS} hops, so nothing was sent. Answer with what you have.` }
 }
 
 // Refuses the send or hand-off that would be the 6th of one harness turn. A session
@@ -160,11 +160,13 @@ async function threadOf(client: pg.PoolClient, teamId: TeamId, a: AgentId, b: Ag
 // One agent's message to another. It goes into their thread, and to the other
 // agent as a turn in its session there. The tool returns at once, and the answer
 // comes back to the sending turn's session when the other agent's turn ends.
-export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent> {
+export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent | Refusal> {
   const turn = await sendingTurn(client, caller)
-  const hops = await nextHop(caller, turn)
-  await checkFanout(client, caller)
   const target = await reachable(client, caller, ask.to)
+  await checkFanout(client, caller)
+  const hop = await nextHop(client, caller, turn)
+  if ('refused' in hop) return hop
+  const { hops } = hop
   const threadId = await threadOf(client, caller.team_id, caller.agent_id, target.id)
   const message = await appendMessage(client, threadId, {
     speaker: 'agent', agentId: caller.agent_id, body: ask.text, clientId: `agent:${randomUUID()}`, sessionId: caller.id,
@@ -181,11 +183,13 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
 // A task one agent hands another. It is a task like one a person starts, with
 // its own workspace and session, and its result goes back to the turn that
 // handed it over when its agent reports back or a person marks it done.
-export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded> {
+export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded | Refusal> {
   const turn = await sendingTurn(client, caller)
-  const hops = await nextHop(caller, turn)
-  await checkFanout(client, caller)
   const target = await reachable(client, caller, ask.to)
+  await checkFanout(client, caller)
+  const hop = await nextHop(client, caller, turn)
+  if ('refused' in hop) return hop
+  const { hops } = hop
   const task = z.object({ id: TaskId }).parse(await one(client, 'the handed-over task',
     `insert into tasks (team_id, slug, title, instructions, owner_id, agent_id, source, asked_by_turn)
      values ($1, $2, $3, $4, $5, $6, 'agent', $7) returning id`,

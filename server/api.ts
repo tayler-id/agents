@@ -231,6 +231,8 @@ const routes: Route[] = [
         case 'agents': return makeAgent(client, caller, body)
       }
     })
+    // A refusal that leaves a note is committed with it, and only then is the agent told no.
+    if ('refused' in answer) throw new HttpError(409, answer.refused)
     void wakeRunner()
     return answer
   }],
