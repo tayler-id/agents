@@ -71,6 +71,6 @@ create table pins (
   primary key (conversation_id, message_id)
 );
 
-alter table messages alter column body drop not null;
 alter table messages add column deleted_by uuid references people on delete set null;
-alter table messages add constraint messages_deleted_has_no_body check ((deleted_at is null) = (body is not null));
+-- A deleted post keeps an empty body, not null, so the release before this one can still read it.
+alter table messages add constraint messages_deleted_has_no_body check (deleted_at is null or body = '');

@@ -114,6 +114,6 @@ export async function chatSetup(name: string, ports: Ports) {
     await api.stop()
     await db.end()
   }
-  return { id, team, teamId, logins, people, token, instanceId, agentId, conversations, tasks, home, filesDir, db, q, q1, api, MACHINES, PEOPLE, as, upload, download, send, stop }
+  return { id, team, teamId, logins, people, token, instanceId, agentId, conversation, conversations, tasks, home, filesDir, db, q, q1, api, MACHINES, PEOPLE, as, upload, download, send, stop }
 }
 export type ChatSetup = Awaited<ReturnType<typeof chatSetup>>

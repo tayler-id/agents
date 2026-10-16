@@ -128,7 +128,7 @@ export async function nextTurn(client: pg.PoolClient, roomId: string) {
     + `New in the room:\n${said.reverse().map((m) => `${m.who}: ${withFiles(m.body, files.filter((f) => f.message_id === m.id))}`).join('\n\n')}\n\n`
     + (reactions ? `${reactions}\n\n` : '')
     + `It is your turn. Reply to the room if you have something useful to add. If you have nothing to add, reply with exactly ${PASS}.`
-  const [seq] = await appendEvents(client, session.id, { events: [{ clientId: `turn:${turn.id}`, kind: 'user', text, body: { text, turnId: turn.id } }] })
+  const [seq] = await appendEvents(client, session.id, { events: [{ clientId: `turn:${turn.id}`, kind: 'user', text, body: { text, turnId: turn.id, messageIds: said.map((m) => m.id) } }] })
   if (seq === undefined) throw new Error(`room turn ${turn.id}'s prompt did not reach its session`)
   const people = (await client.query<{ person_id: string }>(
     'select person_id from conversation_members where conversation_id = $1 and person_id is not null', [roomId])).rows.map((r) => r.person_id)

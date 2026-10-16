@@ -357,11 +357,11 @@ export async function postableConversation(client: Db, person: Person, conversat
 
 // What the agent reads of the post this one answers.
 async function replyContext(client: pg.PoolClient, conversationId: string, replyToMessageId: string): Promise<string> {
-  const quoted = await maybe<{ who: string; body: string | null }>(client,
-    `select coalesce(p.login, a.name, 'someone') as who, m.body from messages m
+  const quoted = await maybe<{ who: string; body: string; deleted: boolean }>(client,
+    `select coalesce(p.login, a.name, 'someone') as who, m.body, m.deleted_at is not null as deleted from messages m
      left join people p on p.id = m.person_id left join agents a on a.id = m.agent_id
      where m.id = $1 and m.conversation_id = $2`, [replyToMessageId, conversationId])
-  if (!quoted || quoted.body === null) throw new HttpError(400, 'replyToMessageId: that post is not in this chat, or was deleted')
+  if (!quoted || quoted.deleted) throw new HttpError(400, 'replyToMessageId: that post is not in this chat, or was deleted')
   return `(In reply to ${quoted.who}: "${quoted.body.slice(0, 200)}")`
 }
 
@@ -398,7 +398,7 @@ export async function sendPersonMessage(
   if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
   const session = await conversationSession(client, person.team_id, person.id, conversationId, agent)
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id }, text: prompt }],
+    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id, ...(extras.replyToMessageId ? { quotedMessageId: extras.replyToMessageId } : {}) }, text: prompt }],
   }, person.id)
   if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 

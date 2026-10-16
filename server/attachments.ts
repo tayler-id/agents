@@ -22,7 +22,7 @@ import { scopedTeams } from './runner.ts'
 // Where the bytes live. Unless the server is told a folder, it is named for the database it serves, so every file
 // in it has its row in that database. A server on agents_test then never reads the live server's folder, and the
 // sweep for files with no row can't take live files for strays.
-const DATABASE_NAME = z.string().regex(/^[A-Za-z0-9_-]+$/, 'a database name of letters, digits, dashes and underscores')
+const DATABASE_NAME = z.string().regex(/^[A-Za-z0-9_-]+$/, 'a database name of letters, digits, dashes and low lines')
 function attachmentsFolder(env: NodeJS.ProcessEnv): string {
   if (env.AGENTS_ATTACHMENTS_DIR) return env.AGENTS_ATTACHMENTS_DIR
   const url = z.url().safeParse(env.DATABASE_URL)

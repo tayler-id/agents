@@ -1153,7 +1153,7 @@ Branch `attachments`, from main de6d961. Tayler put these first on the list of n
 
 - **Files.** Upload to a chat, a task session or nowhere yet, 25 MB at most, bytes in `AGENTS_ATTACHMENTS_DIR`. A post claims 1 to 10 files. Images are judged by their bytes and served inline, other files download under a sandboxing policy. A pending upload is its uploader's alone and is deleted after 24 hours. A New task and a new chat claim uploads as they are made. A pipeline run does not yet.
 - **Reactions.** One emoji, by a person or an agent, on a message or a task post, idempotent both ways. An agent hears of reactions to its posts once, at the top of its next turn.
-- **Post actions.** Reply, edit by the author with versions kept, delete by the author or an admin, pins. A delete erases the text from the post, its versions and the prompt records behind it.
+- **Post actions.** Reply, edit by the author with versions kept, delete by the author or an admin, pins. A delete erases the text from the post, its versions, the prompt records behind it (a room turn's, a reply's quote, the replayed raw lines) and cancels a turn still waiting for its machine. The post keeps an empty body, not null.
 - **Decisions.**
   - A file's upload route takes the raw bytes under the file's type, as the contract says. The API refuses any change that is not JSON, so an upload must carry `X-File-Name`, which no other site can send without a preflight.
   - Pending uploads are visible only to the uploader, in the shape and on download, which the contract left open.
