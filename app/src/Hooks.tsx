@@ -76,8 +76,8 @@ function HookForm({ agentId }: { agentId: string }) {
         <label htmlFor="hook-runs">What it runs</label>
         <textarea id="hook-runs" rows={2} value={command} onChange={(e) => setCommand(e.target.value)} placeholder="echo noted >> task/hook-log.txt" />
         <label htmlFor="hook-limit">Time limit in seconds (optional)</label>
-        <input id="hook-limit" inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="60" />
-        <p className="small muted">It runs on the agent's machine with the event as JSON on its input. Each run, and what it printed, is in the agent's record.</p>
+        <input id="hook-limit" inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value)} />
+        <p className="small muted">It runs on the agent's machine with the event as JSON on its input. Each run, and what it printed, is in the agent's record. With no time limit, Claude Code uses its own, and cancels a hook on a message after 30 seconds.</p>
         <div className="actions">
           <button className="primary" type="submit" disabled={busy || !name || !command.trim()}>Save hook</button>
           {error && <p className="error small" role="alert">{error}</p>}

@@ -87,8 +87,9 @@ export const HookEvent = z.enum(HOOK_EVENTS)
 export type HookEvent = z.infer<typeof HookEvent>
 const TOOL_HOOK_EVENTS: readonly HookEvent[] = ['PreToolUse', 'PostToolUse']
 export const takesMatcher = (event: HookEvent) => TOOL_HOOK_EVENTS.includes(event)
-// Claude Code's own default for a hook is 60 seconds. The longest one may be given is
-// ten minutes, since a hook holds up the turn it runs in.
+// The longest time limit a hook may be given, since a hook holds up the turn it runs in. A hook
+// with no limit gets Claude Code's own, which cancelled one on a message after 30 seconds and let
+// one on each other event run past 130.
 export const HOOK_TIMEOUT_MAX_SEC = 600
 export const HOOK_COMMAND_MAX = 2000
 export const HOOK_MATCHER_MAX = 200
