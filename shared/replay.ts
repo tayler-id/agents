@@ -119,10 +119,11 @@ function ask(state: Replay, kind: Request['kind'], from: number, to: number, cur
   return { ...state, ids: id, request: { id, kind, from, to, cursor }, error: '' }
 }
 
-// Opens steps around the one a replay is moving to, in place of those it has.
+// Opens steps around the one a replay is moving to, in place of those it has. A number past either end of the session is its nearest end.
 function around(state: Replay, seq: number, bounds: Bounds): Replay {
-  const from = Math.max(bounds.first ?? 1, seq - OPEN_BEFORE)
-  return ask(state, 'open', from, from + OPEN_BEFORE + PAGE - 1, seq)
+  const target = Math.min(Math.max(seq, bounds.first ?? seq), bounds.last ?? seq)
+  const from = Math.max(bounds.first ?? 1, target - OPEN_BEFORE)
+  return ask(state, 'open', from, from + OPEN_BEFORE + PAGE - 1, target)
 }
 
 // Asks for the page after the steps loaded or before them, when there is one and none is under way.

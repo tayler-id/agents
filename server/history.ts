@@ -11,6 +11,7 @@ import {
   type HistoryKind, type HistoryPage, type HistoryQuery, type SearchPage, type SearchQuery, type SearchScope, type SessionFilters, type SessionView, type StepsPage,
 } from '../shared/history.ts'
 import type { SessionId } from '../shared/ids.ts'
+import { hasCode } from '../shared/errors.ts'
 import { canSeeSession, VISIBLE_SESSION } from './access.ts'
 import { maybe, pool } from './db.ts'
 import { HttpError, type Person } from './record.ts'
@@ -106,6 +107,17 @@ function ofSession(filters: SessionFilters, bind: Bind): string[] {
   ]
 }
 
+// A cursor can fit its pattern and still name no time or no row, which Postgres says when it reads one. That is the sender's mistake.
+const NOT_A_CURSOR = ['22003', '22007', '22008', '22P02']
+async function read(sql: string, params: unknown[], before: Cursor | undefined) {
+  try {
+    return await pool.query(sql, params)
+  } catch (error) {
+    if (before !== undefined && NOT_A_CURSOR.some((code) => hasCode(error, code))) throw new HttpError(400, 'before is not a cursor this page gave')
+    throw error
+  }
+}
+
 // Where a page begins, from the cursor the last page ended with.
 function resume(cursor: Cursor): { at: string; id: string } {
   const [at = '', id = ''] = cursor.split('|')
@@ -136,12 +148,12 @@ export async function listSessions(person: Person, query: HistoryQuery): Promise
     where.push(`(${activeAt}, s.id) < (${bind(at)}::timestamptz, ${bind(id)}::uuid)`)
   }
   // One more than a page, to know whether another page follows.
-  const { rows } = await pool.query(
+  const { rows } = await read(
     `select ${SESSION} as session, ${activeAt}::text as active_at
      from sessions s ${JOINS}
      where ${where.join(' and ')}
      order by ${activeAt} desc, s.id desc
-     limit ${bind(query.limit + 1)}`, params)
+     limit ${bind(query.limit + 1)}`, params, query.before)
   const found = rows.map((row) => SessionRow.parse(row))
   const page = found.slice(0, query.limit)
   const last = page.at(-1)
@@ -167,7 +179,7 @@ export async function searchSteps(person: Person, query: SearchQuery): Promise<S
   }
   const limit = bind(query.limit + 1)
   const options = bind(`${SNIPPET}, StartSel=${MARK_START}, StopSel=${MARK_END}`)
-  const { rows } = await pool.query(
+  const { rows } = await read(
     `with q as (select ${matching('$3')} as query),
      found as (
        select e.id, e.session_id, e.seq, e.kind, e.tool_name, e.created_at
@@ -181,7 +193,7 @@ export async function searchSteps(person: Person, query: SearchQuery): Promise<S
      join events e on e.id = found.id
      join sessions s on s.id = found.session_id ${JOINS}
      cross join q
-     order by found.created_at desc, found.id desc`, params)
+     order by found.created_at desc, found.id desc`, params, query.before)
   const found = rows.map((row) => HitRow.parse(row))
   const page = found.slice(0, query.limit)
   const last = page.at(-1)

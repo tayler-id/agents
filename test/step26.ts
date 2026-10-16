@@ -201,6 +201,10 @@ try {
   check(marmots.body.hits.length === 100 && marmots.body.next !== null, 'a page is at most the limit asked for')
   check((await ava.json('/v1/search')).status === 400 && (await ava.json('/v1/search?q=')).status === 400 && (await ava.json(`/v1/search?q=${'x'.repeat(301)}`)).status === 400,
     'a search needs words, and not more than 300 characters of them')
+  const cursors = ['2026-13-45%2010:00:00%2B00|00000000-0000-4000-8000-000000000000', '2026-10-16%2010:00:00%2B00|abc']
+  check((await Promise.all(cursors.map(async (before) => (await ava.json(`/v1/history?before=${before}`)).status))).every((status) => status === 400)
+    && (await ava.json('/v1/search?q=a&before=2026-10-16%2010:00:00%2B00|99999999999999999999999999')).status === 400
+    && (await ava.json('/v1/search?q=a&before=2026-13-45%2010:00:00%2B00|12')).status === 400, 'a cursor that fits its pattern and names no time or row is refused, not a failure')
   check((await ava.json(`/v1/search?q=a&limit=0`)).status === 400 && (await ava.json(`/v1/search?q=a&limit=101`)).status === 400 && (await ava.json(`/v1/search?q=a&agent=nobody`)).status === 400
     && (await ava.json(`/v1/search?q=a&before=nonsense`)).status === 400 && (await ava.json(`/v1/history?since=yesterday`)).status === 400, 'a limit, a filter and a cursor that do not fit are refused')
   check((await ava.json('/v1/search?q=the')).body.hits.length === 0, 'words that are all too common to search on find nothing, and are not an error')
@@ -325,6 +329,8 @@ try {
   check(asked.request !== null && second.request !== null && asked.request.id !== second.request.id
     && reduce(second, { type: 'arrived', id: asked.request.id, page: serve(asked.request.from, asked.request.to), bounds }) === second, 'an answer to a request a newer one replaced changes nothing')
   const edge = drive(START, { type: 'start', bounds, at: 499 })
+  check(drive(START, { type: 'start', bounds, at: 9999 }).cursor === 499 && drive(START, { type: 'start', bounds, at: 0 }).cursor === 1 && drive(replay, { type: 'seek', to: 9999, bounds }).cursor === 499,
+    'a number past either end of a session is its nearest end')
   check(drive(edge, { type: 'step', direction: 1, bounds }).cursor === 499, 'there is no step after the last')
   check(drive(START, { type: 'start', bounds: { first: null, last: null }, at: null }).request === null, 'a session with no steps asks for none')
   const lastFetch = drive(START, { type: 'start', bounds, at: 250 })

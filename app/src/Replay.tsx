@@ -30,16 +30,21 @@ function useView(sessionId: string) {
   const [state, setState] = useState<{ id: string; view: SessionView | null; error: string }>({ id: '', view: null, error: '' })
   useEffect(() => {
     let stale = false
+    let working = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const read = () => {
       historyApi.session(sessionId).then(
         (view) => {
           if (stale) return
           setState({ id: sessionId, view, error: '' })
-          if (isWorking(view.session)) timer = setTimeout(read, REFRESH_MS)
+          working = isWorking(view.session)
+          if (working) timer = setTimeout(read, REFRESH_MS)
         },
         (error: unknown) => {
-          if (!stale) setState((last) => ({ id: sessionId, view: last.id === sessionId ? last.view : null, error: messageOf(error) }))
+          if (stale) return
+          setState((last) => ({ id: sessionId, view: last.id === sessionId ? last.view : null, error: messageOf(error) }))
+          // A session that was working still is, as far as anyone knows, so it is read again.
+          if (working) timer = setTimeout(read, REFRESH_MS)
         },
       )
     }
