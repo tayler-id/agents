@@ -5,7 +5,6 @@
 // agent: one whose description forges a line of the listing, one with a huge
 // result. The check runs the computer server the way the daemon's session
 // config starts it and holds it to what a person sees and tries:
-//  - an admin lists a site for the team, and nobody else can
 //  - the box's Chromium gives pages document.modelContext
 //  - with no site listed, the agent is offered no page tool at all
 //  - listing a site restarts the agent's session on its next message, and then
@@ -21,6 +20,7 @@
 //  - a person holding the screen stops these tools like the other browser tools
 //  - a star for any port covers the other site, and taking every site off the list
 //    takes the tools away on the next message
+// The team's list of sites is checked on its own, over the API alone, in step21wa.
 // The box reaches this check's API only on 7701, the machine port the box
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step21w.ts
@@ -44,10 +44,8 @@ const API = `http://127.0.0.1:${MACHINE_PORT}`
 const PEOPLE = `http://127.0.0.1:${PEOPLE_PORT}`
 const id = randomBytes(4).toString('hex')
 const team = `webmcp-${id}`
-const otherTeam = `webmcp-other-${id}`
 const alice = `alice-webmcp-${id}@local`
 const bob = `bob-webmcp-${id}@local`
-const carol = `carol-webmcp-${id}@local`
 const boxName = `box-${id}`
 // Box mounts come from the colima VM, which sees only the home folder.
 const work = join(homedir(), '.agents-app', 'checks', `webmcp-${id}`)
@@ -142,49 +140,12 @@ try {
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, alice)
   node('server/admin.ts', 'add-person', team, bob)
-  node('server/admin.ts', 'add-team', otherTeam, carol)
   const { id: teamId } = must(await one('select id from teams where name = $1', [team]), 'team')
   children.push(spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', 'server/api.ts'], {
     cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...checkEnv },
   }))
   await servePeople(PEOPLE_PORT, peopleSocket(work))
   await within(20, () => fetch(API).then(() => true, () => false))
-
-  // The list of sites. An admin lists one, a member can read the list and cannot
-  // change it, and a site the list cannot hold is refused with a reason.
-  const listed = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: A })
-  check(listed.status === 200 && listed.json?.origins?.length === 1 && listed.json.origins[0].origin === A && listed.json.origins[0].addedBy === alice,
-    `an admin lists a site for the team, and the list says who did (${listed.status})`)
-  const memberAdd = await people(bob, 'POST', '/v1/team/webmcp-origins', { origin: B })
-  check(memberAdd.status === 403 && (await origins(bob)).length === 1, `a member cannot list a site (${memberAdd.status}), and can read the list`)
-  const refused: string[] = []
-  for (const bad of ['javascript:alert(1)', 'http://example.com/path', 'http://*.example.com', 'ftp://example.com', 'http://127.0.0.1:99999', 'https://', 'example.com', 'http://127.1', 'http://user@example.com']) {
-    const answer = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: bad })
-    if (answer.status !== 400) refused.push(`${bad} (${answer.status})`)
-  }
-  check(refused.length === 0 && (await origins(alice)).length === 1, `a site that is not a scheme and a host is refused (not refused: ${refused.join(', ') || 'none'})`)
-  const again = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: A.replace('http://', 'HTTP://') })
-  check(again.status === 200 && again.json?.origins?.length === 1, 'listing a site again, in capitals, keeps one row')
-  const slash = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: 'https://slash.test/' })
-  const slashRow = (await origins(alice)).find((site) => site.origin === 'https://slash.test')
-  check(slash.status === 200 && slashRow !== undefined, 'a site pasted with one slash after the host is listed without it')
-  if (slashRow) await people(alice, 'POST', `/v1/team/webmcp-origins/${slashRow.id}/delete`, {})
-  const strangerRead = await origins(carol)
-  const strangerRemove = await people(carol, 'POST', `/v1/team/webmcp-origins/${(await origins(alice))[0]?.id ?? ''}/delete`, {})
-  check(strangerRead.length === 0 && strangerRemove.status === 404 && (await origins(alice)).length === 1,
-    'a person on another team sees no sites, and cannot remove this team\'s')
-  // The limit. Forty more sites make 41, and twelve admins listing one each at once fill the list to 50 and no further.
-  for (let n = 0; n < 40; n++) await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: `https://site-${n}.test` })
-  const together = await Promise.all(Array.from({ length: 12 }, (_, n) => people(alice, 'POST', '/v1/team/webmcp-origins', { origin: `https://at-once-${n}.test` })))
-  const listedAtOnce = together.filter((answer) => answer.status === 200).length
-  const refusedAtOnce = together.filter((answer) => answer.status === 409).length
-  check(listedAtOnce === 9 && refusedAtOnce === 3 && (await origins(alice)).length === 50,
-    `twelve sites listed at once on a list of 41 stop at 50 (${listedAtOnce} listed, ${refusedAtOnce} refused)`)
-  const full = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: 'https://one-too-many.test' })
-  check(full.status === 409 && (await origins(alice)).length === 50, `a team lists 50 sites at most (the next got ${full.status})`)
-  await db.query(`delete from webmcp_origins where team_id = $1 and (origin like 'https://site-%' or origin like 'https://at-once-%')`, [teamId])
-  await people(alice, 'POST', `/v1/team/webmcp-origins/${(await origins(alice))[0]?.id ?? 'none'}/delete`, {})
-  check(listed.status === 200 && (await origins(alice)).length === 0, 'an admin takes a site off the list')
 
   // The box and its agent.
   node('server/boxes.ts', 'build')
@@ -385,7 +346,7 @@ try {
   // The run's own image goes too, and the disk keeps no copy of it.
   tryDocker('rmi', IMAGE)
   if (!failures.length) {
-    await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
+    await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
     rmSync(work, { recursive: true, force: true })
   }
   await db.end().catch(() => undefined)
