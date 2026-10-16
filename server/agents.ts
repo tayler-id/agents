@@ -9,10 +9,9 @@ import { z } from 'zod'
 import { many, maybe, one } from './db.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
+import { SECRET_NAME } from '../shared/secrets.ts'
 import { NAME } from '../shared/types.ts'
 import { HttpError, type Person } from './record.ts'
-
-const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/
 
 export type Recipe = {
   title: string | null; role: string | null; instructions: string; model: string | null
