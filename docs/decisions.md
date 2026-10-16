@@ -454,6 +454,24 @@ Tayler went with the coordinator's picks on all of these.
 - **Order.** Voice, then calendars with the connectors, then meetings in the app, then outside calls, then phone.
 - **Status.** Designed at this level. Each piece gets its own design section before it is built.
 
+### Chat actions, agent conversations, keys and Teach a task
+
+Decided by Tayler on 2026-10-16, through the UI session.
+
+- **Admins have control over posts.** An admin can delete anyone's post. Edit stays with a post's author, since changing someone else's words misrepresents them.
+- **People see the agent conversation.**
+  - When an agent hands work to another, the answer shows as a post in the chat where the work started.
+  - A chain stopped at its limit leaves a note in that chat: "{agent} stopped a chain of agents at 4 hops".
+  - Agent-to-agent threads stay visible to the team, grouped as "Between agents" in Chats.
+- **Keys show in two places with one source.**
+  - Each app's page shows the keys it uses, hidden until clicked, with a red dot when one is missing.
+  - A "Keys" row in the agent's Details opens a page listing every key the agent holds, with the same dot.
+- **Teach a task records video.**
+  - It records video of the agent's screen while the person works, with the input log, not screenshots. That needs ffmpeg in the box image, which is protected and goes to Tayler's gate.
+  - Typed text in password fields is masked.
+  - The owner and admins may teach a team's agent.
+  - The learned skill is a draft the person saves in the chat.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
