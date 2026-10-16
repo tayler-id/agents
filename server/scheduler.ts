@@ -15,8 +15,9 @@ import { InstanceId, movesInto } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
 import { WAITING_ON_PERSON } from '../shared/lifecycle.ts'
 import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
-import { SessionId, TurnId, type AgentId, type ConversationId, type PersonId, type RoutineId, type RunId, type TaskId, type TeamId } from '../shared/ids.ts'
+import { AgentId, SessionId, TurnId, type ConversationId, type PersonId, type RoutineId, type RunId, type TaskId, type TeamId } from '../shared/ids.ts'
 import { MessagePayload } from '../shared/types.ts'
+import { takeSeat } from './seats.ts'
 
 // How long a running turn may go without a new event before it is marked stuck,
 // long enough for a slow build or test run between two steps. Nothing is stopped.
@@ -56,7 +57,10 @@ export type Prompt = { sessionId: SessionId; seq: number; payload: MessagePayloa
 // offline, as it did before the door. A box is held when a person or a run holds
 // it, which is when the runner starts it.
 const TAKES_WORK = `(i.kind <> 'box' or (i.status = 'online' and i.ready and i.stopped_at is null))`
-const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean() })
+// A person's computer gives each agent at work on it a seat of its own. Any
+// other box runs its sessions on seat 1, as before seats, so a pipeline's
+// stages keep their own placement on the box their run claimed.
+const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean(), seated: z.boolean(), agent_id: AgentId.nullable() })
 type Machine = z.infer<typeof Machine>
 
 // Where a session's turns run. Each runs on the machine its session started on,
@@ -68,7 +72,8 @@ type Machine = z.infer<typeof Machine>
 // turn is placed on a box before the mark or waits for it after, never between.
 async function whereTurnsRun(client: pg.PoolClient, sessionId: string): Promise<Machine> {
   return Machine.parse(await one(client, `the machine of session ${sessionId}`,
-    `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
+    `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work,
+       i.kind = 'box' and i.personal as seated, s.agent_id
      from sessions s join instances i on i.id = s.instance_id where s.id = $1 for key share of i`, [sessionId]))
 }
 
@@ -118,6 +123,17 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
   // read as starting, which the app shows as the agent thinking, and which the
   // watchdog marks lost once the machine stays silent, so it reads as idle.
   if (!machine.takes_work) await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
+  // Every turn of a session is its agent's, so they take one seat, or wait for one
+  // while every seat is busy. The seat is the agent's from now on, for this turn and
+  // the next, until the reclaim rule gives it to another agent.
+  if (machine.takes_work && machine.seated && machine.agent_id !== null
+    && (await takeSeat(client, machine.id, machine.agent_id)).kind === 'busy') {
+    for (const turn of turns) {
+      if (turn.status === 'queued') await moveTurn(client, turn.id, { to: 'waiting', wait: 'seat', instanceId: machine.id })
+      else await client.query(`update turns set wait = 'seat' where id = $1 and status = 'waiting'`, [turn.id])
+    }
+    return
+  }
   for (const turn of turns) {
     if (machine.takes_work) {
       const request = MessagePayload.safeParse(turn.payload)
