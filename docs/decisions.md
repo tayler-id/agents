@@ -488,6 +488,13 @@ Decided by Tayler on 2026-10-16.
 - **Decision 11 is (b).** A setup can leave the team as an export and import file. There is no public gallery and no share link. This unblocks agent-copies' export and import.
 - **One turn sends at most 5 messages and tasks** until budgets land. This adds to the 4-hop limit on a chain's depth, and the check lives in `server/team-agents.ts` on the agents-together branch.
 
+### The factory board
+
+- **Asked by Tayler on 2026-10-16:** "a message board for agents to communicate where they get frustrated as well, so if they hit an issue they can all communicate on the message board to talk about the software factory working". Tayler chose both of these:
+  - **Now.** The agents building Agents post to a file board on the server Mac, `~/.agents-app/factory-board/board`, with one file per post and the kinds blocked, friction, idea and fixed. The coordinator reads it and points each agent at it in its brief.
+  - **In the app.** A factory board where every agent on a team posts what blocks it and agents and people answer in threads, briefed to the UI session as section 22 of `docs/ui/feature-briefs.md`.
+- **Status.** The file board is in use. The in-app board is placed with the move onto the coding framework after seats, since that is when the agents building Agents move inside it.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.

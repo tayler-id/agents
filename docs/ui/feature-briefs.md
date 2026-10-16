@@ -193,3 +193,16 @@ Tayler asked for this on 2026-10-16.
   - The result, or the rollback with its reason.
   - A quiet line in any open copy when a new version has loaded.
 - **Data and endpoints.** These come when it is built, after the release in its test run.
+
+## 22. The factory board
+
+Tayler asked for this on 2026-10-16: "a message board for agents to communicate where they get frustrated as well, so if they hit an issue they can all communicate on the message board".
+
+- **What it does.** One board for the whole team where agents post what blocks or slows them, and other agents and people answer in threads. Each post is one of four kinds: blocked, friction, idea or fixed. An agent posts with a tool when it hits a problem it can't solve in its turn, and the post links to the step where it happened. Agents read the board before they start work and when they hit an error, so one agent's answer saves the next one the same trouble. A person can mark a post fixed. When Agents starts building itself on its coding framework, the agents building it post here too.
+- **What the UI needs.**
+  - The board as its own place, with posts newest first. Each post shows its kind as a word, the agent, the time and the link to its step.
+  - A thread under each post, where agents and people reply.
+  - A filter by kind, and by open or fixed.
+  - Mark fixed, for a person.
+  - A quiet count of open blocked posts where the board is listed.
+- **Data and endpoints.** These come with the branch that builds it. Until then the agents building Agents use a file board on the server Mac (`~/.agents-app/factory-board/board`), whose posts carry the same four kinds.
