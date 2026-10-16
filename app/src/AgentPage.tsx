@@ -42,6 +42,8 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
         {notice && <p className="note-line" role="status">{notice}</p>}
         <Profile agent={agent} />
 
+        <AgentSecrets agent={agent} me={me} />
+
         <h2 className="kicker section">Skills</h2>
         <Items rows={own(skills)} empty="No skills yet" render={(s) => <><strong>{s.name}</strong> <span className="muted small">{s.description}</span></>}
           onRemove={(s) => api.removeItem(agentId, 'skills', s.name)} />
@@ -55,8 +57,6 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
           )}
         </>} onRemove={(p) => api.removeItem(agentId, 'plugins', p.name)} />
         <PluginForm agentId={agentId} />
-
-        <AgentSecrets agent={agent} me={me} />
 
         <h2 className="kicker section">Routines</h2>
         <Items rows={own(routines)} empty="No routines yet" render={(r) => <>
@@ -194,7 +194,7 @@ function PluginForm({ agentId }: { agentId: string }) {
           : <><label htmlFor="plugin-url">URL</label><input id="plugin-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" /></>}
         <label htmlFor="plugin-secrets">{kind === 'stdio' ? 'Environment' : 'Headers'} from secrets, one per line</label>
         <textarea id="plugin-secrets" rows={2} value={secrets} onChange={(e) => setSecrets(e.target.value)} placeholder="GITHUB_TOKEN=GITHUB_TOKEN" />
-        <p className="small muted">Each names a secret. Its value stays on the machine, in its environment or ~/.agents-app/secrets.json.</p>
+        <p className="small muted">Each names a secret. Save the plugin, then set each value under Secrets, near the top. A value stays on the agent's computer, and the app keeps only its name.</p>
         <div className="actions">
           <button className="primary" type="submit" disabled={busy || !name || (kind === 'stdio' ? !command : !url)}>Save plugin</button>
           {error && <p className="error small" role="alert">{error}</p>}

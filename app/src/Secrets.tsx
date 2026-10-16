@@ -25,7 +25,9 @@ function heldNow(row: SecretSetRow | undefined, recent: Recent | undefined): Hel
 // The secrets an agent's plugins name. A person sets each one's value here, and it
 // goes to the agent's computer and nowhere else. The app keeps the name, where it
 // is set and when, never the value. A value put on the computer by hand, or in the
-// daemon's environment, works as well, and shows here as not set from the app.
+// daemon's environment, works as well, and shows here as not set from the app. An
+// agent with no secrets shows nothing. The section sits under the profile, since a
+// value is what a stopped agent is waiting for, and the page scrolls inside its body.
 export function AgentSecrets({ agent, me }: { agent: Agent; me: Me }) {
   const { rows: secrets, error } = useSnapshotOf(SecretRow, 'secrets', {}, REFRESH_MS)
   const { rows: sets } = useSnapshotOf(SecretSetRow, 'secret_sets', {}, REFRESH_MS)
@@ -36,11 +38,11 @@ export function AgentSecrets({ agent, me }: { agent: Agent; me: Me }) {
   const computer = instances.find((instance) => instance.id === agent.home_instance_id)
   // A person not loaded yet reads as someone.
   const login = (id: string) => people.find((p) => p.id === id)?.login ?? 'someone'
+  if (!mine.length && !error) return null
   return (
     <>
       <h2 className="kicker section">Secrets</h2>
       {error && <p className="error small" role="alert">{error}</p>}
-      {!mine.length && <p className="muted small">No secrets yet. A plugin that names one adds it here.</p>}
       {!!mine.length && (
         <p className="muted small">
           {computer ? `A value you set here goes to ${computer.name}, where the agent runs, and nowhere else.` : 'This agent has no computer, so a value cannot be set.'}
