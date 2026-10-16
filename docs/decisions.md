@@ -509,6 +509,16 @@ Decided on 2026-10-16. Tayler left these to the coordinator ("you pick"), and th
 - **Agents leave the Mac only when their computer can run them.** The seats branch moves agents to the person's computer as a step that waits for a Claude token or the person's sign-in and the built box image, not inside migration 0024. Their memory, skills and conversations move. Files left in folders on the Mac stay there.
 - **The next landing's protected files are approved:** `daemon/agentsd.ts`, `server/tasks.ts`, one line of `server/runner.ts`, and migrations 0016, 0017, 0018, 0019, 0022 and 0025. It combines voice, attachments, agents working together, keys from the app, agent copies, WebMCP in agents' browsers and History.
 
+### Seats joins the next landing
+
+Decided on 2026-10-16. Tayler said "just keep going" to the coordinator's ask, which the coordinator recorded as yes.
+
+- **Seats lands with the combined landing**, so one full suite and one restart cover all eight branches.
+- **Its protected files are approved:** `box/Dockerfile`, `server/admin.ts` (the new `move-agents` command), and migrations 0015 and 0024. `daemon/agentsd.ts` was already approved.
+- **Its packages are approved,** all inside the box image: `jwm`, `xterm`, `libutempter0` and `xbitmaps` from apt, and `@excalidraw/excalidraw` 0.17.6 with React 18.3.1 for the whiteboard.
+- **The improver agent moves with the others.** The coach and improve pipelines then run on its person's computer.
+- **At the restart:** a fresh backup, Colima to about 14 CPUs and 32 GiB with more Postgres connections, the box image rebuilt, Tayler runs `claude setup-token` once, then `move-agents` moves the agents whose computers can run them.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
