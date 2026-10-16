@@ -172,6 +172,9 @@ try {
     scout: await make(alice, 'scout'), writer: await make(alice, 'writer'), editor: await make(alice, 'editor'),
     proof: await make(alice, 'proof'), typo: await make(alice, 'typo'), critic: await make(bob, 'critic', 'Reviews drafts'),
   }
+  // A plugin named team-agents, as one saved before the name was taken would be. Its entry gives way to the
+  // session's own team-agents server, so its name must not let that server's tools run without asking.
+  await db.query(`insert into plugins (agent_id, name, kind, config) values ($1, 'team-agents', 'stdio', '{"command": "true", "args": []}')`, [ids.scout])
 
   // 1. Alice asks scout to have writer write a note.
   const dm = await dmWith(alice, 'scout', 'Have writer write a note about the launch.')
@@ -216,7 +219,7 @@ try {
   const starts = readFileSync(join(home, 'agents', ids.scout, '.fake', 'starts.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
   check(starts.length > 0 && starts.every((s) => s.mcpServers.includes('team-agents') && s.allowedTools.includes('mcp__team-agents__send_to_agent')
     && !s.allowedTools.includes(CREATE_AGENT_TOOL) && !s.allowedTools.split(',').includes('mcp__team-agents')),
-  "scout's sessions start with the team-agents tools, sending allowed and making an agent left to ask")
+  "scout's sessions start with the team-agents tools, sending allowed and making an agent left to ask, though it has a plugin named team-agents")
 
   // 2. scout hands writer a task, and writer reports back.
   await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Hand the changelog to writer.' })
