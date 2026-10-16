@@ -10,7 +10,7 @@
 import { useEffect, useId, useState } from 'react'
 import { mayPutOn, SecretRemoved, SecretRow, SecretSetRow, SecretStored } from '../../shared/secrets.ts'
 import { api, call, messageOf, parseTime, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me, type Person } from './data.ts'
-import { SecretValue, type SecretHeld, type SecretNotice } from './SecretValue.tsx'
+import { SecretValue, type SecretHeld } from './SecretValue.tsx'
 import './Secrets.css'
 
 // How often the lists are read again. A value just set or removed shows at once, from the answer to the
@@ -32,13 +32,12 @@ function useMe(): { me: Me | null; problem: string } {
   return seen
 }
 
-// What the page says about a computer, and what a person may do with it.
-function noticeOf(computer: Instance | undefined, person: string, login: (id: string) => string): SecretNotice | null {
-  if (!computer) return { words: 'This agent has no computer, so a value cannot be set.', controls: 'none' }
+// Why a person may not put a value on the agent's computer, in words, or null when they may. A computer that is
+// not running is no reason, since the request starts it.
+function blockedOf(computer: Instance | undefined, person: string, login: (id: string) => string): string | null {
+  if (!computer) return 'This agent has no computer, so a value cannot be set.'
   const owner = computer.owner_id
-  if (owner !== null && !mayPutOn(owner, person)) return { words: `${computer.name} is ${login(owner)}'s own computer, so only they can set a value on it.`, controls: 'none' }
-  if (computer.status === 'offline') return { words: `${computer.name} is stopped, so it can't take a value now. Set it once the computer is running.`, controls: 'off' }
-  if (computer.status === 'stale') return { words: `${computer.name} has stopped answering the server. A value may not reach it until it is back.`, controls: 'on' }
+  if (owner !== null && !mayPutOn(owner, person)) return `${computer.name} is ${login(owner)}'s own computer, so only they can set a value on it.`
   return null
 }
 
@@ -79,7 +78,7 @@ export function AgentSecrets({ agentId }: { agentId: string }) {
                     {secret.description && <span className="muted small">{secret.description}</span>}
                   </div>
                   <SecretValue
-                    name={secret.name} computer={computer?.name ?? 'its computer'} held={held} notice={noticeOf(computer, me.person.id, login)}
+                    name={secret.name} computer={computer?.name ?? 'its computer'} held={held} blocked={blockedOf(computer, me.person.id, login)} asleep={computer !== undefined && computer.status !== 'online'}
                     set={async (value) => new Date((await call(SecretStored, 'POST', `/v1/secrets/${secret.id}/value`, { value })).setAt)}
                     remove={async () => { await call(SecretRemoved, 'POST', `/v1/secrets/${secret.id}/remove`, {}) }}
                   />

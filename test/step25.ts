@@ -11,7 +11,9 @@
 // table, answer, log or file but the computer's secrets file and the config that
 // starts the plugin. Setting it again replaces it, and an agent in the middle of
 // a turn restarts with its next message. A value removed from the app is gone
-// from the computer. A stopped computer, an unreadable or unwritable secrets
+// from the computer. A computer that is not running is asked to start, and the
+// request waits for it: one that comes up in time gets the value, and one that
+// does not ends in a refusal that names it. An unreadable or unwritable secrets
 // file, a reserved name, a name the daemon's environment already sets and a teammate's
 // computer each refuse and store nothing. A value set as a computer connects survives the
 // record's comparison with what the computer says it holds.
@@ -59,9 +61,11 @@ const rand = () => randomBytes(12).toString('hex')
 const value = {
   first: `first25-${rand()}`, second: `second"25\\${rand()}é`, third: `third25-${rand()}`, fourth: `fourth25-${rand()}`,
   fifth: `fifth25-${rand()}`, sixth: `sixth25-${rand()}`, seventh: `seventh25-${rand()}`, eighth: `eighth25-${rand()}`,
-  carl: `carl25-${rand()}`, shadowed: `shadowed25-${rand()}`,
+  carl: `carl25-${rand()}`, shadowed: `shadowed25-${rand()}`, ninth: `ninth25-${rand()}`,
 }
 const SENT = Object.values(value)
+// Seconds the API waits for a computer that is not running, where it waits 90 for a person. Long enough for a daemon to start.
+const WAKE_SEC = 8
 // What the daemon's environment holds under ENV_HELD_TOKEN, which a value set from the app could never replace.
 const ENV_HELD = `held-by-the-environment25-${rand()}`
 const BAD_MARK = `badframe25-${rand()}`
@@ -186,7 +190,7 @@ async function main() {
 
   await db.connect()
   db.on('error', (error) => { failures.push(`Postgres dropped the check's connection: ${error.message}`) })
-  const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team }, streamsDir)
+  const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team, AGENTS_SECRET_WAKE_SEC: String(WAKE_SEC) }, streamsDir)
   closers.push(api.stop)
   logs.push({ name: 'the API', text: api.text })
 
@@ -422,8 +426,8 @@ async function main() {
   const started = Date.now()
   const lost = await ask(alice, 'POST', valueRoute, { value: value.fifth })
   const waited = (Date.now() - started) / 1000
-  check(lost.status === 409 && /connection for secrets is not up/.test(lost.json.error) && /from before this version/.test(lost.json.error) && waited >= LINK_WAIT_MS / 1000 - 1,
-    `a computer that is running but has no connection gets ${String(LINK_WAIT_MS / 1000)} seconds, then a refusal that says what to do (${String(lost.status)} after ${waited.toFixed(0)} s)`)
+  check(lost.status === 504 && /connection for keys is not up/.test(lost.json.error) && /from before this version/.test(lost.json.error) && lost.json.error.includes(computer.a) && waited >= LINK_WAIT_MS / 1000 - 1 && waited < LINK_WAIT_MS / 1000 + 5,
+    `a computer that is running but has no connection gets ${String(LINK_WAIT_MS / 1000)} seconds, then a 504 that names it and says what to do (${String(lost.status)} after ${waited.toFixed(0)} s)`)
   machines = await tap(MACHINES_TAP, { port: PORTS.machines })
   machineTaps.push(machines)
   check(await linkUp(machines, 0), 'the daemon reconnects when the pass-through is back')
@@ -464,18 +468,24 @@ async function main() {
   const removedAgain = await ask(alice, 'POST', removeRoute)
   check(removedAgain.status === 200 && removedAgain.json.had === false, 'removing it again changes nothing and says so')
 
-  // A stopped computer says so, and nothing is kept for when it starts.
+  // A computer that is not running is asked to start, and the request waits for it. Nothing here starts it, so the wait
+  // runs out in a refusal that names the computer, and nothing is kept for when it starts.
+  const startAsks = (name: string) => api.text().split('\n').filter((line) => line.includes(`asking for ${name} to start`)).length
   check((await ask(alice, 'POST', valueRoute, { value: value.seventh })).status === 200, 'a value is set again while the computer runs')
   await daemons[0]?.stop()
   check(await within(20, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'offline'), 'the computer reports that it is stopped')
+  const askedBefore = startAsks(computer.a)
+  const stoppedAt = Date.now()
   const stopped = await ask(alice, 'POST', valueRoute, { value: value.eighth })
-  check(stopped.status === 409 && new RegExp(`${computer.a} is stopped`).test(stopped.json.error) && !holds(stopped.text, value.eighth), `a stopped computer is named as stopped (${String(stopped.status)} ${String(stopped.json.error)})`)
-  const stoppedRemove = await ask(alice, 'POST', removeRoute)
-  check(stoppedRemove.status === 409 && /stopped/.test(stoppedRemove.json.error) && (await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 1,
-    'removing from a stopped computer is refused too, and the record still says the value is set')
+  const stoppedFor = (Date.now() - stoppedAt) / 1000
+  check(stopped.status === 504 && stopped.json.error.includes(computer.a) && stopped.json.error.includes(`within ${String(WAKE_SEC)} seconds`) && stopped.json.error.includes('not saved') && !holds(stopped.text, value.eighth),
+    `a request for a stopped computer waits, then answers 504 with a reason that names the computer (${String(stopped.status)} ${String(stopped.json.error)})`)
+  check(stoppedFor >= WAKE_SEC - 0.5 && stoppedFor < WAKE_SEC + 5, `it waits the time it is given, and no longer (${stoppedFor.toFixed(1)} s of ${String(WAKE_SEC)})`)
+  check(startAsks(computer.a) === askedBefore + 1, 'and it asks once for the computer to be started')
   await db.query(`update instances set status = 'stale' where id = $1`, [instanceA])
-  const silent = await ask(alice, 'POST', valueRoute, { value: value.eighth })
-  check(silent.status === 409 && /stopped answering/.test(silent.json.error), `a computer that stopped answering is named as that (${String(silent.status)} ${String(silent.json.error)})`)
+  const silentRemove = await ask(alice, 'POST', removeRoute)
+  check(silentRemove.status === 504 && silentRemove.json.error.includes(computer.a) && silentRemove.json.error.includes('not removed') && (await all('select 1 from secret_sets where instance_id = $1', [instanceA])).length === 1,
+    `a computer that stopped answering is waited for the same way, and removing from it ends in a 504 that names it, with the record still saying the value is set (${String(silentRemove.status)} ${String(silentRemove.json.error)})`)
   // While it is stopped the value is lost from its home, as when a box is made again with an empty volume.
   writeFileSync(secretsFile, JSON.stringify({ HAND_PLACED }), { mode: 0o600 })
   const beforeRestart = machines.heard.length
@@ -487,17 +497,29 @@ async function main() {
   check((await ask(alice, 'POST', valueRoute, { value: value.eighth })).status === 200 && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.eighth, 'and the value is set once it runs')
   check((await ask(alice, 'POST', removeRoute)).status === 200 && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), 'and removed')
 
-  // A teammate's computer that was never started, and one with no owner.
+  // A computer that starts while a request waits gets the value the request held. This check's own daemon plays the start.
+  await daemons.at(-1)?.stop()
+  check(await within(20, async () => (await one('select status from instances where id = $1', [instanceA]))?.status === 'offline'), 'the computer is stopped again')
+  const askedAgain = startAsks(computer.a)
+  const holding = ask(alice, 'POST', valueRoute, { value: value.ninth })
+  check(await within(10, async () => startAsks(computer.a) > askedAgain), 'a person sets a value, and the API asks for the computer to be started')
+  const beforeStart = machines.heard.length
+  daemons.push(startDaemon(macA.token, homes.a, THROUGH_TAP, scenario, { ENV_HELD_TOKEN: ENV_HELD }))
+  const delivered = await boundedBy(holding, WAKE_SEC + 10, null)
+  check(delivered?.status === 200 && delivered.json.name === 'SENTRY_TOKEN' && JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === value.ninth && !holds(delivered.text, value.ninth),
+    `the computer comes up while the request waits, and the request delivers the value and answers 200 (${String(delivered?.status)} ${delivered?.text.slice(0, 100) ?? ''})`)
+  check(await linkUp(machines, beforeStart) && (await setRowOf(instanceA))?.set_by === await personId(alice), 'and the record says who set it')
+  check((await ask(alice, 'POST', removeRoute)).status === 200 && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), 'and the value is removed again')
+
+  // A teammate's computer, and one with no owner. Neither is running, so a request that the owner rule lets through waits for it.
   check((await ask(bob, 'POST', `/v1/agents/${bobby}/plugins`, pluginOf('jira', 'JIRA_TOKEN'))).status === 200, "a plugin that needs JIRA_TOKEN is added to bobby, whose computer is bob's")
   const jira = await secretIdOf(bob, bobby, 'JIRA_TOKEN')
-  const neverStarted = await ask(bob, 'POST', `/v1/secrets/${jira}/value`, { value: value.eighth })
-  check(neverStarted.status === 409 && new RegExp(`${computer.b} is stopped`).test(neverStarted.json.error), `a computer that never started is stopped (${String(neverStarted.status)} ${String(neverStarted.json.error)})`)
   const notAlices = await ask(alice, 'POST', `/v1/secrets/${jira}/value`, { value: value.eighth })
-  check(notAlices.status === 403, `and another person cannot set a value on it (${String(notAlices.status)})`)
+  check(notAlices.status === 403, `another person cannot set a value on a teammate's computer (${String(notAlices.status)})`)
   await db.query('update instances set owner_id = null where name = $1', [computer.b])
   const ownerless = await ask(alice, 'POST', `/v1/secrets/${jira}/value`, { value: value.eighth })
   await db.query('update instances set owner_id = $2 where name = $1', [computer.b, await personId(bob)])
-  check(ownerless.status === 409 && /stopped/.test(ownerless.json.error), `a computer with no owner takes a value from any teammate, here refused only because it is stopped (${String(ownerless.status)})`)
+  check(ownerless.status === 504 && ownerless.json.error.includes(computer.b), `a computer with no owner takes a value from any teammate, here waited for and not reached because nothing starts it (${String(ownerless.status)} ${String(ownerless.json.error)})`)
 
   // What the API does with a computer's answers, with the check playing the daemon of a third computer.
   check((await ask(alice, 'POST', `/v1/agents/${carl}/plugins`, pluginOf('crm', 'CARL_TOKEN'))).status === 200, 'a plugin that needs CARL_TOKEN is added to carl, whose computer has no daemon here')
