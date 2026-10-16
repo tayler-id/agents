@@ -9,7 +9,7 @@
 // still coming back. Last, a person's post and a turn ending in one DM at the same
 // moment both go through. The API, its runner and the daemon are real, on a Mac
 // instance, with ports 8310 to 8312, which no other check uses.
-//   node --env-file=.env --env-file=.env.test test/step26.ts
+//   node --env-file=.env --env-file=.env.test test/step28.ts
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -34,8 +34,8 @@ const RELAY_SECONDS = 180
 const CLASH_ROUNDS = 20
 
 const id = randomBytes(4).toString('hex')
-const team = `together-26-${id}`
-const [alice, bob] = [`alice26-${id}@local`, `bob26-${id}@local`]
+const team = `together-28-${id}`
+const [alice, bob] = [`alice28-${id}@local`, `bob28-${id}@local`]
 const send = (to: string, text: string) => ({ tool: 'mcp__team-agents__send_to_agent', input: { to, text } })
 // What each agent does, by words in its prompt. The stand-in's own `turns` rules
 // give a turn its words, and the wrapper's `calls` rules its tool calls.
@@ -79,7 +79,7 @@ const SCENARIO = {
 const { failures, check } = results()
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
-const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step26-')))
+const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step28-')))
 let stopApi: (() => Promise<void>) | null = null
 // What the API printed, for a failed run to show its errors.
 let apiLog = () => ''

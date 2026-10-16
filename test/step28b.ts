@@ -1,4 +1,4 @@
-// Step 26b, the app, for agents working together. Drives Chromium, Firefox and
+// Step 28b, the app, for agents working together. Drives Chromium, Firefox and
 // WebKit at desktop and phone width against a real API, runner and daemon, with
 // the stand-in for Claude calling the team-agents tools. Each engine has its own
 // people and agents: Alice asks scout to have writer write a note, asks scout to
@@ -11,8 +11,8 @@
 // the switch makes the change. Scans for accessibility problems,
 // checks the phone fit, and keeps screenshots in test/ui-shots. Ports 8313 to
 // 8315 are its own.
-//   node --env-file=.env --env-file=.env.test test/step26b.ts
-//   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step26b.ts
+//   node --env-file=.env --env-file=.env.test test/step28b.ts
+//   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step28b.ts
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -48,9 +48,9 @@ const WIDTHS = { desktop: { width: 1280, height: 820 }, phone: { width: 390, hei
 const TURN_SECONDS = 60
 
 const id = randomBytes(4).toString('hex')
-const team = `together-26b-${id}`
-const admin = `admin26b-${id}@local`
-const loginOf = (who: 'alice' | 'bob', engine: string) => `${who}26b-${engine}-${id}@local`
+const team = `together-28b-${id}`
+const admin = `admin28b-${id}@local`
+const loginOf = (who: 'alice' | 'bob', engine: string) => `${who}28b-${engine}-${id}@local`
 
 // Each engine's agents are named after it, and so are the words that set them going.
 function scenario() {
@@ -71,7 +71,7 @@ type Scene = { alice: string; bob: string; dm: string; thread: string; threadNam
 const { failures, check } = results()
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
 const children: ChildProcess[] = []
-const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step26b-')))
+const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step28b-')))
 let stopApi: (() => Promise<void>) | null = null
 // What the API printed, for a failed run to show its errors.
 let apiLog = () => ''
