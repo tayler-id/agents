@@ -190,7 +190,7 @@ try {
 
   // A turn that waits for a person's answer is quiet because of them. The same
   // quiet turn with a session that is working is stuck.
-  for (const [label, status, stuck] of [['approval', 'needs_approval', false], ['working', 'running', true]] as const) {
+  for (const [label, status, stuck] of [['approval', 'needs_approval', false], ['question', 'needs_input', false], ['working', 'running', true]] as const) {
     const w = await world(label)
     await up(w)
     await w.ask('Do the thing.')
