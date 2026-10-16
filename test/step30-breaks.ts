@@ -107,7 +107,7 @@ const BREAKS: Break[] = [
     edits: [{ file: ATTACHMENTS, anchor: 'const ORPHAN_GRACE_MS = 60 * 60 * 1000', replace: 'const ORPHAN_GRACE_MS = -60 * 1000' }] },
   // What agents do with files.
   { name: 'share-escape', check: 'step30c', why: 'share_file reads any file on the machine', red: ['share_file refuses a path up out of the folder', 'share_file refuses an absolute path elsewhere', 'a link inside the folder to a file outside it'],
-    edits: [{ file: 'daemon/record-mcp.ts', anchor: "  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw", replace: '  if (false) throw' }] },
+    edits: [{ file: 'daemon/record-mcp.ts', anchor: '  if (outside(inside)) throw', replace: '  if (false) throw' }] },
   { name: 'guard-skipped', check: 'step30c', why: "share_file shares a file whose secret the machine keeps", red: ['share_file refuses plain.txt', 'share_file refuses dump.bin', 'copy-of-env.txt'],
     edits: [{ file: 'daemon/record-mcp.ts', anchor: '  if (held.length) throw', replace: '  if (false) throw' }] },
   { name: 'guard-unreachable', check: 'step30c', why: "a machine whose daemon can't check a file shares it anyway", red: ["a machine whose guard can't be reached shares nothing"],
@@ -197,7 +197,7 @@ const BREAKS: Break[] = [
   { name: 'pin-outsider', check: 'step30b', why: 'a person outside a private chat pins in it', red: ['a person outside a private chat cannot pin in it'],
     edits: [{ file: ACTIONS, anchor: "  if (!(await canSeeConversation(person, conversationId))) throw new HttpError(404, 'no such conversation')\n  const post", replace: '  const post' }] },
   { name: 'pin-elsewhere', check: 'step30b', why: "a post from another chat is pinned here", red: ['a post from another chat cannot be pinned here'],
-    edits: [{ file: ACTIONS, anchor: "from messages where id = $1 and conversation_id = $2', [messageId, conversationId])", replace: "from messages where id = $1 and $2::uuid is not null', [messageId, conversationId])" }] },
+    edits: [{ file: ACTIONS, anchor: "from messages where id = $1 and conversation_id = $2 for share', [messageId, conversationId])", replace: "from messages where id = $1 and $2::uuid is not null for share', [messageId, conversationId])" }] },
 ]
 
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
