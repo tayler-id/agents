@@ -4,7 +4,7 @@
 // creating, messaging and delegating to agents" in docs/design/target-architecture.md.
 
 import { z } from 'zod'
-import { AgentId, ConversationId, SessionId, TaskId, TurnId } from './ids.ts'
+import { AgentId, ConversationId, PersonId, SessionId, TaskId, TurnId } from './ids.ts'
 import { NAME } from './types.ts'
 import { TaskFields, TEXT_MAX } from './work.ts'
 
@@ -64,4 +64,29 @@ export const NewAgentAsk = z.object({
 })
 export type NewAgentAsk = z.infer<typeof NewAgentAsk>
 export const AgentMade = z.object({ agentId: AgentId, name: z.string(), owner: z.string() })
+
+// What the server adds to a create_agent ask, beside the engine's request, so the
+// app shows it as a question with a choice for each answer. Each choice's id is
+// the decision POST /v1/asks/:id/answer takes, and only `answerer`, the asking
+// agent's owner, may choose.
+export const AskChoice = z.object({ id: z.enum(['allow', 'deny']), label: z.string() })
+export type AskChoice = z.infer<typeof AskChoice>
+export const NewAgentQuestion = z.object({
+  question: z.string(), choices: z.array(AskChoice), answerer: z.object({ id: PersonId, login: z.string() }),
+})
+export type NewAgentQuestion = z.infer<typeof NewAgentQuestion>
+
+// The question and choices for an agent's ask to make `input`, which is what the
+// engine asked with and may not read as an agent.
+export function newAgentQuestion(maker: string, input: unknown, owner: { id: PersonId; login: string }, machine: string): NewAgentQuestion {
+  const asked = NewAgentAsk.safeParse(input)
+  const name = asked.success ? asked.data.name : 'an agent'
+  return {
+    question: asked.success
+      ? `${maker} asks to make a new agent, ${name}. It would be ${owner.login}'s, on ${machine}.`
+      : `${maker} asks to make a new agent, and what it sent does not read as one, so making it would fail.`,
+    choices: [{ id: 'allow', label: `Make ${name}` }, { id: 'deny', label: `Don't make ${name}` }],
+    answerer: owner,
+  }
+}
 export type AgentMade = z.infer<typeof AgentMade>

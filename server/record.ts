@@ -18,7 +18,7 @@ import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
 import { requestTurn, signalSession } from './scheduler.ts'
-import { CREATE_AGENT_TOOL } from '../shared/team-agents.ts'
+import { CREATE_AGENT_TOOL, newAgentQuestion } from '../shared/team-agents.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -149,11 +149,22 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     await answerAsk(client, ask.id, null, 'deny', 'A replay never waits on a person.')
     return
   }
-  // Each new agent waits for its maker's owner, and no standing rule answers for them.
-  // A maker with no owner has nobody to ask, so it is told no at once.
+  // Each new agent waits for its maker's owner, and no standing rule answers for
+  // them. The ask carries the question and the choices the app shows them. A maker
+  // with no owner has nobody to ask, and one with no machine has nowhere to put an
+  // agent, so either is told no at once.
   if (body.toolName === CREATE_AGENT_TOOL && session.folder_id === null) {
-    const maker = await one<{ owner_id: string | null }>(client, "the asking agent's owner", 'select owner_id from agents where id = $1', [session.agent_id])
-    if (maker.owner_id === null) await answerAsk(client, ask.id, null, 'deny', 'This agent has no owner to say yes to a new agent.')
+    const maker = await one<{ name: string; owner_id: string | null; login: string | null; machine: string | null }>(client, 'the asking agent',
+      `select a.name, a.owner_id, p.login, i.name as machine from agents a left join people p on p.id = a.owner_id
+       left join instances i on i.id = a.home_instance_id where a.id = $1`, [session.agent_id])
+    if (maker.owner_id === null || maker.login === null) {
+      await answerAsk(client, ask.id, null, 'deny', 'This agent has no owner to say yes to a new agent.')
+    } else if (maker.machine === null) {
+      await answerAsk(client, ask.id, null, 'deny', 'This agent has no machine to put a new agent on.')
+    } else {
+      const asked = newAgentQuestion(maker.name, body.input, { id: PersonId.parse(maker.owner_id), login: maker.login }, maker.machine)
+      await client.query('update asks set payload = payload || $2 where id = $1', [ask.id, JSON.stringify(asked)])
+    }
     return
   }
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
