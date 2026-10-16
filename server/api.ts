@@ -43,7 +43,7 @@ import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wa
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
 import { syncPipelines } from './pipelines.ts'
-import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
+import { copyAgent, createAgent, removeHook, removeItem, saveHook, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
 import { createRoom } from './rooms.ts'
 import { decideHunk } from './hunks.ts'
 import { HunkDecisionBody, HunkId } from '../shared/evidence.ts'
@@ -60,6 +60,7 @@ import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
+import { CopyAsk } from '../shared/recipe.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
@@ -398,6 +399,27 @@ const routes: Route[] = [
     const person = await personFrom(req)
     await tx((client) => removeItem(client, person, agentId, kind as 'skills', decodeURIComponent(name)))
     return { ok: true }
+  }],
+
+  // Hooks run commands on the agent's machine, so they have routes of their own, and an owner's or admin's check.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    await tx((client) => saveHook(client, person, agentId, body))
+    return { ok: true }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks/([^/]+)/delete$`), async (req, [agentId, name]) => {
+    const person = await personFrom(req)
+    await tx((client) => removeHook(client, person, agentId, decodeURIComponent(name)))
+    return { ok: true }
+  }],
+
+  // A new agent with the setup of this one, owned by the person who asks.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/copy$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const ask = parsed(CopyAsk, await readJson(req))
+    return tx((client) => copyAgent(client, person, agentId, ask))
   }],
 
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/templates$`), async (req, [agentId]) => {

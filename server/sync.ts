@@ -125,6 +125,7 @@ const personShapes: Record<string, PersonShape> = {
   skills: async (p) => ({ table: 'skills', where: 'team_id = $1', params: [p.team_id] }),
   plugins: async (p) => ({ table: 'plugins', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
   routines: async (p) => ({ table: 'routines', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
+  agent_hooks: async (p) => ({ table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
   memories: async (p) => ({ table: 'memories', where: 'team_id = $1', params: [p.team_id] }),
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
