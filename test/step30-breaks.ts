@@ -78,6 +78,8 @@ const BREAKS: Break[] = [
     edits: [{ file: ATTACHMENTS, anchor: '  if (files.length === 0) return \'\'\n', replace: "  return ''\n" }] },
   { name: 'task-first-post', check: 'step30a', why: "a new task's files are never put in its session", red: ["the file is in the new task's session, on its first post"],
     edits: [{ file: 'server/api.ts', anchor: '        await placeUploads(client, files.map((f) => f.id), { sessionId: started.sessionId, eventId: first.id })\n', replace: '' }] },
+  { name: 'first-post-twice', check: 'step30a', why: 'a retried new chat posts its first message twice', red: ['makes one post'],
+    edits: [{ file: 'server/api.ts', anchor: 'post.text ?? \'\', post.clientId ?? randomUUID(), {', replace: 'post.text ?? \'\', randomUUID(), {' }] },
   { name: 'draft-files', check: 'step30a', why: 'a draft task takes files it can never give the agent', red: ['a draft task refuses attachments by saying so'],
     edits: [{ file: 'server/api.ts', anchor: "    if (attachmentIds && task.draft) throw new HttpError(400, 'A draft takes no attachments yet. Attach files when the task starts.')\n", replace: '' }] },
   { name: 'first-post', check: 'step30a', why: "a new group chat drops its first post's files", red: ['the file is in the new chat, on its first post'],

@@ -197,6 +197,12 @@ try {
   const [roomRow] = await q('select a.conversation_id, a.message_id, m.body from attachments a join messages m on m.id = a.message_id where a.id = $1', [roomFile.json.attachmentId])
   check(roomRow?.conversation_id === room.json.conversationId && roomRow?.body === 'Kickoff', 'the file is in the new chat, on its first post')
 
+  // A new chat's first post, sent again after a dropped answer, is one post.
+  const open = () => as(alice, 'POST', '/v1/conversations', { kind: 'dm', agent: 'scout', text: 'Hello, once', clientId: 'first-post-1' })
+  const [firstTry, secondTry] = [await open(), await open()]
+  check(firstTry.status === 200 && secondTry.status === 200 && (await q1(`select count(*)::int as n from messages where body = 'Hello, once'`)).n === 1,
+    'asking to open a chat with a first post twice, with one clientId, makes one post')
+
   // 9. Pending uploads are deleted after 24 hours, with their bytes. Sent files stay.
   const old = await upload(alice, '/v1/attachments', Buffer.from('forgotten'), 'old.txt', 'text/plain')
   const young = await upload(alice, '/v1/attachments', Buffer.from('recent'), 'young.txt', 'text/plain')

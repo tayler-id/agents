@@ -132,11 +132,11 @@ const bounded = (value: string | null, fallback: number, max: number) =>
 const UUID = '([0-9a-f-]{36})'
 
 // A new chat's first post: the words, the files, or both. Neither leaves the chat empty.
-const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish() })
+const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish(), clientId: z.string().min(1).nullish() })
 async function withFirstPost(client: pg.PoolClient, person: Person, conversationId: string, body: Record<string, unknown>): Promise<string> {
   const post = parsed(FirstPost, body)
   if ((post.text ?? '').trim() !== '' || post.attachmentIds) {
-    await sendPersonMessage(client, person, conversationId, post.text ?? '', randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
+    await sendPersonMessage(client, person, conversationId, post.text ?? '', post.clientId ?? randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
   }
   return conversationId
 }
