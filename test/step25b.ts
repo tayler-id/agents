@@ -41,6 +41,9 @@ const LAUNCH: Record<string, Record<string, unknown>> = {
 const ENGINES: Record<string, BrowserType> = { chromium, webkit, firefox }
 const engines = (process.env.AGENTS_UI_ENGINES ?? 'chromium,webkit,firefox').split(',')
 const WIDTHS = { desktop: { width: 1280, height: 820 }, phone: { width: 390, height: 844 } }
+// How long a page's lists may take to show when it opens. Each reads a shape that Electric makes on the first
+// request, which takes longer while other checks use the same Electric.
+const LISTS_SEC = 45
 
 const id = randomBytes(4).toString('hex')
 const team = `secrets25b-${id}`
@@ -74,9 +77,18 @@ async function serious(page: Page) {
   return found.length
 }
 
+// Whether the page and each named part stay inside the screen's width. When one does not, the one that
+// does not is printed, since a width that fails now and then is hard to see in a pass or a fail alone.
 async function noSideScroll(page: Page, selectors: string[]) {
-  return page.evaluate((list) => document.documentElement.scrollWidth <= window.innerWidth
-    && list.every((selector) => [...document.querySelectorAll(selector)].every((el) => el.getBoundingClientRect().right <= window.innerWidth + 1)), selectors)
+  const over = await page.evaluate((list) => [
+    ...(document.documentElement.scrollWidth > window.innerWidth ? [`the page is ${String(document.documentElement.scrollWidth)} wide in ${String(window.innerWidth)}`] : []),
+    ...list.flatMap((selector) => [...document.querySelectorAll(selector)].flatMap((el) => {
+      const right = el.getBoundingClientRect().right
+      return right > window.innerWidth + 1 ? [`${selector} ends at ${String(right)} in ${String(window.innerWidth)}`] : []
+    })),
+  ], selectors)
+  for (const line of over) console.log(`      ${line}`)
+  return over.length === 0
 }
 
 // The page scrolls inside its body, so the secrets are scrolled to the bottom of the screen before the shot.
@@ -145,7 +157,9 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     // The page lists the secret the agent's plugin names, not set anywhere yet.
     const page = await open(alice, scout)
     const line = row(page, 'SENTRY_TOKEN')
-    check(await visible(page, '.secrets > li', 20, /SENTRY_TOKEN/) && /Not set on mac-a/.test(await line.innerText()), `${engine}: an agent's page lists the secret its plugin names, and says it is not set on the agent's computer`)
+    const listed = await visible(page, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
+    if (!listed) console.log(`      the page showed:\n${(await page.locator('.page-body').innerText().catch(() => '(no page body)')).split('\n').slice(-12).join('\n')}`)
+    check(listed && /Not set on mac-a/.test(await line.innerText()), `${engine}: an agent's page lists the secret its plugin names, and says it is not set on the agent's computer`)
     check(await page.getByRole('heading', { name: 'Secrets' }).isVisible() && /goes to mac-a.* and nowhere else/.test(await page.locator('.page-body').innerText()), `${engine}: and says where a value goes`)
     await shot(page, `${engine}-secrets-not-set-desktop`)
     check(await serious(page) === 0, `${engine}: the page has no serious accessibility problems`)
@@ -158,7 +172,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     await field.fill(first)
     check(!holds(await page.locator('body').innerText(), first), `${engine}: what is typed is not on the page as text`)
     await page.getByRole('button', { name: 'Set value' }).click()
-    check(await visible(page, '.secrets > li', 20, /Set on mac-a.*by you/), `${engine}: after Set value the row says where it is set, when, and by you`)
+    check(await visible(page, '.secrets > li', LISTS_SEC, /Set on mac-a.*by you/), `${engine}: after Set value the row says where it is set, when, and by you`)
     check(await field.inputValue() === '' && !holds(await page.locator('body').innerText(), first) && !holds(await page.content(), first), `${engine}: the field is empty again and the page holds nothing of the value`)
     check(await page.getByRole('form', { name: 'Replace SENTRY_TOKEN' }).isVisible(), `${engine}: the row now offers to replace the value`)
     const kept = await page.evaluate(() => JSON.stringify([localStorage, sessionStorage, document.cookie, location.href]))
@@ -168,11 +182,11 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
 
     // Read again from the list, it names who set it.
     await page.reload()
-    check(await visible(page, '.secrets > li', 20, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: opened again, the row names the person who set it`)
+    check(await visible(page, '.secrets > li', LISTS_SEC, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: opened again, the row names the person who set it`)
 
     // A teammate sees it, and may not change it on someone else's computer.
     const bobsPage = await open(bob, scout)
-    check(await visible(bobsPage, '.secrets > li', 20, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: a teammate sees where it is set and by whom, and not the value`)
+    check(await visible(bobsPage, '.secrets > li', LISTS_SEC, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: a teammate sees where it is set and by whom, and not the value`)
     await bobsPage.getByLabel('Value of SENTRY_TOKEN').fill(typed)
     await bobsPage.getByRole('button', { name: 'Replace value' }).click()
     check(await visible(bobsPage, '.secrets > li [role="alert"]', 15, /teammate's own computer/), `${engine}: a teammate who tries to change it is told the computer is someone else's`)
@@ -194,7 +208,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
 
     // A computer that is stopped says so, and takes no value.
     const stoppedPage = await open(bob, bobby)
-    check(await visible(stoppedPage, '.secrets > li', 20, /JIRA_TOKEN/) && await visible(stoppedPage, '.secrets > li p', 20, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
+    check(await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/) && await visible(stoppedPage, '.secrets > li p', LISTS_SEC, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
     check(await stoppedPage.getByRole('button', { name: 'Set value' }).isDisabled(), `${engine}: and the page does not offer to send it a value`)
     await shot(stoppedPage, `${engine}-secrets-stopped-desktop`)
 
@@ -208,7 +222,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
 
     // Phone width: the same page fits the screen, with the field and its buttons in reach.
     const phone = await open(alice, scout, { viewport: WIDTHS.phone, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
-    await visible(phone, '.secrets > li', 20, /SENTRY_TOKEN/)
+    await visible(phone, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
     const phoneField = phone.getByLabel('Value of SENTRY_TOKEN')
     await phoneField.fill(first)
     const fits = await noSideScroll(phone, ['.page-head', '.page-body', '.secrets > li', '.secret-form', '.secret-form input'])
@@ -219,7 +233,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
 
     // The dark page.
     const dark = await open(alice, scout, { colorScheme: 'dark' })
-    await visible(dark, '.secrets > li', 20, /SENTRY_TOKEN/)
+    await visible(dark, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
     await shot(dark, `${engine}-secrets-dark`)
   } finally {
     // Checked even when a step above failed, since a page error is often why.
