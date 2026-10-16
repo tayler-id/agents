@@ -144,7 +144,10 @@ async function run(engine: string, machineA: string, folder: string) {
       && await visible(danaPage, 'ul.items[aria-label="What the file runs"] li', 5, /lucky.*node lucky\.js/s)
       && await visible(danaPage, 'p', 5, /LUCKY_TOKEN/),
     `${engine}: the form shows each hook and plugin command the file would run, and the secret it names, before it makes anything`)
-    check(await importForm.getByLabel('Name of the new agent').inputValue() === name && await importForm.getByLabel('Machine for the new agent').locator('option').count() === 1,
+    // The machines load a moment after the form opens, so the count is read once one is there.
+    const machines = importForm.getByLabel('Machine for the new agent').locator('option')
+    await within(15, async () => (await machines.count()) > 0)
+    check(await importForm.getByLabel('Name of the new agent').inputValue() === name && await machines.count() === 1,
       `${engine}: the form offers the file's name, and Dana's machine alone`)
     await danaPage.screenshot({ path: join(SHOTS, `${engine}-import-light.png`), fullPage: true })
     check(await serious(danaPage) === 0, `${engine}: the New agent page with the import form open has no serious accessibility problems`)
