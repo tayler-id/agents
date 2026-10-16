@@ -10,7 +10,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { personFrom } from './auth.ts'
 import { pcmToWav } from './audio.ts'
-import { many, maybe, pool, tx } from './db.ts'
+import { many, maybe, one, pool, tx } from './db.ts'
 import { HttpError, sendPersonMessage, type Person } from './record.ts'
 import { refuse } from './screens.ts'
 import { sentencesFrom, speakable } from './sentences.ts'
@@ -74,45 +74,69 @@ export async function voiceUpgrade(origins: ReadonlySet<string>, req: IncomingMe
   }
 }
 
-// The sentences of the agent's reply as they are written, until its turn ends.
-async function* reply(conversationId: ConversationId, sessionId: string, afterSeq: number, userSeq: number, signal: AbortSignal): AsyncGenerator<string> {
+// The sentences of the agent's reply to one post, as they are written, until the turn that answers it ends.
+// A session runs its turns in order, and each turn's events are written before it ends, in the transaction that
+// ends it. So this turn's words are the assistant events written after the last earlier turn ended, and, once this
+// turn has ended, no later than its end. Sequence numbers cannot say this, since an earlier turn's answer is
+// written after a later post's own event.
+async function* reply(userEventId: string, signal: AbortSignal): AsyncGenerator<string> {
   const deadline = Date.now() + VOICE_REPLY_WAIT_SECONDS * 1000
   // How far into each event's speakable words has been handed on.
   const handed = new Map<string, number>()
   for (;;) {
     signal.throwIfAborted()
-    // Read before the words, so a reply seen as finished is whole.
-    const finished = Boolean(await maybe(pool,
-      `select 1 from messages where conversation_id = $1 and speaker = 'agent' and session_id = $2 and seq > $3`, [conversationId, sessionId, afterSeq]))
-    const events = await many<{ id: string; text: string }>(pool,
-      `select id::text, coalesce(body->>'text', '') as text from events
-       where session_id = $1 and kind = 'assistant' and parent_tool_use_id is null and seq > $2 order by seq`, [sessionId, userSeq])
-    for (const [i, event] of events.entries()) {
-      const words = speakable(event.text)
-      // An event with a later one after it is written, so its last words are a sentence even without an end mark.
-      const { sentences, next } = sentencesFrom(words, Math.min(handed.get(event.id) ?? 0, words.length), finished || i < events.length - 1)
-      handed.set(event.id, next)
-      yield* sentences
+    // Read before the words, so a turn seen as ended has all of them written.
+    const turnRow = await one<{ session_id: string; status: string; earlier_open: string }>(pool, 'the turn of the post',
+      `select t.session_id, t.status,
+         (select count(*) from turns e where e.session_id = t.session_id and e.event_id < t.event_id
+            and e.status not in ('done', 'failed', 'cancelled')) as earlier_open
+       from turns t where t.event_id = $1`, [userEventId])
+    const ended = turnRow.status === 'done' || turnRow.status === 'failed' || turnRow.status === 'cancelled'
+    if (turnRow.earlier_open === '0') {
+      const events = await many<{ id: string; text: string }>(pool,
+        // Compared inside Postgres, since a Date in JavaScript would cut the timestamps to milliseconds.
+        `select ev.id::text, coalesce(ev.body->>'text', '') as text from events ev, turns t
+         where t.event_id = $1 and ev.session_id = t.session_id and ev.kind = 'assistant' and ev.parent_tool_use_id is null and ev.id > t.event_id
+           and ev.created_at > coalesce((select max(e.finished_at) from turns e where e.session_id = t.session_id and e.event_id < t.event_id), '-infinity')
+           and ev.created_at <= coalesce(t.finished_at, 'infinity')
+         order by ev.seq`, [userEventId])
+      for (const [i, event] of events.entries()) {
+        const words = speakable(event.text)
+        // An event with a later one after it is written, so its last words are a sentence even without an end mark.
+        const { sentences, next } = sentencesFrom(words, Math.min(handed.get(event.id) ?? 0, words.length), ended || i < events.length - 1)
+        handed.set(event.id, next)
+        yield* sentences
+      }
     }
-    if (finished) return
+    if (ended) {
+      if (turnRow.status !== 'done') throw new HttpError(502, VOICE_WORDS.noAnswer)
+      return
+    }
     if (Date.now() > deadline) throw new HttpError(504, VOICE_WORDS.noReply)
     await sleep(REPLY_POLL_MS, undefined, { signal })
   }
 }
 
+// What a running turn is doing. While it posts, its words are on their way into the record and nothing may
+// interrupt it. Once posted, only its speech remains, and the person may silence that.
+type Running = { speech: AbortController; posting: boolean }
+
 // One turn: the person's speech to text, posted to the conversation, then the agent's reply spoken.
-async function turn(person: Person, conversationId: ConversationId, pcm: Buffer, signal: AbortSignal, send: (message: VoiceFromServer) => void, frame: (audio: Buffer) => void) {
+async function turn(person: Person, conversationId: ConversationId, pcm: Buffer, running: Running, send: (message: VoiceFromServer) => void, frame: (audio: Buffer) => void, posted: () => void) {
+  const signal = running.speech.signal
   const text = await transcribe(pcmToWav(pcm, VOICE_IN_RATE))
   signal.throwIfAborted()
   if (!text) throw new HttpError(400, VOICE_WORDS.nothingHeard)
   send({ type: 'heard', text })
-  const posted = await tx((client) => sendPersonMessage(client, person, conversationId, text, randomUUID()))
+  const post = await tx((client) => sendPersonMessage(client, person, conversationId, text, randomUUID()))
   send({ type: 'thinking' })
-  const where = await maybe<{ session_id: string; seq: string }>(pool,
-    `select e.session_id, e.seq from events e join sessions s on s.id = e.session_id
-     where s.conversation_id = $1 and e.client_id = $2`, [conversationId, `message:${posted.messageId}`])
-  if (!where) throw new Error(`the post ${posted.messageId} has no event in the conversation's session`)
-  for await (const sentence of reply(conversationId, where.session_id, posted.seq, Number(where.seq), signal)) {
+  const where = await maybe<{ id: string }>(pool,
+    `select e.id::text from events e join sessions s on s.id = e.session_id
+     where s.conversation_id = $1 and e.client_id = $2`, [conversationId, `message:${post.messageId}`])
+  if (!where) throw new Error(`the post ${post.messageId} has no event in the conversation's session`)
+  running.posting = false
+  posted()
+  for await (const sentence of reply(where.id, signal)) {
     send({ type: 'speaking', text: sentence })
     const audio = await speak(sentence, signal)
     signal.throwIfAborted()
@@ -127,26 +151,39 @@ function talk(ws: WebSocket, person: Person, conversationId: ConversationId) {
   let heard: Buffer[] = []
   let heardBytes = 0
   let overflowed = false
-  let running: AbortController | null = null
+  let running: Running | null = null
+  // A turn the person ended while the last one was still being posted. It starts the moment that one is posted.
+  let queued: Buffer | null = null
   const clear = () => { heard = []; heardBytes = 0; overflowed = false }
-  // Silences the agent and says so. A turn that already ended has nothing to stop.
+  // Silences the agent's speech and says so. A turn still posting is not silenced, and one that ended has nothing to stop.
   const silence = () => {
-    if (!running) return
-    running.abort()
+    if (!running || running.posting) return
+    running.speech.abort()
     running = null
     send({ type: 'stopped' })
   }
+  const startQueued = () => {
+    if (!queued) return
+    const pcm = queued
+    queued = null
+    silence()
+    start(pcm)
+  }
   const start = (pcm: Buffer) => {
-    const own = new AbortController()
+    const own: Running = { speech: new AbortController(), posting: true }
     running = own
-    turn(person, conversationId, pcm, own.signal, send, frame).catch((error: unknown) => {
-      if (own.signal.aborted) return
+    turn(person, conversationId, pcm, own, send, frame, startQueued).catch((error: unknown) => {
+      if (own.speech.signal.aborted) return
       if (error instanceof HttpError) send({ type: 'error', error: error.message })
       else {
         console.error(`voice chat turn: ${messageOf(error)}`)
         send({ type: 'error', error: VOICE_WORDS.failed })
       }
-    }).finally(() => { if (running === own) running = null })
+    }).finally(() => {
+      if (running === own) running = null
+      // A turn that failed before it posted leaves the one behind it waiting.
+      if (own.posting) startQueued()
+    })
   }
 
   ws.on('message', (data, isBinary) => {
@@ -175,6 +212,9 @@ function talk(ws: WebSocket, person: Person, conversationId: ConversationId) {
       clear()
     } else if (!heardBytes) {
       send({ type: 'error', error: VOICE_WORDS.noAudio })
+    } else if (running?.posting) {
+      queued = Buffer.concat([queued ?? Buffer.alloc(0), ...heard])
+      clear()
     } else {
       silence()
       start(Buffer.concat(heard))
@@ -182,7 +222,8 @@ function talk(ws: WebSocket, person: Person, conversationId: ConversationId) {
     }
   })
   ws.on('close', () => {
-    running?.abort()
+    queued = null
+    running?.speech.abort()
     running = null
   })
   send({ type: 'ready', inRate: VOICE_IN_RATE, outRate: VOICE_OUT_RATE })

@@ -80,6 +80,7 @@ export const VOICE_WORDS = {
   noAudio: 'There was no audio to send.',
   utteranceTooLong: SPEECH_WORDS.tooLong,
   noReply: 'The agent has not answered yet. Its reply will still appear in the chat.',
+  noAnswer: 'The agent could not answer that. The chat shows why.',
   failed: 'Voice chat hit a problem. Try again.',
   notAllowed: 'Only the app may open a voice chat.',
 } as const

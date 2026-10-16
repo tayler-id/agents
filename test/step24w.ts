@@ -149,17 +149,40 @@ try {
 
   // The agent's machine: the words and the turn's end, posted the way a daemon posts them.
   const sessionOf = async () => z.object({ id: z.uuid() }).parse((await db.query('select id from sessions where conversation_id = $1', [conversationId])).rows[0]).id
+  const machineCall = async (path: string, body: unknown) => {
+    const res = await fetch(`http://127.0.0.1:${PORTS.machines}${path}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${machine.token}` }, body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
+  }
+  // The oldest turn the machine has not finished, with its message command, claimed as the daemon does.
+  const oldestOpen = async () => {
+    const found = await until(async () => (await db.query(
+      `select 1 from turns t join sessions s on s.id = t.session_id where s.conversation_id = $1 and t.status in ('placed', 'running')`, [conversationId])).rows.length > 0)
+    if (!found) throw new Error('the post has no turn for the machine to take')
+    const row = z.object({ command_id: z.uuid(), status: z.string() }).parse((await db.query(
+      `select t.command_id, t.status from turns t join sessions s on s.id = t.session_id
+       where s.conversation_id = $1 and t.status in ('placed', 'running') order by t.requested_at limit 1`, [conversationId])).rows[0])
+    if (row.status === 'placed') await machineCall(`/v1/instance/commands/${row.command_id}/claim`, {})
+    return row.command_id
+  }
   let eventNumber = 0
+  // The words of the oldest open turn, and its end when `usage` is among them, posted the way a daemon posts them.
   const agentPosts = async (events: { kind: 'assistant' | 'usage'; text?: string }[]) => {
     const session = await sessionOf()
-    const res = await fetch(`http://127.0.0.1:${PORTS.machines}/v1/sessions/${session}/events`, {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${machine.token}` },
-      body: JSON.stringify({ events: events.map((e) => ({
+    const command = await oldestOpen()
+    const ending = events.some((e) => e.kind === 'usage')
+    await machineCall(`/v1/sessions/${session}/events`, {
+      events: events.map((e) => ({
         clientId: `agent-${id}-${++eventNumber}`, kind: e.kind, text: e.text, body: e.kind === 'assistant' ? { text: e.text } : { total_cost_usd: 0.01 * eventNumber },
-      })), status: events.some((e) => e.kind === 'usage') ? 'idle' : 'running' }),
+      })),
+      status: ending ? 'idle' : 'running', ...(ending ? { ended: { how: 'answered', ids: [command] } } : {}),
     })
-    if (!res.ok) throw new Error(`agent events: ${res.status} ${await res.text()}`)
   }
+  const openTurns = async () => Number(z.object({ n: z.string() }).parse((await db.query(
+    `select count(*) as n from turns t join sessions s on s.id = t.session_id where s.conversation_id = $1 and t.status in ('placed', 'running')`, [conversationId])).rows[0]).n)
+  // Ends every turn the machine still holds, with nothing said.
+  const drain = async () => { while (await openTurns() > 0) await agentPosts([{ kind: 'usage' }]) }
   const personMessages = async () => PersonRows.parse((await db.query(
     `select body, speaker from messages where conversation_id = $1 order by seq`, [conversationId])).rows)
 
@@ -180,6 +203,7 @@ try {
 
   await agentPosts([{ kind: 'assistant', text: 'I will look into that. Checking the files' }])
   check(await until(() => voice.spoken.length === 1), 'the first complete sentence of the reply is spoken as soon as it is written')
+  await until(() => voice.spoken[0]?.audio.length === pcmFor('I will look into that.').length)
   check(voice.spoken[0]?.text === 'I will look into that.' && voice.spoken[0].audio.equals(pcmFor('I will look into that.')),
     'it is sent as the audio the speech service made for that sentence, whole and in order')
   check(speech.spoken[0]?.model === TTS_MODEL && speech.spoken[0].voice === TTS_VOICE && speech.spoken[0].language === TTS_LANGUAGE,
@@ -235,9 +259,45 @@ try {
   closing.ws.close()
   await until(() => closing.closed !== null)
   const spokenBeforeClose = speech.spoken.length
+  await agentPosts([{ kind: 'usage' }])
   await agentPosts([{ kind: 'assistant', text: 'Nobody is listening to this sentence. Or this one.' }, { kind: 'usage' }])
   await sleep(QUIET_MS)
   check(speech.spoken.length === spokenBeforeClose, 'a socket that closed mid-turn gets nothing spoken for it')
+
+  // ---- speaking again while the last turn is still being posted ----
+  await drain()
+  const quick = await connected(api, conversationId)
+  voices.push(quick)
+  const postsBefore = (await personMessages()).length
+  speech.mode = 'hold'
+  await quick.say(fixturePcm)
+  quick.send({ type: 'end' })
+  await until(() => speech !== undefined && speech.waiting() === 1)
+  await quick.say(fixturePcm)
+  quick.send({ type: 'end' })
+  speech.mode = 'ok'
+  speech.release()
+  check(await until(async () => (await personMessages()).length === postsBefore + 2), 'a turn ended while the last was still being read is queued and posted too, and neither is lost')
+  check(quick.count('heard') === 2 && quick.errors().length === 0, 'both turns are heard, with no error')
+  await drain()
+
+  // ---- the reply to this post, not an earlier one ----
+  const mate1 = await connected(api, conversationId)
+  voices.push(mate1)
+  await post(`/v1/conversations/${conversationId}/messages`, { text: 'A typed question, asked first.' })
+  await mate1.say(fixturePcm)
+  mate1.send({ type: 'end' })
+  await until(() => mate1.count('thinking') === 1)
+  await until(async () => (await openTurns()) === 2)
+  const spokenBefore = mate1.spoken.length
+  await agentPosts([{ kind: 'assistant', text: 'Working on the typed question. Nearly there.' }])
+  await sleep(QUIET_MS)
+  await agentPosts([{ kind: 'assistant', text: 'This answers the typed question. It says so.' }, { kind: 'usage' }])
+  await sleep(QUIET_MS)
+  check(mate1.spoken.length === spokenBefore && mate1.count('done') === 0, "while the agent answers an earlier post, that answer is not spoken as the reply to the spoken one")
+  await agentPosts([{ kind: 'assistant', text: 'This answers the spoken sentence. Done now.' }, { kind: 'usage' }])
+  check(await until(() => mate1.count('done') === 1), 'the reply to the spoken post finishes with done')
+  check(JSON.stringify(mate1.spoken.map((x) => x.text)) === JSON.stringify(['This answers the spoken sentence.', 'Done now.']), 'and only the reply to the spoken post was spoken')
 
   // ---- what goes wrong ----
   const wrong = await connected(api, conversationId)

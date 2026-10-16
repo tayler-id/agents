@@ -60,7 +60,7 @@ The voice chat socket checks the page's origin against `AGENTS_PEOPLE_ORIGINS`, 
 ## What the record keeps
 
 - Transcripts, yes. Dictation text goes into the message box and is saved when the person sends it, like any typed message. A voice chat turn is saved as an ordinary message from the person, and the agent's reply is saved as it always is. Both appear in the conversation as text.
-- Audio, no. A clip is held in memory for the length of the request and dropped. Nothing is written to disk or Postgres. Keeping audio would need consent for recording, a size policy and a place to store it, and no feature needs it today. Meetings may argue for it again, and that argument belongs in the meetings design.
+- Audio, no. The API holds a clip in memory for the length of the request and drops it, and writes none to disk or Postgres. The speech service is another program. It may write a clip to a temporary file while it reads it, and nobody has watched its temp folder yet, so this design does not promise that no copy touches disk. Keeping audio would need consent for recording, a size policy and a place to store it, and no feature needs it today. Meetings may argue for it again, and that argument belongs in the meetings design.
 - No migration. Messages already carry what a transcript needs, so 0026 stays unused.
 
 ## Dictation
@@ -81,10 +81,12 @@ One WebSocket per conversation with an agent: `GET /v1/voice/conversations/{conv
 
 1. The person's audio goes up as binary frames of 16-bit little-endian PCM, mono, 16 kHz. The page ends a turn with the text message `{"type":"end"}`. Detecting silence is the page's job for now.
 2. The server turns the frames into WAV, transcribes them, and posts the text as the person's message through the same code as typing (`sendPersonMessage`). The agent takes the turn as it would a typed one.
-3. The server watches the agent's reply in the record. Each time a complete sentence appears it asks Qwen3-TTS to speak it and sends the result as binary frames of 16-bit little-endian PCM, mono, 24 kHz, before it starts the next sentence.
+3. The server watches the agent's reply in the record. It speaks only the assistant events written after the last earlier turn of the session ended and, once this turn has ended, no later than its end, so an answer to an earlier post is never spoken as the reply to this one. It stops when the turn ends, and says so in words if the turn failed. Each time a complete sentence appears it asks Qwen3-TTS to speak it and sends the result as binary frames of 16-bit little-endian PCM, mono, 24 kHz, before it starts the next sentence.
+A turn the person ends while the last one is still being transcribed and posted waits and is posted right after it, so no turn is lost. Audio sent while a turn is still posting never silences it.
+
 4. The text message `{"type":"stop"}`, or a new `end`, stops the agent's speech at once. It sends no more frames and says so.
 
-The server sends text messages for state, so the page needs no guessing: `ready`, `listening`, `heard` (the transcript), `thinking`, `speaking` (the sentence), `done`, `stopped`, and `error`. The exact shapes are in `shared/voice.ts` and in the report for the UI.
+The server sends text messages for state, so the page needs no guessing: `ready`, `heard` (the transcript), `thinking`, `speaking` (the sentence), `done`, `stopped`, and `error`. The exact shapes are in `shared/voice.ts` and in the report for the UI.
 
 Voice chat does not interrupt the agent's thinking. Talking over the agent stops its speech. It does not cancel the turn, which the interrupt button does.
 
