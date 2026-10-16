@@ -89,7 +89,8 @@ export const HistorySession = z.object({
   private: z.boolean(),
   // What the person first said, in a terminal session or a direct message.
   asked: z.string().nullable(),
-  // The number of the session's last step, how many turns it took, and how many steps went wrong.
+  // The number of the session's last step, how many turns it took, and how many steps went wrong. Bookkeeping
+  // notices have numbers too, so the session has fewer steps than its last number.
   steps: z.number().int(),
   turns: z.number().int(),
   errors: z.number().int(),

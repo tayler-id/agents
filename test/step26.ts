@@ -6,6 +6,7 @@
 // functions, and agents' search_record is shown unchanged. step26b drives the app.
 //   node --env-file=.env --env-file=.env.test test/step26.ts
 
+import { randomUUID } from 'node:crypto'
 import {
   BIG_END, BIG_RESULT, buildWorld, TEXT_COLUMN, WORDS, type World,
 } from './history-kit.ts'
@@ -67,7 +68,10 @@ try {
     `Ben's list leaves out Ava's private conversation, task and folder, and adds his own folder (${names(idsOf(benList)).join(', ')})`)
   const cleoList = await listed(cleo)
   check(JSON.stringify(names(idsOf(cleoList))) === JSON.stringify(['long', 'terminal', 'run', 'task', 'room', 'dm', 'old']),
-    `Cleo's list has the team's sessions and no private one (${names(idsOf(cleoList)).join(', ')})`)
+    `Cleo's list, an admin's, has the team's sessions and no private one (${names(idsOf(cleoList)).join(', ')})`)
+  // A task saved to start later has a session that has not run, so it is not history.
+  const draft = await ava.post('/v1/tasks', { title: 'Write the notes later', instructions: 'someday', agentId: world.ids.scout, repoIds: [], draft: true })
+  check(draft.ok && JSON.stringify(names(idsOf(await listed(ava)))) === JSON.stringify(everything), 'a draft task has a session that has not run, so the list leaves it out')
 
   const danaList = await listed(dana)
   check(danaList.length === 1 && danaList[0].id === world.other.session && danaList[0].person.login === world.other.login
@@ -100,7 +104,8 @@ try {
 
   // The sessions the app's own shapes give each person, which are read by rules of their own.
   for (const person of [ava, ben, cleo, dana]) {
-    const shapes = (await Promise.all(['conversations', 'tasks', 'folders'].map((of) => world.shapeRows(person.login, 'sessions', { of })))).flat()
+    // The app's other reads hold a draft's session too, which is not history.
+    const shapes = (await Promise.all(['conversations', 'tasks', 'folders'].map((of) => world.shapeRows(person.login, 'sessions', { of })))).flat().filter((s) => s.status !== 'draft')
     const mine = idsOf(await listed(person))
     check(sameSet(mine, shapes.map(idString)), `${person.login.split('-')[0]}: the list holds the sessions the app's other reads give, and no other (${String(mine.length)})`)
     const verdicts: boolean[] = []
@@ -325,6 +330,13 @@ try {
   const lastFetch = drive(START, { type: 'start', bounds, at: 250 })
   const edged = drive(lastFetch, { type: 'later', bounds })
   check((edged.cursor ?? 0) > (lastFetch.loaded?.to ?? 0) - AHEAD && (edged.loaded?.to ?? 0) > (lastFetch.loaded?.to ?? 0), 'reading on past the loaded steps loads the next page')
+  // A session that has no steps yet.
+  const none = (await world.machine(world.tokens.avaMac, 'POST', '/v1/instance/terminal-sessions', { folderId: world.folders.shop, harnessSessionId: randomUUID(), cwd: '/Users/ava/shop/empty' })).body.sessionId
+  const noneView = await ava.json(`/v1/history/sessions/${none}`)
+  const noneSteps = await ava.json(`/v1/history/sessions/${none}/steps?from=1&to=50`)
+  check(noneView.status === 200 && noneView.body.first_seq === null && noneView.body.last_seq === null && noneView.body.errors.length === 0 && noneView.body.errors_total === 0
+    && noneSteps.status === 200 && noneSteps.body.steps.length === 0 && (await listed(ava))[0].id === none && (await listed(ava))[0].steps === 0,
+  'a session with no steps yet has no first or last step, and is at the head of the list')
   check(playbackDelay(0, 1) === 400 && playbackDelay(1000, 1) === 1000 && playbackDelay(600_000, 1) === 2500 && playbackDelay(1000, 4) === 250 && playbackDelay(0, 8) === 50 && playbackDelay(Number.NaN, 2) === 200,
     'a step stays as long as the time before the next, between 0.4 and 2.5 seconds, divided by the speed')
   check(JSON.stringify(snippetParts(`a ${MARK_START}b${MARK_END} c ${MARK_START}d${MARK_END}`)) === JSON.stringify([{ text: 'a ', hit: false }, { text: 'b', hit: true }, { text: ' c ', hit: false }, { text: 'd', hit: true }]),

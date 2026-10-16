@@ -10,12 +10,13 @@
 //   node --env-file=.env --env-file=.env.test test/step26b.ts
 //   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step26b.ts
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
-import { BIG_END, buildWorld, WORDS, type World } from './history-kit.ts'
+import { BIG_END, buildWorld, said, typed, WORDS, type World } from './history-kit.ts'
 import { MAX_LOADED, PAGE, OPEN_BEFORE } from '../shared/replay.ts'
 import { STEPS_SPAN_MAX } from '../shared/history.ts'
 import { must } from './must.ts'
@@ -319,9 +320,39 @@ async function run(engine: string) {
   }
 }
 
+// A session that is still working is read again, so a replay of it learns of steps taken after it opened. A session with no steps says so.
+async function working(engine: string) {
+  const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
+  try {
+    const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': logins.ava }, viewport: { width: 1280, height: 820 } })
+    const page = await context.newPage()
+    const make = async (where: string) => {
+      const made = await world.machine(world.tokens.avaMac, 'POST', '/v1/instance/terminal-sessions', { folderId: world.folders.shop, harnessSessionId: randomUUID(), cwd: `/Users/ava/shop/${where}` })
+      return must(made.body.sessionId as string | undefined, 'the new session')
+    }
+    const post = (session: string, status: string, ...events: ReturnType<typeof said>[]) => world.machine(world.tokens.avaMac, 'POST', `/v1/sessions/${session}/events`, { events, status })
+    const live = await make('live')
+    await post(live, 'running', typed('Start the migration'), said('Started.'), said('Still going.'))
+    await page.goto(`/#/history/${live}`)
+    const position = () => page.getByRole('status').first().innerText()
+    check(await until(15, async () => /Step 1 of 3\b/.test(await position())), `${engine}: a replay of a session that is working says where it is in what has happened so far`)
+    await post(live, 'running', said('Fourth.'), said('Fifth.'), said('Sixth.'))
+    check(await until(30, async () => /Step 1 of 6\b/.test(await position())), `${engine}: and learns of the steps taken after it opened, without being reloaded`)
+    await post(live, 'idle', said('Done.'))
+    const none = await make('none')
+    await page.goto(`/#/history/${none}`)
+    check(await shown(page, 'p', 15, 'This session has no steps yet.') && /No steps yet/.test(await position()) && await page.getByRole('button', { name: 'Play' }).isDisabled(),
+      `${engine}: a session with no steps yet says so, and has nothing to play`)
+  } finally {
+    await browser.close()
+  }
+}
+
 try {
   mkdirSync(SHOTS, { recursive: true })
   for (const engine of engines) await run(engine)
+  const first = engines[0]
+  if (first) await working(first)
 } catch (error) {
   failures.push((error as Error).message)
   console.error(`FAIL  ${(error as Error).stack ?? (error as Error).message}`)

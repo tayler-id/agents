@@ -93,6 +93,8 @@ export async function buildWorld(name: string, ports: Ports, options: { buildApp
   node('server/admin.ts', 'add-team', team, logins.ava)
   node('server/admin.ts', 'add-person', team, logins.ben)
   node('server/admin.ts', 'add-person', team, logins.cleo)
+  // An admin is on the team, and sees no more than anyone: private work stays with the people in it.
+  node('server/admin.ts', 'set-role', team, logins.cleo, 'admin')
   const avaMac = JSON.parse(node('server/admin.ts', 'add-instance', team, `ava-mac-${id}`, 'mac', logins.ava)) as { token: string }
   const benMac = JSON.parse(node('server/admin.ts', 'add-instance', team, `ben-mac-${id}`, 'mac', logins.ben)) as { token: string }
   const scout = JSON.parse(node('server/admin.ts', 'add-agent', team, 'scout', `ava-mac-${id}`, 'haiku', 'Be brief.')) as { agentId: string }

@@ -42,6 +42,7 @@ How to read it.
   - 2.20 Document panel (`/d/{artifactId}` after a task or run)
   - 2.21 File panel (`/f/{changeId}` after a task or run)
   - 2.22 Screen panel (`/screen/{instanceId}` or `/screen/{instanceId}/{sessionId}`)
+  - 2.23 History and replay (`#/history`)
 - 3. Shared components and their states
   - 3.1 Markdown
   - 3.2 Code view
@@ -106,7 +107,7 @@ The app renders under React's strict mode (`main.tsx:9`). The code has no global
 | Section | Rows | Refresh | Empty text | Code |
 |---|---|---|---|---|
 | Team block | The team name in bold and your login | none | | `App.tsx:276-279` |
-| Page links | `Team`, `Your box`, and for admins `Tailscale` | waiting logins every 10 s for admins | | `App.tsx:280-286` |
+| Page links | `Team`, `Your box`, `History`, and for admins `Tailscale` | waiting logins every 10 s for admins | | `App.tsx:280-286` |
 | Key notice | Admins only, from 14 days before the Tailscale key expires | 60 s | | `App.tsx:287-291` |
 | Create links | `New project`, `New task`, `New room`, `New agent`, and `Go to` with the shortcut | none | | `App.tsx:292-298` |
 | Projects | One row per project. Under it, its rooms, up to 5 tasks people started and up to 5 runs, newest first | projects 10 s | `No projects yet` | `App.tsx:300-338` |
@@ -185,6 +186,8 @@ The app has no router library. The URL hash holds the whole location. `readRoute
 | `#/a/{agentId}` | Agent (2.10) | `Agent setup` in a DM, the end of New agent | `Conversation.tsx:79` |
 | `#/project/{projectId}` | Project (2.12) | Project rows, project links on tasks and repos, the end of New project | `App.tsx:308` |
 | `#/l/{sessionId}` | Terminal session (2.15) | From terminals rows, terminal rows in Running now | `App.tsx:395`, `App.tsx:448` |
+| `#/history`, `#/history?q={words}&scope={scope}&agent={id}&person={id}&kind={kind}&project={id}&repo={id}&day={YYYY-MM-DD}` | History (2.23), with the search and filters in the address | The `History` link | `App.tsx`, `History.tsx` |
+| `#/history/{sessionId}` or `#/history/{sessionId}/{step}` | The replay of a session (2.23), at its first step or at the one named | A row or a result on History | `History.tsx`, `Replay.tsx` |
 | `#/team` | Team (2.16) | The `Team` link | `App.tsx:281` |
 | `#/tailscale` | Tailscale (2.17) | The `Tailscale` link, the key notice, `Connect Tailscale` | `App.tsx:285`, `Team.tsx:105` |
 | `#/box` | Your box (2.18) | The `Your box` link, `Set up your box` | `App.tsx:284`, `Box.tsx:44` |
@@ -940,6 +943,49 @@ Reasons the server gives when it closes a screen (`server/screens.ts`):
 The app itself closes with `the app could not read who holds the screen` when a control message does not match its schema (`Screen.tsx:41`). A refusal before the connection opens, such as `Only the app may open a screen.`, reaches the browser as a failed connection with no reason, so the panel shows `The connection to the screen dropped.`
 
 The screen area is a region named `The screen of {machine name}` (`the box` until read), scaled to fit, with no resizing of the box's desktop. The panel does not show who else is watching. At phone width the panel replaces the main area.
+
+### 2.23 History and replay (`#/history`)
+
+Everyone on the team sees the page, and each person sees only the sessions they may see. A session is shown when its conversation, its task or its connected folder is shown to them, the rule the sync proxy's `events` shape uses. A private conversation, a private task and a private folder are left out of the list, the search and the replay for anyone they are private from. `HistoryPage` is `History.tsx`, and the replay is `Replay.tsx`. The page reads through four routes (`server/history-routes.ts`) and holds no live shape. The four lists a filter chooses from are read again every 60 s.
+
+The list shows every session, newest active first, thirty at a time. A row has a kicker with the kind of session, `Conversation`, `Task`, `Run` or `Terminal`, and ` · Private` when the session is private, then the time it was last active. Under it, in heavier type, what it was for, such as `# launch`, `Direct message with {people}`, a task's title, `{pipeline} run: {title}` or a terminal's folder and the folder inside it. A terminal session and a direct message also quote what was first said. The last line says who did the work (`{agent} for {person}`, `Your terminal` or `{name}'s terminal`), the machine, how long it ran, how many steps it has, how it ended (`Working`, `Waiting for an answer`, `Waiting for approval`, `Finished`, `Interrupted`, `Stopped at a limit` or `Failed`), what a pipeline stage reported, and how many steps went wrong. A session that is working or waiting has a dot, which is the only color on the row.
+
+| Control | What happens | Confirm | On failure | Code |
+|---|---|---|---|---|
+| Search box | Enter searches the text of every step for the words. Any of the words matches. The words are in the address. An empty box and Enter ends the search | none | Red text in the list | `History.tsx` |
+| `Search in` select | Reads every step (`Everything`), only `Messages`, only `Tool calls and results`, or only `Steps that went wrong` | none | Same | `History.tsx` |
+| `Agent`, `Person`, `Kind`, `Project`, `Repo` selects | Keep the sessions of that choice. A person is the one who started the session, or whose terminal it was. Terminal sessions belong to no project or repo | none | Same | `History.tsx` |
+| `Day` select | The last 14 days, `Today` and `Yesterday` first. Keeps the sessions that ran, or waited, on that day on the person's own clock. A search keeps the steps taken that day | none | Same | `History.tsx` |
+| `Clear filters` | Takes every choice off and keeps the search | none | none | `History.tsx` |
+| `Clear search` | Ends the search and its scope | none | none | `History.tsx` |
+| A row | Opens the replay at the first step | none | none | `History.tsx` |
+| A result | Opens the replay at the step that matched, with the words that matched in heavier type in its snippet | none | none | `History.tsx` |
+| `Show more` | Reads the next thirty | none | Red text | `History.tsx` |
+
+The replay has a header with a kicker (`Replay · {kind}`), what the session was for, the same facts as a row, `Open the conversation`, `Open the task`, `Open the run` or `Open the terminal session`, and `All history`. Under it are the controls and the position, then the steps.
+
+| Control | What happens | Confirm | On failure | Code |
+|---|---|---|---|---|
+| `Play` and `Pause` | Plays on from the current step. Each step stays as long as the real time before the next, between 0.4 and 2.5 seconds, divided by the speed. Playing from the last step starts over. It stops at the last step | none | Red text with `Try again` | `Replay.tsx`, `shared/replay.ts` |
+| `Previous step` and `Next step` | Move one step | none | Same | `Replay.tsx` |
+| `Previous error` and `Next error` | Jump to the step that went wrong before or after the current one. Disabled when there is none | none | Same | `Replay.tsx` |
+| `Speed` select | 1x, 2x, 4x or 8x | none | none | `Replay.tsx` |
+| The slider, `Position in the session` | Goes to a step number. Arrow keys move a step, and Home and End go to the first and the last. A mark under it is each step that went wrong, and clicking one jumps to it | none | Same | `Replay.tsx` |
+| A step's number | Makes it the current step | none | none | `Replay.tsx` |
+| `Show earlier steps`, `Show later steps` | Move to the edge of the steps loaded and load the next page there | none | Same | `Replay.tsx` |
+
+A step has its number, its kind (`Message`, `Reply`, `Thinking`, `Tool`, `Result`, `Asked`, `Answer`, `Notice`, `Error` or `Turn ended`) and tool, `Went wrong` when it did, and its time, with the day when a new day begins. A message, a tool call with each field of its input, and a result show in full, read from the event's body. A reply is Markdown. The current step is on a brighter surface with its whole text, and a long part of any other step folds to its first line. The steps after the current one are in muted type. Bookkeeping notices are not steps, so the numbers skip them.
+
+| State | When | What shows |
+|---|---|---|
+| Loading | The first page has not arrived | `Loading…` on the list, `Loading the steps…` on a replay |
+| Nothing recorded | No session is shown | `Nothing has been recorded yet.`, or `No session matches these filters.` |
+| No result | A search finds nothing | `No step matches those words.` |
+| Not visible | The replay's session is private from the person, or is not there | `This session is not one you can see.` and a link to `All history` |
+| No steps | The session has none | `This session has no steps yet.` |
+| Working | The session is working or waiting | The replay reads the session again every 5 s, so later steps can be loaded |
+
+A replay holds at most 200 steps, those nearest the current one, and asks for at most 100 step numbers at a time. Nothing loads the whole session. The address names the step a replay is paused on, as `#/history/{session id}/{step}`, without adding to the browser's history. At phone width the controls wrap, the filters wrap, and nothing scrolls sideways.
 
 ## 3. Shared components and their states
 
