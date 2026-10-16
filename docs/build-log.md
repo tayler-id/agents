@@ -1189,3 +1189,55 @@ A security fix, so it goes to Tayler. Tayler approved the work on branch `shape-
   - Nothing frees a seat yet. Nothing archives agents, and a seat cap changes only in the database.
   - The seat secret relay and archiving an agent from the design.
   - `AGENTS.md` still says each cloud agent gets its own Docker container. `docs/decisions.md` says that line needs Tayler's edit.
+
+### Every agent's desktop, with no setup, and seats joined to the scheduler (on branch `seats`)
+
+- **What it is.** Tayler's call of 2026-10-16, "Every agent has its own desktop, with no setup" in `docs/decisions.md`: "every agent just has a desktop I ask the agent to do something on it and it should work". Four parts of it, then the join of seats to step 1's scheduler once step 1 was on main.
+- **Built.**
+  - Every person's computer exists by itself. Joining already made one. Migration 0024 makes one for each person on a team who has none, named and sized as joining makes one, asleep, so the runner starts it once something needs it. `docs/data-model.md` describes it under "Added while building". The coordinator set its number, since 0016 to 0023 are other branches'.
+  - A computer signs in to Claude by itself. `server/boxes.ts` gives a person's computer the team's token from `~/.agents-app/box-claude-token`, by name on the `docker run` line, as pool boxes get it. Once the person signs in, the daemon runs Claude on their own token, as it did. The token goes into no table, log or payload.
+  - Agents whose home is a Mac move to their person's computer: migration 0024 moves each to the computer of its owner, or of the Mac's owner when it has none, and `conversationSession` in `server/record.ts` moves a conversation home once its turn on the old machine is over. Pipeline placement is unchanged.
+  - The join. The scheduler takes a seat for each turn it places on a person's computer, and a turn waits with the new `seat` reason while every seat is busy, with the line "Waiting for a seat on Bob's computer, 4 of 4 busy". Migration 0024 adds `seat` to the reasons `turns.wait` allows. The reclaim rule reads turns, a seat records its last turn as each turn starts and ends (`server/durability.ts`), and a session waiting for a seat stays idle, as one waiting for its machine does.
+  - A real desktop on every seat. JWM replaces matchbox, with title bars, Alt+Tab, and a dock along the bottom: a browser window, a terminal and the whiteboard, then the open windows. `daemon/dock.ts` writes each seat's JWM configuration and icons, `daemon/open-window.ts` opens a window in the seat's own browser over its DevTools port, and `daemon/whiteboard.ts` serves Excalidraw from the box's loopback on port 8400. A seat another agent takes loses the windows its dock opened, as it loses the last agent's pages. The agent's guide and computer tool name the dock.
+- **Packages.** Tayler asked for this desktop, so these go in without a further ask. Each is an exact version.
+  - Debian 12 packages added to the box image: `jwm` 2.4.3-1 (Expat, the MIT licence; Debian's packaging GPL-2+), `xterm` 379-1 (X11), and two that xterm pulls in, `libutempter0` 1.2.1-3 (LGPL-2.1, parts BSD-2-Clause) and `xbitmaps` 1.1.1-2.2 (X11). Every other library they use was in the image already.
+  - Removed with matchbox: `matchbox-window-manager`, `libmatchbox1`, `libstartup-notification0` and `libxcb-util1`.
+  - The whiteboard, fetched with `npm pack` in `box/Dockerfile` and checked against each tarball's sha256: `@excalidraw/excalidraw` 0.17.6, `react` 18.3.1 and `react-dom` 18.3.1, all MIT. Only Excalidraw's browser build, its fonts and locales, and React's browser builds are kept, 5.6 MB in `/opt/whiteboard`. Excalidraw 0.18 ships only modules that need a bundler, and tldraw's licence is not an open-source one, so neither was used.
+  - The image built at 3.79 GB, as before.
+- **Decided while building.**
+  - JWM, which ships in Debian 12: title bars, Alt+Tab, a tray with icon buttons and a task list, and a configuration file the daemon writes for each seat, for four packages. The first computers probe found openbox and fluxbox pulled in 151 MB and 167 MB.
+  - The dock's browser and whiteboard buttons open windows in the seat's running browser over its DevTools port, never a second browser on the seat's profile, which Chromium would refuse while the first holds it.
+  - The daemon serves the whiteboard over HTTP, so its page has one origin, whose local storage keeps the drawing. One server serves every seat, and each seat's drawing stays in its own browser. A box on the host's network, as step12c runs them, finds the port taken by another box's whiteboard and goes on without its own, logging why.
+  - The terminal, like everything the desktop starts, gets only `PATH`, `HOME` and `DISPLAY`, plus `LANG=C.UTF-8` so text outside ASCII shows.
+  - A seat's windows close by ending every process the window manager started, read from `/proc`. JWM starts each program in a session of its own, so its process group holds none of them.
+  - A conversation moves home in `conversationSession`, not in the migration, so a turn still running on the Mac finishes there, and the conversation moves with its next message after.
+  - `admin.ts add-person` still makes no computer, so the checks that make people that way start no containers they don't expect, and step12's "makes their own box" line still holds. Those people still press "Make my box".
+  - My checks ran against a Postgres and an Electric of this branch's own, in containers, so the shared test database never got migration 0024 while seven other workstreams' checks ran on it. A dry run of the migration on the test database, run twice in one transaction and rolled back, made 264 computers and moved all 297 Mac agents in 47 ms, and the second run changed nothing.
+  - The `reclaiming` seat status stays out, as in the seat side's first round. A seat given to another agent goes straight back to `starting`, and the box closes the last agent's pages and windows before it reports the seat ready.
+  - Only a person's computer gives out seats. A pool box keeps running every session on seat 1, since a run's stages can be different agents', and with one seat each stage after the first would wait 15 minutes for the reclaim rule.
+  - A conversation left on a Mac moves only once its turns are over too, since step 1 keeps a session idle while its turns wait.
+- **Checks.** Against this branch's own Postgres and Electric, except where a check makes its own.
+  - step15f, new: 12 of 12 after the join, on a throwaway Postgres.
+  - step15h, new: 10 of 10 on a throwaway Postgres.
+  - step15g, new: 15 of 17 at `685b6b4`, before the join, holding the lock. Its two red lines were its own: one read the terminal's middle, where the screenshot draws the pointer, and one read the rectangle's edge where Excalidraw draws a handle. The saved screenshot shows the rectangle drawn. Both are fixed, and it now gets its seats from the scheduler. It has not run since.
+  - step15c 22 of 22, step15d 27 of 27, step15 53 of 53 with its edited line, and step15b 51 of 51, at `685b6b4`, holding the lock. None has run since the join.
+  - step12c 51 of 51 with its edited line, before the join. step23c, step 1's edges, passes after the join.
+  - Typecheck of both projects, lint, the name guard and `test/style.ts` pass at the head.
+- **Seen failing.**
+  - On main, step15f stops at once without its migration, and with 0015 and its migration copied into main's tree its 2 conversation lines go red. step15g and step15h can't load on main, which lacks `daemon/dock.ts` and `test/seats.ts`. step12c's edited line went red on a copy of main's tree.
+  - step15f under breaks, each on a copy of the branch and restored byte for byte: with no computers made, 5 lines went red; with a conversation never moving, 2; with one moving during its turn, 1; with ownerless agents left behind and boxes' agents moved, 2; and with everyone given a second computer, the migration failed.
+  - step15h under breaks the same way: with the scheduler taking no seat, 3 lines went red; with the reclaim rule ignoring turns and no seat turn time, 5; with it ignoring a held screen and the waiting line missing its count, 2; and with the newest seat taken back and pool boxes taking seats, 2.
+  - step15g's breaks wait for the lock.
+- **Memory, with the stand-in for Claude, from step15g at `685b6b4`.** A person's computer with seat 1's terminal and whiteboard open peaked at 729 MiB in docker stats, with seat 1's own processes at 672 MiB. With seats 1 and 2 each drawing on the whiteboard with a terminal open, it peaked at 1,593 MiB and 116% CPU, with seat 1 at 575 MiB and seat 2 at 557 MiB. The seat side's first round measured 1,095 to 1,107 MiB for two seats working with only a browser.
+- **Found on the way.**
+  - JWM runs a dock button only when the button's press and release arrive apart. A click sent as one press and release at the same moment did nothing in a probe, and the computer tool's 30 ms between them worked 6 times of 6.
+  - JWM starts each program in a session of its own, so killing its process group closed no terminal in a probe. Ending its descendants, read from `/proc`, closed a terminal, its shell and a job started in it in 104 ms.
+  - Another workstream named its Computer tab check `test/step15e.ts`, so these are `step15f` and `step15g`.
+  - step12c listens on fixed ports, 7932 to 7935, and takes no lock. My two runs of it, from 11:42 to 11:50 and from 11:52 to 12:04, each made a run that started meanwhile fail at once on the taken door port, one of them the step 1 landing suite's at 12:01. Each left only a folder in `~/.agents-app/checks` with its scenario and token. step12c should take the run lock, or ports of its own.
+- **Not done.**
+  - The box checks after the join: step15g, step15c, step15d, step15, step15b, step12c and step23, and step15g's breaks. Each needs the run lock, which was held when the join was done.
+  - `admin.ts add-person` makes no computer, and the app still offers "Make my box" to anyone without one. The app still asks a person to sign in to Claude, though their computer works without it now.
+  - Real Claude on a seat. An `agentsctl` instance starts no boxes, and this Mac has no `~/.agents-app/box-claude-token`.
+  - What a move leaves behind: an agent's files on its Mac stay there, a plugin whose secret lives only on the Mac fails on the computer until the secret is set there, and a moved conversation starts without the old session's Claude context. The coach and improve pipelines run where the improver agent's home is, so they move with it.
+  - One agent's drawing stays on its seat for the next agent that takes it.
+  - A person who takes over a seat can read the daemon's environment from the terminal, the machine token and the team's Claude token among it, as the browser and the box's agents already could.
