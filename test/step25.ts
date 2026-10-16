@@ -539,7 +539,7 @@ async function main() {
   // The API's control path takes only a daemon with its token, and reads frames strictly.
   const withTailscale = await probe({ authorization: `Bearer ${macC.token}`, 'tailscale-user-login': alice })
   const noToken = await probe({})
-  const wrongToken = await probe({ authorization: 'Bearer machine-not_a_token_of_any_instance' })
+  const wrongToken = await probe({ authorization: 'Bearer a-token-no-instance-has' })
   check(withTailscale.refusedWith === 400 && noToken.refusedWith === 401 && wrongToken.refusedWith === 401,
     `the control path refuses a person's identity, no token and an unknown token (${String(withTailscale.refusedWith)} ${String(noToken.refusedWith)} ${String(wrongToken.refusedWith)})`)
   const earlier = await probe({ authorization: `Bearer ${macC.token}` })
@@ -571,7 +571,7 @@ async function main() {
     if (frame !== undefined) ws.send(frame)
   })
   mkdirSync(homes.stand, { recursive: true })
-  const standDaemon = startDaemon('machine-a_token_the_stand_in_never_checks', homes.stand, `http://127.0.0.1:${String(STAND_IN)}`, scenario)
+  const standDaemon = startDaemon('a-token-the-stand-in-never-checks', homes.stand, `http://127.0.0.1:${String(STAND_IN)}`, scenario)
   daemons.push(standDaemon)
   check(await within(40, async () => codes.length >= 3) && codes.slice(0, 3).every((code) => code === LINK_UNSUPPORTED),
     `a daemon closes the connection on a frame it cannot read, for a bad id, a reserved name and a binary message (${codes.join(' ')})`)
