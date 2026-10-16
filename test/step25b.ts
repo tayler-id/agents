@@ -1,13 +1,13 @@
-// Fit design step 16, the app. An agent's page lists the secrets its plugins name.
-// A person sets one in a masked field, sees where it is set and when, replaces it,
-// and removes it after being asked. A computer that is stopped says so, and a
-// teammate is told whose computer it is and is offered no field. A computer that refuses a
-// value says why in the row, and keeps what was typed. This
-// drives the page in Chromium, Firefox and WebKit at desktop and phone width
-// against a real API and daemon, with a pass-through in front of the people port
-// that keeps every request the page makes, so the check can say the value left
-// the page in one request and was kept nowhere in it. Scans for accessibility
-// problems and takes screenshots to look at.
+// Fit design step 16, the app. A person sets a secret's value in place, from a masked field, sees
+// where it is set and when, replaces it, and removes it after being asked. A computer that is stopped says
+// so and takes nothing, a teammate is told whose computer it is and is offered nothing, and a computer
+// that refuses a value says why in the row and keeps what was typed. Nothing in the app mounts the
+// secrets yet, since the agent panel's card will, so this builds them as a page of their own, under the
+// app's own policy and styles, and drives that page in Chromium, Firefox and WebKit at desktop and phone
+// width against a real API and daemon. A pass-through in front of the people port keeps every request the
+// page makes, so the check can say the value left the page in one request and was kept nowhere in it. It
+// also says the page has no form, no style element and no inline style. Scans for accessibility problems
+// and takes screenshots to look at.
 //   node --env-file=.env --env-file=.env.test test/step25b.ts
 //   AGENTS_UI_ENGINES=chromium node --env-file=.env --env-file=.env.test test/step25b.ts
 
@@ -17,13 +17,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { chromium, firefox, webkit, type BrowserType, type Page } from '@playwright/test'
+import { chromium, firefox, webkit, type BrowserType, type Locator, type Page } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import pg from 'pg'
 import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
 import { asPerson, results, ROOT, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
+import { buildHost, HOST } from './secrets-host.ts'
 import { tap, type Tap } from './wiretap.ts'
 
 const SHOTS = join(ROOT, 'test', 'ui-shots')
@@ -73,6 +74,9 @@ async function visible(page: Page, selector: string, seconds: number, text?: Reg
   return locator.first().waitFor({ state: 'visible', timeout: seconds * 1000 }).then(() => true, () => false)
 }
 
+// Whether the element has the cursor, waiting a moment for the page to give it.
+const hasCursor = (target: Locator) => within(5, async () => await target.count() === 1 && await target.evaluate((el) => el === document.activeElement))
+
 async function serious(page: Page) {
   const axe = await new AxeBuilder({ page }).analyze()
   const found = axe.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')
@@ -94,7 +98,22 @@ async function noSideScroll(page: Page, selectors: string[]) {
   return over.length === 0
 }
 
-// The page scrolls inside its body, so the secrets are scrolled to the bottom of the screen before the shot.
+// What a page did against the app's policy, which refuses a style element, an inline style and an eval, or
+// nothing when it kept to it. A violation the browser reported is named by the rule it broke.
+async function againstPolicy(page: Page): Promise<string> {
+  const [violated, styleElements, inlineStyles, formElements] = await page.evaluate(() => [
+    document.documentElement.dataset.csp ?? '', document.querySelectorAll('style').length,
+    // A screenshot leaves an empty style attribute on a field, which says nothing, so only one that says something counts.
+    [...document.querySelectorAll('[style]')].filter((el) => el.getAttribute('style') !== '').map((el) => `${el.tagName.toLowerCase()} style="${el.getAttribute('style') ?? ''}"`), document.querySelectorAll('form').length,
+  ] as const)
+  return [
+    violated ? `the browser reported ${violated}` : '',
+    styleElements ? `${String(styleElements)} style elements` : '',
+    inlineStyles.length ? `inline styles on ${inlineStyles.join(' and ')}` : '',
+    formElements ? `${String(formElements)} forms` : '',
+  ].filter((problem) => problem !== '').join(', ')
+}
+
 async function shot(page: Page, name: string) {
   const path = join(SHOTS, `${name}.png`)
   await page.locator('.secrets').evaluate((list) => { list.scrollIntoView({ block: 'end' }) })
@@ -115,6 +134,7 @@ async function main() {
   const scout = agentOn('scout', computer.a)
   const bobby = agentOn('bobby', computer.b)
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })
+  buildHost()
   const api = await startApi(PORTS, { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: team }, join(home, 'streams'))
   const people = await tap(TAP_PORT, { port: PORTS.people })
   try {
@@ -143,36 +163,65 @@ async function main() {
 }
 
 async function run(engine: string, scout: string, bobby: string, people: Tap) {
-  const first = `ui-first-${engine}-${randomBytes(10).toString('hex')}`
-  const second = `ui-second-${engine}-${randomBytes(10).toString('hex')}`
-  const bounced = `bounced-by-the-computer-${engine}-${randomBytes(10).toString('hex')}`
-  const unsent = `typed-never-sent-${engine}-${randomBytes(10).toString('hex')}`
+  const unique = (word: string) => `ui-${word}-${engine}-${randomBytes(10).toString('hex')}`
+  const first = unique('first')
+  const second = unique('second')
+  const bounced = unique('bounced-by-the-computer')
+  const unsent = unique('typed-never-sent')
+  const left = unique('typed-then-left')
+  const canceled = unique('typed-then-canceled')
+  const heardBefore = people.heard.length
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
+  // What each page did against the app's policy, looked at while its field was open and again at the end.
+  const against: string[] = []
+  const watched = async (page: Page, which: string) => {
+    const problem = await againstPolicy(page)
+    against.push(problem && `${which}, ${problem}`)
+  }
+  // A screenshot in WebKit puts a style of its own on the page, which the app's policy refuses and the page reports.
+  // What the page did is looked at before the screenshot, and its report starts again after it.
+  const snap = async (page: Page, name: string) => {
+    await watched(page, `before the ${name} screenshot`)
+    await shot(page, `${engine}-${name}`)
+    await page.evaluate(() => { document.documentElement.dataset.csp = '' })
+  }
   const open = async (who: string, agent: string, options: Record<string, unknown> = {}) => {
     const context = await browser.newContext({ baseURL: ORIGINS[engine], extraHTTPHeaders: { 'tailscale-user-login': who }, viewport: WIDTHS.desktop, ...options })
+    // A page that breaks the app's policy leaves the rule it broke on the page, for the check at the end.
+    await context.addInitScript(() => {
+      document.addEventListener('securitypolicyviolation', (event) => { document.documentElement.dataset.csp = `${document.documentElement.dataset.csp ?? ''}${event.violatedDirective};` })
+    })
     const page = await context.newPage()
     page.on('pageerror', (error) => errors.push(error.message))
-    await page.goto(`/#/a/${agent}`)
+    await page.goto(`/secrets-host/index.html#agent=${agent}`)
     return page
   }
   const row = (page: Page, name: string) => page.locator('.secrets > li', { hasText: name })
+  const button = (page: Page, name: string) => page.getByRole('button', { name })
   try {
     // The page lists the secret the agent's plugin names, not set anywhere yet.
     const page = await open(alice, scout)
     const line = row(page, 'SENTRY_TOKEN')
     const listed = await visible(page, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
-    if (!listed) console.log(`      the page showed:\n${(await page.locator('.page-body').innerText().catch(() => '(no page body)')).split('\n').slice(-12).join('\n')}`)
-    check(listed && /Not set from the app on mac-a/.test(await line.innerText()), `${engine}: an agent's page lists the secret its plugin names, and says it is not set on the agent's computer`)
-    check(await page.getByRole('heading', { name: 'Secrets' }).isVisible() && /goes to mac-a.* and nowhere else/.test(await page.locator('.page-body').innerText()), `${engine}: and says where a value goes`)
-    await shot(page, `${engine}-secrets-not-set-desktop`)
+    if (!listed) console.log(`      the page showed:\n${(await page.locator('body').innerText().catch(() => '(no body)')).split('\n').slice(-12).join('\n')}`)
+    check(listed && /Not set from the app on mac-a/.test(await line.innerText()), `${engine}: the secrets page lists the secret its plugin names, and says it is not set on the agent's computer`)
+    check(await page.getByRole('heading', { name: 'Secrets' }).isVisible() && /goes to mac-a.* and nowhere else/.test(await page.locator('body').innerText()), `${engine}: and says where a value goes`)
+    await snap(page, 'secrets-not-set-desktop')
     check(await serious(page) === 0, `${engine}: the page has no serious accessibility problems`)
 
-    // Setting a value: a masked field, one request, and the page keeps nothing.
-    const field = page.getByLabel('Value of SENTRY_TOKEN')
-    check(await page.getByRole('form', { name: 'Set SENTRY_TOKEN' }).isVisible(), `${engine}: the row offers to set the value`)
+    // Setting a value in place. A button opens a masked field, and nothing on the page is a form.
+    const setButton = button(page, 'Set value of SENTRY_TOKEN')
+    const replaceButton = button(page, 'Replace value of SENTRY_TOKEN')
+    const field = page.getByLabel('Value of SENTRY_TOKEN', { exact: true })
+    check(await page.locator('form').count() === 0 && await page.getByRole('form').count() === 0, `${engine}: nothing on the page is a form`)
+    check(await setButton.isVisible() && await field.count() === 0, `${engine}: the row offers Set value, and shows no field until it is chosen`)
+    await setButton.click()
+    check(await field.isVisible() && await hasCursor(field), `${engine}: choosing Set value opens a field with the cursor in it`)
+    await watched(page, 'the first page, while its field is open')
     check(await field.getAttribute('type') === 'password' && await field.getAttribute('autocomplete') === 'off', `${engine}: the value is typed in a masked field`)
-    check(await page.getByRole('button', { name: 'Set value' }).isDisabled(), `${engine}: Set value waits for a value to be typed`)
+    // Enter with nothing typed asks for nothing. The posts counted at the end say so.
+    await field.press('Enter')
 
     // A computer that refuses the value, here because its folder cannot be written, says why in the row. What was
     // typed stays in the field, and nothing is written on the computer.
@@ -180,7 +229,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     await field.fill(bounced)
     chmodSync(homeA, 0o500)
     try {
-      await page.getByRole('button', { name: 'Set value' }).click()
+      await field.press('Enter')
       check(await visible(page, '.secrets > li [role="alert"]', 15, /could not change what this computer holds/), `${engine}: a computer that refuses the value says why in the row`)
     } finally {
       chmodSync(homeA, 0o700)
@@ -188,16 +237,37 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     check(await field.inputValue() === bounced && (existsSync(secretsFile) ? readFileSync(secretsFile, 'utf8') : null) === fileBefore,
       `${engine}: what was typed stays in the field, and the computer is as it was`)
 
+    // Leaving the field keeps what was typed and sends nothing. Esc and Cancel put it away and clear it.
+    await field.fill(left)
+    await page.getByRole('heading', { name: 'Secrets' }).click()
+    check(await field.isVisible() && await field.inputValue() === left, `${engine}: leaving the field keeps what was typed`)
+    // A request would come within a moment of leaving, so the check looks for one for a few seconds and finds none.
+    check(!await within(3, async () => people.heard.slice(heardBefore).some((heard) => heard.kind === 'request' && holds(`${heard.url}\n${heard.body}`, left))),
+      `${engine}: and leaving it sends nothing`)
+    await field.press('Escape')
+    const escaped = await field.count() === 0 && await hasCursor(setButton)
+    await setButton.click()
+    check(escaped && await field.inputValue() === '', `${engine}: Esc puts the field away, gives the cursor back to its button and clears what was typed`)
+    await field.fill(canceled)
+    await button(page, 'Cancel').click()
+    const cancelled = await field.count() === 0 && await hasCursor(setButton)
+    await setButton.click()
+    check(cancelled && await field.inputValue() === '', `${engine}: Cancel does the same`)
+
     await field.fill(first)
     check(!holds(await page.locator('body').innerText(), first), `${engine}: what is typed is not on the page as text`)
-    await page.getByRole('button', { name: 'Set value' }).click()
-    check(await visible(page, '.secrets > li', LISTS_SEC, /Set on mac-a.*by you/), `${engine}: after Set value the row says where it is set, when, and by you`)
-    check(await field.inputValue() === '' && !holds(await page.locator('body').innerText(), first) && !holds(await page.content(), first), `${engine}: the field is empty again and the page holds nothing of the value`)
-    check(await page.getByRole('form', { name: 'Replace SENTRY_TOKEN' }).isVisible(), `${engine}: the row now offers to replace the value`)
+    await field.press('Enter')
+    check(await visible(page, '.secrets > li', LISTS_SEC, /Set on mac-a.*by you/), `${engine}: after Enter the row says where it is set, when, and by you`)
+    check(await field.count() === 0 && !holds(await page.locator('body').innerText(), first) && !holds(await page.content(), first), `${engine}: the field is gone and the page holds nothing of the value`)
+    check(await replaceButton.isVisible() && await hasCursor(replaceButton), `${engine}: the row now offers to replace the value, with the cursor on it`)
+    // Opened again at once, with no new page between, the field holds nothing of what was sent.
+    await replaceButton.click()
+    check(await field.isVisible() && await field.inputValue() === '', `${engine}: opened again to replace the value, the field is empty`)
+    await field.press('Escape')
     const kept = await page.evaluate(() => JSON.stringify([localStorage, sessionStorage, document.cookie, location.href]))
     check(!holds(kept, first), `${engine}: the value is in no storage, cookie or address of the page`)
     check(JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === first, `${engine}: the computer's secrets file has the value`)
-    await shot(page, `${engine}-secrets-set-desktop`)
+    await snap(page, 'secrets-set-desktop')
 
     // Read again from the list, it names who set it.
     await page.reload()
@@ -207,38 +277,49 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const bobsPage = await open(bob, scout)
     check(await visible(bobsPage, '.secrets > li', LISTS_SEC, new RegExp(`Set on mac-a.*by ${alice}`)), `${engine}: a teammate sees where it is set and by whom, and not the value`)
     check(await visible(bobsPage, '.secrets > li p', 15, new RegExp(`is ${alice}'s own computer, so only they can set a value on it`)), `${engine}: and is told whose computer it is`)
-    check(await bobsPage.getByLabel('Value of SENTRY_TOKEN').count() === 0 && await bobsPage.getByRole('button', { name: /^(Set|Replace) value$/ }).count() === 0,
+    check(await bobsPage.getByLabel('Value of SENTRY_TOKEN', { exact: true }).count() === 0 && await bobsPage.getByRole('button', { name: /value of SENTRY_TOKEN/ }).count() === 0,
       `${engine}: with no field or button to change it`)
-    await shot(bobsPage, `${engine}-secrets-teammate-desktop`)
+    await snap(bobsPage, 'secrets-teammate-desktop')
 
     // Replacing, and removing after being asked.
+    await replaceButton.click()
     await field.fill(second)
-    await page.keyboard.press('Enter')
+    await field.press('Enter')
     check(await within(15, async () => JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === second), `${engine}: Enter in the field replaces the value`)
-    await line.getByRole('button', { name: 'Remove', exact: true }).click()
+    const removeButton = button(page, 'Remove value of SENTRY_TOKEN')
+    await removeButton.click()
     check(await visible(page, '.secrets .confirm', 5, /Remove it from mac-a/), `${engine}: Remove asks first, in place`)
-    await shot(page, `${engine}-secrets-remove-desktop`)
-    await line.getByRole('button', { name: 'Keep' }).click()
+    await snap(page, 'secrets-remove-desktop')
+    await button(page, 'Keep').click()
     check(JSON.parse(readFileSync(secretsFile, 'utf8')).SENTRY_TOKEN === second && /Set on mac-a/.test(await row(page, 'SENTRY_TOKEN').innerText()), `${engine}: Keep leaves the value where it is`)
-    await line.getByRole('button', { name: 'Remove', exact: true }).click()
-    await line.getByRole('button', { name: 'Yes, remove' }).click()
+    await removeButton.click()
+    await button(page, 'Yes, remove').click()
     check(await visible(page, '.secrets > li', 15, /Not set from the app on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
+    await watched(page, 'the first page, at its end')
 
     // A computer that is stopped says so, and takes no value. Nothing runs on it to report its status, so the check
-    // sets it by hand: running while a value is typed, and stopped after.
+    // sets it by hand: running while a value is typed, stopped after, and silent after that.
     await db.query(`update instances set status = 'online' where name = $1`, [computer.b])
     const stoppedPage = await open(bob, bobby)
-    const jiraField = stoppedPage.getByLabel('Value of JIRA_TOKEN')
+    const jiraSet = button(stoppedPage, 'Set value of JIRA_TOKEN')
+    const jiraField = stoppedPage.getByLabel('Value of JIRA_TOKEN', { exact: true })
     await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/)
+    await jiraSet.click()
     await jiraField.fill(unsent)
     await db.query(`update instances set status = 'offline' where name = $1`, [computer.b])
     check(await visible(stoppedPage, '.secrets > li p', LISTS_SEC, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
-    check(await stoppedPage.getByRole('button', { name: 'Set value' }).isDisabled() && await jiraField.inputValue() === unsent,
-      `${engine}: a value typed before its computer stopped stays in the field, and Set value waits for the computer`)
-    check(await jiraField.isDisabled(), `${engine}: and the field takes nothing more while the computer is stopped`)
-    await shot(stoppedPage, `${engine}-secrets-stopped-desktop`)
+    await jiraField.press('Enter')
+    check(await jiraField.isVisible() && await jiraField.inputValue() === unsent && /Waiting for/.test(await stoppedPage.locator('.secret-edit').innerText()),
+      `${engine}: what was typed before the computer stopped stays in the field, and Enter sends nothing while it waits`)
+    await snap(stoppedPage, 'secrets-stopped-desktop')
+    await jiraField.press('Escape')
+    check(await jiraField.count() === 0 && await jiraSet.isDisabled(), `${engine}: and the button to set a value is off while the computer is stopped`)
+    await db.query(`update instances set status = 'stale' where name = $1`, [computer.b])
+    check(await visible(stoppedPage, '.secrets > li p', LISTS_SEC, /has stopped answering the server/) && await jiraSet.isEnabled(),
+      `${engine}: a computer that stopped answering says so, and may still be tried`)
+    await watched(stoppedPage, 'the stopped computer page, at its end')
 
-    // The page sent the value in one request, to the route that sets a value.
+    // The page sent the value in one request, to the route that sets a value, and made no other request to the secrets routes.
     const requests = people.heard.flatMap((heard) => (heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, first) ? [heard] : []))
     const sentFirst = requests[0]
     check(requests.length === 1 && sentFirst?.method === 'POST' && /^\/v1\/secrets\/[0-9a-f-]{36}\/value$/.test(sentFirst.url) && holds(sentFirst.body, first) && !holds(sentFirst.url, first) && !holds(JSON.stringify(sentFirst.headers), first),
@@ -248,24 +329,31 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const bouncedPosts = people.heard.filter((heard) => heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, bounced))
     check(bouncedPosts.length === 1 && bouncedPosts[0]?.kind === 'request' && /^\/v1\/secrets\/[0-9a-f-]{36}\/value$/.test(bouncedPosts[0].url) && holds(bouncedPosts[0].body, bounced),
       `${engine}: the value the computer refused left the page once, in the body of the post that asked`)
-    const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, unsent))
-    check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is saved as it is typed`)
+    const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && [unsent, left, canceled].some((text) => holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, text)))
+    check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is sent as it is typed or when the field is left`)
+    const posts = people.heard.slice(heardBefore).flatMap((heard) => (heard.kind === 'request' && heard.method === 'POST' && heard.url.startsWith('/v1/secrets/') ? [heard] : []))
+    check(posts.map((post) => post.url.split('/').pop()).join(' ') === 'value value value remove' && holds(posts[0]?.body ?? '', bounced) && holds(posts[1]?.body ?? '', first) && holds(posts[2]?.body ?? '', second),
+      `${engine}: the page asked to set a value three times and to remove it once, and made no other request to the secrets routes`)
 
-    // Phone width: the same page fits the screen, with the field and its buttons in reach.
+    // Phone width: the same page fits the screen, with the field in reach.
     const phone = await open(alice, scout, { viewport: WIDTHS.phone, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
     await visible(phone, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
-    const phoneField = phone.getByLabel('Value of SENTRY_TOKEN')
+    await button(phone, 'Set value of SENTRY_TOKEN').click()
+    const phoneField = phone.getByLabel('Value of SENTRY_TOKEN', { exact: true })
     await phoneField.fill(first)
-    const fits = await noSideScroll(phone, ['.page-head', '.page-body', '.secrets > li', '.secret-form', '.secret-form input'])
-    await shot(phone, `${engine}-secrets-phone`)
-    check(fits && await phone.getByRole('button', { name: 'Set value' }).isVisible(), `${engine}: at phone width the secrets fit without sideways scrolling`)
+    const fits = await noSideScroll(phone, ['.secrets > li', '.secret-edit', '.secret-edit input'])
+    await snap(phone, 'secrets-phone')
+    check(fits && await button(phone, 'Cancel').isVisible(), `${engine}: at phone width the secrets fit without sideways scrolling`)
     await phoneField.fill('')
     check(await serious(phone) === 0, `${engine}: the phone page has no serious accessibility problems`)
 
     // The dark page.
     const dark = await open(alice, scout, { colorScheme: 'dark' })
     await visible(dark, '.secrets > li', LISTS_SEC, /SENTRY_TOKEN/)
-    await shot(dark, `${engine}-secrets-dark`)
+    await snap(dark, 'secrets-dark')
+
+    // Every page kept to the app's policy while its field was open and after, with no style element, no inline style and no form.
+    check(against.every((text) => text === ''), `${engine}: no page had a form, a style element, an inline style or a policy violation${against.some(Boolean) ? ` (${against.filter(Boolean).join('; ')})` : ''}`)
   } finally {
     // Checked even when a step above failed, since a page error is often why.
     check(errors.length === 0, `${engine}: no page errors${errors.length ? ` (${errors.join('; ')})` : ''}`)
@@ -289,6 +377,7 @@ try {
   if (!failures.length) {
     await db.query('delete from teams where name = $1', [team]).catch((error: unknown) => { console.error('removing the team:', messageOf(error)) })
     rmSync(home, { recursive: true, force: true })
+    rmSync(HOST, { recursive: true, force: true })
   }
   await db.end().catch(() => undefined)
 }

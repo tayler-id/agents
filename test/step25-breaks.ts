@@ -32,6 +32,7 @@ const LINK = 'daemon/control-link.ts'
 const FRAMES = 'shared/link.ts'
 const RULES = 'shared/secret-rules.ts'
 const PAGE = 'app/src/Secrets.tsx'
+const VALUE = 'app/src/SecretValue.tsx'
 
 const BREAKS: Break[] = [
   // What the API keeps and says.
@@ -50,8 +51,8 @@ const BREAKS: Break[] = [
     edits: [{ file: SECRETS, anchor: '  if (!mayPutOn(found.owner_id, person.id)) {', replace: '  if (found.owner_id !== person.id) {' }] },
   { name: 'anyone-may-put', check: '25b', why: "the rule for who may put a value on a computer says yes to everyone, for the API and for the page", red: ['and is told whose computer it is', 'with no field or button to change it'],
     edits: [{ file: 'shared/secrets.ts', anchor: '=> computerOwner === null || computerOwner === person', replace: '=> true' }] },
-  { name: 'shows-form-to-teammate', check: '25b', why: 'the page offers the field to a person the API would refuse', red: ['with no field or button to change it'],
-    edits: [{ file: PAGE, anchor: '      {computer && mayPut && (\n        <form', replace: '      {computer && (\n        <form' }] },
+  { name: 'shows-controls-to-teammate', check: '25b', why: 'the page offers its buttons to a person the API would refuse', red: ['with no field or button to change it'],
+    edits: [{ file: PAGE, anchor: "so only they can set a value on it.`, controls: 'none' }", replace: "so only they can set a value on it.`, controls: 'off' }" }] },
   { name: 'takes-env-names', check: '25', why: "a value is stored under a name the daemon's environment already sets, where it is never used", red: ["a value for a name the daemon's environment already sets is refused with why"],
     edits: [{ file: DAEMON, anchor: '  if (put && process.env[name] !== undefined) {', replace: '  if (false) {' }] },
   { name: 'records-before-comparison', check: '25', why: 'a set is recorded without waiting for the comparison with what the computer lists', red: ['the set waits for the comparison, and no row is written before it has finished'],
@@ -113,23 +114,47 @@ const BREAKS: Break[] = [
     edits: [{ file: DAEMON, anchor: '        if (session && !session.busy) session.stop()\n        else staleSecrets.add(sessionId)\n', replace: '        staleSecrets.add(sessionId)\n' }] },
   { name: 'never-restarts-a-busy-session', check: '25', why: "a session in a turn keeps the old value after the turn", red: ['and its next message starts a new process'],
     edits: [{ file: DAEMON, anchor: '      && (staleSecrets.has(command.sessionId) || setups.get(command.sessionId) !== setupOf(command.payload))) live.stop()', replace: '      && (setups.get(command.sessionId) !== setupOf(command.payload))) live.stop()' }] },
+  // What the computer and the record end up holding.
+  { name: 'stores-nothing', check: '25', why: 'the daemon answers that it stored a value and stores nothing', red: ["the computer's secrets.json holds the value, and the one a person put there by hand"],
+    edits: [{ file: FILES, anchor: '  } else {\n    entries[name] = value\n  }\n', replace: '  } else {\n    // stores nothing\n  }\n' }] },
+  { name: 'keeps-removed-value', check: '25', why: 'the daemon answers that it removed a value and keeps it', red: ['it is gone from secrets.json, and the value put there by hand is not', 'and none is on the computer once removed (secrets.json)'],
+    edits: [{ file: FILES, anchor: '    delete entries[name]\n', replace: '' }] },
+  { name: 'keeps-row-after-removal', check: '25', why: 'the API keeps saying a removed value is set', red: ['the record no longer says it is set'],
+    edits: [{ file: SECRETS, anchor: "  await pool.query('delete from secret_sets where instance_id = $1 and name = $2', [target.instanceId, target.name])\n", replace: '' }] },
+  { name: 'records-no-row', check: '25', why: 'the API never records where a value was set', red: ['the record says who set it on that computer, and when', 'a teammate sees the name, the computer and the time, and nothing of the value'],
+    edits: [{ file: SECRETS, anchor: "`insert into secret_sets (team_id, instance_id, name, set_by) values ($1, $2, $3, $4)\n     on conflict (instance_id, name) do update set set_by = excluded.set_by, set_at = now()\n     returning set_at`", replace: "`select now() as set_at where $1::uuid is not null and $2::uuid is not null and $3::text is not null and $4::uuid is not null`" }] },
   // The page.
   { name: 'shows-the-value', check: '25b', why: 'the field is not masked', red: ['the value is typed in a masked field'],
-    edits: [{ file: PAGE, anchor: 'type="password"', replace: 'type="text"' }] },
-  { name: 'keeps-typed-value', check: '25b', why: 'the field keeps the value after it is set', red: ['the field is empty again and the page holds nothing of the value'],
-    edits: [{ file: PAGE, anchor: "      setText('')\n      done({ at: stored.setAt })", replace: '      done({ at: stored.setAt })' }] },
+    edits: [{ file: VALUE, anchor: 'type="password"', replace: 'type="text"' }] },
+  { name: 'keeps-typed-value', check: '25b', why: 'the field keeps the value after it is set', red: ['opened again to replace the value, the field is empty'],
+    edits: [{ file: VALUE, anchor: "    setRecent({ kind: 'set', at })\n    close()\n", replace: "    setRecent({ kind: 'set', at })\n    refocus.current = true\n    setEditing(false)\n" }] },
+  { name: 'escape-keeps-text', check: '25b', why: 'Esc puts the field away and leaves what was typed in it', red: ['Esc puts the field away'],
+    edits: [{ file: VALUE, anchor: '      event.stopPropagation()\n      close()\n', replace: '      event.stopPropagation()\n      refocus.current = true\n      setEditing(false)\n' }] },
+  { name: 'cancel-keeps-text', check: '25b', why: 'Cancel puts the field away and leaves what was typed in it', red: ['Cancel does the same'],
+    edits: [{ file: VALUE, anchor: 'onClick={close}>Cancel</button>', replace: 'onClick={() => { setEditing(false) }}>Cancel</button>' }] },
   { name: 'echoes-the-value', check: '25b', why: 'the row shows what is typed', red: ['what is typed is not on the page as text'],
-    edits: [{ file: PAGE, anchor: ': `Not set from the app on ${where}`}', replace: ': `Not set from the app on ${where} (${text})`}' }] },
+    edits: [{ file: VALUE, anchor: ': `Not set from the app on ${computer}`}', replace: ': `Not set from the app on ${computer} (${text})`}' }] },
   { name: 'removes-without-asking', check: '25b', why: 'Remove acts at once', red: ['Remove asks first, in place'],
-    edits: [{ file: PAGE, anchor: 'disabled={busy || stopped} onClick={() => { setAsking(true) }}>Remove</button>', replace: 'disabled={busy || stopped} onClick={() => { void remove() }}>Remove</button>' }] },
-  { name: 'offers-to-a-stopped-computer', check: '25b', why: 'Set value stays enabled once the computer stops', red: ['a value typed before its computer stopped stays in the field, and Set value waits for the computer'],
-    edits: [{ file: PAGE, anchor: 'disabled={busy || stopped || !text}', replace: 'disabled={busy || !text}' }] },
-  { name: 'types-into-a-stopped-computer', check: '25b', why: 'the field takes a value for a stopped computer', red: ['and the field takes nothing more while the computer is stopped'],
-    edits: [{ file: PAGE, anchor: 'autoComplete="off" spellCheck={false} data-1p-ignore="true" disabled={busy || stopped}', replace: 'autoComplete="off" spellCheck={false} data-1p-ignore="true" disabled={busy}' }] },
+    edits: [{ file: VALUE, anchor: 'onClick={() => { setAsking(true) }}>Remove</button>', replace: 'onClick={() => { void take() }}>Remove</button>' }] },
+  { name: 'offers-to-a-stopped-computer', check: '25b', why: 'the button to set a value stays on once the computer stops', red: ['and the button to set a value is off while the computer is stopped'],
+    edits: [{ file: VALUE, anchor: 'disabled={busy || off} aria-label={`${shown ? \'Replace\' : \'Set\'} value of ${name}`}', replace: 'disabled={busy} aria-label={`${shown ? \'Replace\' : \'Set\'} value of ${name}`}' }] },
+  { name: 'sends-to-a-stopped-computer', check: '25b', why: 'Enter sends a value to a stopped computer', red: ['what was typed and never set left the page in no request'],
+    edits: [{ file: VALUE, anchor: '      if (text && !busy && !off) void send()', replace: '      if (text && !busy) void send()' }] },
+  { name: 'leaving-sends', check: '25b', why: 'leaving the field sends what was typed', red: ['and leaving it sends nothing'],
+    edits: [{ file: VALUE, anchor: '    if (!text && !busy) setEditing(false)\n', replace: '    if (text) void send()\n    else if (!busy) setEditing(false)\n' }] },
+  { name: 'blocks-a-silent-computer', check: '25b', why: 'a computer that stopped answering takes no value from the page', red: ['a computer that stopped answering says so, and may still be tried'],
+    edits: [{ file: PAGE, anchor: "A value may not reach it until it is back.`, controls: 'on' }", replace: "A value may not reach it until it is back.`, controls: 'off' }" }] },
   { name: 'hides-the-error', check: '25b', why: "a computer's refusal is not shown", red: ['a computer that refuses the value says why in the row'],
-    edits: [{ file: PAGE, anchor: '      {error && <p className="error small" role="alert">{error}</p>}\n    </li>', replace: '    </li>' }] },
+    edits: [{ file: VALUE, anchor: '      {error && <p className="error small" role="alert">{error}</p>}\n    </div>', replace: '    </div>' }] },
   { name: 'names-nobody', check: '25b', why: 'the row never says who set a value', red: ['opened again, the row names the person who set it'],
-    edits: [{ file: PAGE, anchor: "by {held.by ? login(held.by) : 'you'}", replace: 'by you' }] },
+    edits: [{ file: VALUE, anchor: ', by {shown.by}</>', replace: '</>' }] },
+  { name: 'adds-a-form', check: '25b', why: 'the control is a form', red: ['nothing on the page is a form', 'no page had a form'],
+    edits: [
+      { file: VALUE, anchor: '    <div className="secret-value">\n', replace: '    <form className="secret-value" onSubmit={(event) => { event.preventDefault() }}>\n' },
+      { file: VALUE, anchor: '      {error && <p className="error small" role="alert">{error}</p>}\n    </div>', replace: '      {error && <p className="error small" role="alert">{error}</p>}\n    </form>' },
+    ] },
+  { name: 'adds-a-style-element', check: '25b', why: 'the control puts a style element on the page', red: ['no page had a form, a style element, an inline style or a policy violation'],
+    edits: [{ file: VALUE, anchor: '    <div className="secret-value">\n', replace: '    <div className="secret-value">\n      <style>{\'.secret-value { opacity: 1 }\'}</style>\n' }] },
 ]
 
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
