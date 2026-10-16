@@ -531,6 +531,11 @@ try {
   // on the box. His view closes as if he had opened it then, and the screen goes
   // back to the agent. He can still try to hand it back, and hand-back runs no
   // watch rule, so he hears the agent has it rather than that he may not watch.
+  // Bob is a member, and the box is not his, so he may watch it but not take it over.
+  const refusedTake = await post(bob, `/v1/screens/${instanceId}/take`, { sessionId })
+  check(refusedTake.status === 403 && String(refusedTake.json?.error ?? JSON.stringify(refusedTake.json)).includes("Only this computer's owner and team admins can take over its screen. You can watch it."),
+    `a member who does not own the box can't take its screen over, and is told so (${refusedTake.status})`)
+  node('server/admin.ts', 'set-role', team, bob, 'admin')
   const bobTook = await post(bob, `/v1/screens/${instanceId}/take`, { sessionId })
   const aliceSawBob = await within(10, async () => holderOf(aliceView)?.login === bob)
   const { id: privateTask } = must(await one(
