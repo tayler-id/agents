@@ -238,6 +238,13 @@ try {
   check(asking && ask.kind === 'tool_approval' && ask.payload.toolName === CREATE_AGENT_TOOL && ask.conversation_id === dm && ask.payload.input.name === 'copyedit'
     && (await agentNamed('copyedit')) === undefined,
   'making an agent waits on an ask in the DM, and no agent exists while it waits')
+  const aliceId = must(await one('select id from people where login = $1', [alice]), 'Alice').id
+  const shown = { question: ask.payload.question, choices: ask.payload.choices, answerer: ask.payload.answerer }
+  check(JSON.stringify(shown) === JSON.stringify({
+    question: `scout asks to make a new agent, copyedit. It would be ${alice}'s, on mac-${id}.`,
+    choices: [{ id: 'allow', label: 'Make copyedit' }, { id: 'deny', label: "Don't make copyedit" }],
+    answerer: { id: aliceId, login: alice },
+  }), `the ask carries a question, a choice for each answer, and the one person who may choose (${JSON.stringify(shown)})`)
   const skipped = await asSession(token, scoutDm, 'POST', '/v1/team-agents/agents', { name: 'copyedit', title: 'Copy edits drafts', instructions: 'Fix spelling and grammar.' })
   check(skipped.status === 403 && (await agentNamed('copyedit')) === undefined,
     `the API refuses to make an agent with no answered yes behind it, so an engine that skips the ask makes none (${skipped.status})`)
@@ -247,7 +254,7 @@ try {
   await post(alice, `/v1/asks/${ask.id}/answer`, { decision: 'allow' })
   const made = await within(TURN_SECONDS, async () => (await agentNamed('copyedit')) !== undefined)
   const copyedit = await one(`select * from agents where name = 'copyedit' and team_id = (select team_id from people where login = $1)`, [alice])
-  check(made && copyedit?.owner_id === (await one('select id from people where login = $1', [alice]))?.id && copyedit.home_instance_id === macId
+  check(made && copyedit?.owner_id === aliceId && copyedit.home_instance_id === macId
     && copyedit.made_by_session === scoutDm && copyedit.made_by_ask === ask.id && copyedit.title === 'Copy edits drafts',
   "once Alice says yes, the new agent exists: Alice's, on scout's machine, made by scout's session with that yes")
   const reused = await asSession(token, scoutDm, 'POST', '/v1/team-agents/agents', { name: 'copyedit', title: 'Copy edits drafts', instructions: 'Fix spelling and grammar.' })
