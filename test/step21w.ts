@@ -173,11 +173,16 @@ try {
   const strangerRemove = await people(carol, 'POST', `/v1/team/webmcp-origins/${(await origins(alice))[0]?.id ?? ''}/delete`, {})
   check(strangerRead.length === 0 && strangerRemove.status === 404 && (await origins(alice)).length === 1,
     'a person on another team sees no sites, and cannot remove this team\'s')
-  // The limit: 49 more fill the list, and a 51st is refused.
-  for (let n = 0; n < 49; n++) await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: `https://site-${n}.test` })
+  // The limit. Forty more sites make 41, and twelve admins listing one each at once fill the list to 50 and no further.
+  for (let n = 0; n < 40; n++) await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: `https://site-${n}.test` })
+  const together = await Promise.all(Array.from({ length: 12 }, (_, n) => people(alice, 'POST', '/v1/team/webmcp-origins', { origin: `https://at-once-${n}.test` })))
+  const listedAtOnce = together.filter((answer) => answer.status === 200).length
+  const refusedAtOnce = together.filter((answer) => answer.status === 409).length
+  check(listedAtOnce === 9 && refusedAtOnce === 3 && (await origins(alice)).length === 50,
+    `twelve sites listed at once on a list of 41 stop at 50 (${listedAtOnce} listed, ${refusedAtOnce} refused)`)
   const full = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: 'https://one-too-many.test' })
-  check(full.status === 409 && (await origins(alice)).length === 50, `a team lists 50 sites at most (the 51st got ${full.status})`)
-  await db.query(`delete from webmcp_origins where team_id = $1 and origin like 'https://site-%'`, [teamId])
+  check(full.status === 409 && (await origins(alice)).length === 50, `a team lists 50 sites at most (the next got ${full.status})`)
+  await db.query(`delete from webmcp_origins where team_id = $1 and (origin like 'https://site-%' or origin like 'https://at-once-%')`, [teamId])
   await people(alice, 'POST', `/v1/team/webmcp-origins/${(await origins(alice))[0]?.id ?? 'none'}/delete`, {})
   check(listed.status === 200 && (await origins(alice)).length === 0, 'an admin takes a site off the list')
 
@@ -199,7 +204,7 @@ try {
   const task = await people(alice, 'POST', '/v1/tasks', { title: 'Use a page', instructions: 'Look at it.', agentId })
   const sessionId: string = must(task.json?.sessionId, 'the task session')
   await within(120, async () => (await one('select status from sessions where id = $1', [sessionId]))?.status === 'idle')
-  const workspace = must(await one('select w.path from workspaces w join sessions s on s.workspace_id = w.id where s.id = $1', [sessionId]), 'workspace').path as string
+  const workspace: string = must(await one('select w.path from workspaces w join sessions s on s.workspace_id = w.id where s.id = $1', [sessionId]), 'workspace').path
   const startsOf = () => (tryDocker('exec', container, 'cat', `${workspace}/.fake/starts.jsonl`) ?? '').split('\n').filter(Boolean).map((line) => JSON.parse(line))
   const mcpConfig = () => JSON.parse(docker('exec', container, 'cat', `${BOX_HOME}/sessions/${sessionId}.mcp.json`)).mcpServers.computer
 
@@ -217,7 +222,9 @@ try {
   // The first thing to know: the box's Chromium gives a page the WebMCP object.
   await call(tools, 'browser_navigate', { url: `${A}/` })
   const api21 = await evaluate(tools, '() => typeof document.modelContext?.getTools === "function" && typeof document.modelContext.executeTool === "function"')
-  check(api21 === true, "the box's Chromium gives a page document.modelContext, with getTools and executeTool")
+  // The browser says its own version over the DevTools port the session's config names.
+  const devtools = JSON.parse(tryDocker('exec', container, 'curl', '-s', `${mcpConfig().env.AGENTS_BROWSER_CDP}/json/version`) ?? '{}')
+  check(api21 === true, `the box's Chromium gives a page document.modelContext, with getTools and executeTool (${String(devtools.Browser)})`)
 
   // An admin lists A. The agent's next message restarts its session with the list.
   await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: A })
