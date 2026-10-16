@@ -5,7 +5,8 @@
 // holds the screen, so a person who takes over stops the agent's use of both.
 // The design is docs/design/computers.md.
 // Env, set by the daemon in the session's MCP config: AGENTS_SCREEN_SOCKET,
-// AGENTS_BROWSER_MCP, AGENTS_BROWSER_CDP, and AGENTS_TASK_FOLDER for a task's session.
+// AGENTS_BROWSER_MCP, AGENTS_BROWSER_CDP, AGENTS_API, AGENTS_TOKEN and AGENTS_SESSION (for share_screen), and
+// AGENTS_TASK_FOLDER for a task's session.
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
@@ -25,11 +26,15 @@ import {
 } from '../shared/screen.ts'
 import { parseJson } from '../shared/json.ts'
 import { messageOf } from '../shared/errors.ts'
+import { shareBytes } from './share-client.ts'
 
 const Config = z.object({
   AGENTS_SCREEN_SOCKET: z.string().min(1),
   AGENTS_BROWSER_MCP: z.string().min(1),
   AGENTS_BROWSER_CDP: z.url(),
+  AGENTS_API: z.url(),
+  AGENTS_TOKEN: z.string().min(1),
+  AGENTS_SESSION: z.uuid(),
   // Only a task's session has a task folder, where saved screenshots become documents.
   AGENTS_TASK_FOLDER: z.string().min(1).optional(),
 })
@@ -144,6 +149,21 @@ async function saveScreenshot(args: unknown): Promise<CallToolResult> {
   }
 }
 
+// Posts what the screen shows into the chat or task the session serves, as a picture the people there see.
+async function shareScreen(args: unknown): Promise<CallToolResult> {
+  const input = z.object({ caption: z.string().max(2000).optional() }).safeParse(args)
+  if (!input.success) return failure(z.prettifyError(input.error))
+  const acted = await act({ action: 'screenshot' })
+  if ('refused' in acted) return acted.refused
+  // The shot is read for secrets once it is taken, as a saved screenshot is.
+  const secretShown = await secretRefusal()
+  if (secretShown) return secretShown
+  const bytes = Buffer.from(acted.done.shot.png, 'base64')
+  await shareBytes({ api: config.AGENTS_API, token: config.AGENTS_TOKEN, session: config.AGENTS_SESSION },
+    { bytes, name: 'screen.png', contentType: 'image/png', caption: input.data.caption ?? '' })
+  return { content: [{ type: 'text', text: 'Shared a screenshot of your screen.' }] }
+}
+
 async function screenStatus(): Promise<CallToolResult> {
   const now = await status()
   const who = now.control.holder === 'person' ? `${now.control.login} has the screen and is using it now.` : 'You have the screen.'
@@ -187,6 +207,13 @@ const OWN_TOOLS: Tool[] = [
       + '"signup-error-message". Nothing is saved while a page in the browser shows a secret this box holds.',
     inputSchema: InputSchema.parse(z.toJSONSchema(z.object({ name: ScreenshotName.describe('Lowercase letters, digits and dashes') }))),
     outputSchema: OutputSchema.parse(z.toJSONSchema(SavedScreenshot)),
+  },
+  {
+    name: 'share_screen',
+    title: 'Share your screen',
+    description: 'Post a screenshot of what your screen shows now into the chat or task you are working in, with an optional caption, '
+      + 'so the people there see it where you posted it. Nothing is shared while a page in the browser shows a secret this box holds.',
+    inputSchema: InputSchema.parse(z.toJSONSchema(z.object({ caption: z.string().max(2000).optional().describe('What to say with it') }))),
   },
   {
     name: 'screen_status',
@@ -251,6 +278,7 @@ mcp.server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToo
   const { name, arguments: args } = req.params
   if (name === 'computer') return computer(args)
   if (name === 'save_screenshot') return saveScreenshot(args)
+  if (name === 'share_screen') return shareScreen(args)
   if (name === 'screen_status') return screenStatus()
   if ((await browserTools).some((tool) => tool.name === name)) {
     // Given a file name, Playwright's screenshot tool saves where the name says,

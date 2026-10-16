@@ -4,10 +4,14 @@
 // record through the API, as the session it serves.
 // Env: AGENTS_API, AGENTS_TOKEN, AGENTS_SESSION (set by the daemon in the session's MCP config).
 
+import { realpath, readFile, stat } from 'node:fs/promises'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
 import { ReadyAnswer } from '../shared/work.ts'
+import { saveShared, shareBytes } from './share-client.ts'
 
 const API = process.env.AGENTS_API ?? 'http://127.0.0.1:7700'
 const TOKEN = process.env.AGENTS_TOKEN ?? ''
@@ -160,5 +164,47 @@ server.registerTool('log_decision', {
     alternatives: z.array(z.string()).optional().describe('What else you weighed, and why not'),
   },
 }, () => text('Logged in the decision log.'))
+
+const here = { api: API, token: TOKEN, session: SESSION }
+
+server.registerTool('share_file', {
+  title: 'Share a file',
+  description: 'Post a file from your working folder into the chat or task you are working in, so the people there can see or download it. '
+    + 'A picture shows inline, and any other file downloads. The path is relative to your working folder, and nothing outside it can be shared. '
+    + 'A file that holds a secret value is refused.',
+  inputSchema: { path: z.string().min(1).describe('The file, in your working folder'), caption: z.string().max(2000).optional().describe('What to say with it') },
+}, async ({ path, caption }) => {
+  const root = await realpath(process.cwd())
+  const file = await realpath(resolve(root, path)).catch(() => { throw new Error(`There is no file at ${path}.`) })
+  const inside = relative(root, file)
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error(`share_file only shares files inside your working folder, ${root}.`)
+  const info = await stat(file)
+  if (!info.isFile()) throw new Error(`${path} is not a file.`)
+  if (info.size > MAX_ATTACHMENT_BYTES) throw new Error(`${path} is ${info.size} bytes, and a file can be ${MAX_ATTACHMENT_BYTES} at most.`)
+  const shared = await shareBytes(here, { bytes: await readFile(file), name: basename(file), contentType: 'application/octet-stream', caption: caption ?? '' })
+  return text(`Shared ${shared.name} (${shared.kind}, ${shared.size} bytes).`)
+})
+
+server.registerTool('get_attachment', {
+  title: 'Save an attached file',
+  description: 'Save a file that someone attached to a message in this chat or task into your working folder, under attachments/. '
+    + 'The message names the file and its attachment id. Returns the path it was saved to.',
+  inputSchema: { attachment_id: z.uuid() },
+}, async ({ attachment_id }) => text(`Saved at ${await saveShared(here, process.cwd(), attachment_id)}.`))
+
+server.registerTool('react', {
+  title: 'React to a post',
+  description: 'React to a post in your chat or task with one emoji, such as a thumbs up for "got it". With no post named, it reacts '
+    + 'to the latest post from a person. remove: true takes your reaction back off.',
+  inputSchema: {
+    emoji: z.string().min(1).describe('One emoji'),
+    message_id: z.uuid().optional().describe('A chat post'),
+    event_id: z.string().regex(/^[0-9]+$/).optional().describe('A task post'),
+    remove: z.boolean().optional(),
+  },
+}, async ({ emoji, message_id, event_id, remove }) => {
+  await send('/v1/record/react', { emoji, messageId: message_id, eventId: event_id, remove })
+  return text(remove ? `Took your ${emoji} off.` : `Reacted ${emoji}.`)
+})
 
 await server.connect(new StdioServerTransport())

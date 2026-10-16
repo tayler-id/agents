@@ -10,9 +10,10 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type pg from 'pg'
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
-import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { Created, FileAnswer, fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { connectedFolders, connectFolder, disconnectFolder, sessionWriter, terminalSession } from './folders.ts'
 import { ConnectFolder, DisconnectFolder, TerminalSessionAsk, type FolderList } from '../shared/terminal.ts'
 import { maybe, one, pool, tx } from './db.ts'
@@ -22,9 +23,13 @@ import { listenOnSocket } from '../shared/socket.ts'
 import { MACHINE_PORT, MachineHosts, Port } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
-  answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
+  answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision, type Person,
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
+import { agentScope } from './agent-scope.ts'
+import { chatRoutes } from './chat-routes.ts'
+import { pendingUploads, placeUploads, startAttachmentSweep, withFiles } from './attachments.ts'
+import { AttachmentIds, PostBody } from '../shared/attachments.ts'
 import { MessageMoveRefused, moveMessages, recoverMachine } from './durability.ts'
 import { cancelWaitingTurn } from './scheduler.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
@@ -122,25 +127,19 @@ function paramsOf(path: RegExp, pathname: string): Params {
   return [groups[0] ?? '', groups[1] ?? '', groups[2] ?? '']
 }
 
-// An agent reads the record from inside one of its sessions, which must be
-// running on the calling machine. That session decides what it may see.
-async function agentScope(req: IncomingMessage, url: URL) {
-  const instance = await instanceFrom(req)
-  const sessionId = url.searchParams.get('session') ?? ''
-  const { rows } = /^[0-9a-f-]{36}$/.test(sessionId)
-    ? await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
-    : { rows: [] }
-  if (!rows[0]) throw new HttpError(403, 'record reads need a session running on this machine')
-  // A replay must do without the correction it is scored on, and the record holds it.
-  if (await maybe(pool, 'select 1 from session_replays where session_id = $1', [sessionId])) {
-    throw new HttpError(403, 'a replay reads nothing from the team record')
-  }
-  return { teamId: instance.team_id, sessionId }
-}
-
 const bounded = (value: string | null, fallback: number, max: number) =>
   Math.min(max, Math.max(1, Number(value) || fallback))
 const UUID = '([0-9a-f-]{36})'
+
+// A new chat's first post: the words, the files, or both. Neither leaves the chat empty.
+const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish() })
+async function withFirstPost(client: pg.PoolClient, person: Person, conversationId: string, body: Record<string, unknown>): Promise<string> {
+  const post = parsed(FirstPost, body)
+  if ((post.text ?? '').trim() !== '' || post.attachmentIds) {
+    await sendPersonMessage(client, person, conversationId, post.text ?? '', randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
+  }
+  return conversationId
+}
 
 const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/search$/, async (req, _params, url) => {
@@ -370,11 +369,14 @@ const routes: Route[] = [
     if (body.kind === 'room') {
       const list = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
       const projectId = optionalProject(body.projectId)
-      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)) }
+      return { conversationId: await tx(async (client) => {
+        const conversationId = await createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)
+        return withFirstPost(client, person, conversationId, body)
+      }) }
     }
     if (body.kind !== 'dm') throw new HttpError(400, 'kind must be dm or room')
     const agent = text(body.agent, 'agent')
-    return { conversationId: await tx((client) => openDm(client, person, agent)) }
+    return { conversationId: await tx(async (client) => withFirstPost(client, person, await openDm(client, person, agent), body)) }
   }],
 
   ['people', 'POST', /^\/v1\/agents$/, async (req) => {
@@ -420,11 +422,24 @@ const routes: Route[] = [
 
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
-    const { repoId, ...task } = parsed(NewTask, await readJson(req))
+    const raw = await readJson(req)
+    const { repoId, ...task } = parsed(NewTask, raw)
+    const attachmentIds = parsed(AttachmentIds.optional(), raw.attachmentIds)
+    if (attachmentIds && task.draft) throw new HttpError(400, 'A draft takes no attachments yet. Attach files when the task starts.')
     const repoIds = repoId ? [repoId, ...task.repoIds] : task.repoIds
     // The workspace is cloned from each repo's default branch, which its owner can rename on the forge.
     if (!task.draft) await refreshDefaultBranches(person.team_id, repoIds)
-    return tx((client) => startTask(client, person, { ...task, repoIds }))
+    return tx(async (client) => {
+      // The files are named in the task's instructions, so its first turn reads them, and they sit in the
+      // session once it exists.
+      const files = attachmentIds ? await pendingUploads(client, person, attachmentIds, {}) : []
+      const started = await startTask(client, person, { ...task, repoIds, instructions: withFiles(task.instructions, files) })
+      if (files.length) {
+        const first = await one<{ id: string }>(client, "the task's first post", `select id from events where session_id = $1 and kind = 'user' order by seq limit 1`, [started.sessionId])
+        await placeUploads(client, files.map((f) => f.id), { sessionId: started.sessionId, eventId: first.id })
+      }
+      return started
+    })
   }],
 
   // The order of work. Each command answers whether there was anything to change.
@@ -548,8 +563,8 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    await tx((client) => messageTaskSession(client, person, sessionId, text(body.text, 'text')))
+    const body = await parseBody(req, PostBody)
+    await tx((client) => messageTaskSession(client, person, sessionId, body.text ?? '', body.attachmentIds ?? []))
     return { ok: true }
   }],
 
@@ -705,11 +720,13 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/conversations/${UUID}/messages$`), async (req, [conversationId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    const clientId = optionalText(body.clientId, 'clientId') ?? randomUUID()
-    return tx((client) => sendPersonMessage(client, person, conversationId, text(body.text, 'text'), clientId))
+    const body = await parseBody(req, PostBody)
+    return tx((client) => sendPersonMessage(client, person, conversationId, body.text ?? '', body.clientId ?? randomUUID(), {
+      attachmentIds: body.attachmentIds ?? [], replyToMessageId: body.replyToMessageId ?? undefined,
+    }))
   }],
 
+  ...chatRoutes,
   ...onboardingRoutes,
   ...boxRoutes,
 ]
@@ -768,12 +785,16 @@ async function hook(req: IncomingMessage, url: URL): Promise<unknown> {
 // as that person. A post can't carry a JSON content type across sites without a CORS
 // preflight, which this API never grants, so people's changes must declare JSON.
 const JSON_TYPE = /^application\/json\s*(;|$)/i
+// An upload is the file's bytes under the file's own type. A custom header can't cross sites without a
+// preflight either, so an upload must carry X-File-Name.
+const UPLOAD = new RegExp(`^/v1/((conversations|sessions)/${UUID}/)?attachments$`)
 
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     checkAudience(audience, req)
-    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
+    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')
+      && !(req.method === 'POST' && UPLOAD.test(url.pathname) && req.headers['x-file-name'] !== undefined)) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
     const shape = req.method === 'GET' ? SHAPE.exec(url.pathname)?.[1] : undefined
@@ -792,7 +813,9 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
+    if (result instanceof FileAnswer) return void res.writeHead(200, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
+    const created = result instanceof Created
+    res.writeHead(created ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(created ? result.body : result))
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500
     if (status === 500) console.error(error)
@@ -857,12 +880,14 @@ if (import.meta.main) {
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()
+  const stopAttachmentSweep = startAttachmentSweep()
   let githubWorker: ReturnType<typeof startGithubWorker> | null = null
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
   // The GitHub worker finishes the round it is in and starts no other.
   const stop = () => {
     stopSweep()
+    stopAttachmentSweep()
     setTimeout(() => { console.error('the API did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
     Promise.all([githubWorker?.stop(), streams.stop()])
       .then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the API: ${messageOf(error)}`); process.exit(1) })

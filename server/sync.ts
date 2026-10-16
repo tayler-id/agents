@@ -53,6 +53,21 @@ async function requireTaskOf(person: Person, sql: string, id: string): Promise<s
   return id
 }
 
+// A chat or a task's session the person may see, named by `conversation` or `session`. The filter on its
+// rows is by the column that names it.
+async function placeOf(person: Person, args: URLSearchParams): Promise<{ column: 'conversation_id' | 'session_id'; id: string }> {
+  if (args.has('session')) {
+    const id = arg(args, 'session')
+    if (!(await canSeeSession(person, id))) throw new HttpError(404, 'no such session')
+    return { column: 'session_id', id }
+  }
+  return { column: 'conversation_id', id: await requireConversation(person, args) }
+}
+
+const ATTACHMENT_COLUMNS = ['id', 'conversation_id', 'session_id', 'message_id', 'event_id', 'kind', 'name', 'media_type', 'size', 'width', 'height',
+  'added_by_person', 'added_by_agent', 'created_at']
+const REACTION_COLUMNS = ['id', 'conversation_id', 'session_id', 'message_id', 'event_id', 'emoji', 'person_id', 'agent_id', 'created_at']
+
 const personShapes: Record<string, PersonShape> = {
   people: async (p) => ({ table: 'people', where: 'team_id = $1', params: [p.team_id] }),
   // Never sync token hashes.
@@ -82,6 +97,20 @@ const personShapes: Record<string, PersonShape> = {
   messages: async (p, args) => ({
     table: 'messages', where: 'conversation_id = $1', params: [await requireConversation(p, args)],
   }),
+  // The files in a chat or a task's session. A file nobody has sent yet is its uploader's alone.
+  attachments: async (p, args) => {
+    const place = await placeOf(p, args)
+    return {
+      table: 'attachments', columns: ATTACHMENT_COLUMNS, params: [place.id, p.id],
+      where: `${place.column} = $1 and (message_id is not null or event_id is not null or added_by_person = $2)`,
+    }
+  },
+  reactions: async (p, args) => {
+    const place = await placeOf(p, args)
+    return { table: 'reactions', columns: REACTION_COLUMNS, where: `${place.column} = $1`, params: [place.id] }
+  },
+  // The messages pinned in a chat.
+  pins: async (p, args) => ({ table: 'pins', where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
   // Sessions the person may see: conversations', tasks', or the terminal sessions
   // of connected folders. They are separate shapes because Electric 1.8 never
   // sends a row that moves into a filter ORing two subqueries, so a new task's

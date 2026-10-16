@@ -15,6 +15,9 @@ const MEMBERS_POLL_MS = 3000
 
 type Pending = { clientId: string; text: string }
 
+// A deleted post has no text. The redesign shows its placeholder; until then this says so.
+const shown = (m: Message) => (m.deleted_at ? 'This post was deleted.' : m.body ?? '')
+
 export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; conversationId: string; sessionOpen: string | null }) {
   const { rows: messages } = useRows<Message>('messages', { conversation: conversationId })
   const { rows: conversations } = useSnapshot<Conversation>('conversations')
@@ -90,12 +93,12 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
               <strong>{m.speaker === 'agent' ? agents.find((a) => a.id === m.agent_id)?.name ?? 'Agent' : login(m.person_id)}</strong>
               <span className="muted small">{clock(m.created_at)}</span>
             </div>
-            {m.speaker === 'agent' ? <div className="text"><Markdown text={m.body} /></div> : <p className="text">{m.body}</p>}
+            {m.speaker === 'agent' ? <div className="text"><Markdown text={shown(m)} /></div> : <p className="text">{shown(m)}</p>}
             {m.speaker === 'person' && conversation?.kind === 'dm' && agent && (
               m.task_id
                 ? <button type="button" className="link small" onClick={() => go({ task: m.task_id })}>Open its task</button>
                 : <button type="button" className="link small" onClick={act(async () => go({ task: (await api.startTask({
-                  title: (m.body.split('\n')[0] ?? m.body).slice(0, 120), instructions: m.body, agentId: agent.id, conversationId, messageId: m.id,
+                  title: (shown(m).split('\n')[0] ?? shown(m)).slice(0, 120), instructions: shown(m), agentId: agent.id, conversationId, messageId: m.id,
                 })).taskId }))}>Make it a task</button>
             )}
           </li>

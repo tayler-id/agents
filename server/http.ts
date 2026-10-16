@@ -18,6 +18,23 @@ export type Params = readonly [string, string, string]
 export type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown>
 export type Route = [Audience, string, RegExp, Handler]
 
+// A handler's answer is JSON with status 200. These two change that: a created thing
+// answers 201, and a file answers its bytes with the headers the handler sets.
+export class Created {
+  readonly body: unknown
+  constructor(body: unknown) {
+    this.body = body
+  }
+}
+export class FileAnswer {
+  readonly bytes: Buffer
+  readonly headers: Record<string, string>
+  constructor(bytes: Buffer, headers: Record<string, string>) {
+    this.bytes = bytes
+    this.headers = headers
+  }
+}
+
 export const readBody = (req: IncomingMessage): Promise<Buffer> => readWhole(req, MAX_BODY_BYTES, () => new HttpError(413, 'body too large'))
 
 export async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
