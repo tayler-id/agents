@@ -223,6 +223,27 @@ try {
   const leaked = await asSession(secret.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: 'Private work, passed on.' })
   check(secret.held && leaked.status === 409 && JSON.stringify(leaked.json).includes('private'),
     `an agent in private work sends nothing to another agent (${leaked.status} ${JSON.stringify(leaked.json)})`)
+
+  // 7. An answer that can never be delivered is marked so once and posted where the chain started,
+  // not tried on every tick for good. A trigger refuses any new user event in ua's session, a failure of
+  // its own that no retry cures.
+  const [ua, ub] = [await make('ua'), await make('ub')]
+  const uaDm = await parkInDm('ua', ua)
+  const uaSent = await asSession(uaDm.session, 'POST', '/v1/team-agents/messages', { to: 'ub', text: `${PARK} go` })
+  const ubSession = await sessionOf(String(uaSent.json.threadId), ub)
+  const ubHeld = await parked(ubSession)
+  const ubTurn = must(await one(`select id from turns where session_id = $1 and status = 'running'`, [ubSession]), "ub's running turn").id
+  await db.query(`create function pg_temp.refuse() returns trigger language plpgsql as $$ begin raise exception 'step28c refuses this session new messages'; end $$`.replace('pg_temp.', 'public.step28c_'))
+  await db.query(`create trigger step28c_refuse before insert on events for each row when (new.session_id = '${uaDm.session}' and new.kind = 'user') execute function public.step28c_refuse()`)
+  const ubAsk = must(await one(`select id from asks where session_id = $1 and status = 'open'`, [ubSession]), "ub's ask").id
+  await asPerson(PEOPLE, alice, 'POST', `/v1/asks/${ubAsk}/answer`, { decision: 'deny' })
+  const marked = await within(TURN_SECONDS, async () => (await one('select 1 from turns where id = $1 and answer_sent_at is not null', [ubTurn])) !== undefined)
+  const lost = await one('select answer_error from turns where id = $1', [ubTurn])
+  const note = await one(`select body, agent_id, asked_agent_id from messages where conversation_id = $1 and kind = 'answer'`, [uaDm.dm])
+  await db.query('drop trigger step28c_refuse on events')
+  await db.query('drop function public.step28c_refuse()')
+  check(uaDm.held && ubHeld && marked && String(lost?.answer_error).length > 0 && note?.agent_id === ub && note.asked_agent_id === ua && String(note.body).includes('could not be delivered'),
+    `an answer that cannot be delivered is marked once, with its reason, and posted where the chain started (${String(lost?.answer_error)} | ${String(note?.body)})`)
   check(!/deadlock detected/.test(apiLog()), 'the API reported no deadlock')
 } catch (error) {
   failures.push(messageOf(error))
