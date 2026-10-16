@@ -15,7 +15,7 @@ import { wakeRunner } from './runner.ts'
 import { LINK_WAIT_MS, LINK_WAKE_MS } from '../shared/link.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
-import { mayPutOn, SecretId, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
+import { mayPutOn, SecretId, AgentKey, type AgentKeys, type KeySummaries, type SecretRemoved, type SecretStored } from '../shared/secrets.ts'
 import { SetSecretBody, SettableName } from '../shared/secret-rules.ts'
 
 const UUID = '([0-9a-f-]{36})'
@@ -122,7 +122,64 @@ export async function removeSecret(person: Person, secretId: SecretId): Promise<
   return { name: target.name, computer: target.computer, had: answer.had }
 }
 
+const PluginRow = z.object({
+  agent_id: AgentId,
+  plugin: z.string(),
+  env: z.record(z.string(), z.object({ secret: z.string() })).nullish(),
+  headers: z.record(z.string(), z.object({ secret: z.string() })).nullish(),
+})
+const AgentRow = z.object({ id: AgentId, computer: z.string().nullable(), instance_id: InstanceId.nullable() })
+const SecretIdRow = z.object({ id: SecretId, agent_id: AgentId, name: z.string() })
+const SetRow = z.object({ instance_id: InstanceId, name: z.string(), set_at: z.date(), login: z.string().nullable() })
+
+// The keys of one agent, or of every agent on the team when `only` is null. One list serves the agent's Keys
+// row and each app's page, so the two never disagree. Names and times only, never a value.
+async function keysFor(person: Person, only: string | null): Promise<AgentKeys[]> {
+  const agents = (await pool.query(
+    `select a.id, i.name as computer, i.id as instance_id from agents a left join instances i on i.id = a.home_instance_id
+     where a.team_id = $1 and a.archived_at is null and ($2::uuid is null or a.id = $2) order by a.name`, [person.team_id, only])).rows.map((r) => AgentRow.parse(r))
+  if (only !== null && agents.length === 0) throw new HttpError(404, 'no such agent')
+  const plugins = (await pool.query(
+    `select p.agent_id, p.name as plugin, p.config->'env' as env, p.config->'headers' as headers from plugins p
+     join agents a on a.id = p.agent_id where a.team_id = $1 and ($2::uuid is null or a.id = $2) order by p.name`, [person.team_id, only])).rows.map((r) => PluginRow.parse(r))
+  const ids = (await pool.query('select id, agent_id, name from secrets where team_id = $1 and agent_id is not null', [person.team_id])).rows.map((r) => SecretIdRow.parse(r))
+  const sets = (await pool.query(
+    `select s.instance_id, s.name, s.set_at, p.login from secret_sets s left join people p on p.id = s.set_by where s.team_id = $1`, [person.team_id])).rows.map((r) => SetRow.parse(r))
+  return agents.map((agent) => {
+    const byName = new Map<string, AgentKey>()
+    for (const plugin of plugins.filter((p) => p.agent_id === agent.id)) {
+      for (const { secret } of [...Object.values(plugin.env ?? {}), ...Object.values(plugin.headers ?? {})]) {
+        const held = sets.find((s) => s.instance_id === agent.instance_id && s.name === secret)
+        const key = byName.get(secret) ?? {
+          secretId: ids.find((i) => i.agent_id === agent.id && i.name === secret)?.id ?? null, name: secret, plugins: [],
+          state: held ? 'set' : 'missing', setAt: held?.set_at.toISOString() ?? null, setBy: held?.login ?? null,
+        }
+        if (!key.plugins.includes(plugin.plugin)) key.plugins.push(plugin.plugin)
+        byName.set(secret, AgentKey.parse(key))
+      }
+    }
+    const keys = [...byName.values()]
+    return { agentId: agent.id, computer: agent.computer, keys, missing: keys.filter((k) => k.state === 'missing').length }
+  })
+}
+
+export async function keysOfAgent(person: Person, agentId: string): Promise<AgentKeys> {
+  const [found] = await keysFor(person, agentId)
+  if (!found) throw new HttpError(404, 'no such agent')
+  return found
+}
+
+export async function keySummaries(person: Person): Promise<KeySummaries> {
+  return { agents: (await keysFor(person, null)).map((a) => ({ agentId: a.agentId, total: a.keys.length, missing: a.missing })) }
+}
+
 export const secretRoutes: Route[] = [
+  // Every key one agent needs, each set or missing, with the plugins that use it.
+  ['people', 'GET', new RegExp(`^/v1/agents/${UUID}/keys$`), async (req, [id]) => keysOfAgent(await personFrom(req), pathId(AgentId, id))],
+
+  // Each agent's count of keys and of keys missing, for a dot on a list.
+  ['people', 'GET', /^\/v1\/keys$/, async (req) => keySummaries(await personFrom(req))],
+
   // A person sets a secret's value. The body holds it, and nothing else of the request does.
   ['people', 'POST', new RegExp(`^/v1/secrets/${UUID}/value$`), async (req, [id]) => {
     const person = await personFrom(req)

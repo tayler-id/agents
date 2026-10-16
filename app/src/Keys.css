@@ -1,0 +1,9 @@
+/* The Keys row, an app's hidden keys and the full list. Hairlines divide, and the only color is the red dot. */
+.keys-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.keys-row .keys-count { margin-left: auto; }
+.key-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex: none; }
+.key-list { list-style: none; margin: 0; padding: 0; }
+.key-list > li { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.key-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.key-name { font-weight: 600; overflow-wrap: anywhere; }
+.app-keys > button { display: inline-flex; align-items: center; gap: 8px; }

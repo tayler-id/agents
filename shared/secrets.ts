@@ -55,3 +55,32 @@ export const SecretSetRow = z.object({
   set_at: Time,
 })
 export type SecretSetRow = z.infer<typeof SecretSetRow>
+
+// Every key an agent's plugins name, for the agent's Keys row and for each app's page. Both views are
+// filtered from this one list. `state` is 'set' when the app put a value on the agent's computer and the
+// record still says so, and 'missing' otherwise. A value put on the computer by hand reads as missing.
+// `secretId` is the id for the set and remove routes, or null when no secrets row exists yet.
+export const AgentKey = z.object({
+  secretId: SecretId.nullable(),
+  name: SecretName,
+  plugins: z.array(z.string()),
+  state: z.enum(['set', 'missing']),
+  setAt: z.string().nullable(),
+  setBy: z.string().nullable(),
+})
+export type AgentKey = z.infer<typeof AgentKey>
+
+// `computer` is null when the agent has none. `missing` is the number of keys not set, and the red dot shows when it is above 0.
+export const AgentKeys = z.object({
+  agentId: AgentId,
+  computer: z.string().nullable(),
+  keys: z.array(AgentKey),
+  missing: z.number().int().nonnegative(),
+})
+export type AgentKeys = z.infer<typeof AgentKeys>
+
+// The team's agents, each with its count of keys and how many are missing, for a dot on a list.
+export const KeySummaries = z.object({
+  agents: z.array(z.object({ agentId: AgentId, total: z.number().int().nonnegative(), missing: z.number().int().nonnegative() })),
+})
+export type KeySummaries = z.infer<typeof KeySummaries>
