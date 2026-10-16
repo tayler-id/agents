@@ -135,7 +135,8 @@ export function fakeTailscale(options: { key: string; keyExpiresInDays: number; 
       if (!state.devices.delete(m[1] ?? '')) return send(res, 404, { message: 'device not found' })
       return send(res, 200)
     }
-    if (method === 'GET' && path === '/tailnet/-/user-invites') return send(res, 200, [...state.invites.values()])
+    // The real Tailscale answers null, not [], when no invite is open. Seen on 2026-10-16, the first call to it.
+    if (method === 'GET' && path === '/tailnet/-/user-invites') return send(res, 200, state.invites.size ? [...state.invites.values()] : null)
     if (method === 'POST' && path === '/tailnet/-/user-invites') {
       if (state.refuseNextInvite !== null) {
         const message = state.refuseNextInvite
