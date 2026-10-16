@@ -1,8 +1,9 @@
 // WebMCP in agents' browsers, build step 21, the app. Drives the Team page's list
 // of sites and the approval card for web_act in Chromium, Firefox and WebKit, at
-// desktop and phone width, against a real API. An admin lists a site and sees it
-// listed, a site that is not a scheme and a host is refused with the reason, and
-// removing a site takes it off the list. A member sees no such section. The card
+// desktop and phone width, against a real API. An admin lists a site by typing it
+// in the field that ends the list, with Add or with Enter, and sees it listed. A
+// site that is not a scheme and a host is refused with the reason under the field,
+// and removing a site takes it off the list. A member sees no such section. The card
 // for web_act offers Allow once and Deny, says it asks every time, shows the whole
 // call, and has no Always or Never, while the card for Bash keeps all four.
 // Takes screenshots (light, dark, phone) to look at, scans for accessibility
@@ -126,6 +127,7 @@ async function runEngine(engine: string, token: string) {
   node('server/admin.ts', 'set-role', team, admin, 'admin')
   node('server/admin.ts', 'add-person', team, member)
   const site = `https://${engine}.example.test`
+  const second = `https://${engine}-two.example.test`
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
   const open = (login: string, path: string, options: Record<string, unknown> = {}) => openPage(browser, engine, errors, login, path, options)
@@ -136,28 +138,38 @@ async function runEngine(engine: string, token: string) {
       const page = await open(admin, '/#/team')
       const heading = page.getByRole('heading', { name: 'Sites whose tools agents may use' })
       check(await visible(page, 'section[aria-label="Team"]', RESULT_WAIT_S) && await heading.isVisible(), `${engine}: an admin sees the list of sites on the Team page`)
-      await page.getByRole('textbox', { name: 'Site' }).fill('javascript:alert(1)')
-      await page.getByRole('button', { name: 'List site' }).click()
-      check(await visible(page, '[role="alert"]', RESULT_WAIT_S, /scheme and a host/), `${engine}: a site that is not a scheme and a host is refused, and the page says what a site looks like`)
-      await page.getByRole('textbox', { name: 'Site' }).fill(site)
-      await page.getByRole('button', { name: 'List site' }).click()
+      const field = page.getByRole('textbox', { name: 'Add a site' })
+      await field.fill('javascript:alert(1)')
+      await field.press('Enter')
+      check(await visible(page, '[role="alert"]', RESULT_WAIT_S, /scheme and a host/), `${engine}: a site that is not a scheme and a host is refused with Enter, and the page says what a site looks like`)
+      await field.fill(site)
+      await page.getByRole('button', { name: 'Add', exact: true }).click()
       check(await visible(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(`${pattern(site)}.*listed by ${pattern(admin)}`))
-        && await visible(page, '[role="status"]', RESULT_WAIT_S, /Listed .* Agents use it from their next message/), `${engine}: listing a site shows it on the list with who listed it`)
-      check(await page.getByRole('textbox', { name: 'Site' }).inputValue() === '', `${engine}: the field empties once the site is listed`)
+        && await visible(page, '[role="status"]', RESULT_WAIT_S, /Listed .* Agents use it from their next message/), `${engine}: the Add button lists a site, with who listed it`)
+      check(await field.inputValue() === '', `${engine}: the field empties once the site is listed`)
+      await field.fill(second)
+      await field.press('Enter')
+      check(await visible(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(second))), `${engine}: Enter lists a site too`)
+      // The screenshots show the foot of the list, where the field is.
+      await field.scrollIntoViewIfNeeded()
       await page.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-light.png`) })
       check(await serious(page) === 0, `${engine}: the Team page has no serious accessibility problems`)
 
       const dark = await open(admin, '/#/team', { colorScheme: 'dark' })
-      await visible(dark, 'ul[aria-label="Sites whose tools agents may use"]', RESULT_WAIT_S)
+      await visible(dark, 'input[aria-label="Add a site"]', RESULT_WAIT_S)
+      await dark.getByRole('textbox', { name: 'Add a site' }).scrollIntoViewIfNeeded()
       await dark.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-dark.png`) })
       const phone = await open(admin, '/#/team', phoneOptions)
       const phoneListed = await visible(phone, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(site)))
-      const phoneFits = await noSideScroll(phone, ['.page', '.page-body', 'ul[aria-label="Sites whose tools agents may use"]', 'form[aria-label="List a site"]'])
+      await phone.getByRole('textbox', { name: 'Add a site' }).scrollIntoViewIfNeeded()
+      const phoneFits = await noSideScroll(phone, ['.page', '.page-body', 'ul[aria-label="Sites whose tools agents may use"]', 'input[aria-label="Add a site"]'])
       await phone.screenshot({ path: join(SHOTS, `${engine}-webmcp-sites-phone.png`) })
-      check(phoneListed && phoneFits, `${engine}: at phone width the list and its form fit without sideways scrolling (listed ${phoneListed}, fits ${phoneFits})`)
+      check(phoneListed && phoneFits, `${engine}: at phone width the list and its field fit without sideways scrolling (listed ${phoneListed}, fits ${phoneFits})`)
 
       await page.getByRole('button', { name: `Remove ${site}` }).click()
       check(await gone(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(site))), `${engine}: removing a site takes it off the list`)
+      await page.getByRole('button', { name: `Remove ${second}` }).click()
+      await gone(page, 'ul[aria-label="Sites whose tools agents may use"] li', RESULT_WAIT_S, new RegExp(pattern(second)))
     })
 
     // A member sees no such section, and the API refuses their change.
