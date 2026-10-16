@@ -158,3 +158,25 @@ The proposed shapes went to the UI session on 2026-10-16. A person records doing
 - **What it does.** A usage page by agent, person, source and token type, budgets that stop a runaway agent and ask to be raised, and notifications on desktop and phone when an agent needs someone.
 - **Where it fits.** Settings > Usage, and the system's notifications.
 - **Status.** Planned after agents working together and parallel computers.
+
+## 20. Reactions and message actions
+
+Tayler asked on 2026-10-16 for "a thumbs up and every other traditional thing" on every post, a person's or an agent's. These are built with attachments, by the same agent. The shapes went to the UI session on 2026-10-16.
+
+- **Reactions.**
+  - `PUT` and `DELETE` on `/v1/messages/{messageId}/reactions/{emoji}`, and on `/v1/events/{eventId}/reactions/{emoji}` for task posts. Both are idempotent and return `{ reacted }`.
+  - The emoji is one emoji grapheme of at most 32 bytes. Anyone who can see the conversation or task may react.
+  - The live shape `reactions` takes `{ conversation }` or `{ session }`, with rows `{ id, conversation_id, session_id, message_id, event_id, emoji, person_id, agent_id, created_at }`.
+  - Agents react with the team-record tool `react`. A reaction on an agent's post reaches it on its next turn.
+- **Reply.** `replyToMessageId` on send, stored as `messages.reply_to`.
+- **Edit your own post.** `PATCH /v1/messages/{messageId}` with `{ text }` sets `edited_at`, and the earlier text stays in the record as a version.
+- **Delete your own post.** `DELETE /v1/messages/{messageId}` leaves a placeholder with `deleted_at` and erases the text and its versions. The shape gives `text: null`.
+- **Pin.** `PUT` and `DELETE` on `/v1/conversations/{id}/pins/{messageId}`, with the live shape `pins` by conversation. Lower priority.
+
+## Answers to the UI session's questions, 2026-10-16
+
+- **Shape arguments.** `attachments` and `reactions` take `{ conversation: id }` or `{ session: id }`, the way `turn_waits` takes `{ conversation }` or `{ task }`.
+- **Setting a key while the computer sleeps.** The API wakes the computer, holds the request until the key is delivered, for up to 90 s, and answers 200. Meanwhile the UI shows "Starting <name>'s computer to save the key". A timeout answers 504 with a reason. No 409, and no retry by the person.
+- **Seats' waiting line.** The `seat` wait reason arrives with the join of seats to the scheduler, so "Waiting for a seat on <name>'s computer, 4 of 4 busy" shows through the waiting line in section 1.
+- **Voice reply audio.** It arrives as binary frames on the voice chat's WebSocket and plays through the Web Audio API, with an AudioWorklet loaded from the app's own origin. No `<audio>` element, no blob URL, and no change to the page's policy.
+- **Teach a task.** Stop gets a save or discard choice, with `DELETE /v1/lessons/{id}` to discard. Everyone watching the agent's screen sees that a recording is on. The UI session's proposal in `docs/design/teach-a-task.md` on `ui` is the starting point when Teach a task is built.
