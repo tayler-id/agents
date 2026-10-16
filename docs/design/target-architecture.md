@@ -173,13 +173,21 @@ Secrets for one agent live in its seat's own files. A person sets one from the a
 3. The scheduler places the turn. The daemon starts the session with the `computer` MCP server pointed at `:4` and port 9225.
 4. Alice opens Screen on `scout`'s page, and the API pairs her with seat 4's tunnel. If she takes over, seats 1 to 3 keep working.
 
-When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 busy".
+When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 held".
 
 A Mac has no seats. Its agents run without a screen, as today, until the helper gives it one (see "People's own machines").
 
+**Built so far.** Seats are built on branch `seats`, joined to the scheduler from step 1: it takes a seat for each turn on a person's computer, and a turn waits with the `seat` reason while every seat is busy. `test/step15c.ts`, `test/step15d.ts`, `test/step15g.ts` and `test/step15h.ts` check it. It differs from the plan above in five ways.
+
+- A box follows its seat rows through sync, where the plan had `seat_open` commands, so a box that restarts brings back the seats its agents held.
+- A seat is `free`, `starting` or `ready`. A seat given to another agent goes back to `starting` for that agent, and the box closes the pages and windows the last agent had open before it reports the seat ready, so there is no `reclaiming`.
+- Seat 1 runs whenever its computer runs. A session whose agent holds no seat runs on seat 1, as every session on a box did before seats. A person can always open seat 1's screen, to sign in to a site once for every seat.
+- Only a person's computer gives out seats. A pool box runs every session on seat 1, as before seats, so a run's stages, which may be different agents', never wait 15 minutes for its one seat.
+- Each seat's browser has a profile of its own, and the box copies cookies between the seats' browsers every 1.5 seconds, as Tayler decided on 2026-10-15. Seat 1 keeps the profile a box had before seats, so its logins stay. A login a site keeps only in localStorage or IndexedDB stays in its seat. The profile for each agent in the plan above is not built.
+
 **Stays, changes, new.**
 
-- Stays: the image, Xvnc, matchbox, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`.
+- Stays: the image, Xvnc, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`. JWM with a dock replaced matchbox on 2026-10-16, when Tayler asked for a real desktop.
 - Changes: one display per box becomes one per seat. `daemon/computer-mcp.ts` takes its display and DevTools port from the session's seat. The Screen routes in `server/screens.ts` name an agent's seat. The 24-hour privacy rule reads the sessions that ran on that seat, not on the whole box, so one agent's private task no longer hides its owner's other agents. The box limits of 4 GB and 2 CPUs become the computer's size (decision 2).
 - New: the `seats` table, the seat commands, the reclaim rule, the secret relay, archiving an agent, and a seat list on the computer's page.
 

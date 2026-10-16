@@ -10,11 +10,14 @@ import { AgentId, TurnId } from './ids.ts'
 import { InstanceId } from './onboarding.ts'
 
 export type TurnStatus = 'queued' | 'waiting' | 'placed' | 'running' | 'done' | 'failed' | 'cancelled'
+// A turn that is not over: asked for, waiting, placed or running.
+export const UNFINISHED_TURNS: readonly TurnStatus[] = ['queued', 'waiting', 'placed', 'running']
 
 // Why a turn can't go to its machine yet. Only a box holds a turn, since a box takes
 // no work until its desktop is up. One a person or a run holds is starting, which
-// the runner does. One nobody holds is offline until someone holds it.
-export const WaitReason = z.enum(['computer_starting', 'machine_offline'])
+// the runner does. One nobody holds is offline until someone holds it. On a person's
+// computer a turn also waits for a seat while every seat is busy (server/seats.ts).
+export const WaitReason = z.enum(['computer_starting', 'machine_offline', 'seat'])
 export type WaitReason = z.infer<typeof WaitReason>
 
 // Where a turn may go from each status. No move goes back, so no path can hand
@@ -62,9 +65,17 @@ export type TurnWaitRow = z.infer<typeof TurnWaitRow>
 // named for what it is to the turn, until the next read names it. `owner` is the
 // person whose computer it is, and `clock` says a time as the reader's page does.
 // The app shows this line, and step23 reads it from the rows a page reads.
-export function turnLine(turn: TurnWaitRow, machine: { name: string; personal: boolean; owner_id: string | null } | undefined,
+export function turnLine(turn: TurnWaitRow, machine: { name: string; personal: boolean; owner_id: string | null; seat_cap: number } | undefined,
   viewer: string, owner: { name: string | null; login: string } | undefined, clock: (time: string) => string): string {
   if (turn.status === 'running') return `No new step since ${clock(turn.stuck_since)}. It may be stuck.`
+  if (turn.wait === 'seat') {
+    // A turn waits for a seat only while every seat is held.
+    if (!machine) return 'Waiting for a free seat'
+    const busy = `${machine.seat_cap} of ${machine.seat_cap} held`
+    if (!machine.personal || !machine.owner_id) return `Waiting for a seat on ${machine.name}, ${busy}`
+    if (machine.owner_id === viewer) return `Waiting for a seat on your computer, ${busy}`
+    return owner ? `Waiting for a seat on ${owner.name ?? owner.login}'s computer, ${busy}` : `Waiting for a seat on ${machine.name}, ${busy}`
+  }
   if (!machine) return turn.wait === 'computer_starting' ? 'Starting its computer' : 'Waiting for its machine, which is offline'
   if (turn.wait === 'machine_offline') return `Waiting for ${machine.name}, which is offline`
   if (!machine.personal || !machine.owner_id) return `Starting ${machine.name}`

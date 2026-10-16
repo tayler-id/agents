@@ -6,10 +6,13 @@
 //   node --env-file=.env server/admin.ts set-role <team> <login> <admin|member>
 //   node --env-file=.env server/admin.ts add-instance <team> <name> <mac|box|check> <owner login>
 //   node --env-file=.env server/admin.ts add-agent <team> <name> <home instance> [model] [instructions]
+//   node --env-file=.env server/admin.ts move-agents <team>
 //   node --env-file=.env server/admin.ts forge-login <login> <forge user>
 //   node --env-file=.env server/admin.ts set-policy <team> <repo clone url> <policy.json> <owner login>
 //   node --env-file=.env server/admin.ts add-lesson <team> <rule> <incident>
 //   pbpaste | node --env-file=.env server/admin.ts github-token <team> <organization or account>
+// move-agents moves the team's agents from their Macs to their person's computer, those whose computer
+// can run them now (server/rehome.ts), and says which stayed and why. Run it again once more can.
 // github-token sets a team's stopgap, a fine-grained personal access token, for
 // the team before anyone signs in with GitHub. It reads the token from standard
 // input, so it never shows in the process list or the shell history, and keeps
@@ -25,6 +28,8 @@ import { forgeAdmin, forgeConfig, repoPath } from './forge.ts'
 import { STATUS } from '../shared/framework.ts'
 import { POLICY } from '../shared/policy.ts'
 import { setStopgap } from './github-auth.ts'
+import { boxImageBuilt, teamTokenSaved } from './boxes.ts'
+import { moveMacAgents } from './rehome.ts'
 
 // Records a new version of the policy, points the repo at it with its owner,
 // and protects the repo's default branch on the forge to match.
@@ -68,6 +73,7 @@ const USAGE = [
   'set-role <team> <login> <admin|member>',
   'add-instance <team> <name> <mac|box|check> <owner login>',
   'add-agent <team> <name> <home instance> [model] [instructions]',
+  'move-agents <team>',
   'forge-login <login> <forge user>',
   'set-policy <team> <repo clone url> <policy.json> <owner login>',
   'add-lesson <team> <rule> <incident>',
@@ -109,6 +115,12 @@ try {
       [team, name, home, model || null, instructions ?? null])
     if (!agent) throw new Error(`no team ${team} with instance ${home}`)
     console.log(JSON.stringify({ agent: name, agentId: agent.id }))
+  } else if (command === 'move-agents' && args.length === 1) {
+    const team = await maybe<{ id: string }>(pool, 'select id from teams where name = $1', [first])
+    if (!team) throw new Error(`no team ${first}`)
+    const done = await moveMacAgents(pool, team.id, { imageBuilt: await boxImageBuilt(), teamToken: teamTokenSaved() })
+    console.log(`moved ${done.moved.length}${done.moved.length ? `: ${done.moved.join(', ')}` : ''}`)
+    for (const left of done.stayed) console.log(`stayed on its Mac, ${left.agent}: ${left.why}`)
   } else if (command === 'forge-login' && args.length === 2) {
     const { rowCount } = await pool.query('update people set forge_login = $2 where login = $1', [first, second])
     if (!rowCount) throw new Error(`no person ${first}`)

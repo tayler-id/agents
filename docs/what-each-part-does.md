@@ -298,7 +298,7 @@ The design, with what is not done, is in `docs/design/onboarding.md`. Nobody sho
 
 ### A box for each person (`server/boxes.ts`, `app/src/Box.tsx`)
 
-- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Runs never claim it, the box limit doesn't count it, and it never gets the team's Claude token. It goes to sleep after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it, a command is queued for it, its owner starts a Claude sign-in, or a person holds its screen. The Your box page and the welcome steps say it is asleep, and the Team page lists it so. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
+- **Solves now.** Joining makes the person a box, named after their login, and the runner starts its container as it does for any box someone holds. Migration 0024 made one for everyone already on a team. Runs never claim it, and the box limit doesn't count it. It gets the team's Claude token from `~/.agents-app/box-claude-token`, as pool boxes do, so its agents work before its owner signs in to Claude, and on the owner's own token once they have. It goes to sleep after `AGENTS_BOX_IDLE_MIN`, 30 minutes by default, with nothing to do, and wakes when a turn waits for it, a command is queued for it, its owner starts a Claude sign-in, or a person holds its screen. The Your box page and the welcome steps say it is asleep, and the Team page lists it so. When Docker can't start it, the box keeps what Docker said on stderr, never the error's message, which repeats the command line with the box's token. A newcomer sees steps in place of the welcome text until their box is ready and they are signed in to Claude, and the Your box page shows the box's state. A new agent's machine defaults to the person's own box, and only the owner can make agents on it.
 - **Helps later.** Each person's agents run on their own computer and their own Claude account, so one person's work doesn't slow or bill another's.
 - **Not done.** Boxes on the real server get the new daemon only after `server/boxes.ts build` and recreating them. A person can watch an asleep box's screen only once something wakes it, since the Screen view does not wake it.
 
@@ -412,7 +412,7 @@ The design is `docs/design/computers.md`.
 
 ### The box's computer (`box/Dockerfile`, `daemon/desktop.ts`)
 
-- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, matchbox as the window manager, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until the desktop is up, and stops so the box starts again when it can't come up. The sessions on a box share its one computer. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. Each box runs within 4 GB of memory, 2 CPUs and 4,096 processes.
+- **Solves now.** Every box has a desktop, made of TigerVNC's Xvnc as its 1280x800 display and VNC server, JWM as the window manager with a dock along the bottom, and Chromium kept open with its profile in the home volume. The daemon starts all three, restarts any that exits, and clears the locks a killed box or a home volume from another host leaves behind, so the screen comes back after an idle stop, after a crash, and on a recreated box. The desktop's programs see none of the daemon's tokens. The daemon takes no work until seat 1's desktop is up, and stops so the box starts again when it can't come up. Each agent at work on a box has a seat with a desktop of its own, as "Seats" below says. The image also carries Playwright 1.64.0's Chromium, Firefox and WebKit, so agents run checks in all three engines without a download. A box runs within the size its row gives, which for a person's computer is 8 GiB of memory and 4 CPUs, and for any other box 4 GiB and 2 CPUs, with 4,096 threads for each seat.
 - **Helps later.** Each person's own box, which onboarding added, and the AWS host can use the same image. The screen size comes from one environment variable, `AGENTS_DESKTOP`.
 
 ### Computer tools (`daemon/computer-mcp.ts`, `daemon/screen.ts`, `daemon/actions.ts`, `daemon/rfb.ts`, `daemon/png.ts`, `daemon/page-secrets.ts`)
@@ -439,6 +439,55 @@ The design is `docs/design/computers.md`.
 
 - **Solves now.** A session on a machine with a screen, except a judge's, is told to check every change by running its tests and looking at the result in the browser, and to save a screenshot of each thing it checked. The `verify-work` skill spells out the steps, unless the agent has its own skill of that name.
 - **Helps later.** The coach pipeline can propose changes to the skill the way it does for any other.
+
+## Seats
+
+The design is "Seats" in `docs/design/target-architecture.md`, and Tayler's calls of 2026-10-15 and 2026-10-16 are in `docs/decisions.md`. The scheduler from step 1 gives each turn on a person's computer a seat.
+
+### The seats table (`server/migrations/0015_seats.sql`, `shared/seats.ts`)
+
+- **Solves now.** Each box has a row for each of its seats, numbered 1 to its seat cap, with the agent holding it and whether it is free, starting or ready. The database makes the rows whenever a box is added or its cap changes, however it was added. A box's size is in its row too. A person's computer holds 4 seats in 4 CPUs and 8 GiB, and every other box keeps 1 seat in 2 CPUs and 4 GiB. A session records the seat it last ran on, and a takeover the seat whose screen a person held. `shared/seats.ts` holds the row's type, how its status moves, and what the API and a box tell each other.
+- **Helps later.** The scheduler places a turn on its agent's seat, and the app shows who works where.
+
+### Giving out seats (`server/seats.ts`, `server/seat-routes.ts`)
+
+- **Solves now.** The scheduler calls `takeSeat` for each turn it places on a person's computer. It gives the turn's agent the seat it holds there, else the free seat with the lowest number, else the seat the reclaim rule takes back. That is the seat whose agent has no turn there that is not over, whose screen nobody holds, and whose last turn there started or ended the longest ago, more than 15 minutes back. With none, the turn waits with the `seat` reason, and its line reads "Waiting for a seat on Bob's computer, 4 of 4 held". The runner places it once a seat comes free. A seat records its last turn as each turn starts and ends. A pool box takes no seats, so its sessions run on seat 1 as before and a pipeline's stages keep their placement. A box asks which seat a session runs on each time it starts it or hands it a message. The answer is the seat its agent holds there, or seat 1, and it is recorded on the session. A box reports a seat up for its agent, which makes it ready.
+- **Helps later.** A seat cap set from the computer's page, and a computer that grows when its seats stay busy.
+
+### Seats in a box (`daemon/seats.ts`, `daemon/desktop.ts`)
+
+- **Solves now.** Each seat is a display, a window manager with its dock, a browser and a screen service of its own. Seat n has display :n, its browser's DevTools port 9221 + n and its own sockets, so seat 1 keeps the :1 and 9222 a box had before. Seat 1 runs whenever the box does, and its failure to come up still stops the box so it starts again. Every other seat runs while an agent holds it. The daemon follows its box's seat rows, starts and stops seats to match, closes a seat's pages and the windows its dock opened when another agent takes it, and reports each seat up for its agent. A session waits for its seat, and its `computer` server drives that seat's screen and browser. A session whose agent moves to another seat starts again there with its next message.
+- **Helps later.** A job computer is a box with one seat.
+
+### The desktop on every seat (`daemon/dock.ts`, `daemon/open-window.ts`, `daemon/whiteboard.ts`)
+
+- **Solves now.** Each seat's window manager is JWM, which gives windows title bars to move, resize, minimize and close them, and Alt+Tab to switch between them. Its dock along the bottom has three buttons, named on hover: a new browser window, a terminal (xterm, starting in the home folder) and the whiteboard, then a list of the open windows to click between. The browser and whiteboard buttons open windows in the seat's own browser over its DevTools port, so a click never starts a second browser on the seat's profile. The whiteboard is Excalidraw 0.17.6, served by the daemon from the box on port 8400 of its loopback, so it opens with no network and no account. A drawing stays in the local storage of the seat's browser. The agent's guide and its computer tool name the dock. The terminal and everything the dock starts see only `PATH`, `HOME` and `DISPLAY`, never the daemon's tokens.
+- **Helps later.** A person who takes over a seat finds the tools they know, and more apps go on the dock the same way.
+- **Not done.** A drawing lives in one seat's browser, so another seat's whiteboard starts empty, and one agent's drawing stays in the seat for the next agent that takes it.
+
+### Every person's computer (`server/migrations/0024_own_computers.sql`, `conversationSession` in `server/record.ts`)
+
+- **Solves now.** The migration made a computer for each person on a team who had none, as joining makes one, and moves no agent. `admin.ts move-agents <team>` (`server/rehome.ts`) moves each agent whose home is a Mac to the computer of its owner, or the Mac's owner when it has none, but only when that computer can run Claude: the image built, and the team's token saved or the person signed in. An agent left behind stays on its Mac and works as before. Running either again changes nothing more. A conversation whose session is on a machine that is no longer its agent's home moves home once its turn is over. The API archives the old session, and the next message starts a new one on the agent's computer. A turn still running on the Mac finishes there first.
+- **Helps later.** Every agent has a desktop to work on, with no step to put it there.
+- **Not done.** `admin.ts add-person` makes no computer, so someone added that way still presses "Make my box". The files an agent made on its Mac stay there, and a moved conversation starts without the old session's Claude context.
+
+### Shared logins (`daemon/logins.ts`, `daemon/devtools.ts`)
+
+- **Solves now.** Every 1.5 seconds the daemon reads each running seat's cookies over its browser's DevTools port and copies what one browser changed into the others, so logging in once logs in every agent on the computer, and logging out logs them all out. A browser that starts, or starts again, takes the shared cookies whole, so a seat that was stopped through a logout can't bring the login back. A seat goes to work once its browser holds them, or after 10 seconds without them, which it logs. Seat 1's profile, the one a box had before seats, keeps the logins across a restart. `daemon/devtools.ts` is the daemon's DevTools client, which `daemon/page-secrets.ts` also uses.
+- **Helps later.** Logins a site keeps in a page's storage, such as localStorage or IndexedDB, could be copied the same way. Today they stay in their own seat.
+
+### A seat's screen (`server/screens.ts`, `daemon/screen-link.ts`, `shared/screen.ts`)
+
+- **Solves now.** Each seat has its own screen, viewers and takeover. `/v1/screens/<box>/seats/<n>` watches seat n, and a screen named without a seat is seat 1. Taking over one seat stops only that seat's agent. The box keeps one control connection, which carries each seat's control and tunnel requests. One agent's private work hides only its own seat's screen, and a box session with no seat counts for seat 1. A free seat's screen is off, so it can't be opened.
+- **Helps later.** The Mac helper can serve its screen as a seat.
+
+### Seats in the app (`app/src/Screen.tsx`, `app/src/Box.tsx`)
+
+- **Solves now.** The Screen view names the seat it shows. A session's Screen button opens the seat the session runs on. The box page lists the box's seats, the agent holding each and whether it is ready, with a Screen for each running seat, which opens beside the page.
+
+### The seat checks (`test/step15c.ts`, `test/step15d.ts`, `test/step15f.ts`, `test/step15g.ts`, `test/step15h.ts`, `test/seats.ts`)
+
+- **Solves now.** step15c, step15d and step15g start a person's computer from a box image built under a tag of the run's own, and give agents seats with `takeSeat`, as the scheduler will. step15c drives both seats' browsers at once and checks each screenshot shows its own page, takes over seat 1 while seat 2 keeps working, signs in on seat 1 and finds the login in seat 2, signs out on seat 2 and finds seat 1 signed out, starts seat 3 with the login, checks the privacy rule per seat, and prints each seat's memory. step15d drives the box page's seat list and a seat's Screen view in Chromium, Firefox and WebKit at desktop and phone width. step15g adds a person through the app and finds their computer made, started and running Claude on the team's token, which is in no table and no log, until they sign in. With the computer tool it opens a terminal from the dock and types into it, switches windows with Alt+Tab, draws a rectangle on the whiteboard and saves a screenshot, then finds the windows gone when another agent takes the seat and a dock on seat 2, and prints the memory of each seat with the new desktop. step15f runs migration 0024 twice on a Postgres of its own in a throwaway container and checks the computers it makes, the agents it moves, and a moved agent's conversation going home. step15h drives the scheduler the same way, through people's messages: a seat for each agent's turn, a seat's turn time, a fifth turn waiting with its line, each guard of the reclaim rule, the longest idle seat taken back, and a pool box taking no seat. `test/seats.ts` holds what they share, including the computer tools started with the check's environment.
 
 ## Projects and GitHub
 

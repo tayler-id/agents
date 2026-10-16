@@ -1,7 +1,8 @@
-// The box's outbound connections to the API's machine port for its screen. One
-// control connection carries who holds the screen and asks for tunnels, and
-// each tunnel joins one person's Screen view to Xvnc's socket. Nothing in the
-// box listens for the API. The design is docs/design/computers.md.
+// The box's outbound connections to the API's machine port for its seats'
+// screens. One control connection carries who holds each seat's screen and asks
+// for tunnels, and each tunnel joins one person's Screen view to the Xvnc socket
+// of the seat they watch. Nothing in the box listens for the API. The design is
+// docs/design/computers.md.
 
 import { connect } from 'node:net'
 import { pipeline } from 'node:stream'
@@ -10,26 +11,36 @@ import { FromBox, SCREEN_DEAD_MS, SCREEN_PING_MS, ScreenClose, ToBox, type Scree
 import { parseJson } from '../shared/json.ts'
 import { bytesOf } from '../shared/websocket.ts'
 import type { TunnelId } from '../shared/ids.ts'
+import type { SeatNumber } from '../shared/seats.ts'
 
 const RECONNECT_FIRST_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
 
 export type ScreenLink = { stop(): void }
 
-export function linkScreen(config: { api: string; token: string; vncSocket: string; onControl: (control: ScreenControl) => void }): ScreenLink {
+// `vncSocket` names a running seat's Xvnc socket, or null for a seat that isn't running.
+export function linkScreen(config: {
+  api: string; token: string; vncSocket: (seat: SeatNumber) => string | null; onControl: (seat: SeatNumber, control: ScreenControl) => void
+}): ScreenLink {
   const base = new URL(config.api)
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
   const headers = { authorization: `Bearer ${config.token}` }
   const tunnels = new Set<WebSocket>()
   const state: { control: WebSocket | null; stopping: boolean; reconnectIn: number } = { control: null, stopping: false, reconnectIn: RECONNECT_FIRST_MS }
 
-  function openTunnel(tunnel: TunnelId) {
+  function openTunnel(tunnel: TunnelId, seat: SeatNumber) {
     const ws = new WebSocket(new URL(`/v1/instance/screen/tunnels/${tunnel}`, base), { headers })
     tunnels.add(ws)
     ws.on('close', () => tunnels.delete(ws))
     ws.on('error', (error) => { console.error(`screen tunnel ${tunnel}:`, error.message) })
     ws.on('open', () => {
-      const vnc = connect(config.vncSocket)
+      const socket = config.vncSocket(seat)
+      // The seat stopped after the API asked. Closing tells the viewer at once.
+      if (socket === null) {
+        ws.close()
+        return
+      }
+      const vnc = connect(socket)
       const stream = createWebSocketStream(ws)
       // A viewer closing its tab ends the tunnel, which is the usual way. Either
       // side ending, for any reason, ends both.
@@ -61,8 +72,8 @@ export function linkScreen(config: { api: string; token: string; vncSocket: stri
       }
       const body = message.value
       switch (body.type) {
-        case 'control': config.onControl(body.control); return
-        case 'open': openTunnel(body.tunnel); return
+        case 'control': config.onControl(body.seat, body.control); return
+        case 'open': openTunnel(body.tunnel, body.seat); return
         case 'pong': return
       }
     })

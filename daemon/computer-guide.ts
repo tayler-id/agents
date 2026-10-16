@@ -7,6 +7,8 @@ import { COMPUTER_SERVER, WEB_TOOL_ACT, WEB_TOOL_LIST, WEB_TOOL_READ } from '../
 
 export const COMPUTER_GUIDE = [
   'You have your own computer: a Linux desktop of 1280x800 pixels with Chromium open on it, in the box you run in. '
+    + 'The dock along the bottom opens another browser window, a terminal and a whiteboard, and lists the open windows. '
+    + 'Click a window there, or press alt+Tab, to bring it to the front. '
     + 'Your teammates can watch its screen live, and a person can take it over.',
   'Check every change before you say it is done. Run its tests, then look at the result in the browser: start the app, '
     + 'open it with the browser_ tools, use the part you changed the way a person would, and read the console for errors. '

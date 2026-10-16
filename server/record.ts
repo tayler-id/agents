@@ -11,6 +11,8 @@ import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.t
 import { maybe, one, type Db } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { inFlight } from '../shared/lifecycle.ts'
+import { UNFINISHED_TURNS } from '../shared/turns.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
 import { ASKS_EVERY_TIME } from '../shared/webmcp.ts'
 import { hooksOf, memoryBlock } from './agents.ts'
@@ -475,15 +477,25 @@ export async function sendPersonMessage(
 
 type ConversationSession = { id: string; instance_id: string; harness_session_id: string | null }
 
-// The agent's open session for this conversation, or a new one on its home machine.
+// The agent's open session for this conversation, or a new one on its home
+// machine. A session left on a machine that is no longer the agent's home, as
+// when an agent moved from a Mac to its person's computer, is archived once its
+// turns are over, and the conversation goes on at home in a new session. The
+// conversation keeps every message, and the new session starts without the
+// old one's Claude context.
 export async function conversationSession(
   client: pg.PoolClient, teamId: string, startedBy: string | null, conversationId: string, agent: Pick<Agent, 'id' | 'home_instance_id' | 'harness' | 'model'>,
 ): Promise<ConversationSession> {
-  const found = await maybe<ConversationSession>(client,
-    `select id, instance_id, harness_session_id from sessions
-     where conversation_id = $1 and agent_id = $2 and archived_at is null
-     order by created_at desc limit 1`, [conversationId, agent.id])
-  if (found) return found
+  const found = await maybe<ConversationSession & { status: string; unfinished: boolean }>(client,
+    `select s.id, s.instance_id, s.harness_session_id, s.status,
+       exists (select 1 from turns t where t.session_id = s.id and t.status = any($3)) as unfinished
+     from sessions s
+     where s.conversation_id = $1 and s.agent_id = $2 and s.archived_at is null
+     order by s.created_at desc limit 1`, [conversationId, agent.id, UNFINISHED_TURNS])
+  if (found && (agent.home_instance_id === null || found.instance_id === agent.home_instance_id || inFlight(found.status) || found.unfinished)) {
+    return { id: found.id, instance_id: found.instance_id, harness_session_id: found.harness_session_id }
+  }
+  if (found) await client.query('update sessions set archived_at = now() where id = $1', [found.id])
   const created = await one<ConversationSession>(client, 'the new session',
     `insert into sessions (team_id, conversation_id, instance_id, agent_id, started_by, harness, model)
      values ($1, $2, $3, $4, $5, $6, $7) returning id, instance_id, harness_session_id`,

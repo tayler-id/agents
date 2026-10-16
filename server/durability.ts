@@ -22,6 +22,12 @@ export class MessageMoveRefused extends Error {}
 
 export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
 
+// A turn that starts or ends on a seat marks the seat's last turn then, which the
+// reclaim rule reads (server/seats.ts). It follows a statement's `turned` rows.
+const SEAT_TURN_TIME = `seated as (
+       update seats s set last_turn_at = now() from turned t where s.instance_id = t.instance_id and s.agent_id = t.agent_id
+     )`
+
 // The runner gives up on a message that no machine took, because the machine it
 // was queued for went silent. The lifecycle has no move from queued to failed, since
 // a queued message may still be handed over, so this is the one way a message ends
@@ -35,7 +41,8 @@ export async function failUntakenMessage(db: Db, commandId: string, error: strin
        where id = $1 and kind = 'message' and status = 'queued' returning id
      ), turned as (
        update turns set status = 'failed', finished_at = now() where command_id in (select id from failed) and status = 'placed'
-     )
+       returning instance_id, agent_id
+     ), ${SEAT_TURN_TIME}
      select id from failed`, [commandId, error])
   return failed.length > 0
 }
@@ -70,7 +77,8 @@ export async function moveMessages(
          started_at = case when $6::text = 'running' then now() else started_at end,
          finished_at = case when $6::text = 'running' then finished_at else now() end
        where command_id in (select id from moved) and status = any($7)
-     )
+       returning instance_id, agent_id
+     ), ${SEAT_TURN_TIME}
      select id, kind, session_id, payload from moved`,
     [wanted, COMMAND_STATUS_OF[to], sources, options.instanceId ?? null, options.error ?? null, turn, movesInto(TURN_MOVES, turn)])
   if (moved.length !== wanted.length) {

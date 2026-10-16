@@ -72,7 +72,8 @@ import { secretRoutes } from './secrets.ts'
 import { controlUpgrade } from './control.ts'
 import { webmcpRoutes } from './webmcp.ts'
 import { historyRoutes } from './history-routes.ts'
-import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { handBackScreen, recheckViewers, screenUpgrades, seatInPath, startScreenSweep, takeScreen } from './screens.ts'
+import { seatRoutes } from './seat-routes.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { CopyAsk } from '../shared/recipe.ts'
 import { ImportAsk } from '../shared/recipe-file.ts'
@@ -787,14 +788,15 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // A person takes over a box's screen, or hands it back to the agents. The body
+  // A person takes over the screen of a seat on a box, or hands it back to the
+  // agents. A screen named without a seat is the box's first seat. The body
   // names the session they were looking at, for the notice in its record.
-  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}/(take|hand-back)$`), async (req, [instanceId, action]) => {
+  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}(?:/seats/([0-9]+))?/(take|hand-back)$`), async (req, [instanceId, seat, action]) => {
     const person = await personFrom(req)
     const body = ScreenMove.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
     const move = action === 'take' ? takeScreen : handBackScreen
-    const moved: ScreenMoved = { control: await move(person, instanceId, body.data.sessionId) }
+    const moved: ScreenMoved = { control: await move(person, instanceId, seatInPath(seat), body.data.sessionId) }
     return moved
   }],
 
@@ -828,6 +830,7 @@ const routes: Route[] = [
   ...secretRoutes,
   ...webmcpRoutes,
   ...historyRoutes,
+  ...seatRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
