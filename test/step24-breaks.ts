@@ -28,11 +28,14 @@ type Break = { name: string; checks: CheckName[]; why: string; red: string[]; ed
 
 const AGENTS = 'server/agents.ts'
 const TYPES = 'shared/types.ts'
+const RECIPE = 'shared/recipe.ts'
 const DAEMON = 'daemon/agentsd.ts'
 const CLAUDE = 'daemon/claude.ts'
 const FILES = 'daemon/agentfiles.ts'
-const HOOKS_UI = 'app/src/Hooks.tsx'
-const COPY_UI = 'app/src/CopyAgent.tsx'
+const PAGE = 'app/src/AgentPage.tsx'
+const HOOKS_UI = 'app/src/agent/Hooks.tsx'
+const COPY_UI = 'app/src/agent/CreateCopy.tsx'
+const CALLS_UI = 'app/src/agent/copies.ts'
 
 const BREAKS: Break[] = [
   // Who may change a hook, and what a hook may be.
@@ -44,6 +47,8 @@ const BREAKS: Break[] = [
     edits: [{ file: TYPES, anchor: '}).refine((hook) => hook.matcher === null || takesMatcher(hook.event), {', replace: '}).refine((hook) => true || hook.matcher === null || takesMatcher(hook.event), {' }] },
   { name: 'time-limit-zero', checks: ['step24'], why: 'a hook may have a time limit of nothing', red: ['a hook needs a known event, a matcher only on a tool event'],
     edits: [{ file: TYPES, anchor: 'timeoutSec: z.number().int().min(1).max(HOOK_TIMEOUT_MAX_SEC)', replace: 'timeoutSec: z.number().int().min(0).max(HOOK_TIMEOUT_MAX_SEC)' }] },
+  { name: 'hook-default-name', checks: ['step24'], why: 'a hook sent with no name is named hook, whatever its event', red: ['a hook sent with no name is named after its event'],
+    edits: [{ file: AGENTS, anchor: "  const base = typeof event === 'string' ? event.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase() : 'hook'", replace: "  const base = 'hook'" }] },
   // How hooks reach a session.
   { name: 'shape-hooks', checks: ['step24'], why: 'teammates cannot read an agent\'s hooks', red: ['teammates read an agent\'s hooks through the agent_hooks shape'],
     edits: [{ file: 'server/sync.ts', anchor: "  agent_hooks: async (p) => ({ table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),\n", replace: '' }] },
@@ -62,6 +67,10 @@ const BREAKS: Break[] = [
     edits: [{ file: CLAUDE, anchor: "    if (options.hookEvents) args.push('--include-hook-events')\n", replace: '' }] },
   { name: 'hook-line', checks: ['step24', 'step24d'], why: 'a hook run is a notice named only by its subtype', red: ["a hook's run is in the record, with what it printed", 'each run is a notice that says what the hook did and printed'],
     edits: [{ file: CLAUDE, anchor: "  if (type === 'system' && subtype === 'hook_response') return { events: [hookEvent(clientId, line, rest)], raw }\n", replace: '' }] },
+  { name: 'timeout-dropped', checks: ['step24', 'step24d'], why: "the settings file loses each hook's time limit", red: ['grouped by event and matcher', 'with their matchers and time limits'],
+    edits: [{ file: FILES, anchor: "    group.hooks.push({ type: 'command', command: hook.command, ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })", replace: "    group.hooks.push({ type: 'command', command: hook.command })" }] },
+  { name: 'outcome-flattened', checks: ['step24', 'step24d'], why: 'a hook that failed reads as one that finished', red: ['a hook that fails is in the record too', 'a hook that exits 3 is a notice with its exit code'],
+    edits: [{ file: CLAUDE, anchor: "  const verdict = outcome === 'success' ? 'finished'", replace: "  const verdict = outcome !== 'cancelled' ? 'finished'" }] },
   // What a copy carries, and what it does not.
   { name: 'memories-person', checks: ['step24'], why: 'a copy carries a log about a person, written as the team\'s', red: ['the copy carries no memory about a person', 'the copy carries the team\'s memories'],
     edits: [{ file: AGENTS, anchor: "from memories where agent_id = $1 and scope = 'team' and content <> '' order by kind desc, log_date`", replace: "from memories where agent_id = $1 and (scope = 'team' or kind = 'log') and content <> '' order by kind desc, log_date`" }] },
@@ -81,32 +90,64 @@ const BREAKS: Break[] = [
       { file: AGENTS, anchor: '  for (const plugin of recipe.plugins) await savePlugin(client, person, agentId, plugin)\n',
         replace: "  for (const plugin of recipe.plugins) await client.query('insert into plugins (agent_id, name, kind, config) values ($1, $2, $3, $4)', [agentId, plugin.name, plugin.kind, JSON.stringify(plugin.config)])\n" },
     ] },
-  // Where a copy may go, and what it records.
+  { name: 'template-default-name', checks: ['step24'], why: 'a template saved with no name is called template', red: ['a template saved with no name is named after the agent'],
+    edits: [{ file: AGENTS, anchor: '  const name = given ?? agent.name\n', replace: "  const name = given ?? 'template'\n" }] },
+  // Where a copy may go, what it is called, and what it records.
   { name: 'copy-personal-box', checks: ['step24'], why: 'a copy may go on a teammate\'s own box', red: ["a copy cannot go on a teammate's own box"],
     edits: [{ file: AGENTS, anchor: 'if (home.personal && home.owner_id !== person.id)', replace: 'if (false)' }] },
+  { name: 'machine-any-team', checks: ['step24'], why: "a copy may go on another team's machine", red: ["a copy cannot go on another team's machine"],
+    edits: [{ file: AGENTS, anchor: "'select id, personal, owner_id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])", replace: "'select id, personal, owner_id from instances where id = $1 and $2::uuid is not null', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])" }] },
   { name: 'copy-name-taken', checks: ['step24'], why: 'a copy may take another agent\'s name', red: ['a copy needs a name no agent has'],
-    edits: [{ file: AGENTS, anchor: '  if (taken) throw new HttpError(409, `there is already an agent named ${agent.name}`)\n', replace: '' }] },
+    edits: [{ file: AGENTS, anchor: '  if (taken) throw new HttpError(409, `there is already an agent named ${name}`)\n', replace: '' }] },
   { name: 'copy-provenance', checks: ['step24'], why: 'a copy does not record where it came from', red: ["Bob's copy is his own agent on his machine, made from Alice's"],
-    edits: [{ file: AGENTS, anchor: 'home.id, person.id, agent.copiedFrom])', replace: 'home.id, person.id, null])' }] },
+    edits: [{ file: AGENTS, anchor: '  if (copiedFrom !== null) {\n', replace: '  if (false) {\n' }] },
+  { name: 'copy-conversation', checks: ['step24'], why: 'the answer holds some other id for the conversation', red: ["the answer holds Bob's conversation with the copy"],
+    edits: [{ file: AGENTS, anchor: 'conversationId: ConversationId.parse(conversationId)', replace: 'conversationId: ConversationId.parse(agentId)' }] },
+  // What a copy asked for with nothing else gets.
+  { name: 'copy-default-memories', checks: ['step24', 'step24b'], why: 'a copy asked for with nothing else leaves out the team\'s memories', red: ["a copy asked for with nothing else carries the team's memories", 'the copy remembers what the team told the agent'],
+    edits: [{ file: RECIPE, anchor: 'memories: z.boolean().default(true) })', replace: 'memories: z.boolean().default(false) })' }] },
+  { name: 'copy-memories-coerced', checks: ['step24'], why: 'a copy asked for with a word where a yes or no goes is taken as yes', red: ['a copy asked for with a value of the wrong kind is refused'],
+    edits: [{ file: RECIPE, anchor: 'memories: z.boolean().default(true) })', replace: 'memories: z.coerce.boolean().default(true) })' }] },
+  { name: 'copy-name-suffix', checks: ['step24'], why: 'a copy is named -clone, not -copy', red: ['a copy asked for with nothing else is named after the agent'],
+    edits: [{ file: AGENTS, anchor: "source.name, '-copy')", replace: "source.name, '-clone')" }] },
+  { name: 'copy-name-free', checks: ['step24'], why: 'a copy takes the first name even when an agent has it', red: ['the next copy takes the next free name'],
+    edits: [{ file: AGENTS, anchor: "    if (!(await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [teamId, name]))) return name\n", replace: '    return name\n' }] },
+  { name: 'copy-name-cut', checks: ['step24'], why: 'a copy of an agent with the longest name is named past the limit', red: ['the name of a copy of an agent with the longest name is cut to fit'],
+    edits: [{ file: AGENTS, anchor: '`${base.slice(0, NAME_LENGTH - suffix.length)}${suffix}`', replace: '`${base}${suffix}`' }] },
+  { name: 'copy-name-lock', checks: ['step24'], why: 'copies asked for together are not named one at a time', red: ['three copies asked for at once get three different names'],
+    edits: [
+      { file: AGENTS, anchor: '  await lockNames(client, teamId)\n', replace: '' },
+      { file: AGENTS, anchor: '  await lockNames(client, person.team_id)\n', replace: '' },
+    ] },
+  { name: 'copy-machine-personal-first', checks: ['step24'], why: 'a copy goes on the first machine by name, not on the person\'s box', red: ['a person with a box of their own and a Mac gets the box'],
+    edits: [{ file: AGENTS, anchor: 'order by personal desc, name limit 1', replace: 'order by name limit 1' }] },
+  { name: 'copy-machine-owned', checks: ['step24'], why: 'a person with no machine is given a teammate\'s', red: ['a person with no machine of their own is told to name one'],
+    edits: [{ file: AGENTS, anchor: "where team_id = $1 and owner_id = $2 and (personal or kind = 'mac')", replace: "where team_id = $1 and $2::uuid is not null and (personal or kind = 'mac')" }] },
   // The app.
   { name: 'ui-hooks-gate', checks: ['step24b'], why: 'the page offers the hook controls to everyone', red: ['a teammate reads the hooks, and is told who changes them'],
-    edits: [{ file: HOOKS_UI, anchor: '  const mayChange = mayChangeHooks(me.person, agent)', replace: '  const mayChange = true' }] },
-  { name: 'ui-tools-field', checks: ['step24b'], why: 'every hook form asks which tools it applies to', red: ['a hook for a message takes no tools to match'],
-    edits: [{ file: HOOKS_UI, anchor: '        {takesMatcher(event) && (', replace: '        {true && (' }] },
-  { name: 'ui-memories-chosen', checks: ['step24b'], why: 'the copy form starts with the team\'s memories chosen', red: ["memories counted and not chosen"],
-    edits: [{ file: COPY_UI, anchor: 'const [withMemories, setWithMemories] = useState(false)', replace: 'const [withMemories, setWithMemories] = useState(true)' }] },
-  { name: 'ui-receipt', checks: ['step24b'], why: 'the receipt leaves out the hooks', red: ['copying says what the copy carries'],
-    edits: [{ file: COPY_UI, anchor: "  count(c.hooks, 'hook', 'hooks'), count(c.memories, 'team memory', 'team memories'),", replace: "  count(c.memories, 'team memory', 'team memories'),"}] },
-  // What the daemon writes and what it reads back.
-  { name: 'timeout-dropped', checks: ['step24', 'step24d'], why: "the settings file loses each hook's time limit", red: ['grouped by event and matcher', 'with their matchers and time limits'],
-    edits: [{ file: FILES, anchor: "    group.hooks.push({ type: 'command', command: hook.command, ...(hook.timeoutSec === null ? {} : { timeout: hook.timeoutSec }) })", replace: "    group.hooks.push({ type: 'command', command: hook.command })" }] },
-  { name: 'outcome-flattened', checks: ['step24', 'step24d'], why: 'a hook that failed reads as one that finished', red: ['a hook that fails is in the record too', 'a hook that exits 3 is a notice with its exit code'],
-    edits: [{ file: CLAUDE, anchor: "  const verdict = outcome === 'success' ? 'finished'", replace: "  const verdict = outcome !== 'cancelled' ? 'finished'" }] },
-  // Where a new agent may go.
-  { name: 'machine-any-team', checks: ['step24'], why: "a copy may go on another team's machine", red: ["a copy cannot go on another team's machine"],
-    edits: [{ file: AGENTS, anchor: "'select id, personal, owner_id from instances where id = $1 and team_id = $2', [agent.homeInstanceId, person.team_id])", replace: "'select id, personal, owner_id from instances where id = $1 and $2::uuid is not null', [agent.homeInstanceId, person.team_id])" }] },
-  { name: 'ui-provenance', checks: ['step24b'], why: 'the copy does not say where it came from', red: ['says which agent it was copied from'],
-    edits: [{ file: 'app/src/AgentPage.tsx', anchor: '{agent.copied_from_agent_id && <p className="muted small">Copied from', replace: '{false && <p className="muted small">Copied from' }] },
+    edits: [{ file: PAGE, anchor: 'canChange={mayChangeHooks(me.person, agent)}', replace: 'canChange={true}' }] },
+  { name: 'ui-tools-field', checks: ['step24b'], why: 'every hook line asks which tools it applies to', red: ['takes no tools to match for it'],
+    edits: [{ file: HOOKS_UI, anchor: '      {takesMatcher(event) && (', replace: '      {true && (' }] },
+  { name: 'ui-default-event', checks: ['step24b'], why: 'the hook line starts on another event than a message', red: ['with a message chosen'],
+    edits: [{ file: HOOKS_UI, anchor: "useState<HookEvent>('UserPromptSubmit')", replace: "useState<HookEvent>('Stop')" }] },
+  { name: 'ui-chip-pressed', checks: ['step24b'], why: 'no event chip says it is chosen', red: ['with a message chosen', 'choosing a tool event asks which tools'],
+    edits: [{ file: HOOKS_UI, anchor: 'aria-pressed={event === e}', replace: 'aria-pressed={false}' }] },
+  { name: 'ui-matcher-sent', checks: ['step24b'], why: 'the tools a hook applies to are not sent', red: ['a hook for a tool shows the tools it applies to', 'the hooks are saved with their event and tools'],
+    edits: [{ file: HOOKS_UI, anchor: 'matcher: takesMatcher(event) && tools.trim() ? tools.trim() : null', replace: 'matcher: null' }] },
+  { name: 'ui-remove', checks: ['step24b'], why: 'Remove does nothing', red: ['Remove takes a hook off the agent'],
+    edits: [{ file: HOOKS_UI, anchor: 'onClick={() => { void removal.attempt(() => actions.remove(hook.name)) }}', replace: 'onClick={() => undefined}' }] },
+  { name: 'ui-add-refusal', checks: ['step24b'], why: 'the line does not say why a hook was refused', red: ['a command with a secret value is refused, the reason shows in the add line'],
+    edits: [{ file: HOOKS_UI, anchor: '      {problem && <p className="error small" role="alert">{problem}</p>}', replace: '      {false && <p className="error small" role="alert">{problem}</p>}' }] },
+  { name: 'ui-copy-memories', checks: ['step24b'], why: 'the button asks for a copy without the team\'s memories', red: ['the copy remembers what the team told the agent'],
+    edits: [{ file: CALLS_UI, anchor: 'ask: z.input<typeof CopyAsk> = {}', replace: 'ask: z.input<typeof CopyAsk> = { memories: false }' }] },
+  { name: 'ui-copy-problem', checks: ['step24b'], why: 'the button does not say why a copy was refused', red: ['a person with no machine of their own is told so beside the button'],
+    edits: [{ file: COPY_UI, anchor: '      {problem && (', replace: '      {false && (' }] },
+  { name: 'ui-copy-close', checks: ['step24b'], why: 'the note about a refused copy cannot be closed', red: ['Close puts the note away'],
+    edits: [{ file: COPY_UI, anchor: '<button type="button" className="link small" onClick={dismiss}>', replace: '<button type="button" className="link small" onClick={() => undefined}>' }] },
+  { name: 'ui-copy-opened', checks: ['step24b'], why: 'the copy is made and the person stays where they were', red: ['one tap makes the copy, named after the agent, and opens it'],
+    edits: [{ file: COPY_UI, anchor: '    if (made) opened(made)\n', replace: '' }] },
+  { name: 'ui-provenance', checks: ['step24b'], why: 'the copy does not say where it came from', red: ['saying which agent it was copied from'],
+    edits: [{ file: PAGE, anchor: '{agent.copied_from_agent_id && <p className="muted small">Copied from', replace: '{false && <p className="muted small">Copied from' }] },
   { name: 'ui-hook-line', checks: ['step24b'], why: 'the session panel leaves out a hook\'s run', red: ["the session lists the hook's run"],
     edits: [{ file: 'app/src/Session.tsx', anchor: "new Set<unknown>(['init', 'interrupted', 'screen', 'hook_response'])", replace: "new Set<unknown>(['init', 'interrupted', 'screen'])" }] },
 ]
