@@ -81,11 +81,13 @@ async function postAnswer(client: pg.PoolClient, waiting: { conversationId: Conv
 export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskId; agentId: AgentId; askedByTurn: TurnId }, text: string, posted: string, fromSession: SessionId): Promise<TurnId> {
   const asked = HandingOver.parse(await one(client, `the turn that handed over task ${task.id}`,
     `select session_id, agent_id, answer_to_turn, hops, conversation_id, ${CHAIN_ORIGIN} as origin from turns where id = $1`, [task.askedByTurn]))
-  const turnId = await sendAgentTurn(client, asked.session_id, { text, clientId: `result:${task.id}:${randomUUID()}`, links: { taskId: task.id } }, task.agentId,
+  const resultId = randomUUID()
+  // The post comes first: it locks the conversation, and a person's post and a turn's end lock the conversation before the session.
+  await postAnswer(client, { conversationId: asked.conversation_id, hops: asked.hops, agentId: asked.agent_id },
+    { agentId: task.agentId, sessionId: fromSession, body: posted, clientId: `result-post:${task.id}:${resultId}` })
+  const turnId = await sendAgentTurn(client, asked.session_id, { text, clientId: `result:${task.id}:${resultId}`, links: { taskId: task.id } }, task.agentId,
     { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin })
   if (turnId === null) throw new Error(`the result of task ${task.id} was recorded already, with a client id made just now`)
-  await postAnswer(client, { conversationId: asked.conversation_id, hops: asked.hops, agentId: asked.agent_id },
-    { agentId: task.agentId, sessionId: fromSession, body: posted, clientId: `result-post:${turnId}` })
   return turnId
 }
 
@@ -154,10 +156,11 @@ async function answerTurn(client: pg.PoolClient, turnId: TurnId) {
   if (!found) return
   const turn = Answering.parse(found)
   const answer = await answerOf(client, turn)
-  await sendAgentTurn(client, turn.waiting_session, { text: answer.toAgent, clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
-    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin })
+  // The post comes first: it locks the conversation, and a person's post and a turn's end lock the conversation before the session.
   await postAnswer(client, { conversationId: turn.waiting_conversation, hops: turn.waiting_hops, agentId: turn.waiting_agent },
     { agentId: turn.agent_id, sessionId: turn.session_id, body: answer.posted, clientId: `answer-post:${turn.id}` })
+  await sendAgentTurn(client, turn.waiting_session, { text: answer.toAgent, clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
+    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin })
   await client.query('update turns set answer_sent_at = now() where id = $1', [turn.id])
 }
 
