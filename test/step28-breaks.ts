@@ -74,7 +74,7 @@ const BREAKS: Break[] = [
     edits: [{ file: RECORD, anchor: "  if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'A new agent is approved or denied one at a time, so Always and Never are not offered.')\n", replace: '' }] },
   // The two writes that met in a DM.
   { name: 'lock-order', check: 'step28', why: 'a turn that ends locks its session before its conversation, the other way from a post', red: ["a person's post and a turn ending in one DM at once both go through"],
-    edits: [{ file: RECORD, anchor: "  if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {\n    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for update', [sessionId])\n  }\n", replace: '' }] },
+    edits: [{ file: RECORD, anchor: "  if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {\n    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for no key update', [sessionId])\n  }\n", replace: '' }] },
   // The app.
   { name: 'ui-thread-label', check: 'step28b', why: 'a thread lists as Two agents, not by its agents', red: ['the sidebar lists the thread as'],
     edits: [{ file: 'app/src/data.ts', anchor: "    return pair.length ? pair.join(' and ') : 'Two agents'\n", replace: "    return 'Two agents'\n" }] },

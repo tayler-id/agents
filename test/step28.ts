@@ -358,12 +358,14 @@ try {
 
   // 6c. One turn sends at most MAX_SENDS_PER_TURN messages and tasks. The sixth is refused.
   await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Fan out to writer.' })
-  const fanned = await within(TURN_SECONDS, async () => {
+  const fanned = await within(RELAY_SECONDS, async () => {
     const last = await toolResult(scoutDm, 'mcp__team-agents__send_to_agent')
     return last?.is_error === 'true' && last.text.includes('sent 5 messages')
   })
   const fanTurn = await one(`select t.id from turns t join events e on e.id = t.event_id where t.session_id = $1 and e.text = 'Fan out to writer.'`, [scoutDm])
-  const fanSent = await one(`select count(*)::int as n from turns where answer_to_turn = $1`, [fanTurn?.id])
+  // An answer that arrived while scout ran was folded into the same harness turn, so what it sent counts too.
+  const fanSent = await one(`select count(*)::int as n from turns where answer_to_turn in
+    (select id from turns where session_id = $1 and requested_at >= (select requested_at from turns where id = $2))`, [scoutDm, fanTurn?.id])
   const fanRefusal = await toolResult(scoutDm, 'mcp__team-agents__send_to_agent')
   check(fanned && Number(fanSent?.n) === MAX_SENDS_PER_TURN && fanRefusal?.text.includes(`at most ${MAX_SENDS_PER_TURN}`) && fanRefusal.text.includes('Answer with what you have'),
     `a turn that tries 6 sends gets ${MAX_SENDS_PER_TURN} through and the 6th refused, with the limit and what to do (${fanSent?.n} sent, ${fanRefusal?.text})`)

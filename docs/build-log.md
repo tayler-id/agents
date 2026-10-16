@@ -1218,7 +1218,9 @@ Branch `attachments`, from main de6d961. Tayler put these first on the list of n
   - The result of a handed task posts when the agent reports back, and when a person marks the task done, with the agent's last words.
 - **Seen failing.** Three breaks were added to `test/step28-breaks.ts`: the stop note, the answer post, and a chain's start taken from its latest turn. Their runs wait on the checks lock.
 - **Fan-out cap.** Tayler decided on a hard cap of 5 messages and tasks per turn until budgets land. The 6th is refused with a 409 that gives the limit and says to answer with what the agent has. Counted from the turns answering to the sending turn and the tasks it handed over, under a per-turn lock. The `fan-out` break covers it.
-- **Not done.** step28, step28b and the agents-git runs have not run since this change. `app/` is untouched, so `Message` in `app/src/data.ts` does not list the two new columns yet.
+- **Locks.** Six sends meeting returning answers deadlocked: a turn insert takes a key-share lock on its session and conversation, and `for update` waits on that. The session and conversation locks in `appendEvents`, `requestTurn`, `appendMessage` and the fan-out check are now `for no key update`. The cap counts what all of a session's running turns sent, since an answer folded into a running harness turn would otherwise add a second 5.
+- **Checked.** step28 passes 40 lines and step28b 87, and the five breaks (`stop-note`, `answer-post`, `origin-last-hop`, `fan-out`, `lock-order`) each went red with every file back byte for byte.
+- **Not done.** The agents-git runs have not run on this branch. The combined landing suite covers them. `app/` is untouched, so `Message` in `app/src/data.ts` does not list the two new columns yet.
 
 ### Secrets set from the app (build step 16, 2026-10-16)
 

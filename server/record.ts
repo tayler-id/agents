@@ -66,10 +66,10 @@ export async function appendEvents(
   // conversation. A person's post locks the conversation before the session, so
   // this takes the two in the same order, or the two writes deadlock.
   if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {
-    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for update', [sessionId])
+    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for no key update', [sessionId])
   }
   const session = await maybe<Session>(client,
-    'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for update', [sessionId])
+    'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for no key update', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
 
   const ids = batch.events.map((e) => e.clientId)
@@ -232,7 +232,7 @@ export async function answerAsk(
   // The session's lock comes before the ask's, the order a machine's recovery and
   // a harness's batches take them in, so neither can wait on the other forever.
   const owner = await maybe<{ session_id: string }>(client, 'select session_id from asks where id = $1', [askId])
-  if (owner) await client.query('select 1 from sessions where id = $1 for update', [owner.session_id])
+  if (owner) await client.query('select 1 from sessions where id = $1 for no key update', [owner.session_id])
   const ask = await maybe<AskTarget & { status: string; agent_id: string; request_ended_at: string | null }>(client,
     `select a.id, a.status, a.session_id, a.payload, a.request_ended_at, s.instance_id, s.agent_id, s.team_id
      from asks a join sessions s on s.id = a.session_id where a.id = $1 for update of a`, [askId])
@@ -319,7 +319,7 @@ export async function appendMessage(
   client: pg.PoolClient, conversationId: string, message: NewMessage,
 ): Promise<{ id: string; seq: number; fresh: boolean }> {
   const conversation = await maybe<{ team_id: string; last_seq: string }>(client,
-    'select team_id, last_seq from conversations where id = $1 for update', [conversationId])
+    'select team_id, last_seq from conversations where id = $1 for no key update', [conversationId])
   if (!conversation) throw new HttpError(404, 'no such conversation')
   const existing = await maybe<{ id: string; seq: string }>(client,
     'select id, seq from messages where conversation_id = $1 and client_id = $2', [conversationId, message.clientId])

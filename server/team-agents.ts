@@ -106,14 +106,17 @@ async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin:
   return hops
 }
 
-// Refuses the send or hand-off that would be a turn's 6th. Messages the turn sent
-// are the turns that answer to it, and tasks it handed over name it as theirs. Two
-// sends at once wait for each other on the turn's lock, so neither slips past.
-async function checkFanout(client: pg.PoolClient, turn: { id: TurnId }) {
-  await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [turn.id])
+// Refuses the send or hand-off that would be the 6th of one harness turn. A session
+// that took in a second message while it ran has two running turns for one harness
+// turn, so what both sent counts together. Messages a turn sent are the turns that
+// answer to it, and tasks it handed over name it as theirs. Two sends at once wait
+// for each other on the session's row, so neither slips past.
+async function checkFanout(client: pg.PoolClient, caller: Caller) {
+  await client.query('select 1 from sessions where id = $1 for no key update', [caller.id])
   const sent = await one<{ n: number }>(client, 'the count of what the turn sent',
-    `select ((select count(*) from turns where answer_to_turn = $1 and source = 'agent')
-          + (select count(*) from tasks where asked_by_turn = $1))::int as n`, [turn.id])
+    `with running as (select id from turns where session_id = $1 and status = 'running')
+     select ((select count(*) from turns where answer_to_turn in (select id from running) and source = 'agent')
+           + (select count(*) from tasks where asked_by_turn in (select id from running)))::int as n`, [caller.id])
   if (sent.n >= MAX_SENDS_PER_TURN) {
     throw new HttpError(409, `This turn has sent ${MAX_SENDS_PER_TURN} messages and tasks already, and one turn sends at most ${MAX_SENDS_PER_TURN}, so nothing was sent. Answer with what you have.`)
   }
@@ -158,7 +161,7 @@ async function threadOf(client: pg.PoolClient, teamId: TeamId, a: AgentId, b: Ag
 export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent> {
   const turn = await sendingTurn(client, caller)
   const hops = await nextHop(caller, turn)
-  await checkFanout(client, turn)
+  await checkFanout(client, caller)
   const target = await reachable(client, caller, ask.to)
   const threadId = await threadOf(client, caller.team_id, caller.agent_id, target.id)
   const message = await appendMessage(client, threadId, {
@@ -179,7 +182,7 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
 export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded> {
   const turn = await sendingTurn(client, caller)
   const hops = await nextHop(caller, turn)
-  await checkFanout(client, turn)
+  await checkFanout(client, caller)
   const target = await reachable(client, caller, ask.to)
   const task = z.object({ id: TaskId }).parse(await one(client, 'the handed-over task',
     `insert into tasks (team_id, slug, title, instructions, owner_id, agent_id, source, asked_by_turn)
