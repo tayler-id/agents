@@ -93,7 +93,7 @@ export function ImportRecipe({ make, opened }: { make: (file: RecipeFile) => Pro
   return (
     <div role="group" aria-label="Start from a file">
       <label htmlFor="import-file" className="small">Start from a file</label>
-      <input id="import-file" type="file" accept=".json,application/json" onChange={(e) => { void read(e.target.files?.[0]) }} />
+      <input id="import-file" aria-label="Recipe file" type="file" accept=".json,application/json" onChange={(e) => { void read(e.target.files?.[0]) }} />
       {unreadable && <p className="error small" role="alert">{unreadable}</p>}
       {file && carried && (
         <>

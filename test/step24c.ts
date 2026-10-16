@@ -154,10 +154,12 @@ async function run(engine: string, machineA: string, folder: string) {
     await phone.screenshot({ path: join(SHOTS, `${engine}-import-phone.png`), fullPage: true })
     check(await noSideScroll(phone, ['.page-head', '.page-body', '.items']), `${engine}: at phone width the import, with the file's commands shown, fits without sideways scrolling`)
     await importForm.getByRole('button', { name: 'Make the agent' }).click()
-    check(await visible(danaPage, '.page-head h1', 20, new RegExp(name)) && await visible(danaPage, 'ul.items[aria-label="Hooks"] li', 15, /stamp-writes.*After a tool runs · Write/s)
+    // The agent takes the name the file offers, or the next free one.
+    const nameShown = await visible(danaPage, '.page-head h1', 20, new RegExp(`^${name}(-\\d+)?$`)) ? (await danaPage.locator('.page-head h1').first().textContent()) ?? '' : ''
+    check(nameShown !== '' && await visible(danaPage, 'div.hooks li.hooks-row', 15, /stamp-writes.*After a tool runs · Write/s)
       && await visible(danaPage, 'ul.memories li', 10, new RegExp(TEAM_NOTE)), `${engine}: Make the agent opens the new agent, with its hooks and the team's memories`)
     const made = await row(`select a.id, a.owner_id, a.copied_from_agent_id, p.id as person from agents a join people p on p.login = $2
-      where a.team_id = (select id from teams where name = $1) and a.name = $3`, [teamB, dana, name])
+      where a.team_id = (select id from teams where name = $1) and a.name = $3`, [teamB, dana, nameShown])
     const asImported = await setupOf(must(made?.id, 'the imported agent'))
     const asSource = await setupOf(source)
     // The skill with the key is the one difference, since the file held it scrubbed.
