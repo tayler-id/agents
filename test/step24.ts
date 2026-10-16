@@ -173,6 +173,13 @@ try {
   check(same(unnamedAs, ['session-start', 'session-start-2', 'post-tool-use']),
     `a hook sent with no name is named after its event, and the next of an event takes the next free name: ${unnamedAs.join(' ')}`)
   for (const name of unnamedAs) await as(alice, `/v1/agents/${source}/hooks/${name}/delete`)
+  // Hooks sent with no name at the same moment each get a name of their own, and none replaces another.
+  const racing = await Promise.all(Array.from({ length: 6 }, (_, n) => as(alice, `/v1/agents/${source}/hooks`, { event: 'SessionStart', command: `echo racing-${String(n)}` })))
+  const racedNames = racing.map((answer) => String(answer.json?.name))
+  const racedRows = await rows(`select name, command from agent_hooks where agent_id = $1 and command like 'echo racing-%' order by name`, [source])
+  check(racing.every((answer) => answer.status === 200) && new Set(racedNames).size === 6 && racedRows.length === 6,
+    `six hooks sent at once with no name get six names, and all six are kept: ${racedNames.join(' ')}, ${String(racedRows.length)} kept`)
+  for (const name of racedNames) await as(alice, `/v1/agents/${source}/hooks/${name}/delete`)
   check(Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 3, 'the hooks made for that are taken off again')
   // A hook saved under the name of one the agent has changes that one, and taking off one it has not is a 404.
   await as(alice, `/v1/agents/${source}/hooks`, { name: 'scratch', event: 'Stop', command: 'echo first' })

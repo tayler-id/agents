@@ -267,6 +267,9 @@ async function freeHookName(client: pg.PoolClient, agentId: string, event: unkno
 // Saves a hook under the name it came with, or under one made from its event. Answers with the name.
 export async function saveHook(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>): Promise<string> {
   const agent = await agentWithHooksAccess(client, person, agentId)
+  // Hooks of one agent are saved one at a time, so a name found free is still free when its hook is written, and two
+  // hooks sent with no name at once get two names. The lock does not wait on rows that only refer to the agent.
+  await client.query('select 1 from agents where id = $1 for no key update', [agent.id])
   const parsed = AgentHook.safeParse(body.name === undefined ? { ...body, name: await freeHookName(client, agent.id, body.event) } : body)
   if (!parsed.success) throw new HttpError(400, z.prettifyError(parsed.error))
   const hook = parsed.data

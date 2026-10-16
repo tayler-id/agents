@@ -42,6 +42,8 @@ const BREAKS: Break[] = [
   { name: 'hook-owner', checks: ['step24'], why: 'any teammate changes any agent\'s hooks', red: ['a teammate who does not own the agent cannot add a hook', 'a teammate cannot take one off'],
     edits: [{ file: AGENTS, anchor: '  if (!mayChangeHooks(person, agent, null)) {', replace: '  if (false) {' },
       { file: AGENTS, anchor: '  await mustRunOn(client, person, agent.id)\n', replace: '' }] },
+  { name: 'hook-names-race', checks: ['step24'], why: 'two hooks sent with no name at once take one name, and the second replaces the first', red: ['six hooks sent at once with no name get six names'],
+    edits: [{ file: AGENTS, anchor: "  await client.query('select 1 from agents where id = $1 for no key update', [agent.id])\n", replace: '' }] },
   { name: 'hooks-on-teammates-mac', checks: ['step24'], why: "an agent's owner puts hooks on a teammate's Mac", red: ["Bob makes a blank agent on Alice's Mac, as before, but cannot add a hook to it"],
     edits: [{ file: AGENTS, anchor: '  await mustRunOn(client, person, agent.id)\n', replace: '' }] },
   { name: 'recipe-on-teammates-mac', checks: ['step24c'], why: "an import's plugins go on a teammate's Mac", red: ["an import with plugins and no hooks cannot go on a teammate's Mac either"],
