@@ -1154,3 +1154,14 @@ A reviewer on another model read the branch at 40acec7. The coordinator asked me
   - Two answers that a harness takes into one turn both carry that turn's last words.
   - After a rollback, the release before can't read a waiting turn with source `agent` in a conversation's line, and shows the parse error there.
   - The verify feature map has no file for agents working together. It lives under `.claude/`, which needs Tayler.
+
+### Agent conversations shown where the work started (step 6, 2026-10-16)
+
+- **What changed.** When an agent hands work on and the answer or result comes back, it is also a post in the conversation where the chain started, the conversation of the chain's hop-0 turn. When a chain is refused at hop 5, that conversation gets the note "{agent} stopped a chain of agents at 4 hops". A chain that started in a task, a room or a stage posts nothing. This is Tayler's 16:02 call.
+- **Schema, still in 0019.** `messages.kind` (`post`, `answer`, `chain_stopped`), `messages.asked_agent_id`, and `turns.origin_conversation_id`, which carries the start of a chain down its turns. The messages shape already sends every column, so the app reads both new ones as they are.
+- **Decisions.**
+  - An answer is posted only when the turn waiting for it is a hop-0 turn in a conversation. Answers between two agents in the middle of a chain stay in the threads between agents, which the UI groups as "Between agents" by conversation kind `agents`.
+  - The stop note is written on its own connection before the 409, since the request's transaction rolls back. Its client id is the refused turn's, so the same turn asking again writes one note.
+  - The result of a handed task posts when the agent reports back, and when a person marks the task done, with the agent's last words.
+- **Seen failing.** Three breaks were added to `test/step28-breaks.ts`: the stop note, the answer post, and a chain's start taken from its latest turn. Their runs wait on the checks lock.
+- **Not done.** step28, step28b and the agents-git runs have not run since this change. `app/` is untouched, so `Message` in `app/src/data.ts` does not list the two new columns yet.

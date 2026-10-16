@@ -300,6 +300,9 @@ type NewMessage = {
   clientId: string
   sessionId?: string
   eventId?: string
+  // A post, unless it carries an agent's result back or says a chain stopped.
+  kind?: 'post' | 'answer' | 'chain_stopped'
+  askedAgentId?: string
 }
 
 export async function appendMessage(
@@ -314,10 +317,10 @@ export async function appendMessage(
 
   const seq = Number(conversation.last_seq) + 1
   const row = await one<{ id: string }>(client, 'the new message',
-    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id, kind, asked_agent_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
     [conversation.team_id, conversationId, seq, message.speaker, message.personId ?? null, message.agentId ?? null,
-      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId])
+      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId, message.kind ?? 'post', message.askedAgentId ?? null])
   await client.query('update conversations set last_seq = $2 where id = $1', [conversationId, seq])
   return { id: row.id, seq, fresh: true }
 }

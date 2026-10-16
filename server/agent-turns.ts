@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
 import { many, maybe, one, pool, tx } from './db.ts'
-import { agentKit, appendEvents, scrub } from './record.ts'
+import { agentKit, appendEvents, appendMessage, scrub } from './record.ts'
 import { CONVERSATION_PERMISSIONS, WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { requestTurn, type AgentCause } from './scheduler.ts'
 import { AgentId, ConversationId, SessionId, TaskId, TeamId, TurnId, WorkspaceId } from '../shared/ids.ts'
@@ -51,18 +51,41 @@ export async function sendAgentTurn(client: pg.PoolClient, sessionId: SessionId,
   throw new Error(`session ${session.id} serves neither a conversation nor a task`)
 }
 
+// The conversation a chain of agents started in, for a turn in it: the conversation
+// of the hop-0 turn, which an agent's turn carries down its chain. Null when the
+// chain started in a task, a room's line or a stage, which post nothing.
+export const CHAIN_ORIGIN = `coalesce(origin_conversation_id, case when hops = 0 then conversation_id end)`
+
 // The turn that handed a task over: where its result goes, and what that turn answers.
-const HandingOver = z.object({ session_id: SessionId, answer_to_turn: TurnId.nullable(), hops: z.number().int() })
+const HandingOver = z.object({
+  session_id: SessionId, agent_id: AgentId, answer_to_turn: TurnId.nullable(), hops: z.number().int(),
+  origin: ConversationId.nullable(), conversation_id: ConversationId.nullable(),
+})
+
+// An agent's result, posted in the conversation of the hop-0 turn that waits for it,
+// when that turn is in one. A result into a later hop of a chain stays in the
+// threads between agents.
+async function postAnswer(client: pg.PoolClient, waiting: { conversationId: ConversationId | null; hops: number; agentId: AgentId },
+  answer: { agentId: AgentId; sessionId: SessionId; body: string; clientId: string }) {
+  if (waiting.hops !== 0 || waiting.conversationId === null) return
+  await appendMessage(client, waiting.conversationId, {
+    speaker: 'agent', agentId: answer.agentId, body: answer.body, clientId: answer.clientId, sessionId: answer.sessionId,
+    kind: 'answer', askedAgentId: waiting.agentId,
+  })
+}
 
 // A handed-over task's result goes to the turn of the agent that handed it over,
 // as a delegation turn in that agent's session, which then answers what that
-// turn answered. `fromSession` is the task's session.
-export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskId; agentId: AgentId; askedByTurn: TurnId }, text: string, fromSession: SessionId): Promise<TurnId> {
+// turn answered. `fromSession` is the task's session. `text` is what the agent that
+// handed the task reads, and `posted` what the conversation it started in shows.
+export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskId; agentId: AgentId; askedByTurn: TurnId }, text: string, posted: string, fromSession: SessionId): Promise<TurnId> {
   const asked = HandingOver.parse(await one(client, `the turn that handed over task ${task.id}`,
-    'select session_id, answer_to_turn, hops from turns where id = $1', [task.askedByTurn]))
+    `select session_id, agent_id, answer_to_turn, hops, conversation_id, ${CHAIN_ORIGIN} as origin from turns where id = $1`, [task.askedByTurn]))
   const turnId = await sendAgentTurn(client, asked.session_id, { text, clientId: `result:${task.id}:${randomUUID()}`, links: { taskId: task.id } }, task.agentId,
-    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1 })
+    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin })
   if (turnId === null) throw new Error(`the result of task ${task.id} was recorded already, with a client id made just now`)
+  await postAnswer(client, { conversationId: asked.conversation_id, hops: asked.hops, agentId: asked.agent_id },
+    { agentId: task.agentId, sessionId: fromSession, body: posted, clientId: `result-post:${turnId}` })
   return turnId
 }
 
@@ -80,34 +103,42 @@ export async function deliverMarkedDone(client: pg.PoolClient, taskId: TaskId, b
   const task = z.object({
     id: TaskId, title: z.string(), agent_id: AgentId, agent: z.string(), asked_by_turn: TurnId, session_id: SessionId, last_words: z.string().nullable(),
   }).parse(found)
+  const posted = task.last_words ?? `${task.agent} had said nothing on it when ${by} marked it done.`
   const text = task.last_words === null
     ? `${by} marked the task you handed ${task.agent}, "${task.title}", done, before ${task.agent} said anything on it.`
     : `${by} marked the task you handed ${task.agent}, "${task.title}", done. ${task.agent}'s last words on it:\n\n${task.last_words}`
-  await deliverTaskResult(client, { id: task.id, agentId: task.agent_id, askedByTurn: task.asked_by_turn }, text, task.session_id)
+  await deliverTaskResult(client, { id: task.id, agentId: task.agent_id, askedByTurn: task.asked_by_turn }, text, posted, task.session_id)
 }
 
 // A finished turn that another turn waits on, with that turn's session and what it answers.
 const Answering = z.object({
   id: TurnId, session_id: SessionId, agent_id: AgentId, agent: z.string(), status: z.enum(['done', 'failed', 'cancelled']), hops: z.number().int(),
   prompt_seq: z.coerce.number().int().nullable(), finished_at: z.date(), waiting_session: SessionId, waiting_answer_to: TurnId.nullable(),
+  waiting_agent: AgentId, waiting_hops: z.number().int(), waiting_conversation: ConversationId.nullable(), waiting_origin: ConversationId.nullable(),
 })
 type Answering = z.infer<typeof Answering>
 
-// What an answer says: the turn's last words, or why it has none. Words and an
-// error count only up to the turn's end, so a later turn's never answer for it.
-async function answerOf(client: pg.PoolClient, turn: Answering): Promise<string> {
-  if (turn.status === 'cancelled') return `${turn.agent}'s turn was cancelled before it ran, so ${turn.agent} did not answer you.`
+// What an answer says to the agent that waits for it, and what the conversation it
+// started in shows: the turn's last words, or why it has none. Words and an error
+// count only up to the turn's end, so a later turn's never answer for it.
+async function answerOf(client: pg.PoolClient, turn: Answering): Promise<{ toAgent: string; posted: string }> {
+  if (turn.status === 'cancelled') {
+    return { toAgent: `${turn.agent}'s turn was cancelled before it ran, so ${turn.agent} did not answer you.`, posted: `${turn.agent}'s turn was cancelled before it ran.` }
+  }
   const since = [turn.session_id, turn.prompt_seq ?? 0, turn.finished_at]
   if (turn.status === 'failed') {
     const error = await maybe<{ text: string }>(client,
       `select text from events where session_id = $1 and kind = 'error' and seq > $2 and created_at <= $3 and text is not null
        order by seq desc limit 1`, since)
-    return `${turn.agent} could not answer you. ${error?.text ?? 'Its turn failed.'}`
+    const why = error?.text ?? 'Its turn failed.'
+    return { toAgent: `${turn.agent} could not answer you. ${why}`, posted: `${turn.agent} could not answer. ${why}` }
   }
   const reply = await maybe<{ text: string }>(client,
     `select body->>'text' as text from events where session_id = $1 and kind = 'assistant' and parent_tool_use_id is null
        and coalesce(body->>'text', '') <> '' and seq > $2 and created_at <= $3 order by seq desc limit 1`, since)
-  return reply ? `${turn.agent} answered you, in your thread with ${turn.agent}:\n\n${reply.text}` : `${turn.agent} ended its turn without a word for you.`
+  return reply
+    ? { toAgent: `${turn.agent} answered you, in your thread with ${turn.agent}:\n\n${reply.text}`, posted: reply.text }
+    : { toAgent: `${turn.agent} ended its turn without a word for you.`, posted: `${turn.agent} ended its turn without an answer.` }
 }
 
 // Sends one finished turn's answer to the turn that waits for it, unless another
@@ -115,13 +146,18 @@ async function answerOf(client: pg.PoolClient, turn: Answering): Promise<string>
 async function answerTurn(client: pg.PoolClient, turnId: TurnId) {
   const found = await maybe(client,
     `select t.id, t.session_id, t.agent_id, a.name as agent, t.status, t.hops, p.seq as prompt_seq, t.finished_at,
-       w.session_id as waiting_session, w.answer_to_turn as waiting_answer_to
+       w.session_id as waiting_session, w.answer_to_turn as waiting_answer_to,
+       w.agent_id as waiting_agent, w.hops as waiting_hops, w.conversation_id as waiting_conversation,
+       coalesce(w.origin_conversation_id, case when w.hops = 0 then w.conversation_id end) as waiting_origin
      from turns t join turns w on w.id = t.answer_to_turn join agents a on a.id = t.agent_id left join events p on p.id = t.event_id
      where t.id = $1 and t.answer_sent_at is null for update of t skip locked`, [turnId])
   if (!found) return
   const turn = Answering.parse(found)
-  await sendAgentTurn(client, turn.waiting_session, { text: await answerOf(client, turn), clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
-    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops })
+  const answer = await answerOf(client, turn)
+  await sendAgentTurn(client, turn.waiting_session, { text: answer.toAgent, clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
+    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin })
+  await postAnswer(client, { conversationId: turn.waiting_conversation, hops: turn.waiting_hops, agentId: turn.waiting_agent },
+    { agentId: turn.agent_id, sessionId: turn.session_id, body: answer.posted, clientId: `answer-post:${turn.id}` })
   await client.query('update turns set answer_sent_at = now() where id = $1', [turn.id])
 }
 

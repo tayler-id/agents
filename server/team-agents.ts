@@ -9,12 +9,12 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { isUniqueViolation, many, maybe, one } from './db.ts'
+import { isUniqueViolation, many, maybe, one, tx } from './db.ts'
 import { appendMessage, conversationSession, HttpError, scrub } from './record.ts'
 import { insertAgent } from './agents.ts'
 import { slugOf } from './tasks.ts'
 import { launchHandedTask } from './launch.ts'
-import { deliverTaskResult, sendAgentTurn } from './agent-turns.ts'
+import { CHAIN_ORIGIN, deliverTaskResult, sendAgentTurn } from './agent-turns.ts'
 import { sameInput } from './durability.ts'
 import { AgentId, ConversationId, SessionId, TaskId, TeamId, TurnId } from '../shared/ids.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
@@ -74,22 +74,33 @@ export async function listAgents(client: pg.PoolClient, caller: Caller): Promise
 // conversation or a task the team shares sends, since the thread between two
 // agents is the team's to read, and a room or a pipeline stage does not, since
 // an answer would come back outside the room's turns or the stage's.
-async function sendingTurn(client: pg.PoolClient, caller: Caller): Promise<{ id: TurnId; hops: number }> {
+async function sendingTurn(client: pg.PoolClient, caller: Caller): Promise<{ id: TurnId; hops: number; origin: ConversationId | null }> {
   if (caller.stage !== null) throw new HttpError(403, 'A pipeline stage does not message other agents.')
   if (caller.conversation_kind === 'room') throw new HttpError(409, 'Agents in a room cannot message other agents yet. Say what you need in the room instead.')
   if (caller.visibility === 'private') {
     throw new HttpError(409, 'The work this session serves is private, and what agents send each other is read by the whole team, so nothing was sent.')
   }
   const turn = await maybe(client,
-    `select id, hops from turns where session_id = $1 and status = 'running' order by hops desc, requested_at desc, id desc limit 1`, [caller.id])
+    `select id, hops, ${CHAIN_ORIGIN} as origin from turns where session_id = $1 and status = 'running' order by hops desc, requested_at desc, id desc limit 1`, [caller.id])
   if (!turn) throw new HttpError(409, 'This session has no turn running, so it cannot message another agent now.')
-  return z.object({ id: TurnId, hops: z.number().int() }).parse(turn)
+  return z.object({ id: TurnId, hops: z.number().int(), origin: ConversationId.nullable() }).parse(turn)
 }
 
 // The hop a message or a task from `turn` would be, when the chain has room for it.
-function nextHop(turn: { hops: number }): number {
+// A refusal puts a note in the conversation the chain started in, if it started in
+// one, and that note is written on its own connection so it stays when the
+// request's transaction rolls back. Asking again after the same turn's refusal
+// writes nothing new, since the note's client id is the turn's.
+async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin: ConversationId | null }): Promise<number> {
   const hops = turn.hops + 1
   if (hops > MAX_HOPS) {
+    if (turn.origin !== null) {
+      const origin = turn.origin
+      await tx((client) => appendMessage(client, origin, {
+        speaker: 'agent', agentId: caller.agent_id, body: `${caller.name} stopped a chain of agents at ${MAX_HOPS} hops`,
+        clientId: `chain-stopped:${turn.id}`, kind: 'chain_stopped',
+      }))
+    }
     throw new HttpError(409, `This would be hop ${hops} of the chain, and a chain of agents stops after ${MAX_HOPS} hops, so nothing was sent. Answer with what you have.`)
   }
   return hops
@@ -133,7 +144,7 @@ async function threadOf(client: pg.PoolClient, teamId: TeamId, a: AgentId, b: Ag
 // comes back to the sending turn's session when the other agent's turn ends.
 export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: SendToAgent): Promise<MessageSent> {
   const turn = await sendingTurn(client, caller)
-  const hops = nextHop(turn)
+  const hops = await nextHop(caller, turn)
   const target = await reachable(client, caller, ask.to)
   const threadId = await threadOf(client, caller.team_id, caller.agent_id, target.id)
   const message = await appendMessage(client, threadId, {
@@ -143,7 +154,7 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
   const text = `${caller.name} sent you a message, in your thread with ${caller.name}:\n\n${ask.text}\n\n`
     + `What you say last in this turn goes back to ${caller.name} as your answer.`
   const turnId = await sendAgentTurn(client, SessionId.parse(session.id), { text, clientId: `message:${message.id}`, links: { messageId: message.id } }, caller.agent_id,
-    { source: 'agent', askedBySession: caller.id, answerTo: turn.id, hops })
+    { source: 'agent', askedBySession: caller.id, answerTo: turn.id, hops, originConversation: turn.origin })
   if (turnId === null) throw new Error(`message ${message.id} reached ${target.name}'s session before it was sent`)
   return { threadId, turnId, hops }
 }
@@ -153,14 +164,14 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
 // handed it over when its agent reports back or a person marks it done.
 export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: DelegateTask): Promise<TaskHanded> {
   const turn = await sendingTurn(client, caller)
-  const hops = nextHop(turn)
+  const hops = await nextHop(caller, turn)
   const target = await reachable(client, caller, ask.to)
   const task = z.object({ id: TaskId }).parse(await one(client, 'the handed-over task',
     `insert into tasks (team_id, slug, title, instructions, owner_id, agent_id, source, asked_by_turn)
      values ($1, $2, $3, $4, $5, $6, 'agent', $7) returning id`,
     [caller.team_id, slugOf(ask.title), ask.title, ask.instructions, caller.owner_id, target.id, turn.id]))
   const sessionId = await launchHandedTask(client, task.id, { agentId: caller.agent_id, name: caller.name },
-    { source: 'delegation', askedBySession: caller.id, answerTo: null, hops })
+    { source: 'delegation', askedBySession: caller.id, answerTo: null, hops, originConversation: turn.origin })
   return { taskId: task.id, sessionId, hops }
 }
 
@@ -178,7 +189,7 @@ export async function reportBack(client: pg.PoolClient, caller: Caller, ask: Rep
   if (task.done) throw new HttpError(409, 'This task is done, and its result went back already. A person can reopen it.')
   await client.query('update tasks set done_at = now() where id = $1', [task.id])
   const turnId = await deliverTaskResult(client, { id: task.id, agentId: caller.agent_id, askedByTurn: task.asked_by_turn },
-    `${caller.name} finished the task you handed it, "${task.title}":\n\n${ask.text}`, caller.id)
+    `${caller.name} finished the task you handed it, "${task.title}":\n\n${ask.text}`, ask.text, caller.id)
   return { to: task.asker, turnId }
 }
 

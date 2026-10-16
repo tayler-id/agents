@@ -185,6 +185,10 @@ try {
   const answer = await one(`select * from turns where session_id = $1 and source = 'agent'`, [scoutDm])
   check(answer?.asked_by_session === writerThread && answer.hops === 1 && answer.answer_to_turn === null && answer.status === 'done' && answer.conversation_id === dm,
     `writer's answer came back to scout's DM session as a turn with source agent, asked by writer's thread session (${answer?.status})`)
+  const answerPost = await all(`select * from messages where conversation_id = $1 and kind = 'answer' order by seq`, [dm])
+  check(answerPost.length === 1 && answerPost[0].speaker === 'agent' && answerPost[0].agent_id === ids.writer && answerPost[0].session_id === writerThread
+    && answerPost[0].asked_agent_id === ids.scout && answerPost[0].person_id === null && answerPost[0].body === 'Note: the launch moved to Friday, and the release notes are ready.',
+  `writer's answer is also a post in Alice's DM, kind answer, from writer's thread session, for scout (${answerPost.length} rows)`)
   const sent = await toolResult(scoutDm, 'mcp__team-agents__send_to_agent')
   check(sent?.is_error === 'false' && sent.text.includes(`hop 1 of at most ${MAX_HOPS}`), `scout's send_to_agent call returned at once, naming the hop (${sent?.text})`)
   const seen = (await shapeRows(PEOPLE, alice, 'conversations')).rows.find((c) => c.id === threadId)
@@ -216,6 +220,10 @@ try {
   const result = await one(`select * from turns where session_id = $1 and source = 'delegation'`, [scoutDm])
   check(result?.asked_by_session === taskSession?.id && result.hops === 1 && result.status === 'done',
     `the result came back to scout's DM session as a delegation turn, asked by the task's session (${result?.status})`)
+  const resultPost = await all(`select * from messages where conversation_id = $1 and kind = 'answer' and body like 'Changelog:%'`, [dm])
+  check(resultPost.length === 1 && resultPost[0].agent_id === ids.writer && resultPost[0].session_id === taskSession?.id && resultPost[0].asked_agent_id === ids.scout
+    && resultPost[0].body === 'Changelog: login fix, faster search, new export.',
+  `writer's report on the handed task is also a post in Alice's DM, kind answer, from the task's session, for scout (${resultPost.length} rows)`)
   const again = await asSession(token, String(taskSession?.id), 'POST', '/v1/team-agents/report', { text: 'Once more.' })
   check(again.status === 409, `a task's result goes back once: a second report is refused (${again.status} ${JSON.stringify(again.json)})`)
   const noTask = await asSession(token, scoutDm, 'POST', '/v1/team-agents/report', { text: 'Done.' })
@@ -321,6 +329,31 @@ try {
   })
   const backToScout = await one(`select count(*)::int as n from turns where session_id = $1 and source = 'agent' and hops = $2`, [scoutDm, MAX_HOPS])
   check(settled && Number(backToScout?.n) === 1, `every turn of the relay ended and sent its answer back, the last one to scout's DM at hop ${MAX_HOPS}`)
+
+  const stopNotes = await all(`select * from messages where conversation_id = $1 and kind = 'chain_stopped'`, [dm])
+  check(stopNotes.length === 1 && stopNotes[0].speaker === 'agent' && stopNotes[0].agent_id === ids.typo && stopNotes[0].asked_agent_id === null
+    && stopNotes[0].body === `typo stopped a chain of agents at ${MAX_HOPS} hops`,
+  `the DM where the relay started shows one note, from typo, saying "${stopNotes[0]?.body}"`)
+  const notDm = await all(`select 1 from messages where kind = 'chain_stopped' and conversation_id <> $1 and team_id = (select team_id from people where login = $2)`, [dm, alice])
+  check(notDm.length === 0, 'no thread between agents got a stop note, only the conversation the chain started in')
+
+  // 6b. A chain that starts in a task posts nothing in any conversation: not its
+  // answers, and not a stop note when it reaches the limit.
+  const postsBefore = Number((await one(`select count(*)::int as n from messages where kind <> 'post' and team_id = (select team_id from people where login = $1)`, [alice]))?.n)
+  const taskRelay = await post(alice, '/v1/tasks', { title: 'Relay from a task', instructions: 'Start the relay.', agentId: ids.scout })
+  const refusedAgain = await within(RELAY_SECONDS, async () => {
+    const refused = await all(`select 1 from events e join sessions s on s.id = e.session_id where s.agent_id = $1 and e.kind = 'tool_result' and e.text like $2`,
+      [ids.typo, `%hop ${MAX_HOPS + 1} of the chain%`])
+    return refused.length >= 2
+  })
+  const taskSettled = await within(RELAY_SECONDS, async () => {
+    const open = await one(`select count(*)::int as n from turns where team_id = (select team_id from people where login = $1)
+      and (status not in ('done', 'failed', 'cancelled') or (answer_to_turn is not null and answer_sent_at is null))`, [alice])
+    return Number(open?.n) === 0
+  })
+  const postsAfter = Number((await one(`select count(*)::int as n from messages where kind <> 'post' and team_id = (select team_id from people where login = $1)`, [alice]))?.n)
+  check(taskRelay.taskId !== undefined && refusedAgain && taskSettled && postsAfter === postsBefore,
+    `a relay started in a task was refused at hop ${MAX_HOPS + 1} again and posted no answer and no stop note anywhere (${postsBefore} before, ${postsAfter} after)`)
 
   // 7. Answers end turns in DMs while people type in them. A person's post and a
   // turn's end in one DM, at the same moment, both go through.

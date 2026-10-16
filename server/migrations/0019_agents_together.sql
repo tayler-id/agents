@@ -39,6 +39,21 @@ alter table turns add constraint turns_hops check ((source in ('agent', 'delegat
 -- The runner finds the turns whose answer is still to go back to an agent.
 create index turns_answer_due on turns (finished_at) where answer_to_turn is not null and answer_sent_at is null;
 
+-- Where a chain of agents started, when that was a conversation: the chain's last
+-- word, an answer or a stop note, is posted there. Null for a turn no agent asked
+-- for, whose own conversation is the start, and for a chain that started outside a
+-- conversation.
+alter table turns add column origin_conversation_id uuid references conversations on delete set null;
+
+-- What a message in a conversation is. An answer is an agent's result that came back
+-- to the agent who handed the work over, and a chain_stopped note says a chain of
+-- agents hit its hop limit. asked_agent_id is the agent in this conversation that
+-- handed the work over, set on answers only.
+alter table messages
+  add column kind text not null default 'post' check (kind in ('post', 'answer', 'chain_stopped')),
+  add column asked_agent_id uuid references agents on delete set null;
+alter table messages add constraint messages_asked_agent check (asked_agent_id is null or kind = 'answer');
+
 alter table tasks add column asked_by_turn uuid references turns on delete set null;
 
 -- Only a user event carries another agent's message, and then no person wrote it.

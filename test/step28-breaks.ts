@@ -39,6 +39,12 @@ const BREAKS: Break[] = [
     edits: [{ file: 'server/agents.ts', anchor: "  const decides = agent.owner_id === null ? person.role === 'admin' : agent.owner_id === person.id", replace: '  const decides = true' }] },
   { name: 'hop-limit', check: 'step28', why: 'a chain of agents has no end', red: ['and its message, hop 5, is refused', 'no turn in the team is past hop 4'],
     edits: [{ file: TEAM_AGENTS, anchor: '  if (hops > MAX_HOPS) {', replace: '  if (false) {' }] },
+  { name: 'stop-note', check: 'step28', why: 'a chain stopped at its limit leaves no note where it started', red: ['the DM where the relay started shows one note'],
+    edits: [{ file: TEAM_AGENTS, anchor: '    if (turn.origin !== null) {\n      const origin = turn.origin\n', replace: '    if (false) {\n      const origin = turn.origin\n' }] },
+  { name: 'answer-post', check: 'step28', why: "an answer or a result goes back to the agent only, and the conversation where the work started never shows it", red: ["writer's answer is also a post in Alice's DM", "writer's report on the handed task is also a post"],
+    edits: [{ file: 'server/agent-turns.ts', anchor: '  if (waiting.hops !== 0 || waiting.conversationId === null) return\n', replace: '  return\n' }] },
+  { name: 'origin-last-hop', check: 'step28', why: "a chain's start is taken to be the conversation of its latest turn, so a stop note lands in an agents thread, even for a chain that started in a task", red: ['the DM where the relay started shows one note', 'no thread between agents got a stop note', 'posted no answer and no stop note anywhere'],
+    edits: [{ file: 'server/agent-turns.ts', anchor: 'export const CHAIN_ORIGIN = `coalesce(origin_conversation_id, case when hops = 0 then conversation_id end)`', replace: 'export const CHAIN_ORIGIN = `conversation_id`' }] },
   { name: 'room', check: 'step28', why: "an agent in a room messages other agents, and the answer comes back outside the room's turns", red: ['an agent in a room is told it cannot message other agents yet'],
     edits: [{ file: TEAM_AGENTS, anchor: "  if (caller.conversation_kind === 'room') throw new HttpError(409, 'Agents in a room cannot message other agents yet. Say what you need in the room instead.')\n", replace: '' }] },
   // Answers and results going back.
