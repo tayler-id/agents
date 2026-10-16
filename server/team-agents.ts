@@ -110,9 +110,11 @@ async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin:
 // that took in a second message while it ran has two running turns for one harness
 // turn, so what both sent counts together. Messages a turn sent are the turns that
 // answer to it, and tasks it handed over name it as theirs. Two sends at once wait
-// for each other on the session's row, so neither slips past.
+// for each other on the lock, so neither slips past.
 async function checkFanout(client: pg.PoolClient, caller: Caller) {
-  await client.query('select 1 from sessions where id = $1 for no key update', [caller.id])
+  // An advisory lock, not the session's row. A send goes on to lock the target's session,
+  // and two agents sending to each other at once would wait for each other's rows.
+  await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [caller.id])
   const sent = await one<{ n: number }>(client, 'the count of what the turn sent',
     `with running as (select id from turns where session_id = $1 and status = 'running')
      select ((select count(*) from turns where answer_to_turn in (select id from running) and source = 'agent')
