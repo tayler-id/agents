@@ -35,7 +35,8 @@ import type { HarnessSession } from './harness.ts'
 import { startDesktop, type Desktop } from './desktop.ts'
 import { startScreenService, type ScreenService } from './screen.ts'
 import { linkScreen, type ScreenLink } from './screen-link.ts'
-import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL } from './computer-guide.ts'
+import { COMPUTER_GUIDE, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL, WEB_GUIDE } from './computer-guide.ts'
+import { COMPUTER_SERVER } from '../shared/webmcp.ts'
 import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
 import { followTerminalSessions } from './transcripts.ts'
 import { loginShellSecrets } from './secrets.ts'
@@ -113,7 +114,9 @@ const setups = new Map<string, string>()
 // plugins started with a value that was set again or removed since.
 const usedSecrets = new Map<string, string[]>()
 const staleSecrets = new Set<string>()
-const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.hooks, p.permissions])
+// The sites the team lists for this agent's browser. A server from before this release sends none.
+const webmcpOriginsOf = (p: MessagePayload) => p.webmcpOrigins ?? []
+const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.hooks, p.permissions, webmcpOriginsOf(p)])
 const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
@@ -179,8 +182,12 @@ function agentHome(agentId: string): string {
 // gets the team-agents tools, since an answer from another agent would come back
 // outside the stage. The file holds the machine's token, so only this user can read it.
 // On a machine with a screen it adds the `computer` server, and in a task's
-// session tells it the task folder, where saved screenshots become documents.
-function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null): string {
+// session tells it the task folder, where saved screenshots become documents. It
+// also tells it the sites the team lists, whose pages' WebMCP tools the agent may use.
+function mcpConfig(
+  sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null,
+  webmcpOrigins: readonly string[],
+): string {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = { ...plugins }
@@ -196,6 +203,7 @@ function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Rec
         AGENTS_SCREEN_SOCKET: computer.socket, AGENTS_BROWSER_MCP: computer.browserMcp, AGENTS_BROWSER_CDP: computer.cdpUrl,
         AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId,
         ...(taskFolder ? { AGENTS_TASK_FOLDER: taskFolder } : {}),
+        ...(webmcpOrigins.length ? { AGENTS_WEBMCP_ORIGINS: JSON.stringify(webmcpOrigins) } : {}),
       },
     }
   }
@@ -323,6 +331,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   // has a skill of that name itself. An isolated session, such as a judge's, gets
   // none of it, since the runner names the only tools a judge may use.
   const computer = stage?.isolated ? null : screen
+  const webmcpOrigins = webmcpOriginsOf(payload)
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
@@ -331,8 +340,9 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   writeHooks(cwd, hooks)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
-    instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
-    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null),
+    instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', computer && webmcpOrigins.length ? WEB_GUIDE : '', payload.instructions, payload.memory]
+      .filter(Boolean).join('\n\n'),
+    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null, webmcpOrigins),
     // A judge's session gets no team-record tools, so it cannot read the author's session.
     allowedTools: [
       ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),

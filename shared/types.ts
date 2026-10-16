@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from './framework.ts'
+import { WebmcpOrigins } from './webmcp.ts'
 
 export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
@@ -137,6 +138,8 @@ export const MessagePayload = z.object({
   plugins: z.array(AgentPlugin).optional(),
   hooks: z.array(AgentHook).optional(),
   memory: z.string().optional(),
+  // The sites whose WebMCP tools the agent's browser may take, as the team lists them now. Left out, there are none.
+  webmcpOrigins: WebmcpOrigins.optional(),
 })
 export type MessagePayload = z.infer<typeof MessagePayload>
 

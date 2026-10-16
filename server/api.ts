@@ -70,6 +70,7 @@ import { kindOf } from './audio.ts'
 import { isVoiceUpgrade, voiceUpgrade } from './voice-chat.ts'
 import { secretRoutes } from './secrets.ts'
 import { controlUpgrade } from './control.ts'
+import { webmcpRoutes } from './webmcp.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { CopyAsk } from '../shared/recipe.ts'
@@ -809,6 +810,7 @@ const routes: Route[] = [
   ...boxRoutes,
   ...voiceRoutes,
   ...secretRoutes,
+  ...webmcpRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']

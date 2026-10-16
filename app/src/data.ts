@@ -16,6 +16,7 @@ import type { AcceptsAgents } from '../../shared/team-agents.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'
+import { WebmcpOriginList } from '../../shared/webmcp.ts'
 
 export type Me = MemberView
 
@@ -367,6 +368,9 @@ export const api = {
   resolveComment: (commentId: string) => request('POST', `/v1/comments/${commentId}/resolve`, {}),
   runRoutine: (routineId: string) => request<{ conversationId: string }>('POST', `/v1/routines/${routineId}/run`, {}),
   releaseBox: (instanceId: string) => request('POST', `/v1/instances/${instanceId}/release`, {}),
+  webmcpOrigins: () => call(WebmcpOriginList, 'GET', '/v1/team/webmcp-origins'),
+  addWebmcpOrigin: (origin: string) => call(WebmcpOriginList, 'POST', '/v1/team/webmcp-origins', { origin }),
+  removeWebmcpOrigin: (originId: string) => call(WebmcpOriginList, 'POST', `/v1/team/webmcp-origins/${originId}/delete`, {}),
 }
 
 // How long something took, in words a person scans.

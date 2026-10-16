@@ -3,10 +3,13 @@
 // passes Playwright MCP's browser tools through, driving the box's Chromium over
 // its DevTools port. Every action, its own or Playwright's, first checks who
 // holds the screen, so a person who takes over stops the agent's use of both.
-// The design is docs/design/computers.md.
+// The design is docs/design/computers.md. When the team has listed sites whose
+// pages may offer tools through WebMCP, the server adds web_tools, web_read and
+// web_act (daemon/web-tools.ts).
 // Env, set by the daemon in the session's MCP config: AGENTS_SCREEN_SOCKET,
-// AGENTS_BROWSER_MCP, AGENTS_BROWSER_CDP, AGENTS_API, AGENTS_TOKEN and AGENTS_SESSION (for share_screen), and
-// AGENTS_TASK_FOLDER for a task's session.
+// AGENTS_BROWSER_MCP, AGENTS_BROWSER_CDP, AGENTS_API, AGENTS_TOKEN and AGENTS_SESSION (for share_screen),
+// AGENTS_TASK_FOLDER for a task's session, and AGENTS_WEBMCP_ORIGINS, the listed sites as JSON, left out
+// when there are none.
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
@@ -27,6 +30,8 @@ import {
 import { parseJson } from '../shared/json.ts'
 import { messageOf } from '../shared/errors.ts'
 import { shareBytes } from './share-client.ts'
+import { WEB_TOOL_ACT, WEB_TOOL_LIST, WEB_TOOL_READ, WebmcpOrigins } from '../shared/webmcp.ts'
+import { WEB_TOOL_DEFINITIONS, webTools } from './web-tools.ts'
 
 const Config = z.object({
   AGENTS_SCREEN_SOCKET: z.string().min(1),
@@ -37,6 +42,7 @@ const Config = z.object({
   AGENTS_SESSION: z.uuid(),
   // Only a task's session has a task folder, where saved screenshots become documents.
   AGENTS_TASK_FOLDER: z.string().min(1).optional(),
+  AGENTS_WEBMCP_ORIGINS: z.string().min(1).optional(),
 })
 const parsedConfig = Config.safeParse(process.env)
 if (!parsedConfig.success) {
@@ -44,6 +50,18 @@ if (!parsedConfig.success) {
   process.exit(2)
 }
 const config = parsedConfig.data
+
+// The sites the team lists, whose pages' tools the agent may use. With none, the
+// server offers no tool that reaches a page's.
+const webOrigins = (() => {
+  if (config.AGENTS_WEBMCP_ORIGINS === undefined) return []
+  const parsed = parseJson(WebmcpOrigins, config.AGENTS_WEBMCP_ORIGINS)
+  if (!parsed.ok) {
+    console.error(`computer: AGENTS_WEBMCP_ORIGINS is not a list of origins (${parsed.reason})`)
+    process.exit(2)
+  }
+  return parsed.value
+})()
 
 // Where Playwright puts files it names itself. Files the agent names go where it
 // says, relative to the session's folder.
@@ -222,14 +240,17 @@ const OWN_TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: {} },
     outputSchema: OutputSchema.parse(z.toJSONSchema(ScreenStatusOutput)),
   },
+  ...(webOrigins.length ? WEB_TOOL_DEFINITIONS : []),
 ]
 
 // Playwright's browser tools, from its MCP server running as a child process.
 const browser = new Client({ name: 'computer', version: '1.0.0' })
 const browserReady = browser.connect(new StdioClientTransport({
   command: process.execPath,
-  // Pages can register their own tools through WebMCP. Those would come from
-  // whatever site is open, so they stay out of the agent's tool list.
+  // Pages can register their own tools through WebMCP. Playwright's collection of
+  // them stays off for every team, listed sites included. It would put the names and
+  // descriptions of a page's tools into every snapshot, whatever the page's origin.
+  // web_tools reads a page's tools only at a listed origin.
   args: [config.AGENTS_BROWSER_MCP, '--cdp-endpoint', config.AGENTS_BROWSER_CDP, '--no-webmcp', '--output-dir', BROWSER_OUTPUT],
 }))
 const browserTools = browserReady.then(async () => (await browser.listTools()).tools)
@@ -271,6 +292,10 @@ async function browserCall(name: string, args: Record<string, unknown> | undefin
   }
 }
 
+// The tools of a page at a listed origin, read and run in the tab the other browser
+// tools act on, so a person who takes over stops them too.
+const web = webTools(webOrigins, (source) => browserCall('browser_evaluate', { function: source, _meta: { json: true } }))
+
 const mcp = new McpServer({ name: 'computer', version: '1.0.0' })
 mcp.server.registerCapabilities({ tools: {} })
 mcp.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...OWN_TOOLS, ...(await browserTools)] }))
@@ -280,6 +305,11 @@ mcp.server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToo
   if (name === 'save_screenshot') return saveScreenshot(args)
   if (name === 'share_screen') return shareScreen(args)
   if (name === 'screen_status') return screenStatus()
+  if (webOrigins.length) {
+    if (name === WEB_TOOL_LIST) return web.list()
+    if (name === WEB_TOOL_READ) return web.read(args)
+    if (name === WEB_TOOL_ACT) return web.act(args)
+  }
   if ((await browserTools).some((tool) => tool.name === name)) {
     // Given a file name, Playwright's screenshot tool saves where the name says,
     // which can be the task folder, where an image becomes a document. Without

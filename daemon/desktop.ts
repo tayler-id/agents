@@ -193,6 +193,10 @@ export function startDesktop(config: DesktopConfig): Desktop {
       // The "for automated testing only" bar would take 56 pixels off every screenshot.
       '--disable-infobars',
       '--no-first-run', '--no-default-browser-check', '--password-store=basic',
+      // Chromium 156 gives a page document.modelContext, where it registers the tools it
+      // offers to agents, only behind this feature. The computer server reads those tools
+      // only for sites the team lists (daemon/web-tools.ts).
+      '--enable-features=WebMCPTesting',
       // A box browser does what the agent asks and nothing else: no update checks,
       // field trials or sync.
       '--disable-background-networking', '--disable-component-update', '--disable-sync',

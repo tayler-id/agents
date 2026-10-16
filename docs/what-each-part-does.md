@@ -789,3 +789,29 @@ The design is "Agents creating, messaging and delegating to agents" in `docs/des
 ### The step 28 checks (`test/step28.ts`, `test/step28b.ts`, `test/step28-breaks.ts`, `test/fake-claude-agents.ts`, `test/stand-ins.ts`)
 
 - **Solves now.** `test/fake-claude-agents.ts` runs the stand-in for Claude as it is and makes the tool calls a scenario names around it, over MCP to the session's own servers, asking the daemon first for a tool the session does not allow, as Claude Code does. step28 drives a message and its answer, a handed task and its report, a task marked done, a create that waits on its owner's yes, another owner's agent before and after its owner allows it, a room, a relay of agents that stops at its fifth hop with every answer still coming back, and a person's post that meets a turn's end in one DM, on ports 8310 to 8312. step28b drives the thread, the ask and the switch in Chromium, Firefox and WebKit at desktop and phone width, on ports 8313 to 8315. `test/step28-breaks.ts` breaks each guard in turn and watches its line go red. `test/stand-ins.ts` stops each stand-in a check's daemon leaves running, since a daemon that stops leaves a busy session's process for its next start.
+
+## WebMCP in agents' browsers
+
+The design is `docs/design/target-architecture.md`, under "WebMCP, both ways". Build step 21 made the agents' half. The app offering its own actions as tools, step 22, is not built.
+
+### The sites a team lists (`server/webmcp.ts`, `shared/webmcp.ts`, `app/src/WebmcpSites.tsx`, `0018_webmcp_origins.sql`)
+
+- **Solves now.** An agent's browser takes tools from a web page only if the team has listed the page's origin. An admin lists a site on the Team page as a scheme and a host, with a port or a star for any port, such as `http://127.0.0.1:*` for a preview. Every teammate can read the list through the API, and the API refuses a change from anyone but an admin. The list rides in each message to an agent's machine, and a session whose list changed restarts on its next message, so a site added or removed takes effect then. A team lists 50 sites at most, and a team that lists none gives its agents' browsers no page tools at all.
+- **The endpoints.** `GET /v1/team/webmcp-origins` answers any teammate with `{ origins: [{ id, origin, addedBy, createdAt }] }`. `POST /v1/team/webmcp-origins` with `{ origin }` lists a site, and `POST /v1/team/webmcp-origins/<id>/delete` takes one off. Both answer an admin with the new list, and refuse anyone else with 403. A site that is not a scheme and a host gets 400 with the reason, the 51st gets 409, and an id that is not on the team's list gets 404. The schemas are in `shared/webmcp.ts`.
+- **The component.** `WebmcpSitesList` takes `sites`, which is null while loading, and `onAdd` and `onRemove`, which reject with the reason a change was refused. It draws one row for each site and a field at the foot, with no form around it. Enter or Add lists what was typed. `WebmcpSites` reads the API and passes both in, and the Team page mounts it for admins. A settings screen can mount `WebmcpSitesList` instead and drop the two lines in `Team.tsx`.
+- **Helps later.** One row for each site is the place for rules that belong to a site, such as which of its tools may run.
+
+### The page tools (`daemon/web-tools.ts`, `daemon/computer-mcp.ts`, `daemon/desktop.ts`)
+
+- **Solves now.** The box's Chromium starts with the feature that gives a page `document.modelContext`, where a page registers its tools for agents. With a site listed, the `computer` server adds three tools. `web_tools` lists the tools of the page open in the agent's tab. `web_read` runs one the page marks read-only, so the agent looks something up without clicking through the page. `web_act` runs any other and asks a person first. All three work only while the tab is at a listed origin. A page at any other origin shows the agent no tools, and Playwright's own collection of page tools stays off for every team, so no snapshot carries an unlisted page's tool text either. A call names the origin `web_tools` gave, and runs only if the tab is still there. A person who takes over the screen stops these tools like the other browser tools. A page's names, descriptions and results reach the agent under a line that says they are the page author's words.
+- **Helps later.** The app's own tools in step 22 can be read through the same `web_tools`, once the preview's origin is listed.
+
+### Asking every time (`ASKS_EVERY_TIME` in `shared/webmcp.ts`, `server/record.ts`, `app/src/Asks.tsx`)
+
+- **Solves now.** `web_act` is not among the tools that run without asking, so Claude asks a person before each call, as it does for page scripts. For a tool on `ASKS_EVERY_TIME` the card offers Allow once and Deny and shows the whole call, the API refuses Always and Never, and no standing rule answers the ask.
+- **Helps later.** Any later tool that must ask each time joins the one list.
+
+### The WebMCP checks (`test/step21wa.ts`, `test/step21w.ts`, `test/step21wb.ts`)
+
+- **Solves now.** `step21wa` checks the team's list over the API alone, in about three seconds, with no box and no run lock. It covers who may list, what a site may look like, one form for one site, another team's view, and the limit of 50, including twelve sites listed at the same moment. `step21w` builds a real box under its own image tag, serves two sites from inside it, and runs the `computer` server the way the daemon's session config starts it. It checks that the box's Chromium has the object, that no tool is offered without a site and that listing one restarts the session with it, the three tools against a listed and an unlisted page, the ask for `web_act` and its answer, and the take-over. `step21wb` drives the Team page's list and the approval card in Chromium, Firefox and WebKit, at desktop and phone width.
+- **Helps later.** The sites script is a model for checking the app's own tools against a page in a box.

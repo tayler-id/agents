@@ -12,6 +12,7 @@ import { maybe, one, type Db } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
+import { ASKS_EVERY_TIME } from '../shared/webmcp.ts'
 import { hooksOf, memoryBlock } from './agents.ts'
 import { finishTurn, nextTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
@@ -169,6 +170,8 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     }
     return
   }
+  // A tool that asks every time is never answered by a rule, whatever the rules hold.
+  if (ASKS_EVERY_TIME.includes(body.toolName ?? '')) return
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
     `select decision from approval_rules
      where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
@@ -237,6 +240,9 @@ export async function answerAsk(
   if (ask.status === 'answered') throw new HttpError(409, 'this ask is already answered')
   if (ask.status !== 'open') throw new HttpError(409, 'this ask is no longer open, since the turn that raised it ended')
   if (ask.payload.toolName === CREATE_AGENT_TOOL) await checkNewAgentAnswer(client, ask.agent_id, person, decision)
+  if ((decision === 'always' || decision === 'never') && ASKS_EVERY_TIME.includes(ask.payload.toolName ?? '')) {
+    throw new HttpError(400, `${ask.payload.toolName} asks every time. Answer allow for this call or deny it.`)
+  }
   await client.query(
     `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
     [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
@@ -349,12 +355,15 @@ async function postAgentReply(client: pg.PoolClient, session: AgentSession, conv
   return reply.text
 }
 
-// What an agent brings to every session: its skills, its plugins, its hooks and
-// what it remembers about the people involved and the team.
-export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'hooks' | 'memory'>> {
+// What an agent brings to every session: its skills, its plugins, its hooks, what
+// it remembers about the people involved and the team, and the sites its team
+// lists for its browser to take WebMCP tools from.
+export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'hooks' | 'memory' | 'webmcpOrigins'>> {
   const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
   const memory = await memoryBlock(client, agentId, personIds)
-  return { skills: await skillsOf(client, agentId), plugins, hooks: await hooksOf(client, agentId), memory: memory || undefined }
+  const { rows: sites } = await client.query<{ origin: string }>(
+    'select o.origin from webmcp_origins o join agents a on a.team_id = o.team_id where a.id = $1 order by o.origin', [agentId])
+  return { skills: await skillsOf(client, agentId), plugins, hooks: await hooksOf(client, agentId), memory: memory || undefined, webmcpOrigins: sites.map((site) => site.origin) }
 }
 
 // An agent's skills: its own and the team's.

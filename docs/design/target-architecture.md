@@ -1069,6 +1069,17 @@ Never offered: answering an ask, setting a secret, signing in to a connector, a 
 
 **One action, an agent's browser.** The team lists `http://127.0.0.1:*`. `qa`, on a box, starts a preview of the app and opens it. It calls `web_tools` and sees the app's tools, calls `web_read` with `list_asks`, and calls `web_act` with `send_message`. The card asks a person. The page's dialog opens too, and `qa` can press it, so the card is the gate here.
 
+**As built for agents' browsers (step 21, branch `webmcp-browsers`, checked 2026-10-15).** It follows the text above, with these differences.
+
+- Playwright's own collection of page tools stays off with `--no-webmcp` for every team, not only for a team with an empty list. With it on, Playwright prints the names, descriptions and schemas of a page's tools in each snapshot and in each page's status line, so an unlisted page's tool text would reach the agent through any snapshot. The three tools reach a page through the browser tools' `browser_evaluate`, in the tab those tools act on. The program they run reads `document.modelContext` only after the page's origin matched the list, and it reads only the tools the top page registered itself, not those of frames in it.
+- The tab's origin is read inside the tab, from `location.origin`, by the program that reads the tools. The design said to read the address from the DevTools endpoint, but that list does not say which tab Playwright's server acts on, and reading it in the tab leaves no gap between the tab that was checked and the tab acted on. A page that replaces `eval` before the program runs can answer anything. It would only put its own text in front of the agent, which a snapshot already lets it do, and nothing outside that page runs.
+- `web_read` and `web_act` take the `origin` that `web_tools` gave, with the tool's name and its input. The program does nothing unless the tab is still at that origin, so the person's answer to a `web_act` card applies to the page they saw, and a tab that moved while the card waited runs nothing.
+- `web_tools` answers with one JSON object on each line for each tool, under a line that says whose words they are, so a description cannot forge another tool's line.
+- A tool the page marks read-only and also marks as consequential asks like any other. A tool that has not answered in 30 seconds is given up on. A result is cut at 30,000 characters.
+- The list is the table `webmcp_origins`, not a team setting, so it records who listed each site and when. A team's agents follow a change on their next message. Nothing is listed to start with, `http://127.0.0.1:*` included. A turn already running keeps the list it started with.
+- The box's browser starts with `--enable-features=WebMCPTesting` in `daemon/desktop.ts`. That is a change to the daemon and not to `box/`.
+- `computer-mcp.ts` still lists its tools once, at start. The three tools are fixed, and Playwright's own `webmcp_` tools, the ones that would change as a page does, stay off.
+
 **Stays, changes, new.**
 
 - Stays: Playwright's browser tools, the `computer` server, the takeover rules, and `--no-webmcp` when no origin is listed.
@@ -1077,8 +1088,8 @@ Never offered: answering an ask, setting a secret, signing in to a connector, a 
 
 ### What this section could not confirm
 
-- Whether the Chromium in the box image, and the one inside Electron, expose `document.modelContext`. Chrome's pages describe an origin trial and an early preview program and name no flag. One guide names `chrome://flags/#enable-webmcp-testing`. Steps 21 and 22 each start by checking this.
-- Whether the object is `document.modelContext` or `navigator.modelContext`. The spec draft of 2026-10-15 and Chrome's page say `document`. The first proposal and Tayler's note say `navigator`. The code reads both, as Playwright's does.
+- Whether the Chromium inside Electron exposes `document.modelContext`. Step 22 starts by checking this. The box's Chromium, 156.0.8078.4 from Playwright 1.64.0, exposes it only behind the feature `WebMCPTesting`, the one `chrome://flags/#enable-webmcp-testing` switches. Step 21 starts the box's browser with `--enable-features=WebMCPTesting`, and `test/step21w.ts` checks first that a page gets the object.
+- Whether `navigator.modelContext` exists anywhere. In the box's Chromium only `document.modelContext` does, with `registerTool`, `getTools` and `executeTool`. `executeTool` takes the tool and an input object and answers with the result as text. Step 22 still reads both until Electron's Chromium is checked.
 - Whether any of the four hosted servers returns a view. None of the pages read says so, which is why apps start off (decision 18).
 - Which protocol version each hosted server speaks. The SDK here speaks up to 2025-11-25, and the 2026-07-28 revision drops `initialize` and sessions.
 - Atlassian's pages do not say that third-party clients register dynamically. A customer's request in Atlassian's tracker (ROVO-870, July 2026) says the server "exclusively uses OAuth 2.1 with Dynamic Client Registration" and allows only localhost and listed partner domains. Atlassian's pages do say an admin can add an HTTPS origin.
