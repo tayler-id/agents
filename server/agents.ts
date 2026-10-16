@@ -12,7 +12,7 @@ import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
 import { SECRET_NAME } from '../shared/secrets.ts'
 import { AgentId, ConversationId } from '../shared/ids.ts'
-import { carriedBy, mayChangeHooks, Recipe, type CopyAsk, type CopyDone, type RecipeMemory } from '../shared/recipe.ts'
+import { carriedBy, mayChangeHooks, mayRunOn, Recipe, type CopyAsk, type CopyDone, type RecipeMemory } from '../shared/recipe.ts'
 import { AgentHook, NAME, type AgentPlugin, type AgentSkill } from '../shared/types.ts'
 import { TEAM_AGENTS_SERVER, type AcceptsAgents } from '../shared/team-agents.ts'
 import { HttpError, openDm, scrub, type Person } from './record.ts'
@@ -230,11 +230,28 @@ export async function hooksOf(client: pg.PoolClient | pg.Pool, agentId: string):
 }
 
 // A hook is a command the agent's machine runs, so who may change one is narrower than for a skill.
+// The machine an agent runs on, and whose it is.
+const MachineOf = z.object({ name: z.string(), owner_id: PersonId.nullable(), login: z.string().nullable() })
+async function machineOf(client: pg.PoolClient, agentId: string) {
+  return MachineOf.parse(await one(client, "the agent's machine",
+    `select i.name, i.owner_id, p.login from agents a join instances i on i.id = a.home_instance_id
+     left join people p on p.id = i.owner_id where a.id = $1`, [agentId]))
+}
+
+// Refuses hooks or plugins for an agent whose machine is a teammate's, unless the person is a team admin.
+async function mustRunOn(client: pg.PoolClient, person: Person, agentId: string) {
+  const machine = await machineOf(client, agentId)
+  if (!mayRunOn(person, machine.owner_id)) {
+    throw new HttpError(403, `Hooks and plugins run commands on ${machine.name} as ${machine.login ?? 'its owner'}, so only they or a team admin can put them there.`)
+  }
+}
+
 async function agentWithHooksAccess(client: pg.PoolClient, person: Person, agentId: string) {
   const agent = await agentOf(client, person, agentId)
-  if (!mayChangeHooks(person, agent)) {
+  if (!mayChangeHooks(person, agent, null)) {
     throw new HttpError(403, "Hooks run commands on the agent's machine, so only the agent's owner or a team admin changes them.")
   }
+  await mustRunOn(client, person, agent.id)
   return agent
 }
 
@@ -364,6 +381,7 @@ export async function saveTemplate(client: pg.PoolClient, person: Person, agentI
 // and the team's memories. Each part goes through the call a person's edit does, so
 // a recipe can't carry anything the agent's page would refuse.
 export async function installRecipe(client: pg.PoolClient, person: Person, agentId: string, recipe: Recipe) {
+  if (recipe.hooks.length > 0 || recipe.plugins.length > 0) await mustRunOn(client, person, agentId)
   await updateAgent(client, person, agentId, { title: recipe.title, role: recipe.role, instructions: recipe.instructions, model: recipe.model })
   for (const skill of recipe.skills) await saveSkill(client, person, agentId, skill)
   for (const plugin of recipe.plugins) await savePlugin(client, person, agentId, plugin)

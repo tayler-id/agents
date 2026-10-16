@@ -37,7 +37,7 @@ const ENGINES: Record<string, BrowserType> = { chromium, webkit, firefox }
 const engines = (process.env.AGENTS_UI_ENGINES ?? 'chromium,webkit,firefox').split(',')
 const id = randomBytes(4).toString('hex')
 const [teamA, teamB] = [`step24c-${id}`, `step24cx-${id}`]
-const [alice, dana] = [`alice24c-${id}@local`, `dana24c-${id}@local`]
+const [alice, dana, erin] = [`alice24c-${id}@local`, `dana24c-${id}@local`, `erin24c-${id}@local`]
 const TEAM_NOTE = `TEAMNOTE-${id}`
 const ABOUT_ALICE = `ABOUTALICE-${id}`
 // Shaped like a GitHub token, so the scrubber knows it. A skill that holds one must not leave the team in a file.
@@ -181,6 +181,8 @@ try {
   node('server/admin.ts', 'add-team', teamB, dana)
   node('server/admin.ts', 'add-instance', teamA, `mac-a-${id}`, 'mac', alice)
   node('server/admin.ts', 'add-instance', teamB, `mac-b-${id}`, 'mac', dana)
+  // Erin is Dana's teammate and not an admin. Dana made the team, so she is its admin.
+  node('server/admin.ts', 'add-person', teamB, erin)
   const idOf = async (name: string) => must(await row('select id from instances where name = $1', [name]), name).id
   const [machineA, machineB] = [await idOf(`mac-a-${id}`), await idOf(`mac-b-${id}`)]
   const folder = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step24c-')))
@@ -238,6 +240,16 @@ try {
   })
   const taken = await as(dana, 'POST', '/v1/agents/import', { file, name: 'release-notes', homeInstanceId: machineB })
   const theirMachine = await as(dana, 'POST', '/v1/agents/import', { file, name: 'on-alices-machine', homeInstanceId: machineA })
+  const onDanas = await as(erin, 'POST', '/v1/agents/import', { file, name: 'on-danas-mac', homeInstanceId: machineB })
+  check(onDanas.status === 403 && new RegExp(`mac-b-${id}`).test(onDanas.json?.error) && !(await row('select 1 from agents a join teams t on t.id = a.team_id where a.name = $1 and t.name = $2', ['on-danas-mac', teamB])),
+    `an import that carries hooks and plugins cannot go on a teammate's Mac, and nothing is made (${String(onDanas.status)} ${String(onDanas.json?.error)})`)
+  const pluginsOnly = file && { ...file, recipe: { ...file.recipe, hooks: [] } }
+  const pluginsOnDanas = await as(erin, 'POST', '/v1/agents/import', { file: pluginsOnly, name: 'plugins-on-danas-mac', homeInstanceId: machineB })
+  check(pluginsOnDanas.status === 403 && /hooks and plugins/i.test(pluginsOnDanas.json?.error),
+    `an import with plugins and no hooks cannot go on a teammate's Mac either (${String(pluginsOnDanas.status)} ${String(pluginsOnDanas.json?.error)})`)
+  const plain = file && { ...file, recipe: { ...file.recipe, plugins: [], hooks: [] } }
+  const plainOnDanas = await as(erin, 'POST', '/v1/agents/import', { file: plain, name: 'plain-on-danas-mac', homeInstanceId: machineB })
+  check(plainOnDanas.status === 200, `a file with no hook or plugin still goes on a teammate's Mac, as a blank agent does (${String(plainOnDanas.status)})`)
   const tooMany = await as(dana, 'POST', '/v1/agents/import', {
     file: file && { ...file, recipe: { ...file.recipe, hooks: Array.from({ length: 1001 }, (_, i) => ({ name: `h${i}`, event: 'Stop', matcher: null, command: 'true', timeoutSec: null })) } },
     name: 'too-many', homeInstanceId: machineB,

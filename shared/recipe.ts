@@ -67,9 +67,18 @@ export const HookRow = z.object({
 })
 export type HookRow = z.infer<typeof HookRow>
 
+// Hooks and plugins run commands on the agent's machine as that machine's owner. So
+// on a machine with an owner, only that person or a team admin puts them there. A
+// machine with no owner, such as a team box, is no one person's, and the rule for
+// the agent decides. Decision 17's approval by a Mac's owner does not exist yet.
+export function mayRunOn(person: { id: string; role: TeamRole }, machineOwner: string | null): boolean {
+  return person.role === 'admin' || machineOwner === null || machineOwner === person.id
+}
+
 // A hook runs a command on the agent's machine, as a plugin does, so only the
-// agent's owner or a team admin changes one. The server refuses anyone else, and
-// the app uses the same rule to leave out the controls that would be refused.
-export function mayChangeHooks(person: { id: string; role: TeamRole }, agent: { owner_id: string | null }): boolean {
-  return person.role === 'admin' || agent.owner_id === person.id
+// agent's owner or a team admin changes one, and only on a machine they may run
+// commands on. The server refuses anyone else, and the app uses the same rule to
+// leave out the controls that would be refused.
+export function mayChangeHooks(person: { id: string; role: TeamRole }, agent: { owner_id: string | null }, machineOwner: string | null): boolean {
+  return (person.role === 'admin' || agent.owner_id === person.id) && mayRunOn(person, machineOwner)
 }

@@ -311,6 +311,18 @@ try {
     "a copy cannot go on a teammate's own box, where agents run on that teammate's sign-in")
   const elsewhere = await as(bob, `/v1/agents/${source}/copy`, { name: 'on-another-team', homeInstanceId: macX, memories: false })
   check(elsewhere.status === 404 && elsewhere.json?.error === 'no such machine' && !(await agentRow('on-another-team')), "a copy cannot go on another team's machine")
+  // Hooks and plugins run commands as the machine's owner, so only that person or an admin puts them on a machine.
+  // Bob may still make a blank agent on Alice's Mac, as before, and it carries no command.
+  const onMac = await as(bob, `/v1/agents/${source}/copy`, { name: 'on-alices-mac', homeInstanceId: macA, memories: false })
+  check(onMac.status === 403 && new RegExp(`mac-a-${id}`).test(onMac.json?.error) && /hooks and plugins/i.test(onMac.json?.error) && !(await agentRow('on-alices-mac')),
+    `a copy that carries hooks and plugins cannot go on a teammate's Mac, and nothing is made (${String(onMac.status)} ${String(onMac.json?.error)})`)
+  const blank = await as(bob, '/v1/agents', { name: 'bobs-on-alices-mac', homeInstanceId: macA })
+  const blankHook = await as(bob, `/v1/agents/${blank.json?.agentId}/hooks`, STOP)
+  check(blank.status === 200 && blankHook.status === 403 && new RegExp(`mac-a-${id}`).test(blankHook.json?.error)
+    && Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [blank.json?.agentId])).n) === 0,
+  `Bob makes a blank agent on Alice's Mac, as before, but cannot add a hook to it, though it is his (${String(blankHook.status)} ${String(blankHook.json?.error)})`)
+  const byAdmin = await as(alice, `/v1/agents/${source}/copy`, { name: 'alices-on-bobs-mac', homeInstanceId: macB, memories: false })
+  check(byAdmin.status === 200 && (await agentRow('alices-on-bobs-mac')) !== undefined, `an admin may put a copy with hooks and plugins on a teammate's Mac (${String(byAdmin.status)})`)
   const stranger = await as(outsider, `/v1/agents/${source}/copy`, { name: 'taken-from-away', homeInstanceId: macB, memories: true })
   check(stranger.status === 404 && stranger.json?.error === 'no such agent', "a person from another team cannot copy the agent")
   await db.query(`insert into plugins (agent_id, name, kind, config) values ($1, 'leaky', 'stdio', $2)`,
@@ -385,6 +397,9 @@ try {
   const templated = await slice(fromTemplate.json?.agentId)
   check(fromTemplate.status === 200 && same(templated.hooks, from.hooks) && (await teamRows(fromTemplate.json?.agentId)).length === 0,
     'a new agent started from the template has the hooks and no memory')
+  const templatedOnMac = await as(bob, '/v1/agents', { name: 'template-on-alices-mac', homeInstanceId: macA, templateSlug: saved.json?.slug })
+  check(templatedOnMac.status === 403 && !(await agentRow('template-on-alices-mac')),
+    `a new agent from a template with hooks and plugins cannot go on a teammate's Mac, and nothing is made (${String(templatedOnMac.status)} ${String(templatedOnMac.json?.error)})`)
   const old = { title: 'Old', role: null, instructions: 'Made before hooks.', model: null, skills: [], plugins: [], routines: [] }
   await db.query(`insert into templates (team_id, name, recipe, share_slug) values ((select id from teams where name = $1), 'old', $2, $3)`, [team, JSON.stringify(old), `old-${id}`])
   const fromOld = await as(bob, '/v1/agents', { name: 'from-old', homeInstanceId: macB, templateSlug: `old-${id}` })

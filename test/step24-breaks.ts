@@ -40,7 +40,14 @@ const CALLS_UI = 'app/src/agent/copies.ts'
 const BREAKS: Break[] = [
   // Who may change a hook, and what a hook may be.
   { name: 'hook-owner', checks: ['step24'], why: 'any teammate changes any agent\'s hooks', red: ['a teammate who does not own the agent cannot add a hook', 'a teammate cannot take one off'],
-    edits: [{ file: AGENTS, anchor: '  if (!mayChangeHooks(person, agent)) {', replace: '  if (false) {' }] },
+    edits: [{ file: AGENTS, anchor: '  if (!mayChangeHooks(person, agent, null)) {', replace: '  if (false) {' },
+      { file: AGENTS, anchor: '  await mustRunOn(client, person, agent.id)\n', replace: '' }] },
+  { name: 'hooks-on-teammates-mac', checks: ['step24'], why: "an agent's owner puts hooks on a teammate's Mac", red: ["Bob makes a blank agent on Alice's Mac, as before, but cannot add a hook to it"],
+    edits: [{ file: AGENTS, anchor: '  await mustRunOn(client, person, agent.id)\n', replace: '' }] },
+  { name: 'recipe-on-teammates-mac', checks: ['step24c'], why: "an import's plugins go on a teammate's Mac", red: ["an import with plugins and no hooks cannot go on a teammate's Mac either"],
+    edits: [{ file: AGENTS, anchor: '  if (recipe.hooks.length > 0 || recipe.plugins.length > 0) await mustRunOn(client, person, agentId)\n', replace: '' }] },
+  { name: 'admin-no-exception', checks: ['step24'], why: "an admin cannot put hooks or plugins on a teammate's Mac", red: ["an admin may put a copy with hooks and plugins on a teammate's Mac"],
+    edits: [{ file: RECIPE, anchor: "  return person.role === 'admin' || machineOwner === null || machineOwner === person.id\n", replace: '  return machineOwner === null || machineOwner === person.id\n' }] },
   { name: 'hook-secret', checks: ['step24'], why: 'a command that holds a key is stored', red: ['a command that holds a secret value is refused'],
     edits: [{ file: AGENTS, anchor: '  if (scrub(hook.command) !== hook.command) {', replace: '  if (false) {' }] },
   { name: 'matcher-any-event', checks: ['step24'], why: 'a hook for a message may name tools', red: ['a hook needs a known event, a matcher only on a tool event'],
@@ -133,7 +140,7 @@ const BREAKS: Break[] = [
     edits: [{ file: AGENTS, anchor: "where team_id = $1 and owner_id = $2 and (personal or kind = 'mac')", replace: "where team_id = $1 and $2::uuid is not null and (personal or kind = 'mac')" }] },
   // The app.
   { name: 'ui-hooks-gate', checks: ['step24b'], why: 'the page offers the hook controls to everyone', red: ['a teammate reads the hooks, and is told who changes them'],
-    edits: [{ file: PAGE, anchor: 'canChange={mayChangeHooks(me.person, agent)}', replace: 'canChange={true}' }] },
+    edits: [{ file: PAGE, anchor: 'canChange={mayChangeHooks(me.person, agent, instances.find((i) => i.id === agent.home_instance_id)?.owner_id ?? null)}', replace: 'canChange={true}' }] },
   { name: 'ui-tools-field', checks: ['step24b'], why: 'every hook line asks which tools it applies to', red: ['takes no tools to match for it'],
     edits: [{ file: HOOKS_UI, anchor: '      {takesMatcher(event) && (', replace: '      {true && (' }] },
   { name: 'ui-default-event', checks: ['step24b'], why: 'the hook line starts on another event than a message', red: ['with a message chosen'],

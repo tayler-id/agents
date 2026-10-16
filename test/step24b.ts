@@ -87,9 +87,10 @@ async function run(engine: string) {
   const hookRows = (page: Page) => hooksOf(page).locator('li.hooks-row')
   const focused = (locator: Locator) => locator.evaluate((el) => el === document.activeElement)
   try {
-    // The agent Bob will copy: Alice owns it, with a skill, a plugin that needs no secret, a routine and memories.
+    // The agent Bob will copy: Alice owns it, with a skill, a plugin that needs no secret, a routine and memories. It is
+    // on her own Mac, since hooks may go only on a machine of the person who adds them. Nothing runs on that Mac here.
     const made = await asPerson(PEOPLE, alice, 'POST', '/v1/agents', {
-      name, homeInstanceId: must(await row('select id from instances where name = $1', [`mac-${id}`]), 'the machine').id,
+      name, homeInstanceId: must(await row('select id from instances where name = $1', [`mac-${engine}-${id}`]), 'her machine').id,
       title: 'Writes release notes', instructions: 'You write release notes.',
     })
     const source = must(made.json?.agentId, 'the agent Alice made')
@@ -243,6 +244,7 @@ try {
   node('server/admin.ts', 'add-team', team, admin)
   for (const login of [bob, carol, ...engines.map((engine) => `alice24b-${engine}-${id}@local`)]) node('server/admin.ts', 'add-person', team, login)
   const { token } = JSON.parse(node('server/admin.ts', 'add-instance', team, `mac-${id}`, 'mac', bob))
+  for (const engine of engines) node('server/admin.ts', 'add-instance', team, `mac-${engine}-${id}`, 'mac', `alice24b-${engine}-${id}@local`)
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step24b-')))
   writeFileSync(join(home, 'scenario.json'), JSON.stringify({ turns: [] }))
   execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--config', 'app/vite.config.ts', '--logLevel', 'error'], { cwd: ROOT })

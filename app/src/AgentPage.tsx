@@ -23,6 +23,7 @@ export function AgentPage({ me, agentId }: { me: Me; agentId: string }) {
   const { rows: memories } = useSnapshot<Memory>('memories', {}, 6000)
   const { rows: people } = useSnapshot<Person>('people', {}, 30000)
   const { rows: hooks, error: hooksError } = useSnapshotOf(HookRow, 'agent_hooks', {}, 4000)
+  const { rows: instances } = useSnapshot<Instance>('instances', {}, 15000)
   const agent = agents.find((a) => a.id === agentId)
   const [notice, setNotice] = useState('')
   if (!agent) return <section className="page"><p className="muted">Loading the agent…</p></section>
@@ -76,7 +77,7 @@ export function AgentPage({ me, agentId }: { me: Me; agentId: string }) {
 
         <h2 className="kicker section">Hooks</h2>
         {hooksError && <p className="error small" role="alert">{hooksError}</p>}
-        <Hooks agentName={agent.name} hooks={own(hooks)} canChange={mayChangeHooks(me.person, agent)}
+        <Hooks agentName={agent.name} hooks={own(hooks)} canChange={mayChangeHooks(me.person, agent, instances.find((i) => i.id === agent.home_instance_id)?.owner_id ?? null)}
           actions={{ save: (ask) => saveHook(agentId, ask), remove: (name) => removeHook(agentId, name) }} />
 
         <h2 className="kicker section">What it remembers</h2>
