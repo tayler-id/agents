@@ -23,8 +23,8 @@ import { servePeople } from './people.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
-// Ports 8120 to 8124 are this check's: machines, people, streams, a page on another site, and a recorder in front of the API.
-const PORT = 8120
+// Ports 8140 to 8144 are this check's: machines, people, streams, a page on another site, and a recorder in front of the API.
+const PORT = 8140
 const API = `http://127.0.0.1:${PORT}`
 const PEOPLE_PORT = PORT + 1
 const PEOPLE = `http://127.0.0.1:${PEOPLE_PORT}`
