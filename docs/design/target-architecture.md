@@ -180,13 +180,13 @@ A Mac has no seats. Its agents run without a screen, as today, until the helper 
 **Built so far.** The seat side is built on branch `seats`, and joins the scheduler once step 1 lands. `test/step15c.ts` and `test/step15d.ts` check it. It differs from the plan above in four ways.
 
 - A box follows its seat rows through sync, where the plan had `seat_open` commands, so a box that restarts brings back the seats its agents held.
-- A seat is `free`, `starting` or `ready`. A seat given to another agent goes back to `starting` for that agent, and the box closes the pages the last agent had open before it reports the seat ready, so there is no `reclaiming`.
+- A seat is `free`, `starting` or `ready`. A seat given to another agent goes back to `starting` for that agent, and the box closes the pages and windows the last agent had open before it reports the seat ready, so there is no `reclaiming`.
 - Seat 1 runs whenever its computer runs. A session whose agent holds no seat runs on seat 1, as every session on a box did before seats. A person can always open seat 1's screen, to sign in to a site once for every seat.
 - Each seat's browser has a profile of its own, and the box copies cookies between the seats' browsers every 1.5 seconds, as Tayler decided on 2026-10-15. Seat 1 keeps the profile a box had before seats, so its logins stay. A login a site keeps only in localStorage or IndexedDB stays in its seat. The profile for each agent in the plan above is not built.
 
 **Stays, changes, new.**
 
-- Stays: the image, Xvnc, matchbox, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`.
+- Stays: the image, Xvnc, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`. JWM with a dock replaced matchbox on 2026-10-16, when Tayler asked for a real desktop.
 - Changes: one display per box becomes one per seat. `daemon/computer-mcp.ts` takes its display and DevTools port from the session's seat. The Screen routes in `server/screens.ts` name an agent's seat. The 24-hour privacy rule reads the sessions that ran on that seat, not on the whole box, so one agent's private task no longer hides its owner's other agents. The box limits of 4 GB and 2 CPUs become the computer's size (decision 2).
 - New: the `seats` table, the seat commands, the reclaim rule, the secret relay, archiving an agent, and a seat list on the computer's page.
 
