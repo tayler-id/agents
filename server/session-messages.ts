@@ -18,7 +18,7 @@ import type { MessagePayload } from '../shared/types.ts'
 // `attachmentIds` are the person's pending uploads this message carries, which the agent is told of.
 export async function sendToSession(client: pg.PoolClient, person: Person, sessionId: string, text: string, said = text, attachmentIds: readonly string[] = []) {
   const session = await maybe<{ id: string; team_id: string; task_id: string | null; instance_id: string; workspace_id: string | null; harness_session_id: string | null; agent_id: string }>(client,
-    'select id, team_id, task_id, instance_id, workspace_id, harness_session_id, agent_id from sessions where id = $1 and team_id = $2 for update',
+    'select id, team_id, task_id, instance_id, workspace_id, harness_session_id, agent_id from sessions where id = $1 and team_id = $2 for no key update',
     [sessionId, person.team_id])
   if (!session?.task_id) throw new HttpError(404, 'no such task session')
   // A judge's session is one a review or confirm row lists among its

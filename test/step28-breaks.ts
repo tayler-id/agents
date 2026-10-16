@@ -24,7 +24,7 @@ const PENDING = join(WORK, 'pending.json')
 const RUN_TIMEOUT_MS = 15 * 60 * 1000
 
 type Edit = { file: string; anchor: string; replace: string }
-type CheckName = 'step28' | 'step28b'
+type CheckName = 'step28' | 'step28b' | 'step28c'
 // `red` holds a piece of each check line the break must turn red.
 type Break = { name: string; check: CheckName; why: string; red: string[]; edits: Edit[] }
 
@@ -38,9 +38,9 @@ const BREAKS: Break[] = [
   { name: 'accepts-owner', check: 'step28', why: "anyone on the team opens an agent to other people's agents", red: ["only critic's owner lets other people's agents message it"],
     edits: [{ file: 'server/agents.ts', anchor: "  const decides = agent.owner_id === null ? person.role === 'admin' : agent.owner_id === person.id", replace: '  const decides = true' }] },
   { name: 'hop-limit', check: 'step28', why: 'a chain of agents has no end', red: ['and its message, hop 5, is refused', 'no turn in the team is past hop 4'],
-    edits: [{ file: TEAM_AGENTS, anchor: '  if (hops > MAX_HOPS) {', replace: '  if (false) {' }] },
+    edits: [{ file: TEAM_AGENTS, anchor: '  if (hops <= MAX_HOPS) return { hops }', replace: '  if (true as boolean) return { hops }' }] },
   { name: 'stop-note', check: 'step28', why: 'a chain stopped at its limit leaves no note where it started', red: ['the DM where the relay started shows one note'],
-    edits: [{ file: TEAM_AGENTS, anchor: '    if (turn.origin !== null) {\n      const origin = turn.origin\n', replace: '    if (false) {\n      const origin = turn.origin\n' }] },
+    edits: [{ file: TEAM_AGENTS, anchor: '  if (turn.origin !== null) {\n    await appendMessage(client, turn.origin, {', replace: '  if (false as boolean) {\n    await appendMessage(client, turn.origin, {' }] },
   { name: 'answer-post', check: 'step28', why: "an answer or a result goes back to the agent only, and the conversation where the work started never shows it", red: ["writer's answer is also a post in Alice's DM", "writer's report on the handed task is also a post"],
     edits: [{ file: 'server/agent-turns.ts', anchor: '  if (waiting.hops !== 0 || waiting.conversationId === null) return\n', replace: '  return\n' }] },
   { name: 'origin-last-hop', check: 'step28', why: "a chain's start is taken to be the conversation of its latest turn, so a stop note lands in an agents thread, even for a chain that started in a task", red: ['the DM where the relay started shows one note', 'no thread between agents got a stop note', 'posted no answer and no stop note anywhere'],
@@ -72,6 +72,33 @@ const BREAKS: Break[] = [
     edits: [{ file: RECORD, anchor: '  if (person?.id !== maker.owner_id) {', replace: '  if (false) {' }] },
   { name: 'create-always', check: 'step28', why: 'Always answers every later ask to make an agent', red: ['only the owner says yes to a new agent, one at a time'],
     edits: [{ file: RECORD, anchor: "  if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'A new agent is approved or denied one at a time, so Always and Never are not offered.')\n", replace: '' }] },
+  // What the landing review found: locks, the cap, the machine port and answers that cannot be delivered. They
+  // run on a database built by the migrator, with Electric on it, which the environment of this run names.
+  { name: 'fanout-row-lock', check: 'step28c', why: "the sender's session row is locked for the fan-out count, so two agents sending to each other at once wait for each other", red: ['messages between pairs of agents'],
+    edits: [{ file: TEAM_AGENTS, anchor: "await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [caller.id])", replace: "await client.query('select 1 from sessions where id = $1 for no key update', [caller.id])" }] },
+  { name: 'fanout-no-lock', check: 'step28c', why: 'sends from one turn at the same moment all see the count before any of them is written', red: ['sends from one turn at the same moment'],
+    edits: [{ file: TEAM_AGENTS, anchor: "await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [caller.id])", replace: 'void caller' }] },
+  { name: 'pair-lock', check: 'step28c', why: "two agents' first messages to each other at the same moment make two threads", red: ["first messages to each other at the same moment make one thread"],
+    edits: [{ file: TEAM_AGENTS, anchor: "  await client.query(`select pg_advisory_xact_lock(hashtext('agents-thread:' || $1 || ':' || $2))`, [first, second])\n", replace: '' }] },
+  { name: 'report-lock', check: 'step28c', why: "a report locks its task and a person's message locks the task's session, each in a way the other's foreign keys wait on, so the two deadlock", red: ["a report on each task and a person's message to it"],
+    edits: [
+      { file: 'server/session-messages.ts', anchor: "team_id = $2 for no key update'", replace: "team_id = $2 for update'" },
+      { file: TEAM_AGENTS, anchor: 'where t.id = $1 for no key update of t`', replace: 'where t.id = $1 for update of t`' },
+    ] },
+  { name: 'send-count', check: 'step28c', why: "an answer passing through a turn counts as one of its sends", red: ["is not one of its sends"],
+    edits: [{ file: TEAM_AGENTS, anchor: '(select count(*) from turns where sent_by_turn in (select id from running))', replace: "(select count(*) from turns where answer_to_turn in (select id from running) and source = 'agent')" }] },
+  { name: 'tools-scope', check: 'step28c', why: 'a session with no turn running on the machine still gets the agent tools', red: ['gets no agent tools'],
+    edits: [{ file: 'server/api.ts', anchor: "  if (!running) throw new HttpError(403, 'agent tools work only in a session with a turn running on this machine')\n", replace: '' }] },
+  { name: 'private-send', check: 'step28c', why: "an agent in private work copies it into a thread the team reads", red: ['sends nothing to another agent'],
+    edits: [{ file: TEAM_AGENTS, anchor: "  if (caller.visibility === 'private') {", replace: '  if (false as boolean) {' }] },
+  { name: 'answer-lost', check: 'step28c', why: 'an answer that cannot be delivered is tried on every tick for good', red: ['cannot be delivered is marked once'],
+    edits: [{ file: 'server/agent-turns.ts', anchor: '      if (!isTransient(error)) await tx(', replace: '      if (false as boolean) await tx(' }] },
+  { name: 'lock-modes', check: 'step28', why: "the session and conversation locks wait on foreign-key checks again, so sends meeting answers deadlock", red: ['a turn that tries 6 sends'],
+    edits: [
+      { file: RECORD, anchor: "folder_id, last_seq from sessions where id = $1 for no key update'", replace: "folder_id, last_seq from sessions where id = $1 for update'" },
+      { file: RECORD, anchor: "'select team_id, last_seq from conversations where id = $1 for no key update'", replace: "'select team_id, last_seq from conversations where id = $1 for update'" },
+      { file: 'server/scheduler.ts', anchor: "select 1 from sessions where id = $1 for no key update', [prompt.sessionId]", replace: "select 1 from sessions where id = $1 for update', [prompt.sessionId]" },
+    ] },
   // The two writes that met in a DM.
   { name: 'lock-order', check: 'step28', why: 'a turn that ends locks its session before its conversation, the other way from a post', red: ["a person's post and a turn ending in one DM at once both go through"],
     edits: [{ file: RECORD, anchor: "  if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {\n    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for no key update', [sessionId])\n  }\n", replace: '' }] },
@@ -130,7 +157,7 @@ function runCheck(name: CheckName): Promise<string> {
 
 // A red run keeps its team and its folder to look at. Once its lines are read they go.
 async function removeKept(output: string) {
-  const kept = /\(team (together-28b?-[0-9a-f]+) kept, files in (\S+)\)/.exec(output)
+  const kept = /\(team (together-28[bc]?-[0-9a-f]+) kept, files in (\S+)\)/.exec(output)
   if (!kept?.[1] || !kept[2]) return
   const db = new pg.Client({ connectionString: process.env.DATABASE_URL })
   await db.connect()

@@ -50,6 +50,8 @@ export type AgentCause = {
   source: 'agent' | 'delegation'; askedBySession: SessionId; answerTo: TurnId | null; hops: number
   // The conversation the chain started in, null when it started outside one.
   originConversation: ConversationId | null
+  // The turn whose message to another agent this is, null for an answer or a handed task's result.
+  sentByTurn: TurnId | null
 }
 // A room's turn waits in the room's line, without a prompt, until the room gives
 // it its go. The deadline is how long it may take once it has the go.
@@ -169,14 +171,14 @@ export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queue
        where id = $1 and status = 'queued' and session_id is null returning id`, [turn.queued, prompt.sessionId, event.id, payload])
     : await one<{ id: string }>(client, 'the new turn',
       `insert into turns (team_id, agent_id, source, conversation_id, task_id, run_id, routine_id, asked_by_person,
-         asked_by_session, answer_to_turn, hops, origin_conversation_id, session_id, event_id, payload, status, requested_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'queued', clock_timestamp()) returning id`,
+         asked_by_session, answer_to_turn, hops, origin_conversation_id, sent_by_turn, session_id, event_id, payload, status, requested_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'queued', clock_timestamp()) returning id`,
       [turn.teamId, turn.agentId, turn.source,
         'conversationId' in turn ? turn.conversationId : null, 'taskId' in turn ? turn.taskId : null,
         turn.source === 'pipeline' ? turn.runId : null, turn.source === 'routine' ? turn.routineId : null,
         turn.source === 'person' || turn.source === 'routine' ? turn.askedBy : null,
         'askedBySession' in turn ? turn.askedBySession : null, 'answerTo' in turn ? turn.answerTo : null, 'hops' in turn ? turn.hops : 0,
-        'originConversation' in turn ? turn.originConversation : null, prompt.sessionId, event.id, payload])
+        'originConversation' in turn ? turn.originConversation : null, 'sentByTurn' in turn ? turn.sentByTurn : null, prompt.sessionId, event.id, payload])
   await placeSession(client, prompt.sessionId)
   return TurnId.parse(row.id)
 }

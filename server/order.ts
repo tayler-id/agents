@@ -27,7 +27,7 @@ export async function lockedTask(client: pg.PoolClient, person: Person, taskId: 
     `select t.archived_at is not null as archived, t.done_at is not null as done,
        (select s.id from sessions s where s.task_id = t.id and s.status = 'draft' and s.archived_at is null
         order by s.created_at desc limit 1) as draft
-     from tasks t where t.id = $1 and t.team_id = $2 for update of t`, [taskId, person.team_id])
+     from tasks t where t.id = $1 and t.team_id = $2 for no key update of t`, [taskId, person.team_id])
   if (!row) throw new HttpError(404, 'no such task')
   const task = taskState(row)
   if (!TASK_ACTIONS[action].from.includes(task.state)) throw new HttpError(409, REFUSALS[task.state])

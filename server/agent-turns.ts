@@ -86,7 +86,7 @@ export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskI
   await postAnswer(client, { conversationId: asked.conversation_id, hops: asked.hops, agentId: asked.agent_id },
     { agentId: task.agentId, sessionId: fromSession, body: posted, clientId: `result-post:${task.id}:${resultId}` })
   const turnId = await sendAgentTurn(client, asked.session_id, { text, clientId: `result:${task.id}:${resultId}`, links: { taskId: task.id } }, task.agentId,
-    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin })
+    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin, sentByTurn: null })
   if (turnId === null) throw new Error(`the result of task ${task.id} was recorded already, with a client id made just now`)
   return turnId
 }
@@ -160,22 +160,47 @@ async function answerTurn(client: pg.PoolClient, turnId: TurnId) {
   await postAnswer(client, { conversationId: turn.waiting_conversation, hops: turn.waiting_hops, agentId: turn.waiting_agent },
     { agentId: turn.agent_id, sessionId: turn.session_id, body: answer.posted, clientId: `answer-post:${turn.id}` })
   await sendAgentTurn(client, turn.waiting_session, { text: answer.toAgent, clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
-    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin })
+    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin, sentByTurn: null })
   await client.query('update turns set answer_sent_at = now() where id = $1', [turn.id])
 }
 
-// The runner sends each finished turn's answer back to the turn waiting for it.
-// One that cannot be sent, for a reason of its own, is logged and tried again on
-// the next tick, and does not hold up the answers behind it.
+// A failure of the database itself, which the next tick may not meet: a deadlock or another
+// rolled-back transaction (class 40), a lost connection (08), a server out of resources or
+// shutting down (53, 57). Anything else is a failure of this answer's own.
+const TRANSIENT_CLASSES = ['40', '08', '53', '57']
+const isTransient = (error: unknown) => typeof error === 'object' && error !== null && 'code' in error
+  && typeof error.code === 'string' && TRANSIENT_CLASSES.includes(error.code.slice(0, 2))
+
+// Gives up on an answer that cannot be delivered: marks it sent, with the reason, and says so
+// where the chain started, if it started in a conversation.
+async function markUndeliverable(client: pg.PoolClient, turnId: TurnId, reason: string) {
+  const found = await maybe(client,
+    `select t.session_id, t.agent_id, a.name as agent, w.agent_id as waiting_agent, w.hops as waiting_hops, w.conversation_id as waiting_conversation
+     from turns t join turns w on w.id = t.answer_to_turn join agents a on a.id = t.agent_id
+     where t.id = $1 and t.answer_sent_at is null for update of t`, [turnId])
+  if (!found) return
+  const turn = z.object({
+    session_id: SessionId, agent_id: AgentId, agent: z.string(), waiting_agent: AgentId, waiting_hops: z.number().int(), waiting_conversation: ConversationId.nullable(),
+  }).parse(found)
+  await client.query('update turns set answer_sent_at = now(), answer_error = $2 where id = $1', [turnId, scrub(reason)])
+  await postAnswer(client, { conversationId: turn.waiting_conversation, hops: turn.waiting_hops, agentId: turn.waiting_agent },
+    { agentId: turn.agent_id, sessionId: turn.session_id, body: `${turn.agent}'s answer could not be delivered. ${reason}`, clientId: `answer-lost:${turnId}` })
+}
+
+// The runner sends each finished turn's answer back to the turn waiting for it, the oldest
+// first and at most ANSWERS_PER_TICK at a time. A failure of the database is logged and tried
+// again on the next tick. Any other failure is this answer's own, so it is given up on.
+const ANSWERS_PER_TICK = 50
 export async function answerAgentTurns(teamIds: TeamId[] | null) {
   const due = await many<{ id: string }>(pool,
     `select id from turns where answer_to_turn is not null and answer_sent_at is null and status in ('done', 'failed', 'cancelled')
-       and ($1::uuid[] is null or team_id = any($1)) order by finished_at, id`, [teamIds])
+       and ($1::uuid[] is null or team_id = any($1)) order by finished_at, id limit $2`, [teamIds, ANSWERS_PER_TICK])
   for (const { id } of due) {
     try {
       await tx((client) => answerTurn(client, TurnId.parse(id)))
     } catch (error) {
       console.error(`the answer of turn ${id}: ${messageOf(error)}`)
+      if (!isTransient(error)) await tx((client) => markUndeliverable(client, TurnId.parse(id), messageOf(error)))
     }
   }
 }
