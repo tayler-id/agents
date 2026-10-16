@@ -393,6 +393,16 @@ Tayler went with the coordinator's picks on all of these.
 - **The design's picks, which Tayler let stand on 2026-10-15.** Hosted connectors are called from the server's gateway, so no connector token reaches a computer (13). An agent acts as the person whose turn it is, and team accounts are for service accounts only (14). Read-only tools are on and other tools ask (16). MCP apps are off for each connector until a manager turns them on (18). The app offers reads, opening a page and two writes the person confirms as WebMCP tools, never approvals or secrets (19). An agent's browser takes tools from no site until the team lists its origins (20).
 - **Status.** Designed. Building starts after seats, with secrets from the app first.
 
+### Agents working together and parallel coding computers come next
+
+- **Purpose.** Tayler called both "super important" on 2026-10-16. Agents message other agents, hand them work and create new ones, and parallel coding work gets computers of its own.
+- **Decided by Tayler on 2026-10-16,** from the decisions in `docs/design/target-architecture.md`.
+  - Both are built right after step 1 and seats, before the usage meter and budgets, with hard limits until budgets land. An agent chain stops after 4 hops, and at most 8 coding computers run at once for a team.
+  - An agent messages its owner's other agents freely, and another person's agent only when that person allows it. Every new agent asks its owner first. This is decision 7, option (b), with the hop limit and no dollar cap until budgets land.
+  - Coding computers start warm. A few per team are kept ready with the repo's packages installed, and each is thrown away after one job. This is decision 4, option (a).
+  - A coding computer uses the Claude sign-in of the person whose agent started the job, and team pipelines use the team's account. This is decision 5, option (b).
+- **Status.** Agents working together is being built. Coding computers start once seats are joined to step 1.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
