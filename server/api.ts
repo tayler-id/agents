@@ -61,6 +61,8 @@ import { boxRoutes } from './box-routes.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { CopyAsk } from '../shared/recipe.ts'
+import { ImportAsk } from '../shared/recipe-file.ts'
+import { exportRecipe, importRecipe } from './recipe-files.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
@@ -412,6 +414,20 @@ const routes: Route[] = [
     const person = await personFrom(req)
     await tx((client) => removeHook(client, person, agentId, decodeURIComponent(name)))
     return { ok: true }
+  }],
+
+  // An agent's setup as a file, and a new agent from one. Whether setups leave the team waits on Tayler's decision 11.
+  ['people', 'GET', new RegExp(`^/v1/agents/${UUID}/recipe$`), async (req, [agentId], url) => {
+    const person = await personFrom(req)
+    const memories = url.searchParams.get('memories')
+    if (memories !== 'true' && memories !== 'false') throw new HttpError(400, 'memories must be true or false')
+    return tx((client) => exportRecipe(client, person, agentId, memories === 'true'))
+  }],
+
+  ['people', 'POST', /^\/v1\/agents\/import$/, async (req) => {
+    const person = await personFrom(req)
+    const ask = parsed(ImportAsk, await readJson(req))
+    return tx((client) => importRecipe(client, person, ask))
   }],
 
   // A new agent with the setup of this one, owned by the person who asks.
