@@ -114,7 +114,7 @@ function canonical(value: unknown): unknown {
 
 // Two requests ask for the same thing when their inputs match, apart from the
 // description Claude writes for a person, which it words afresh each time.
-function sameInput(a: unknown, b: unknown): boolean {
+export function sameInput(a: unknown, b: unknown): boolean {
   const plain = (input: unknown): unknown => (typeof input === 'object' && input !== null && !Array.isArray(input)
     ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'description'))
     : input)

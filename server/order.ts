@@ -7,6 +7,7 @@ import type pg from 'pg'
 import { many, maybe, type Db } from './db.ts'
 import { canSeeTask } from './access.ts'
 import { HttpError, type Person } from './record.ts'
+import { deliverMarkedDone } from './agent-turns.ts'
 import { TASK_ACTIONS, taskState, type BlockAsk, type HoldAsk, type Outcome, type ReadyAnswer, type StateOf, type TaskAction, type TaskState } from '../shared/work.ts'
 import type { SessionId, TaskId } from '../shared/ids.ts'
 
@@ -49,6 +50,8 @@ export async function markDone(client: pg.PoolClient, person: Person, taskId: Ta
   const task = await lockedTask(client, person, taskId, 'done')
   if (task.state === 'done') return { already: true }
   await client.query('update tasks set done_at = now() where id = $1', [taskId])
+  // A task an agent handed over tells that agent it is done.
+  await deliverMarkedDone(client, taskId, person.login)
   return { already: false }
 }
 

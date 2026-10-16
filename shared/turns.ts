@@ -41,8 +41,10 @@ export const TURN_OF_COMMAND = {
   claimed: 'running', done: 'done', failed: 'failed',
 } as const satisfies Record<Exclude<CommandStatus, 'queued'>, TurnStatus>
 
-// Who or what asked for a turn, as the turns table keeps it.
-export const TurnSource = z.enum(['person', 'room', 'routine', 'pipeline'])
+// Who or what asked for a turn, as the turns table keeps it. An agent turn
+// carries one agent's message to another, or the answer back. A delegation turn
+// starts a task one agent handed another, or carries its result back.
+export const TurnSource = z.enum(['person', 'room', 'routine', 'pipeline', 'agent', 'delegation'])
 export type TurnSource = z.infer<typeof TurnSource>
 
 // What the app reads of a turn that waits, or that runs and has gone quiet, for

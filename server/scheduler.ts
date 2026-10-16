@@ -33,14 +33,20 @@ const STUCK_AFTER_SEC = stuckAfterSec(process.env.AGENTS_TURN_STUCK_MIN)
 // Who asked for a turn, and what for. A person's message is for the DM or room
 // it was posted in, or the task whose session it went to. A routine's firing is
 // for its agent's main conversation, and a pipeline's stage, reminder or replay
-// for its run.
+// for its run. Another agent's message, its answer, a handed-over task and its
+// result are for the conversation or task of the session they go to.
 type Asker = { teamId: TeamId; agentId: AgentId }
 export type TurnAsk = Asker & (
   | { source: 'person'; askedBy: PersonId; conversationId: ConversationId }
   | { source: 'person'; askedBy: PersonId; taskId: TaskId }
   | { source: 'routine'; askedBy: PersonId | null; conversationId: ConversationId; routineId: RoutineId }
   | { source: 'pipeline'; runId: RunId }
+  | (AgentCause & ({ conversationId: ConversationId } | { taskId: TaskId }))
 )
+// What an agent's turn carries when another agent's session asked for it: the
+// session that asked, the turn that waits for its answer, if any, and how many
+// hops of the chain stand behind it.
+export type AgentCause = { source: 'agent' | 'delegation'; askedBySession: SessionId; answerTo: TurnId | null; hops: number }
 // A room's turn waits in the room's line, without a prompt, until the room gives
 // it its go. The deadline is how long it may take once it has the go.
 export type RoomTurnAsk = Asker & { conversationId: ConversationId; askedBy: PersonId; deadlineSec: number }
@@ -159,12 +165,14 @@ export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queue
        where id = $1 and status = 'queued' and session_id is null returning id`, [turn.queued, prompt.sessionId, event.id, payload])
     : await one<{ id: string }>(client, 'the new turn',
       `insert into turns (team_id, agent_id, source, conversation_id, task_id, run_id, routine_id, asked_by_person,
-         session_id, event_id, payload, status, requested_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', clock_timestamp()) returning id`,
+         asked_by_session, answer_to_turn, hops, session_id, event_id, payload, status, requested_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'queued', clock_timestamp()) returning id`,
       [turn.teamId, turn.agentId, turn.source,
         'conversationId' in turn ? turn.conversationId : null, 'taskId' in turn ? turn.taskId : null,
         turn.source === 'pipeline' ? turn.runId : null, turn.source === 'routine' ? turn.routineId : null,
-        turn.source === 'pipeline' ? null : turn.askedBy, prompt.sessionId, event.id, payload])
+        turn.source === 'person' || turn.source === 'routine' ? turn.askedBy : null,
+        'askedBySession' in turn ? turn.askedBySession : null, 'answerTo' in turn ? turn.answerTo : null, 'hops' in turn ? turn.hops : 0,
+        prompt.sessionId, event.id, payload])
   await placeSession(client, prompt.sessionId)
   return TurnId.parse(row.id)
 }

@@ -17,7 +17,7 @@ import { sendToSession } from './session-messages.ts'
 import { TaskId } from '../shared/ids.ts'
 import { CommentAnchor, type NewComment, type NewTask } from '../shared/work.ts'
 
-const slugOf = (title: string) =>
+export const slugOf = (title: string) =>
   `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task'}-${randomBytes(2).toString('hex')}`
 
 export async function startTask(client: pg.PoolClient, person: Person, body: Omit<NewTask, 'repoId'>): Promise<{ taskId: string; sessionId: string }> {

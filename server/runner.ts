@@ -27,6 +27,7 @@ import { WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { markLostMachines } from './durability.ts'
 import { sendRoutine } from './routines.ts'
 import { markStuckTurns, placeWaitingTurns, requestTurn, signalSession } from './scheduler.ts'
+import { answerAgentTurns } from './agent-turns.ts'
 import * as framework from './framework.ts'
 import { deliverOutcomes, promiseOutcome } from './obligations.ts'
 import { lastFire } from '../shared/cron.ts'
@@ -1078,6 +1079,7 @@ export function startRunner() {
         await tx((client) => expireTurns(client, teams)).catch(logged('turns'))
         await placeWaitingTurns(teams, reportUnplaceableTurn).catch(logged('waiting turns'))
         await markStuckTurns(teams).catch(logged('stuck turns'))
+        await answerAgentTurns(teams).catch(logged('answers to agents'))
         await finishPushes(teams).catch(logged('pull requests'))
         await markLostMachines(teams).catch(logged('lost machines'))
         const rows = await many<{ id: string }>(pool,

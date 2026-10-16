@@ -10,6 +10,7 @@ import { many, maybe, one } from './db.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
 import { NAME } from '../shared/types.ts'
+import { TEAM_AGENTS_SERVER, type AcceptsAgents } from '../shared/team-agents.ts'
 import { HttpError, type Person } from './record.ts'
 
 const SECRET_NAME = /^[A-Z][A-Z0-9_]*$/
@@ -46,24 +47,58 @@ export async function agentOf(client: pg.PoolClient, person: Person, agentId: st
 
 const Home = z.object({ id: InstanceId, personal: z.boolean(), owner_id: PersonId.nullable() })
 
-export async function createAgent(client: pg.PoolClient, person: Person, body: Record<string, unknown>): Promise<string> {
-  const name = text(body.name, 'name', 40)
-  if (!NAME.test(name)) throw new HttpError(400, 'name must be lowercase letters, digits and dashes, starting with a letter')
-  const found = await maybe(client,
-    'select id, personal, owner_id from instances where id = $1 and team_id = $2', [text(body.homeInstanceId, 'homeInstanceId'), person.team_id])
+// A new agent, owned by `ownerId`, on its home machine. A person makes one from
+// the app, and an agent makes one once its owner said yes, which `madeBy` names.
+type NewAgent = {
+  teamId: string; ownerId: string; homeInstanceId: string; name: string
+  title: string | null; role: string | null; instructions: string; model: string | null
+  madeBy: { sessionId: string; askId: string } | null
+}
+
+export async function insertAgent(client: pg.PoolClient, agent: NewAgent): Promise<string> {
+  if (!NAME.test(agent.name)) throw new HttpError(400, 'name must be lowercase letters, digits and dashes, starting with a letter')
+  const found = await maybe(client, 'select id, personal, owner_id from instances where id = $1 and team_id = $2', [agent.homeInstanceId, agent.teamId])
   if (!found) throw new HttpError(404, 'no such machine')
   const home = Home.parse(found)
   // Agents on a person's own box run on that person's Claude sign-in, so only they put agents there.
-  if (home.personal && home.owner_id !== person.id) throw new HttpError(403, "That box is a teammate's own. Only they can make agents on it.")
-  const taken = await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [person.team_id, name])
-  if (taken) throw new HttpError(409, `there is already an agent named ${name}`)
-  const agent = await one<{ id: string }>(client, 'the new agent',
-    `insert into agents (team_id, name, title, role, instructions, model, home_instance_id, owner_id, visibility)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, 'team') returning id`,
-    [person.team_id, name, optional(body.title, 'title', 80), optional(body.role, 'role', 200),
-      optional(body.instructions, 'instructions') ?? '', optional(body.model, 'model', 80), home.id, person.id])
-  if (typeof body.templateSlug === 'string') await install(client, person, agent.id, body.templateSlug)
-  return agent.id
+  if (home.personal && home.owner_id !== agent.ownerId) throw new HttpError(403, "That box is a teammate's own. Only they can make agents on it.")
+  const taken = await maybe(client, 'select 1 from agents where team_id = $1 and name = $2 and archived_at is null', [agent.teamId, agent.name])
+  if (taken) throw new HttpError(409, `there is already an agent named ${agent.name}`)
+  const made = await one<{ id: string }>(client, 'the new agent',
+    `insert into agents (team_id, name, title, role, instructions, model, home_instance_id, owner_id, visibility, made_by_session, made_by_ask)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, 'team', $9, $10) returning id`,
+    [agent.teamId, agent.name, agent.title, agent.role, agent.instructions, agent.model, home.id, agent.ownerId,
+      agent.madeBy?.sessionId ?? null, agent.madeBy?.askId ?? null])
+  return made.id
+}
+
+export async function createAgent(client: pg.PoolClient, person: Person, body: Record<string, unknown>): Promise<string> {
+  const agentId = await insertAgent(client, {
+    name: text(body.name, 'name', 40), teamId: person.team_id, ownerId: person.id, homeInstanceId: text(body.homeInstanceId, 'homeInstanceId'),
+    title: optional(body.title, 'title', 80), role: optional(body.role, 'role', 200), instructions: optional(body.instructions, 'instructions') ?? '',
+    model: optional(body.model, 'model', 80), madeBy: null,
+  })
+  if (typeof body.templateSlug === 'string') await install(client, person, agentId, body.templateSlug)
+  return agentId
+}
+
+// Whether agents with another owner may message the agent and hand it tasks. A
+// message runs a turn on the owner's Claude account, so only the owner says, or an
+// admin for an agent nobody owns.
+export async function setAcceptsAgents(client: pg.PoolClient, person: Person, agentId: string, accepts: AcceptsAgents): Promise<{ already: boolean }> {
+  const agent = await maybe<{ owner_id: string | null; accepts_agents: AcceptsAgents; login: string | null }>(client,
+    `select a.owner_id, a.accepts_agents, p.login from agents a left join people p on p.id = a.owner_id
+     where a.id = $1 and a.team_id = $2 and a.archived_at is null for update of a`, [agentId, person.team_id])
+  if (!agent) throw new HttpError(404, 'no such agent')
+  const decides = agent.owner_id === null ? person.role === 'admin' : agent.owner_id === person.id
+  if (!decides) {
+    throw new HttpError(403, agent.owner_id === null
+      ? 'This agent has no owner, so only an admin decides which agents may message it.'
+      : `Only ${agent.login ?? 'its owner'} decides which agents may message this agent.`)
+  }
+  if (agent.accepts_agents === accepts) return { already: true }
+  await client.query('update agents set accepts_agents = $2 where id = $1', [agentId, accepts])
+  return { already: false }
 }
 
 export async function updateAgent(client: pg.PoolClient, person: Person, agentId: string, body: Record<string, unknown>) {
@@ -122,7 +157,7 @@ export async function savePlugin(client: pg.PoolClient, person: Person, agentId:
   await agentOf(client, person, agentId)
   const name = text(body.name, 'name', 40)
   if (!NAME.test(name)) throw new HttpError(400, 'a plugin name is lowercase letters, digits and dashes')
-  if (name === 'team-record' || name === 'stage') throw new HttpError(400, `${name} is taken by the tools every session has`)
+  if (name === 'team-record' || name === 'stage' || name === TEAM_AGENTS_SERVER) throw new HttpError(400, `${name} is taken by the tools every session has`)
   const { kind, config } = pluginConfig(body.kind, body.config)
   await client.query(
     `insert into plugins (agent_id, name, kind, config) values ($1, $2, $3, $4)

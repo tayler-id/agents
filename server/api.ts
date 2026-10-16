@@ -41,7 +41,9 @@ import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wa
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
 import { syncPipelines } from './pipelines.ts'
-import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
+import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, setAcceptsAgents, updateAgent, writeMemory } from './agents.ts'
+import { callerOf, delegateTask, listAgents, makeAgent, reportBack, sendToAgent } from './team-agents.ts'
+import { DelegateTask, ReportBack, SendToAgent, SetAccepts } from '../shared/team-agents.ts'
 import { createRoom } from './rooms.ts'
 import { decideHunk } from './hunks.ts'
 import { HunkDecisionBody, HunkId } from '../shared/evidence.ts'
@@ -141,6 +143,8 @@ async function agentScope(req: IncomingMessage, url: URL) {
 const bounded = (value: string | null, fallback: number, max: number) =>
   Math.min(max, Math.max(1, Number(value) || fallback))
 const UUID = '([0-9a-f-]{36})'
+// What an agent's team-agents tools post: a message, a handed-over task, a task's result, and a new agent.
+const TeamAgentAction = z.enum(['messages', 'tasks', 'report', 'agents'])
 
 const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/search$/, async (req, _params, url) => {
@@ -193,6 +197,29 @@ const routes: Route[] = [
       await writeMemory(client, session.agent_id, teamId, { personId }, kind, scrub(content))
     })
     return { ok: true }
+  }],
+
+  // An agent working with its team's other agents, from inside one of its sessions,
+  // through its team-agents tools. server/team-agents.ts checks who may do what.
+  ['machines', 'GET', /^\/v1\/team-agents$/, async (req, _params, url) => {
+    const { teamId, sessionId } = await agentScope(req, url)
+    return tx(async (client) => listAgents(client, await callerOf(client, teamId, sessionId)))
+  }],
+
+  ['machines', 'POST', /^\/v1\/team-agents\/(messages|tasks|report|agents)$/, async (req, [action], url) => {
+    const { teamId, sessionId } = await agentScope(req, url)
+    const body = await readJson(req)
+    const answer = await tx(async (client) => {
+      const caller = await callerOf(client, teamId, sessionId)
+      switch (parsed(TeamAgentAction, action)) {
+        case 'messages': return sendToAgent(client, caller, parsed(SendToAgent, body))
+        case 'tasks': return delegateTask(client, caller, parsed(DelegateTask, body))
+        case 'report': return reportBack(client, caller, parsed(ReportBack, body))
+        case 'agents': return makeAgent(client, caller, body)
+      }
+    })
+    void wakeRunner()
+    return answer
   }],
 
   ['machines', 'POST', /^\/v1\/instance\/heartbeat$/, async (req) => {
@@ -401,6 +428,13 @@ const routes: Route[] = [
     const person = await personFrom(req)
     await tx((client) => removeItem(client, person, agentId, kind as 'skills', decodeURIComponent(name)))
     return { ok: true }
+  }],
+
+  // Whether agents with another owner may message the agent and hand it tasks. Only its owner says.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/accepts$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const { agents } = await parseBody(req, SetAccepts)
+    return tx((client) => setAcceptsAgents(client, person, agentId, agents))
   }],
 
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/templates$`), async (req, [agentId]) => {

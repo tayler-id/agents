@@ -18,6 +18,7 @@ import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
 import { requestTurn, signalSession } from './scheduler.ts'
+import { CREATE_AGENT_TOOL } from '../shared/team-agents.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -49,10 +50,14 @@ type Session = { id: string; team_id: string; instance_id: string; last_seq: str
 type AgentSession = Extract<Session, { folder_id: null }>
 type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 
+// Who wrote the events a caller appends: a person, by id, or another agent whose
+// message a user event carries, or nobody when the session's machine wrote them.
+export type EventAuthor = string | { agent: AgentId } | null
+
 // Gives new events the next numbers in their session, skipping any client id
 // already recorded, so a retried post leaves no gap and no duplicate.
 export async function appendEvents(
-  client: pg.PoolClient, sessionId: string, batch: EventBatch, author: string | null = null,
+  client: pg.PoolClient, sessionId: string, batch: EventBatch, author: EventAuthor = null,
 ): Promise<number[]> {
   // A batch that ends a turn in a conversation posts there, which locks the
   // conversation. A person's post locks the conversation before the session, so
@@ -144,6 +149,13 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     await answerAsk(client, ask.id, null, 'deny', 'A replay never waits on a person.')
     return
   }
+  // Each new agent waits for its maker's owner, and no standing rule answers for them.
+  // A maker with no owner has nobody to ask, so it is told no at once.
+  if (body.toolName === CREATE_AGENT_TOOL && session.folder_id === null) {
+    const maker = await one<{ owner_id: string | null }>(client, "the asking agent's owner", 'select owner_id from agents where id = $1', [session.agent_id])
+    if (maker.owner_id === null) await answerAsk(client, ask.id, null, 'deny', 'This agent has no owner to say yes to a new agent.')
+    return
+  }
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
     `select decision from approval_rules
      where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
@@ -183,6 +195,19 @@ export async function recordAnswer(client: pg.PoolClient, ask: AskTarget, answer
     [ask.team_id, ask.instance_id, ask.session_id, JSON.stringify(payload), event.id])
 }
 
+// An agent asking to make an agent waits for its own owner, who says yes or no to
+// each one, so no standing rule ever answers for them. Nobody but a person says
+// yes. The API makes the agent only with that yes behind it.
+async function checkNewAgentAnswer(client: pg.PoolClient, agentId: string, person: Person | null, decision: Decision) {
+  if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'A new agent is approved or denied one at a time, so Always and Never are not offered.')
+  if (person === null && decision === 'deny') return
+  const maker = await one<{ owner_id: string | null; login: string | null }>(client, 'the asking agent',
+    'select a.owner_id, p.login from agents a left join people p on p.id = a.owner_id where a.id = $1', [agentId])
+  if (person?.id !== maker.owner_id) {
+    throw new HttpError(403, `Only ${maker.login ?? "the agent's owner"} can say yes or no to a new agent this one asks for.`)
+  }
+}
+
 // Records a person's answer (or a standing rule's), makes "always" and "never"
 // into rules, and sends the answer to the machine running the session.
 export async function answerAsk(
@@ -198,6 +223,7 @@ export async function answerAsk(
   if (!ask) throw new HttpError(404, 'no such ask')
   if (ask.status === 'answered') throw new HttpError(409, 'this ask is already answered')
   if (ask.status !== 'open') throw new HttpError(409, 'this ask is no longer open, since the turn that raised it ended')
+  if (ask.payload.toolName === CREATE_AGENT_TOOL) await checkNewAgentAnswer(client, ask.agent_id, person, decision)
   await client.query(
     `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
     [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
@@ -241,15 +267,17 @@ export async function reportUnplaceableTurn(client: pg.PoolClient, turn: { turnI
 // In a terminal session only what the person writes carries their author, so its
 // batch names them on their prompts and on nothing Claude wrote. Any other
 // session takes the author its caller gives, such as the person a screen notice
-// says took over.
-async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
+// says took over, or the agent whose message a user event carries.
+async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: EventAuthor) {
   const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
   const authored = session.folder_id === null || PERSON_KINDS.includes(event.kind)
+  const person = authored && typeof author === 'string' ? author : null
+  const agent = author !== null && typeof author === 'object' ? author.agent : null
   await client.query(
-    `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
+    `insert into events (team_id, session_id, seq, updated_seq, kind, author, author_agent, parent_tool_use_id,
        tool_use_id, tool_name, text, body, client_id)
-     values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [session.team_id, session.id, seq, event.kind, authored ? author : null, event.parentToolUseId ?? null,
+     values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [session.team_id, session.id, seq, event.kind, person, agent, event.parentToolUseId ?? null,
       event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
 }
 
