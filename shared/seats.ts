@@ -38,8 +38,8 @@ export const SeatRow = z.discriminatedUnion('status', [
 export type SeatRow = z.infer<typeof SeatRow>
 
 // Where a seat's status may go. An agent takes a free seat. A seat given to
-// another agent starts again for that agent, which closes the pages the last
-// one had open, and only a seat still starting for its agent becomes ready.
+// another agent starts again for that agent, which closes the pages and windows
+// the last one had open, and only a seat still starting for its agent becomes ready.
 export const SEAT_MOVES = {
   free: ['starting'],
   starting: ['starting', 'ready'],
