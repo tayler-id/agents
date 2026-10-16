@@ -21,14 +21,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Duplex } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { inflateSync } from 'node:zlib'
 import pg from 'pg'
 import WebSocket from 'ws'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { must } from './must.ts'
 import { ROOT, IMAGE, MACHINE_PORT, SCREEN, within, docker, tryDocker, boxCheckEnv, peopleSocket, textOf, imageOf, stopAll } from './computers.ts'
 import { servePeople } from './people.ts'
-import { IN_PAGE, isBlue, isRed, seatPage, seatTools } from './seats.ts'
+import { IN_PAGE, isBlue, isRed, measure, pixelsOf, seatMemory, seatPage, seatTools } from './seats.ts'
 import { AgentId } from '../shared/ids.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
@@ -122,45 +121,6 @@ async function outcome(login: string, path: string): Promise<string> {
   return result
 }
 
-// The screen service encodes RGB at 8 bits, with PNG's five row filters.
-function pixelOf(base64: string, x: number, y: number): [number, number, number] {
-  const png = Buffer.from(base64, 'base64')
-  let width = 0
-  let height = 0
-  const data: Buffer[] = []
-  for (let at = 8; at < png.length;) {
-    const length = png.readUInt32BE(at)
-    const type = png.toString('latin1', at + 4, at + 8)
-    const body = png.subarray(at + 8, at + 8 + length)
-    if (type === 'IHDR') {
-      width = body.readUInt32BE(0)
-      height = body.readUInt32BE(4)
-      if (body.readUInt8(8) !== 8 || body.readUInt8(9) !== 2) throw new Error('the screenshot is not 8-bit RGB')
-    }
-    if (type === 'IDAT') data.push(body)
-    at += 12 + length
-  }
-  const raw = inflateSync(Buffer.concat(data))
-  const stride = width * 3
-  const rows = Buffer.alloc(stride * height)
-  const paeth = (a: number, b: number, c: number) => {
-    const p = a + b - c
-    const [pa, pb, pc] = [Math.abs(p - a), Math.abs(p - b), Math.abs(p - c)]
-    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c
-  }
-  for (let row = 0; row <= y; row++) {
-    const filter = raw.readUInt8(row * (stride + 1))
-    for (let i = 0; i < stride; i++) {
-      const a = i >= 3 ? rows.readUInt8(row * stride + i - 3) : 0
-      const b = row > 0 ? rows.readUInt8((row - 1) * stride + i) : 0
-      const c = i >= 3 && row > 0 ? rows.readUInt8((row - 1) * stride + i - 3) : 0
-      const predicted = filter === 1 ? a : filter === 2 ? b : filter === 3 ? (a + b) >> 1 : filter === 4 ? paeth(a, b, c) : 0
-      rows.writeUInt8((raw.readUInt8(row * (stride + 1) + 1 + i) + predicted) & 0xff, row * stride + i)
-    }
-  }
-  return [rows.readUInt8(y * stride + x * 3), rows.readUInt8(y * stride + x * 3 + 1), rows.readUInt8(y * stride + x * 3 + 2)]
-}
-
 // A site on the box's loopback that signs in with an HttpOnly cookie and says who is signed in.
 const LOGIN_SITE = `require('node:http').createServer((req, res) => {
   const signed = /(?:^|; )seats_check=([^;]+)/.exec(req.headers.cookie || '')
@@ -178,54 +138,6 @@ async function siteSays(tools: Client, path: string): Promise<string> {
   return /signed in as [a-z0-9-]+|nobody signed in|signed out now/.exec(shown)?.[0] ?? `none of the site's answers: ${`${went} ${shown}`.replace(/\s+/g, ' ').slice(0, 300)}`
 }
 
-// The memory each seat's processes hold, from inside the box: its Xvnc, its
-// window manager and its browser with every process the browser started, as
-// the proportional share of what they hold, so shared pages count once.
-const SEAT_MEMORY = `const fs = require('node:fs')
-const procs = new Map()
-for (const pid of fs.readdirSync('/proc').filter((p) => /^[0-9]+$/.test(p))) {
-  try {
-    const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8')
-    const parent = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]
-    const args = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\\0')
-    const env = fs.readFileSync('/proc/' + pid + '/environ', 'utf8').split('\\0')
-    const pss = Number((/Pss:\\s+([0-9]+) kB/.exec(fs.readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8')) || [])[1] || 0)
-    procs.set(pid, { parent, args, env, pss })
-  } catch { /* a process that ended while this read */ }
-}
-const seatOf = (pid) => {
-  for (let at = pid, hops = 0; procs.has(at) && hops < 64; at = procs.get(at).parent, hops++) {
-    const { args, env } = procs.get(at)
-    const port = args.find((arg) => arg.startsWith('--remote-debugging-port='))
-    if (port) return Number(port.split('=')[1]) - 9221
-    if (args[0] === 'Xvnc') return Number(args[1].slice(1))
-    if (args[0] === 'matchbox-window-manager') return Number((env.find((e) => e.startsWith('DISPLAY=:')) || 'DISPLAY=:0').slice(9))
-  }
-  return 0
-}
-const seats = {}
-for (const [pid, { pss }] of procs) { const n = seatOf(pid); if (n) seats[n] = (seats[n] || 0) + pss }
-console.log(JSON.stringify(Object.fromEntries(Object.entries(seats).map(([n, kb]) => [n, Math.round(kb / 1024)]))))`
-
-// Samples the container's memory and CPU from docker stats while `during` runs.
-async function measure(container: string, during: () => Promise<unknown>) {
-  const stats = spawn('docker', ['stats', '--format', '{{.MemUsage}}|{{.CPUPerc}}', container])
-  const samples: { mib: number; cpu: number }[] = []
-  stats.stdout.setEncoding('utf8').on('data', (text: string) => {
-    for (const line of text.split('\n')) {
-      // Each refresh starts with terminal escape codes before the values.
-      const match = /([\d.]+)(MiB|GiB)\s*\/[^|]*\|([\d.]+)%/.exec(line)
-      if (match) samples.push({ mib: Number(match[1]) * (match[2] === 'GiB' ? 1024 : 1), cpu: Number(match[3]) })
-    }
-  })
-  await within(10, async () => samples.length > 0)
-  const seats = await during()
-  const after = samples.length
-  await within(5, async () => samples.length > after)
-  stats.kill()
-  return { peak: Math.round(Math.max(...samples.map((s) => s.mib))), cpu: Math.round(Math.max(...samples.map((s) => s.cpu))), seats }
-}
-
 // Works a seat's screen the way an agent checking its page does, for SAMPLE_MS.
 async function workScreen(tools: Client) {
   const until = Date.now() + SAMPLE_MS
@@ -234,7 +146,6 @@ async function workScreen(tools: Client) {
     await tools.callTool({ name: 'computer', arguments: { action: 'scroll', coordinate: [640, 400], scroll_direction: 'up', scroll_amount: 3 } })
   }
 }
-const seatMemory = (container: string): Record<string, number> => JSON.parse(docker('exec', container, 'node', '-e', SEAT_MEMORY))
 
 process.on('SIGTERM', () => {
   for (const child of children) child.kill('SIGTERM')
@@ -322,8 +233,8 @@ try {
     writer.tools.callTool({ name: 'browser_navigate', arguments: { url: seatPage('Seat two page', '#0000ff') } }),
   ])
   const [scoutShot, writerShot] = await Promise.all([scout, writer].map((s) => s.tools.callTool({ name: 'computer', arguments: { action: 'screenshot' } })))
-  const scoutPixel = pixelOf(must(imageOf(scoutShot), "scout's screenshot"), IN_PAGE.x, IN_PAGE.y)
-  const writerPixel = pixelOf(must(imageOf(writerShot), "writer's screenshot"), IN_PAGE.x, IN_PAGE.y)
+  const scoutPixel = pixelsOf(must(imageOf(scoutShot), "scout's screenshot")).at(IN_PAGE.x, IN_PAGE.y)
+  const writerPixel = pixelsOf(must(imageOf(writerShot), "writer's screenshot")).at(IN_PAGE.x, IN_PAGE.y)
   check(isRed(scoutPixel) && isBlue(writerPixel),
     `two seats' browsers driven at once each show their own page in their own screenshot (seat 1 ${scoutPixel.join(',')}, seat 2 ${writerPixel.join(',')})`)
   const titles = await Promise.all([scout, writer].map(async (s) => textOf(await s.tools.callTool({ name: 'browser_snapshot', arguments: {} }))))
