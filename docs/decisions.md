@@ -391,7 +391,7 @@ Tayler went with the coordinator's picks on all of these.
   - The app gets HTTPS on its tailnet name, since Slack's sign-in returns only to an HTTPS address and WebMCP works only on HTTPS pages. The server's tailnet name then appears in public certificate logs. Turning it on changes Tailscale settings and the live API's origins, so it happens with Tayler at build step 18. This is decision 15, option (a).
   - The regression is accepted. Only admins add team connectors, only an agent's owner or manager adds its servers, and a Mac's owner approves the exact command before a server runs on that Mac. Today any teammate can add a server to any agent. This is decision 17, option (a).
 - **The design's picks, which Tayler let stand on 2026-10-15.** Hosted connectors are called from the server's gateway, so no connector token reaches a computer (13). An agent acts as the person whose turn it is, and team accounts are for service accounts only (14). Read-only tools are on and other tools ask (16). MCP apps are off for each connector until a manager turns them on (18). The app offers reads, opening a page and two writes the person confirms as WebMCP tools, never approvals or secrets (19). An agent's browser takes tools from no site until the team lists its origins (20).
-- **Status.** Designed. Building starts after seats, with secrets from the app first.
+- **Status.** Designed. Secrets from the app, build step 16, is built on branch `secrets` and waits to land. The rest starts after seats.
 
 ### Under evaluation
 

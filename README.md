@@ -78,7 +78,7 @@ Without them, invites are made in the app only and nobody is emailed. With only 
 
 ## Run a daemon
 
-On each machine, put `{"api": "<server URL>", "token": "<instance token>"}` in `~/.agents-app/daemon.json`, then run `npm run daemon`. The machine port listens on loopback unless `AGENTS_MACHINE_HOST` on the server lists other addresses, as it does on AWS, where daemons use `http://agents-server.<your-tailnet>.ts.net:7700`. Each agent whose home is this machine gets a folder under `~/.agents-app/agents/`, and each task a workspace under `~/.agents-app/workspaces/`. Secrets the agents' plugins need go in the daemon's environment or `~/.agents-app/secrets.json`. Their values never reach the server.
+On each machine, put `{"api": "<server URL>", "token": "<instance token>"}` in `~/.agents-app/daemon.json`, then run `npm run daemon`. The machine port listens on loopback unless `AGENTS_MACHINE_HOST` on the server lists other addresses, as it does on AWS, where daemons use `http://agents-server.<your-tailnet>.ts.net:7700`. Each agent whose home is this machine gets a folder under `~/.agents-app/agents/`, and each task a workspace under `~/.agents-app/workspaces/`. A secret an agent's plugin needs is set from the agent's page in the app, which sends the value to the agent's computer and keeps only its name, where it is set and when. A computer can also take one from the daemon's environment or `~/.agents-app/secrets.json`.
 
 ## The forge and pipelines
 
