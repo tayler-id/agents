@@ -941,7 +941,7 @@ A value is 8 bytes to 4 KiB, since the scrubber ignores anything under 8 charact
 4. The API writes a `secret_sets` row, answers the ask, and requests a turn for scout with source `person`. The session starts with the plugin.
 5. The value is in no Postgres table, response, log, event or prompt. If her computer was stopped, step 3 started it first, and answered 409 only if it did not come up in time, so she pressed the button again.
 
-**Built so far.** The route, the relay, the daemon's side and the agent page's Secrets list are built on branch `secrets`, and `test/step25.ts` and `test/step25b.ts` check them. It differs from the plan above in these ways.
+**Built so far.** The routes, the relay, the daemon's side and `SecretValue`, the control for one secret's value, are built on branch `secrets`, and `test/step25.ts` and `test/step25b.ts` check them. No screen in the app shows `SecretValue` yet. The agent panel's Secrets card, on branch `ui`, does, with `AgentSecrets` in `app/src/Secrets.tsx` as the wiring it needs. It differs from the plan above in these ways.
 
 - The route is `POST /v1/secrets/<id>/value`, and `POST /v1/secrets/<id>/remove` takes a value off. Every write in this API is a POST, and `agentsctl api` takes only GET, POST and HEAD.
 - The control connection is new, and every daemon opens it at `/v1/instance/control`. The screen's messages stay on the screen's own connection, since the seats branch changes both ends of that one. Moving them is a later change.
@@ -949,7 +949,8 @@ A value is 8 bytes to 4 KiB, since the scrubber ignores anything under 8 charact
 - Each frame carries a request id, since two requests for one name can be in flight. The daemon also sends the names it holds each time it connects, and the API drops a row for a name the computer lacks.
 - A computer whose connection is not up gets 12 seconds, where the plan says 30. Nothing on this branch starts a stopped computer, which step 1 does, so a stopped one is refused at once and the 12 seconds cover a daemon reconnecting. Step 1 raises it when it can.
 - The card in the conversation is not built. A missing secret still stops the agent, and its stopped line now says to set the value on the agent's page.
-- A computer with an owner takes values only from its owner, and one with no owner takes them from any teammate. A teammate sees whose computer it is and gets no field.
+- A computer with an owner takes values only from its owner, and one with no owner takes them from any teammate. A teammate sees whose computer it is and gets no control.
+- There is no form. The value reads as text, Set value or Replace value opens a masked field in place, Enter sends it, and Esc or Cancel puts it away. Leaving the field sends nothing, since the app never holds a value and cannot put one back.
 - A daemon refuses a value for a name its own environment sets, and says why, since the environment is read before the secrets file and the value would never be used.
 - The row says "Not set from the app" where the plan says "not set". The app knows only what it set, and a value put on the computer by hand works too.
 - Replacing or removing a value deletes the session configs that held it and stops the idle sessions started with it. The daemon keeps scrubbing the old value for as long as it runs.
@@ -957,8 +958,8 @@ A value is 8 bytes to 4 KiB, since the scrubber ignores anything under 8 charact
 **Stays, changes, new.**
 
 - Stays: names in Postgres, values on the machine, `savePlugin` creating the secret rows, and the machine's environment as a source.
-- Changes: `stored_in` gains `server`. The agent page's note, that a value stays on the machine, gains a Set button. The daemon's failure for a missing secret becomes data the API turns into the ask.
-- New: `secret_sets`, the route, the control connection on every daemon, the `secret_request` ask, and a Secrets list on the agent page that shows set or not set for each computer.
+- Changes: `stored_in` gains `server`. The agent panel's Secrets card, which says how to put a value on the machine, gains Set value. The daemon's failure for a missing secret becomes data the API turns into the ask.
+- New: `secret_sets`, the route, the control connection on every daemon, the `secret_request` ask, and `SecretValue`, which the agent panel's Secrets card shows for each secret and computer as set or not set.
 - By decision 3, a value on a person's computer is readable by all of that person's agents. A value the server holds is not.
 
 ### MCP apps and widgets
