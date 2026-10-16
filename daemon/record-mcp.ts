@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
+import { hasCode } from '../shared/errors.ts'
 import { ReadyAnswer } from '../shared/work.ts'
 import { saveShared, secretsHeld, shareBytes } from './share-client.ts'
 
@@ -177,7 +178,10 @@ server.registerTool('share_file', {
   inputSchema: { path: z.string().min(1).describe('The file, in your working folder'), caption: z.string().max(2000).optional().describe('What to say with it') },
 }, async ({ path, caption }) => {
   const root = await realpath(process.cwd())
-  const file = await realpath(resolve(root, path)).catch(() => { throw new Error(`There is no file at ${path}.`) })
+  const file = await realpath(resolve(root, path)).catch((error: unknown) => {
+    if (hasCode(error, 'ENOENT')) throw new Error(`There is no file at ${path}.`)
+    throw error
+  })
   const inside = relative(root, file)
   if (outside(inside)) throw new Error(`share_file only shares files inside your working folder, ${root}.`)
   // A file saved for another chat or task is not this one's to share.
