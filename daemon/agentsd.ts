@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
-import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { envSecrets, makeScrub, MIN_SECRET_LENGTH } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
@@ -387,7 +387,8 @@ function holdSecret(frame: ToDaemon): FromDaemon {
   const put = frame.type === 'secret_put'
   try {
     const { had } = changeMachineSecret(HOME, name, put ? frame.value : null, (gone) => {
-      retiredSecrets.push([name, gone])
+      // A value the scrubber would ignore, or one it already remembers, is not kept again.
+      if (gone.length >= MIN_SECRET_LENGTH && !retiredSecrets.some(([retired, value]) => retired === name && value === gone)) retiredSecrets.push([name, gone])
       forgetValueIn(SESSIONS_DIR, gone)
       for (const [sessionId, names] of usedSecrets) {
         if (!names.includes(name)) continue
@@ -402,7 +403,7 @@ function holdSecret(frame: ToDaemon): FromDaemon {
     return put ? { type: 'secret_stored', id, name } : { type: 'secret_removed', id, name, had }
   } catch (error) {
     // The daemon's own words for a file it will not touch. Anything else is Node's, scrubbed.
-    const reason = (error instanceof SecretsFileError ? error.message : `The daemon could not change ${join(HOME, 'secrets.json')}. ${scrub(messageOf(error))}`).slice(0, 500)
+    const reason = (error instanceof SecretsFileError ? error.message : `The daemon could not change what this computer holds. ${scrub(messageOf(error))}`).slice(0, 500)
     console.error(`secret ${name} was refused: ${reason}`)
     return { type: 'secret_refused', id, name, reason }
   }
@@ -717,6 +718,8 @@ function followSignIns(signal: AbortSignal) {
 async function shutdown(code: 0 | 1) {
   if (stopping) return
   stopping = true
+  // The API takes the computer for stopped from here, and refuses a secret for it.
+  control.stop()
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
   for (const [id, session] of sessions) {
@@ -726,7 +729,6 @@ async function shutdown(code: 0 | 1) {
   for (const running of signIns.values()) running.stop()
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)
-  control.stop()
   screen?.link.stop()
   await screen?.service.stop()
   await desktop?.stop()
