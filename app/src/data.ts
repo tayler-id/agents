@@ -12,6 +12,7 @@ import {
 } from '../../shared/onboarding.ts'
 import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
+import type { AcceptsAgents } from '../../shared/team-agents.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'
@@ -21,6 +22,8 @@ export type Me = MemberView
 export type Person = Row & { id: string; login: string; name: string | null; role: TeamRole }
 export type Agent = Row & {
   id: string; name: string; title: string | null; role: string | null; model: string | null; home_instance_id: string | null; instructions: string
+  // Whose it is, and whether other people's agents may message it.
+  owner_id: string | null; accepts_agents: AcceptsAgents
 }
 export type Instance = Row & {
   id: string; name: string; kind: string; status: 'online' | 'stale' | 'offline'; last_seen_at: string | null
@@ -208,9 +211,14 @@ export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args
 }
 
 // How lists name a conversation: a room by its name, a DM by its agent and its
-// people. A person or agent not loaded yet reads as someone or agent.
+// people, and a thread between two agents by the two. A person or agent not
+// loaded yet reads as someone or agent.
 export function conversationLabel(c: Conversation, names: { me: Me; members: Member[]; agentName: Map<string, string>; login: Map<string, string> }): string {
   if (c.kind === 'room') return `# ${c.name ?? 'room'}`
+  if (c.kind === 'agents') {
+    const pair = names.members.flatMap((m) => (m.conversation_id === c.id && m.agent_id ? [names.agentName.get(m.agent_id) ?? 'agent'] : [])).sort()
+    return pair.length ? pair.join(' and ') : 'Two agents'
+  }
   const who = names.members.filter((m) => m.conversation_id === c.id)
     .flatMap((m) => (m.person_id ? [m.person_id === names.me.person.id ? 'you' : names.login.get(m.person_id) ?? 'someone'] : []))
   const agent = c.agent_id ? names.agentName.get(c.agent_id) ?? 'agent' : null
@@ -326,6 +334,7 @@ export const api = {
   removeItem: (agentId: string, kind: 'skills' | 'plugins' | 'routines', name: string) =>
     request('POST', `/v1/agents/${agentId}/${kind}/${encodeURIComponent(name)}/delete`, {}),
   saveTemplate: (agentId: string, name: string) => request<{ slug: string; version: number }>('POST', `/v1/agents/${agentId}/templates`, { name }),
+  setAcceptsAgents: (agentId: string, agents: AcceptsAgents) => call(Outcome, 'POST', `/v1/agents/${agentId}/accepts`, { agents }),
   createRoom: (name: string, people: string[], agents: string[], projectId?: string) =>
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents, projectId }),
   startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),

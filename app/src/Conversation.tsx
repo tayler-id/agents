@@ -4,6 +4,7 @@ import {
   act, messageOf, api, byNumber, clock, newId, useRows, useSnapshot, type Agent, type Ask, type Conversation, type EventRow, type Me, type Member, type Message, type Person,
   type Session,
 } from './data.ts'
+import { ThreadNote, useThreadName } from './AgentThread.tsx'
 import { useLiveText } from './live.ts'
 import { AskCard } from './Asks.tsx'
 import { Markdown } from './Markdown.tsx'
@@ -40,6 +41,8 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
   // A turn cut off when its machine stopped. It picks up again when the machine is back.
   const lost = [...newest.values()].filter((s) => s.status === 'lost')
   const room = conversation?.kind === 'room'
+  // A thread between two agents, which people read and do not post to.
+  const threadName = useThreadName(conversation, agents, me)
   const canPost = Boolean(agent) || (room && conversation.source !== 'pipeline')
   const working = Boolean(session && isWorking(session.status))
   const openAsks = asks.filter((a) => a.conversation_id === conversationId && a.status === 'open')
@@ -67,9 +70,9 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
     <section className="conversation">
       <header className="conversation-head">
         <div>
-          <h1>{room ? `# ${conversation.name ?? 'room'}` : agent?.name ?? 'Conversation'}</h1>
+          <h1>{room ? `# ${conversation.name ?? 'room'}` : threadName ?? agent?.name ?? 'Conversation'}</h1>
           <p className="muted small">
-            {conversation?.visibility === 'private' ? 'Private' : 'Shared with your team'}
+            {threadName !== null && 'Between two agents · '}{conversation?.visibility === 'private' ? 'Private' : 'Shared with your team'}
             {session && <> · <button type="button" className="link" onClick={() => go({ conversation: conversationId, session: sessionOpen ? null : session.id })}>
               {sessionOpen ? 'Hide session' : 'Session details'}</button></>}
           </p>
@@ -117,7 +120,7 @@ export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; 
 
       {openAsks.map((ask) => <AskCard key={ask.id} ask={ask} />)}
       <div ref={end} />
-      <Composer onSend={send} disabled={!canPost} placeholder={room ? 'Post to the room. @name asks one agent.' : 'Message the agent'} />
+      {threadName !== null ? <ThreadNote /> : <Composer onSend={send} disabled={!canPost} placeholder={room ? 'Post to the room. @name asks one agent.' : 'Message the agent'} />}
     </section>
   )
 }

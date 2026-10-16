@@ -150,7 +150,7 @@ function Workspace({ me }: { me: Me }) {
             : route.task ? <TaskView key={route.task} me={me} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
-                : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
+                : route.agent ? <AgentPage key={route.agent} me={me} agentId={route.agent} />
                   : route.project ? <ProjectPage key={route.project} projectId={route.project} />
                     : route.terminal ? <TerminalSessionView key={route.terminal} me={me} sessionId={route.terminal} />
                       : route.create === 'agent' ? <NewAgent me={me} />
@@ -266,9 +266,9 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   const newestRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at))
   const recentRuns = newestRuns.filter((r) => !projectOf.get(r.task_id)).slice(0, 8)
   const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)
-  // Tasks people started, outside pipelines.
+  // Tasks people started, and tasks agents handed each other, outside pipelines.
   const runTasks = new Set(runs.map((r) => r.task_id))
-  const peopleTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
+  const peopleTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message' || t.source === 'agent'))
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
   const myTasks = peopleTasks.filter((t) => !t.project_id).slice(0, 6)
   const looseConversations = conversations.filter((c) => !c.project_id)

@@ -38,10 +38,12 @@ import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
 import { followTerminalSessions } from './transcripts.ts'
 import { loginShellSecrets } from './secrets.ts'
 import { serveAppSocket } from './app-socket.ts'
+import { TEAM_AGENT_TOOLS_ALLOWED, TEAM_AGENTS_SERVER } from '../shared/team-agents.ts'
 
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
+const AGENTS_MCP = fileURLToPath(new URL('./team-agents-mcp.ts', import.meta.url))
 const STAGE_MCP = fileURLToPath(new URL('./stage-mcp.ts', import.meta.url))
 const COMPUTER_MCP = fileURLToPath(new URL('./computer-mcp.ts', import.meta.url))
 // The screen's sockets, outside the home volume, which outlives the container.
@@ -163,8 +165,9 @@ function agentHome(agentId: string): string {
 }
 
 // The session's MCP config: the team-record tools, acting as this session, and
-// for a pipeline stage the report_result tool. The file holds the machine's
-// token, so only this user can read it.
+// for a pipeline stage the report_result tool. Every session but a stage's also
+// gets the team-agents tools, since an answer from another agent would come back
+// outside the stage. The file holds the machine's token, so only this user can read it.
 // On a machine with a screen it adds the `computer` server, and in a task's
 // session tells it the task folder, where saved screenshots become documents.
 function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null): string {
@@ -175,6 +178,7 @@ function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Rec
     servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
   }
   if (stage) servers.stage = { command: process.execPath, args: [STAGE_MCP], env: { AGENTS_STAGE_OUTCOMES: JSON.stringify(stage.outcomes) } }
+  else servers[TEAM_AGENTS_SERVER] = { command: process.execPath, args: [AGENTS_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
   if (computer) {
     servers[COMPUTER_SERVER] = {
       command: process.execPath, args: [COMPUTER_MCP],
@@ -316,7 +320,7 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null),
     // A judge's session gets no team-record tools, so it cannot read the author's session.
     allowedTools: [
-      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : []),
+      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
       ...(computer ? COMPUTER_TOOLS_ALLOWED : []),
     ],
     acceptEdits: payload.permissions.workspaceWrites,

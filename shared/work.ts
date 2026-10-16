@@ -9,7 +9,7 @@ import { ProjectId } from './projects.ts'
 // A pull request's title is the task's title, so both share the forge's limit.
 const TITLE_MAX = 255
 // A first message long enough for a pasted spec, short enough to read in a prompt.
-const TEXT_MAX = 50_000
+export const TEXT_MAX = 50_000
 // The repos one workspace clones. More would make one task's setup take minutes.
 const REPOS_MAX = 10
 

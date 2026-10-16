@@ -305,6 +305,12 @@ A task already reports each turn to the conversation it came from (`reportToConv
 - Stays: rooms, engine subagents, and tasks reporting back.
 - Changes: the daemon adds the new server to each session's MCP config next to `team-record` (`mcpConfig` in `daemon/agentsd.ts`), except a judge's, which gets neither. Rooms get a member cap, and agents can be added after a room is made, which today only people can (`server/onboarding-routes.ts:59`).
 - New: the tools, the `agents` thread, chain limits, `author_agent`, the ask before a create, and a list of a session's subagents in its panel, read from `parent_tool_use_id`.
+- Built in step 6, on Tayler's calls of 2026-10-16: `list_agents`, `send_to_agent`, `delegate_task`, `report_back` and `create_agent`, the `agents` thread, the hop limit of 4, `author_agent`, `made_by_session`, and the owner's yes before each create, which the server writes as a question with lettered choices. Where it differs from the design above:
+  - A turn keeps `hops` and `answer_to_turn`, the turn its answer goes back to, and no `chain_id`, since nothing reads a chain's total until budgets land. There is no dollar cap, as Tayler decided.
+  - An answer goes back when the asked turn ends, failed or cancelled included, and the runner sends it, once. A message and an answer are both turns with source `agent`, and an answer has the hops of the turn that gave it, so each round trip between two agents is a hop.
+  - `accepts` is one column, `agents.accepts_agents`. The people half is step 11's.
+  - A room, a private conversation or task, and a pipeline stage send nothing. An answer would come back outside a room's turns or a stage's, and a thread between agents is the team's to read. Stages get no team-agents tools.
+  - `check_task`, `ask_people`, the room member cap, adding agents to a room after it is made, and the list of a session's subagents are not built. A handed task gets no repos, and joins no project.
 
 ## The usage meter and budgets
 
