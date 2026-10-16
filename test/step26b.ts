@@ -336,8 +336,11 @@ async function working(engine: string) {
     await page.goto(`/#/history/${live}`)
     const position = () => page.getByRole('status').first().innerText()
     check(await until(15, async () => /Step 1 of 3\b/.test(await position())), `${engine}: a replay of a session that is working says where it is in what has happened so far`)
+    // The next read of the session fails once, and the replay goes on reading it.
+    let refused = 0
+    await page.route(`**/v1/history/sessions/${live}`, (route) => (refused++ === 0 ? route.abort() : route.continue()))
     await post(live, 'running', said('Fourth.'), said('Fifth.'), said('Sixth.'))
-    check(await until(30, async () => /Step 1 of 6\b/.test(await position())), `${engine}: and learns of the steps taken after it opened, without being reloaded`)
+    check(await until(30, async () => /Step 1 of 6\b/.test(await position())), `${engine}: and learns of the steps taken after it opened, without being reloaded, even when a read of the session fails on the way`)
     await post(live, 'idle', said('Done.'))
     const none = await make('none')
     await page.goto(`/#/history/${none}`)
