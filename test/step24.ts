@@ -148,6 +148,26 @@ try {
   const keyed = await as(alice, `/v1/agents/${source}/hooks`, { name: 'leaky', event: 'Stop', command: `curl -H "Authorization: token ghp_${'a1B2c3D4'.repeat(5)}" https://example.test` })
   check(keyed.status === 400 && Number((await row('select count(*)::int as n from agent_hooks where agent_id = $1', [source])).n) === 0,
     'a command that holds a secret value is refused, since the record keeps commands')
+  // A value in no known key format: a command, a plugin's arguments or its address that gives a key, a token or a
+  // password a value is refused too. A reference to the environment, and a number, are not values.
+  const HEX = randomBytes(8).toString('hex')
+  const named = [
+    await as(alice, `/v1/agents/${source}/hooks`, { name: 'by-header', event: 'Stop', command: `curl -H "X-Api-Key: ${HEX}" https://example.test` }),
+    await as(alice, `/v1/agents/${source}/plugins`, { name: 'by-query', kind: 'http', config: { url: `https://mcp.example.test/sse?api_key=${HEX}` } }),
+    await as(alice, `/v1/agents/${source}/plugins`, { name: 'by-login', kind: 'http', config: { url: `https://reader:${HEX}@mcp.example.test/sse` } }),
+    await as(alice, `/v1/agents/${source}/plugins`, { name: 'by-flag', kind: 'stdio', config: { command: 'node', args: ['server.js', '--token', HEX] } }),
+    await as(alice, `/v1/agents/${source}/plugins`, { name: 'by-equals', kind: 'stdio', config: { command: 'node', args: [`--client-secret=${HEX}`] } }),
+  ]
+  const namedKept = Number((await row(`select (select count(*) from agent_hooks where agent_id = $1 and name = 'by-header') + (select count(*) from plugins where agent_id = $1 and name like 'by-%') as n`, [source])).n)
+  check(named.every((answer) => answer.status === 400 && !answer.text.includes(HEX)) && namedKept === 0,
+    `a key, a token or a password given a value in a header, a query, an address's login or an argument is refused, and the answer does not repeat it: ${named.map((answer) => String(answer.status)).join(' ')}`)
+  const fine = [
+    await as(alice, `/v1/agents/${source}/hooks`, { name: 'from-env', event: 'Stop', command: 'curl -H "Authorization: Bearer $API_TOKEN" https://example.test' }),
+    await as(alice, `/v1/agents/${source}/plugins`, { name: 'counted', kind: 'stdio', config: { command: 'node', args: ['server.js', '--max-tokens', '4000'] } }),
+  ]
+  check(fine.every((answer) => answer.status === 200), `a reference to the environment and a number are kept: ${fine.map((answer) => String(answer.status)).join(' ')}`)
+  await as(alice, `/v1/agents/${source}/hooks/from-env/delete`)
+  await as(alice, `/v1/agents/${source}/plugins/counted/delete`)
   const bobAdds = await as(bob, `/v1/agents/${source}/hooks`, STOP)
   const outsiderAdds = await as(outsider, `/v1/agents/${source}/hooks`, STOP)
   check(bobAdds.status === 403 && /owner or a team admin/.test(bobAdds.json?.error) && outsiderAdds.status === 404

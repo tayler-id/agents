@@ -17,7 +17,8 @@ export const removeHook = (agentId: string, name: string) =>
 // the person's own machine and gives it the team's memories. The answer holds the conversation with it.
 export const copyAgent = (agentId: string, ask: z.input<typeof CopyAsk> = {}) => call(CopyDone, 'POST', `/v1/agents/${agentId}/copy`, ask)
 
-// An agent's setup as a file, which holds no secret value and nothing the agent remembers about a person.
+// An agent's setup as a file, with a plugin's secrets by name, values in known key formats removed, and nothing
+// the agent remembers about a person.
 // The team's memories are in it only when asked for.
 export const recipeFileOf = (agentId: string, memories: boolean) => call(RecipeFile, 'GET', `/v1/agents/${agentId}/recipe?memories=${String(memories)}`)
 

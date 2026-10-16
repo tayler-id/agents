@@ -11,6 +11,7 @@ import { many, maybe, one } from './db.ts'
 import { InstanceId, PersonId } from '../shared/onboarding.ts'
 import { parseCron } from '../shared/cron.ts'
 import { SECRET_NAME } from '../shared/secrets.ts'
+import { secretIn, wordsOf } from '../shared/command-secrets.ts'
 import { AgentId, ConversationId } from '../shared/ids.ts'
 import { carriedBy, mayChangeHooks, mayRunOn, Recipe, type CopyAsk, type CopyDone, type RecipeMemory } from '../shared/recipe.ts'
 import { AgentHook, NAME, type AgentPlugin, type AgentSkill } from '../shared/types.ts'
@@ -164,13 +165,21 @@ function pluginConfig(kind: unknown, raw: unknown): { kind: 'stdio' | 'http'; co
     }
     return out
   }
+  // The record keeps a plugin's setup and a recipe file carries it off the team, so a value given there is refused.
+  const noValueIn = (words: string[]) => {
+    const found = secretIn(words)
+    if (found) throw new HttpError(400, `The plugin gives ${found} a value, and the record keeps a plugin's setup. Name a secret in env or headers instead, such as {"secret": "GITHUB_TOKEN"}.`)
+  }
   if (kind === 'stdio') {
     const args = Array.isArray(config.args) ? config.args.map((a, i) => text(a, `config.args.${i}`, 2000)) : []
-    return { kind, config: { command: text(config.command, 'config.command', 500), args, env: secrets(config.env, 'config.env') } }
+    const command = text(config.command, 'config.command', 500)
+    noValueIn([...wordsOf(command), ...args])
+    return { kind, config: { command, args, env: secrets(config.env, 'config.env') } }
   }
   if (kind === 'http') {
     const url = text(config.url, 'config.url', 2000)
     if (!/^https?:\/\//.test(url)) throw new HttpError(400, 'config.url must be an http or https URL')
+    noValueIn([url])
     return { kind, config: { url, headers: secrets(config.headers, 'config.headers') } }
   }
   throw new HttpError(400, 'kind must be stdio or http')
@@ -276,6 +285,10 @@ export async function saveHook(client: pg.PoolClient, person: Person, agentId: s
   // A command is where a pasted key is likeliest to end up, and the record keeps it.
   if (scrub(hook.command) !== hook.command) {
     throw new HttpError(400, 'The command holds what looks like a secret value, and the record keeps commands. Keep the value on the machine and have the command read it from the environment.')
+  }
+  const given = secretIn(wordsOf(hook.command))
+  if (given) {
+    throw new HttpError(400, `The command gives ${given} a value, and the record keeps commands. Keep the value on the machine and have the command read it from the environment, such as $API_TOKEN.`)
   }
   await client.query(
     `insert into agent_hooks (agent_id, name, event, matcher, command, timeout_sec) values ($1, $2, $3, $4, $5, $6)

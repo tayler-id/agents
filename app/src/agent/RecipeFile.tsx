@@ -45,7 +45,7 @@ export function ExportRecipe({ agentName, teamMemories, load }: {
         With the team's memories ({teamMemories})
       </label>
       <p className="small muted">
-        The file holds the agent's title, instructions, skills, plugins, routines and hooks. It holds no secret value and nothing the agent remembers about a person.
+        The file holds the agent's title, instructions, skills, plugins, routines and hooks, and nothing the agent remembers about a person. A plugin's secrets are in it by name, and values in known key formats are removed from the rest. Read it before you hand it on.
         Anyone who has the file can make an agent from it, on any team, so hand it only to people you trust with these.
       </p>
       <button type="button" className="ghost" disabled={busy} onClick={() => { void save() }}>Export as a file</button>
