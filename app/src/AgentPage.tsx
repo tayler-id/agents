@@ -9,8 +9,9 @@ import { Hooks } from './Hooks.tsx'
 import { useSubmit } from './useSubmit.ts'
 import { machinesFor, startMachine } from './machines.ts'
 
-// One agent's setup: who it is, its skills, plugins and routines, and what it
-// remembers. Anyone on the team can change it.
+// One agent's setup: who it is, its skills, plugins, routines and hooks, and what
+// it remembers. Anyone on the team can change it, except its hooks, which only its
+// owner or a team admin changes.
 export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
   const { rows: skills } = useSnapshot<Skill>('skills', {}, 4000)
@@ -25,6 +26,7 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
 
   const own = <T extends { agent_id: string | null }>(rows: T[]) => rows.filter((r) => r.agent_id === agentId)
   const login = (id: string | null) => people.find((p) => p.id === id)?.login ?? 'someone'
+  const teamMemories = own(memories).filter((m) => m.scope === 'team').length
   const template = async () => {
     const { version } = await api.saveTemplate(agentId, agent.name)
     setNotice(`Saved as the template "${agent.name}", version ${version}.`)
@@ -46,7 +48,7 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
       </header>
       <div className="page-body">
         {notice && <p className="note-line" role="status">{notice}</p>}
-        {copying && <CopyAgent agent={agent} me={me} teamMemories={own(memories).filter((m) => m.scope === 'team').length} />}
+        {copying && <CopyAgent agent={agent} me={me} teamMemories={teamMemories} />}
         <Profile agent={agent} />
 
         <h2 className="kicker section">Skills</h2>

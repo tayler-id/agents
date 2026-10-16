@@ -6,7 +6,7 @@
 import { z } from 'zod'
 import { AgentHook, AgentPlugin, AgentSkill, HookEvent } from './types.ts'
 import { AgentId } from './ids.ts'
-import { InstanceId } from './onboarding.ts'
+import { InstanceId, type TeamRole } from './onboarding.ts'
 
 export const RecipeRoutine = z.object({ name: z.string(), prompt: z.string(), schedule: z.string() })
 
@@ -63,6 +63,6 @@ export type HookRow = z.infer<typeof HookRow>
 // A hook runs a command on the agent's machine, as a plugin does, so only the
 // agent's owner or a team admin changes one. The server refuses anyone else, and
 // the app uses the same rule to leave out the controls that would be refused.
-export function mayChangeHooks(person: { id: string; role: 'admin' | 'member' }, agent: { owner_id: string | null }): boolean {
+export function mayChangeHooks(person: { id: string; role: TeamRole }, agent: { owner_id: string | null }): boolean {
   return person.role === 'admin' || agent.owner_id === person.id
 }
