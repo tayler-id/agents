@@ -801,10 +801,10 @@ The design is "A scheduler places every turn" in `docs/design/target-architectur
 
 - **Solves now.**
   - Anyone who can see a chat or task puts one emoji on a message or a task post, and takes their own back. Both calls are safe to repeat. Agents react with the `react` tool. A reaction on an agent's post reaches the agent once, at the top of its next turn.
-  - A reply names the post it answers in `replyToMessageId`, and the agent is told which. An author edits their own post and the earlier words stay as versions. The author, or a team admin, deletes a post. The post stays in its place with no text, and its versions, files, reactions, pin and the copies in the agent's prompt records go. Anyone who can see the chat pins a post.
+  - A reply names the post it answers in `replyToMessageId`, and the agent is told which. An author edits their own post and the earlier words stay as versions. The author, or a team admin, deletes a post. The post stays in its place with an empty body and `deleted_at`, and its versions, files, reactions and pin go. So do the words in the prompt records behind it, which a room turn's event lists in `messageIds` and a reply's event names in `quotedMessageId`, and in the replayed raw lines. A turn still waiting for its machine is cancelled. Anyone who can see the chat pins a post.
   - The `reactions` and `pins` live shapes carry them.
 - **Helps later.** A summary or a search can leave deleted posts out by `deleted_at`, and a moderation view can read `deleted_by`.
-- **Not done.** A deleted post's words stay where an agent already copied them, such as its reply, its memory, a room turn's prompt that quoted it, or a task started from it. Editing a post does not change what the agent was told.
+- **Not done.** A deleted post's words stay where an agent already copied them, such as its reply, its memory, or a task started from it. Editing a post does not change what the agent was told.
 
 ### The step 30 checks (`test/step30a.ts`, `test/step30b.ts`, `test/step30c.ts`, `test/step30-breaks.ts`)
 

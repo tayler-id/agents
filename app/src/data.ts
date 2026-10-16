@@ -14,6 +14,7 @@ import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, typ
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 import type { AcceptsAgents } from '../../shared/team-agents.ts'
 import type { ConversationKind } from '../../shared/types.ts'
+export type { AttachmentShapeRow as Attachment, PinShapeRow as Pin, ReactionShapeRow as Reaction } from '../../shared/attachments.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'
@@ -43,7 +44,7 @@ export type Conversation = Row & {
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
 export type Message = Row & {
   id: string; conversation_id: string; seq: bigint; speaker: 'person' | 'agent'; person_id: string | null
-  agent_id: string | null; body: string | null; session_id: string | null; task_id: string | null; client_id: string; created_at: string
+  agent_id: string | null; body: string; session_id: string | null; task_id: string | null; client_id: string; created_at: string
   quoted_message_id: string | null; edited_at: string | null; deleted_at: string | null; deleted_by: string | null
 }
 export type Session = Row & {

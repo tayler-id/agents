@@ -7,13 +7,15 @@
 //   node --env-file=.env --env-file=.env.test test/step30c.ts
 
 import { createServer } from 'node:http'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { chatSetup, PNG, GIF_30x20 } from './chat-kit.ts'
-import { ROOT, results } from './onboarding-kit.ts'
+import { serveShareGuard } from '../daemon/share-guard.ts'
+import { ROOT, results, within } from './onboarding-kit.ts'
 import { must } from './must.ts'
 
 const PORTS = { machines: 8353, people: 8354, streams: 8355 }
@@ -34,7 +36,13 @@ async function connect(script: string, env: Record<string, string>): Promise<Cli
   clients.push(client)
   return client
 }
-const asSession = (sessionId: string) => ({ AGENTS_API: kit.MACHINES, AGENTS_TOKEN: kit.token, AGENTS_SESSION: sessionId })
+// A secret no pattern knows, held by the machine as a plugin's key is, and the guard the daemon runs for it.
+const machineSecret = `plugin-${randomBytes(9).toString('hex')}`
+const dotenvSecret = `dotenv-${randomBytes(9).toString('hex')}`
+const guardDir = mkdtempSync('/tmp/sg-')
+const guardSocket = join(guardDir, 'guard.sock')
+const guardAbort = new AbortController()
+const asSession = (sessionId: string) => ({ AGENTS_API: kit.MACHINES, AGENTS_TOKEN: kit.token, AGENTS_SESSION: sessionId, AGENTS_SHARE_GUARD: guardSocket })
 
 // What a tool call answered: whether it failed, and its text.
 async function call(client: Client, name: string, args: Record<string, unknown>) {
@@ -62,6 +70,8 @@ try {
   const dmSession = (await q1('select id from sessions where conversation_id = $1', [conversations.dm])).id as string
   check(sent.status === 200, 'alice sends the agent a picture')
 
+  serveShareGuard({ socket: guardSocket, secrets: () => [['PLUGIN_DB_PASSWORD', machineSecret]], signal: guardAbort.signal })
+  await within(10, async () => existsSync(guardSocket))
   const record = await connect('daemon/record-mcp.ts', asSession(dmSession))
   const tools = (await record.listTools()).tools.map((t) => t.name)
   check(['share_file', 'get_attachment', 'react'].every((name) => tools.includes(name)), `the team-record server offers share_file, get_attachment and react (${tools.join(', ')})`)
@@ -106,19 +116,50 @@ try {
   const before = (await q1('select count(*)::int as n from attachments where added_by_agent is not null')).n
   check(before === 2, `only the two good shares made files (${before})`)
 
+  writeFileSync(join(work, '.env'), `STRIPE_RESTRICTED=${dotenvSecret}\n`)
+  const countFiles = async () => (await q1('select count(*)::int as n from attachments where added_by_agent is not null')).n
+  const filesBefore = await countFiles()
+  const refusals: [string, Buffer | string, string][] = [
+    ['plain.txt', `db password: ${machineSecret}\n`, 'PLUGIN_DB_PASSWORD'],
+    ['dump.bin', Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from(machineSecret), Buffer.from([0, 0])]), 'PLUGIN_DB_PASSWORD'],
+    ['wide.txt', Buffer.from(`token ${'gh' + 'p_'}${'D4'.repeat(18)}`, 'utf16le'), 'github'],
+    ['binary-token.dat', Buffer.concat([Buffer.from([0, 0, 255]), Buffer.from(`${'gh' + 'p_'}${'E5'.repeat(18)}`)]), 'github'],
+    ['copy-of-env.txt', `key=${dotenvSecret}`, ''],
+  ]
+  for (const [name, content, held] of refusals) {
+    writeFileSync(join(work, name), content)
+    const refusedFile = await call(record, 'share_file', { path: name })
+    check(refusedFile.failed && refusedFile.text.includes('which this machine keeps secret') && refusedFile.text.includes(held),
+      `share_file refuses ${name}, which holds a secret only the machine knows, or one hidden in binary or UTF-16 (${refusedFile.text})`)
+  }
+  check(await countFiles() === filesBefore, 'none of them was posted')
+  const unguarded = await connect('daemon/record-mcp.ts', { AGENTS_API: kit.MACHINES, AGENTS_TOKEN: kit.token, AGENTS_SESSION: dmSession })
+  const noGuard = await call(unguarded, 'share_file', { path: 'report.txt' })
+  check(noGuard.failed && noGuard.text.includes("can't check a file for secrets") && await countFiles() === filesBefore, `a machine whose guard can't be reached shares nothing (${noGuard.text})`)
   // A file with a secret in its text is not shared.
   writeFileSync(join(work, 'notes.env'), `token = ${'gh' + 'p_'}${'A1'.repeat(18)}\n`)
   const leaked = await call(record, 'share_file', { path: 'notes.env', caption: 'config' })
-  check(leaked.failed && leaked.text.includes('That file holds a secret this team keeps, so it was not shared.')
+  check(leaked.failed && leaked.text.includes('which this machine keeps secret, so it was not shared.')
     && (await q1('select count(*)::int as n from attachments where name = $1', ['notes.env'])).n === 0, `a file with a secret in it is refused and leaves nothing (${leaked.text})`)
+  const direct = await fetch(`${kit.MACHINES}/v1/record/share?${new URLSearchParams({ session: dmSession })}`, {
+    method: 'POST', headers: { authorization: `Bearer ${kit.token}`, 'x-file-name': 'k.bin', 'content-type': 'application/octet-stream' },
+    body: Buffer.concat([Buffer.from([0, 0]), Buffer.from(`${'gh' + 'p_'}${'F6'.repeat(18)}`)]),
+  })
+  check(direct.status === 400 && (await direct.text()).includes('That file holds a secret this team keeps'), 'the API looks again, and refuses a binary file with a pattern-matched secret that reached it')
   const leakedCaption = await call(record, 'share_file', { path: 'report.txt', caption: `use ${'gh' + 'p_'}${'B2'.repeat(18)}` })
   const captionRow = await q1(`select body from messages where conversation_id = $1 and speaker = 'agent' order by seq desc limit 1`, [conversations.dm])
   check(!leakedCaption.failed && captionRow.body === 'use [secret:github]', `a secret in a caption is scrubbed, as in any post (${captionRow.body})`)
 
   // Saving what a person attached.
   const saved = await call(record, 'get_attachment', { attachment_id: sentFile })
-  const savedPath = join(work, 'attachments', `${sentFile.slice(0, 8)}-wave.gif`)
+  const savedPath = join(work, 'attachments', dmSession, `${sentFile.slice(0, 8)}-wave.gif`)
   check(!saved.failed && saved.text === `Saved at ${savedPath}.` && readFileSync(savedPath).equals(GIF_30x20), `get_attachment saves the picture under attachments/ (${saved.text})`)
+  // A file saved for one chat is not there to share from another chat of the same agent.
+  const otherChat = await connect('daemon/record-mcp.ts', asSession(tasks.team.sessionId))
+  const crossShare = await call(otherChat, 'share_file', { path: `attachments/${dmSession}/${sentFile.slice(0, 8)}-wave.gif` })
+  const ownShare = await call(record, 'share_file', { path: `attachments/${dmSession}/${sentFile.slice(0, 8)}-wave.gif` })
+  check(crossShare.failed && crossShare.text.includes('A file saved for another one is not yours to share') && !ownShare.failed,
+    `a file saved for one chat can't be shared from another, and can from its own (${crossShare.text.slice(0, 80)} | ${ownShare.text})`)
   const privateFile = (await upload(alice, `/v1/conversations/${conversations.privateRoom}/attachments`, PNG, 'private.png', 'image/png')).json.attachmentId as string
   await send(alice, conversations.privateRoom, { text: 'private', attachmentIds: [privateFile] })
   const notHere = await call(record, 'get_attachment', { attachment_id: privateFile })
@@ -167,6 +208,8 @@ try {
   if (failures.length) console.log(`\nthe API printed:\n${kit.api.text().slice(-1500)}`)
   for (const client of clients) await client.close().catch((error: unknown) => { console.error(error) })
   screen.close()
+  guardAbort.abort()
+  rmSync(guardDir, { recursive: true, force: true })
   rmSync(work, { recursive: true, force: true })
   rmSync(outside, { recursive: true, force: true })
   await q('delete from teams where id = $1', [kit.teamId]).catch((error: unknown) => { console.error(error) })

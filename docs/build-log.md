@@ -1169,7 +1169,7 @@ Branch `attachments`, from main de6d961. Tayler put these first on the list of n
 
 - **Files.** Upload to a chat, a task session or nowhere yet, 25 MB at most, bytes in `AGENTS_ATTACHMENTS_DIR`. A post claims 1 to 10 files. Images are judged by their bytes and served inline, other files download under a sandboxing policy. A pending upload is its uploader's alone and is deleted after 24 hours. A New task and a new chat claim uploads as they are made. A pipeline run does not yet.
 - **Reactions.** One emoji, by a person or an agent, on a message or a task post, idempotent both ways. An agent hears of reactions to its posts once, at the top of its next turn.
-- **Post actions.** Reply, edit by the author with versions kept, delete by the author or an admin, pins. A delete erases the text from the post, its versions and the prompt records behind it.
+- **Post actions.** Reply, edit by the author with versions kept, delete by the author or an admin, pins. A delete erases the text from the post, its versions, the prompt records behind it (a room turn's, a reply's quote, the replayed raw lines) and cancels a turn still waiting for its machine. The post keeps an empty body, not null.
 - **Decisions.**
   - A file's upload route takes the raw bytes under the file's type, as the contract says. The API refuses any change that is not JSON, so an upload must carry `X-File-Name`, which no other site can send without a preflight.
   - Pending uploads are visible only to the uploader, in the shape and on download, which the contract left open.
@@ -1178,6 +1178,13 @@ Branch `attachments`, from main de6d961. Tayler put these first on the list of n
   - A task session's share is a `notice` event with `subtype: 'share'`, so the code that picks an agent's reply never mistakes it for one.
   - No package was added.
 - **Checks.** step30a (63 lines), step30b (53), step30c (24), on ports 8350 to 8358, no run lock. `test/step30-breaks.ts` has 59 breaks. Each was seen turning the named lines red and the files came back byte for byte. Three first showed a check that crashed instead of failing, and one break was redundant with a second scrub, so I removed the extra scrub in `server/share.ts`. step0, step2 and step10 still pass. Typecheck, lint, names and style are clean.
+- **Landing review fixes (2026-10-16).**
+  - B1: the default folder is named for the database (`$AGENTS_HOME/attachments/<database name>`), so a server on `agents_test` never sweeps the live server's files. I kept one folder per database, not one per team, since every file in it has its row in that database.
+  - B2: `share_file` asks the daemon first. The daemon serves `daemon/share-guard.ts` on a socket in its run folder, with its environment, `secrets.json`, the Claude token, the login shell and the agent folder's `.env` values, and scans the file's bytes (binary and UTF-16 too). A machine whose guard is unreachable shares nothing. step30c proves it with a guard started in the check and a pattern-free secret. It does not run the real daemon's assembly of that list, which `knownSecrets` also feeds to the event scrubber. This changed `daemon/agentsd.ts` by two more lines (the guard and its socket path in the record server's environment).
+  - B3: a room turn's event lists `messageIds`, a reply's names `quotedMessageId`, and a delete replaces the words in those events, turns and commands, wipes the raw lines that hold them, and cancels a turn still waiting. The chat's row is locked first. No check races a delete against a turn reading the chat, so the lock is not proven.
+  - S4: a deleted post has an empty body, not null. Migration 0025 changed before it landed, and I applied the same change to `agents_test` by hand.
+  - S1, S3, S5, S6, S7, S8 and notes N1, N2, N3, N5, N7, N9, N13 are fixed. S3 came with B3's session filter.
+  - Left: N4 (every shared file goes up as octet-stream, so a PDF downloads with no type), N6 streaming of downloads, N8 (versions have no reader yet), N10 and N11 (the UI session's), N12 (whether Electric keeps the pre-delete body in a shape's log, which I did not check, so "erased" holds for Postgres only), N14 (the record server's working folder under the real harness), N15.
 - **Not done.** Runs take no attachments. Lock-bound suites were not run, since the lock was held. A reaction on a room's post reaches the agent only in a turn the room gives it. A deleted post's words stay in anything an agent already copied.
 
 ### Agents working together (step 6 of the fit design, 2026-10-16)

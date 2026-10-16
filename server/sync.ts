@@ -14,6 +14,7 @@ import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
 import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
 import { TURN_WAIT_COLUMNS } from '../shared/turns.ts'
+import { AttachmentShapeRow, PinShapeRow, ReactionShapeRow } from '../shared/attachments.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -64,9 +65,8 @@ async function placeOf(person: Person, args: URLSearchParams): Promise<{ column:
   return { column: 'conversation_id', id: await requireConversation(person, args) }
 }
 
-const ATTACHMENT_COLUMNS = ['id', 'conversation_id', 'session_id', 'message_id', 'event_id', 'kind', 'name', 'media_type', 'size', 'width', 'height',
-  'added_by_person', 'added_by_agent', 'created_at']
-const REACTION_COLUMNS = ['id', 'conversation_id', 'session_id', 'message_id', 'event_id', 'emoji', 'person_id', 'agent_id', 'created_at']
+const ATTACHMENT_COLUMNS = Object.keys(AttachmentShapeRow.shape)
+const REACTION_COLUMNS = Object.keys(ReactionShapeRow.shape)
 
 const personShapes: Record<string, PersonShape> = {
   people: async (p) => ({ table: 'people', where: 'team_id = $1', params: [p.team_id] }),
@@ -110,7 +110,7 @@ const personShapes: Record<string, PersonShape> = {
     return { table: 'reactions', columns: REACTION_COLUMNS, where: `${place.column} = $1`, params: [place.id] }
   },
   // The messages pinned in a chat.
-  pins: async (p, args) => ({ table: 'pins', where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
+  pins: async (p, args) => ({ table: 'pins', columns: Object.keys(PinShapeRow.shape), where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
   // Sessions the person may see: conversations', tasks', or the terminal sessions
   // of connected folders. They are separate shapes because Electric 1.8 never
   // sends a row that moves into a filter ORing two subqueries, so a new task's

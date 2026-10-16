@@ -6,8 +6,9 @@ import type pg from 'pg'
 import { canSeeConversation, canSeeSession } from './access.ts'
 import { many, maybe } from './db.ts'
 import { HttpError, type Person } from './record.ts'
+import { EventId, MessageId } from '../shared/ids.ts'
 
-export type ReactionTarget = { kind: 'message'; id: string } | { kind: 'event'; id: string }
+export type ReactionTarget = { kind: 'message'; id: MessageId } | { kind: 'event'; id: EventId }
 type Reactor = { personId: string } | { agentId: string }
 
 // A reaction's target as the row of the post it is on.
@@ -16,7 +17,7 @@ type Post = { team_id: string; conversation_id: string | null; session_id: strin
 async function postOf(client: pg.PoolClient, teamId: string, target: ReactionTarget): Promise<Post | undefined> {
   return target.kind === 'message'
     ? maybe<Post>(client,
-      'select team_id, conversation_id, null::uuid as session_id, deleted_at is not null as deleted from messages where id = $1 and team_id = $2', [target.id, teamId])
+      'select team_id, conversation_id, null::uuid as session_id, deleted_at is not null as deleted from messages where id = $1 and team_id = $2 for share', [target.id, teamId])
     // Only a task's session has posts to react to. A chat's session holds the prompts behind its messages.
     : maybe<Post>(client,
       `select e.team_id, null::uuid as conversation_id, e.session_id, false as deleted
@@ -69,9 +70,9 @@ export async function latestPersonPost(client: pg.PoolClient, sessionId: string)
   const message = await maybe<{ id: string }>(client,
     `select m.id from messages m join sessions s on s.conversation_id = m.conversation_id
      where s.id = $1 and m.speaker = 'person' and m.deleted_at is null order by m.seq desc limit 1`, [sessionId])
-  if (message) return { kind: 'message', id: message.id }
+  if (message) return { kind: 'message', id: MessageId.parse(message.id) }
   const event = await maybe<{ id: string }>(client, `select id from events where session_id = $1 and kind = 'user' order by seq desc limit 1`, [sessionId])
-  if (event) return { kind: 'event', id: event.id }
+  if (event) return { kind: 'event', id: EventId.parse(event.id) }
   throw new HttpError(404, 'there is no post from a person to react to yet')
 }
 

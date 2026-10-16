@@ -17,7 +17,7 @@ const MEMBERS_POLL_MS = 3000
 type Pending = { clientId: string; text: string }
 
 // A deleted post has no text. The redesign shows its placeholder; until then this says so.
-const shown = (m: Message) => (m.deleted_at ? 'This post was deleted.' : m.body ?? '')
+const shown = (m: Message) => (m.deleted_at ? 'This post was deleted.' : m.body)
 
 export function ConversationView({ me, conversationId, sessionOpen }: { me: Me; conversationId: string; sessionOpen: string | null }) {
   const { rows: messages } = useRows<Message>('messages', { conversation: conversationId })

@@ -5,11 +5,12 @@
 // in. The API is real, on ports 8350 to 8352, which no other check uses.
 //   node --env-file=.env --env-file=.env.test test/step30a.ts
 
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { chatSetup, GIF_30x20, JPEG_640x480, PNG, WEBP_100x50 } from './chat-kit.ts'
-import { results, shapeRows, within } from './onboarding-kit.ts'
+import { results, shapeRows, startApi, within } from './onboarding-kit.ts'
 import { MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
 
 const PORTS = { machines: 8350, people: 8351, streams: 8352 }
@@ -46,6 +47,10 @@ try {
     `the PNG comes back inline as image/png with the same bytes (${inline.status} ${inline.headers.get('content-disposition')})`)
   check((inline.headers.get('content-disposition') ?? '').includes("filename*=UTF-8''shot%20%C3%B1.png"),
     `its download name keeps the ñ, encoded (${inline.headers.get('content-disposition')})`)
+  check(inline.headers.get('cache-control') === 'private, no-cache' && inline.headers.get('etag') === `"${idOfPng}"`, 'a file may be kept but must be asked about again, with its id as its tag')
+  const unchanged = await fetch(`${kit.PEOPLE}/v1/attachments/${idOfPng}`, { headers: { 'tailscale-user-login': alice, 'if-none-match': `"${idOfPng}"` } })
+  const strangerTag = await fetch(`${kit.PEOPLE}/v1/attachments/${idOfPng}`, { headers: { 'tailscale-user-login': bob, 'if-none-match': `"${idOfPng}"` } })
+  check(unchanged.status === 304 && strangerTag.status === 404, `asking again with the tag answers 304 for alice, and 404 for a person who may not open it (${unchanged.status}, ${strangerTag.status})`)
   const forced = await download(alice, `/v1/attachments/${idOfPng}?download=1`)
   check(/^attachment;/.test(forced.headers.get('content-disposition') ?? '') && forced.bytes.equals(PNG), '?download=1 downloads the image too')
 
@@ -79,7 +84,7 @@ try {
 
   // 4. Access follows the chat. A pending upload is its uploader's alone.
   const bobsPending = await as(bob, 'GET', `/v1/attachments/${idOfPng}`)
-  check(bobsPending.status === 404, `bob, who is not in alice's DM, cannot open her pending upload (${bobsPending.status})`)
+  check(bobsPending.status === 404, `bob, who is not in alice's DM, cannot open a file in it (${bobsPending.status})`)
   const bobUp = await upload(bob, `/v1/conversations/${conversations.dm}/attachments`, PNG, 'x.png', 'image/png')
   check(bobUp.status === 404, `bob cannot upload to alice's DM (${bobUp.status} ${bobUp.text})`)
   const carolUp = await upload(carol, `/v1/conversations/${conversations.privateRoom}/attachments`, PNG, 'x.png', 'image/png')
@@ -128,6 +133,7 @@ try {
   check(typeof event.text === 'string' && event.text.startsWith('look at these\n\nAttached files:\n- shot ñ.png (image/png, ')
     && event.text.includes(`attachment ${idOfPng}`) && event.text.includes('get_attachment'),
     `the agent's prompt names each file and the tool that saves it (${JSON.stringify(event.text).slice(0, 200)})`)
+  check(event.body.said === 'look at these' && event.body.messageId === sent.json.messageId, "the event keeps the person's own words beside the prompt")
   const command = await q1(`select c.payload->>'text' as text from commands c join events e on e.id = c.event_id where c.kind = 'message' and e.client_id = $1`,
     [`message:${sent.json.messageId}`])
   check(typeof command.text === 'string' && command.text.includes(`attachment ${gif}`), 'the message command to the machine carries the same words')
@@ -145,7 +151,7 @@ try {
   })
   const bobRows = await shapeRows(kit.PEOPLE, bob, 'attachments', { conversation: conversations.teamRoom })
   check(seen && bobRows.rows.length === 1 && bobRows.rows[0].message_id === sentTo.json.messageId && bobRows.rows[0].kind === 'image'
-    && bobRows.rows[0].media_type === 'image/png' && bobRows.rows[0].added_by_person === kit.people.alice && !('store_key' in bobRows.rows[0]),
+    && bobRows.rows[0].media_type === 'image/png' && bobRows.rows[0].added_by_person === kit.people.alice,
     `bob's attachments shape for the room has room.png and not alice's pending draft (${JSON.stringify(bobRows.rows.map((r) => r.name))})`)
   const aliceRows = await shapeRows(kit.PEOPLE, alice, 'attachments', { conversation: conversations.teamRoom })
   check(aliceRows.rows.some((r) => r.name === 'draft.txt' && r.message_id === null), "alice's own shape also holds her pending draft, with no message")
@@ -192,6 +198,24 @@ try {
   const [roomRow] = await q('select a.conversation_id, a.message_id, m.body from attachments a join messages m on m.id = a.message_id where a.id = $1', [roomFile.json.attachmentId])
   check(roomRow?.conversation_id === room.json.conversationId && roomRow?.body === 'Kickoff', 'the file is in the new chat, on its first post')
 
+  // File names are cleaned at the edge. A format character that reverses text is dropped, and the name leaves room for a prefix.
+  const spoof = await upload(alice, `/v1/conversations/${conversations.dm}/attachments`, html, 'invoice\u202Efdp.exe', 'text/plain')
+  const long = await upload(alice, `/v1/conversations/${conversations.dm}/attachments`, html, `${'x'.repeat(250)}.txt`, 'text/plain')
+  check(spoof.json.name === 'invoicefdp.exe' && Buffer.byteLength(long.json.name) <= 240, `a right-to-left mark is dropped from a name, and a long name is cut to 240 bytes (${spoof.json.name}, ${Buffer.byteLength(long.json.name)})`)
+
+  // One person can't keep more than 200 MB waiting to be sent.
+  const statuses: number[] = []
+  for (let i = 0; i < 7; i++) statuses.push((await upload(carol, '/v1/attachments', Buffer.alloc(MAX_ATTACHMENT_BYTES, i + 1), `bulk-${i}.bin`)).status)
+  const refusedBulk = await upload(carol, '/v1/attachments', Buffer.alloc(MAX_ATTACHMENT_BYTES, 99), 'one-more.bin')
+  check(statuses.filter((s) => s === 201).length === 7 && refusedBulk.status === 409 && refusedBulk.json.error === 'Too many files are waiting to be sent. Send them in a post first.',
+    `a person's pending uploads stop at 200 MB: seven 25 MB files in, the next refused (${statuses.join(',')}, ${refusedBulk.text})`)
+
+  // A new chat's first post, sent again after a dropped answer, is one post.
+  const open = () => as(alice, 'POST', '/v1/conversations', { kind: 'dm', agent: 'scout', text: 'Hello, once', clientId: 'first-post-1' })
+  const [firstTry, secondTry] = [await open(), await open()]
+  check(firstTry.status === 200 && secondTry.status === 200 && (await q1(`select count(*)::int as n from messages where body = 'Hello, once'`)).n === 1,
+    'asking to open a chat with a first post twice, with one clientId, makes one post')
+
   // 9. Pending uploads are deleted after 24 hours, with their bytes. Sent files stay.
   const old = await upload(alice, '/v1/attachments', Buffer.from('forgotten'), 'old.txt', 'text/plain')
   const young = await upload(alice, '/v1/attachments', Buffer.from('recent'), 'young.txt', 'text/plain')
@@ -216,6 +240,30 @@ try {
   utimesSync(stray, new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000))
   const orphanGone = await within(20, async () => !existsSync(stray))
   check(orphanGone && existsSync(strayNew), 'a stored file with no row is removed after an hour, and a fresh one is left alone')
+
+  // 10. A server told no folder keeps its files in a folder named for its database, and its sweep looks only there.
+  // The old default was one folder for every database, which a server on the test database would have swept clean.
+  const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)
+  const home2 = realpathSync(mkdtempSync(join(tmpdir(), 'agents-step30a-home-')))
+  const liveId = randomUUID()
+  const orphanId = randomUUID()
+  const liveLike = join(home2, 'attachments', liveId.slice(0, 2), liveId)
+  const ownOrphan = join(home2, 'attachments', databaseName, orphanId.slice(0, 2), orphanId)
+  for (const file of [liveLike, ownOrphan]) {
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, 'x')
+    utimesSync(file, new Date(Date.now() - 2 * 3600_000), new Date(Date.now() - 2 * 3600_000))
+  }
+  const second = await startApi({ machines: 8360, people: 8361, streams: 8362 },
+    { AGENTS_RUNNER: 'off', AGENTS_RUNNER_TEAMS: kit.team, AGENTS_HOME: home2, AGENTS_ATTACHMENTS_DIR: undefined, AGENTS_ATTACHMENT_SWEEP_SECONDS: '1' }, join(home2, 'streams'))
+  try {
+    const sweptOwn = await within(30, async () => !existsSync(ownOrphan))
+    check(sweptOwn && existsSync(liveLike),
+      "a server given no folder sweeps the folder named for its database and leaves another database's files alone")
+  } finally {
+    if (failures.length) console.log(second.text().slice(-1200))
+    await second.stop()
+  }
 } finally {
   if (failures.length) console.log(`\nthe API printed:\n${kit.api.text().slice(-1500)}`)
   await q(`delete from teams where id = $1`, [kit.teamId]).catch((error: unknown) => { console.error(error) })

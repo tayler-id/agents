@@ -161,11 +161,11 @@ const UUID = '([0-9a-f-]{36})'
 const TeamAgentAction = z.enum(['messages', 'tasks', 'report', 'agents'])
 
 // A new chat's first post: the words, the files, or both. Neither leaves the chat empty.
-const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish() })
+const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish(), clientId: z.string().min(1).nullish() })
 async function withFirstPost(client: pg.PoolClient, person: Person, conversationId: string, body: Record<string, unknown>): Promise<string> {
   const post = parsed(FirstPost, body)
   if ((post.text ?? '').trim() !== '' || post.attachmentIds) {
-    await sendPersonMessage(client, person, conversationId, post.text ?? '', randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
+    await sendPersonMessage(client, person, conversationId, post.text ?? '', post.clientId ?? randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
   }
   return conversationId
 }
@@ -913,7 +913,7 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)
-    if (result instanceof FileAnswer) return void res.writeHead(200, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
+    if (result instanceof FileAnswer) return void res.writeHead(result.status, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
     const created = result instanceof Created
     res.writeHead(created ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(created ? result.body : result))
   } catch (error) {

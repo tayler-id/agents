@@ -6,11 +6,12 @@
 import type { IncomingMessage } from 'node:http'
 import { z } from 'zod'
 import { readBody } from '../shared/body.ts'
-import { dispositionOf, declaredType, MAX_ATTACHMENT_BYTES } from '../shared/attachments.ts'
+import { dispositionOf, declaredType, MAX_ATTACHMENT_BYTES, type AttachmentRow } from '../shared/attachments.ts'
 import { Emoji } from '../shared/reactions.ts'
+import { EventId, MessageId } from '../shared/ids.ts'
 import { canSeeSession } from './access.ts'
 import { agentScope } from './agent-scope.ts'
-import { attachmentFor, attachmentForSession, readBytes, removeFiles, saveUpload, type AttachmentRow } from './attachments.ts'
+import { attachmentFor, attachmentForSession, readBytes, removeFiles, saveUpload } from './attachments.ts'
 import { maybe, one, pool, tx } from './db.ts'
 import { Created, FileAnswer, parseBody, type Route } from './http.ts'
 import { personFrom } from './auth.ts'
@@ -57,17 +58,21 @@ const emojiInPath = (value: string): string => {
 
 
 // How a file is served. An image the bytes show is inline, and everything else is a download, so an
-// uploaded page or SVG never runs on the app's origin. The file never changes, so it may be kept.
-async function served(row: AttachmentRow, forceDownload: boolean): Promise<FileAnswer> {
+// uploaded page or SVG never runs on the app's origin. A browser may keep a file but must ask first, so a
+// deleted post's file or a chat a person has left stops opening at once, and an unchanged file answers 304.
+async function served(row: AttachmentRow, forceDownload: boolean, ifNoneMatch: string | undefined): Promise<FileAnswer> {
   const inline = row.kind === 'image' && !forceDownload
-  return new FileAnswer(await readBytes(row), {
+  const headers = {
     'content-type': row.media_type,
     'x-file-name': encodeURIComponent(row.name),
     'content-disposition': dispositionOf(inline ? 'inline' : 'attachment', row.name),
-    'cache-control': 'private, max-age=31536000, immutable',
+    'cache-control': 'private, no-cache',
+    etag: `"${row.id}"`,
     'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; sandbox",
-  })
+  }
+  if (ifNoneMatch === headers.etag) return new FileAnswer(Buffer.alloc(0), headers, 304)
+  return new FileAnswer(await readBytes(row), headers)
 }
 
 const Edit = z.object({ text: z.string() })
@@ -96,13 +101,13 @@ export const chatRoutes: Route[] = [
 
   ['people', 'GET', new RegExp(`^/v1/attachments/${UUID}$`), async (req, [id], url) => {
     const person = await personFrom(req)
-    return served(await attachmentFor(person, id), url.searchParams.get('download') === '1')
+    return served(await attachmentFor(person, id), url.searchParams.get('download') === '1', req.headers['if-none-match'])
   }],
 
   // The same bytes for an agent, to save in its working folder.
   ['machines', 'GET', new RegExp(`^/v1/record/attachments/${UUID}$`), async (req, [id], url) => {
     const { teamId, sessionId } = await agentScope(req, url)
-    return served(await attachmentForSession(teamId, sessionId, id), true)
+    return served(await attachmentForSession(teamId, sessionId, id), true, undefined)
   }],
 
   // An agent posts a file or a screenshot into its chat, or onto its task's page.
@@ -114,19 +119,19 @@ export const chatRoutes: Route[] = [
 
   ['people', 'PUT', new RegExp(`^/v1/messages/${UUID}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'message', id }, emojiInPath(emoji), true))
+    return tx((client) => reactAsPerson(client, person, { kind: 'message', id: MessageId.parse(id) }, emojiInPath(emoji), true))
   }],
   ['people', 'DELETE', new RegExp(`^/v1/messages/${UUID}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'message', id }, emojiInPath(emoji), false))
+    return tx((client) => reactAsPerson(client, person, { kind: 'message', id: MessageId.parse(id) }, emojiInPath(emoji), false))
   }],
   ['people', 'PUT', new RegExp(`^/v1/events/${EVENT}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'event', id }, emojiInPath(emoji), true))
+    return tx((client) => reactAsPerson(client, person, { kind: 'event', id: EventId.parse(id) }, emojiInPath(emoji), true))
   }],
   ['people', 'DELETE', new RegExp(`^/v1/events/${EVENT}/reactions/([^/]+)$`), async (req, [id, emoji]) => {
     const person = await personFrom(req)
-    return tx((client) => reactAsPerson(client, person, { kind: 'event', id }, emojiInPath(emoji), false))
+    return tx((client) => reactAsPerson(client, person, { kind: 'event', id: EventId.parse(id) }, emojiInPath(emoji), false))
   }],
 
   // An agent reacts to a post in its chat or its task.
@@ -135,8 +140,8 @@ export const chatRoutes: Route[] = [
     const body = await parseBody(req, ReactBody)
     return tx(async (client) => {
       const session = await one<{ id: string; team_id: string; agent_id: string }>(client, 'the session', 'select id, team_id, agent_id from sessions where id = $1', [sessionId])
-      const target = body.messageId !== undefined ? { kind: 'message' as const, id: body.messageId }
-        : body.eventId !== undefined ? { kind: 'event' as const, id: body.eventId } : await latestPersonPost(client, session.id)
+      const target = body.messageId !== undefined ? { kind: 'message' as const, id: MessageId.parse(body.messageId) }
+        : body.eventId !== undefined ? { kind: 'event' as const, id: EventId.parse(body.eventId) } : await latestPersonPost(client, session.id)
       return reactAsAgent(client, { ...session, team_id: teamId }, target, emojiOf(body.emoji), body.remove !== true)
     })
   }],

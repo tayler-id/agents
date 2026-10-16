@@ -42,6 +42,7 @@ import { followTerminalSessions } from './transcripts.ts'
 import { loginShellSecrets } from './secrets.ts'
 import { serveAppSocket } from './app-socket.ts'
 import { TEAM_AGENT_TOOLS_ALLOWED, TEAM_AGENTS_SERVER } from '../shared/team-agents.ts'
+import { serveShareGuard, shareGuardPath } from './share-guard.ts'
 
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
@@ -192,7 +193,7 @@ function mcpConfig(
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = { ...plugins }
   if (!stage?.isolated) {
-    servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
+    servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId, AGENTS_SHARE_GUARD: shareGuardPath(HOME) } }
   }
   if (stage) servers.stage = { command: process.execPath, args: [STAGE_MCP], env: { AGENTS_STAGE_OUTCOMES: JSON.stringify(stage.outcomes) } }
   else servers[TEAM_AGENTS_SERVER] = { command: process.execPath, args: [AGENTS_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
@@ -781,3 +782,5 @@ void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, re
   .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })
 // The Agents app on this Mac lists and connects those folders through this socket.
 serveAppSocket({ home: HOME, api, signal: abort.signal })
+// Agents' tools ask it before they share a file, since only the daemon knows this machine's secrets.
+serveShareGuard({ socket: shareGuardPath(HOME), secrets: knownSecrets, signal: abort.signal })

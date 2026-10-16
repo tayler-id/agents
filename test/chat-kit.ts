@@ -4,7 +4,7 @@
 // upload of a file.
 
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -113,7 +113,8 @@ export async function chatSetup(name: string, ports: Ports) {
   const stop = async () => {
     await api.stop()
     await db.end()
+    rmSync(home, { recursive: true, force: true })
   }
-  return { id, team, teamId, logins, people, token, instanceId, agentId, conversations, tasks, home, filesDir, db, q, q1, api, MACHINES, PEOPLE, as, upload, download, send, stop }
+  return { id, team, teamId, logins, people, token, instanceId, agentId, conversation, conversations, tasks, home, filesDir, db, q, q1, api, MACHINES, PEOPLE, as, upload, download, send, stop }
 }
 export type ChatSetup = Awaited<ReturnType<typeof chatSetup>>

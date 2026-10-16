@@ -5,10 +5,12 @@
 // the database. The API is real, on ports 8356 to 8358, which no other check uses.
 //   node --env-file=.env --env-file=.env.test test/step30b.ts
 
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { chatSetup, PNG } from './chat-kit.ts'
+import { randomBytes } from 'node:crypto'
+import { chatSetup, PNG, sha256 } from './chat-kit.ts'
 import { foundInDatabase, ROOT, results, shapeRows, within } from './onboarding-kit.ts'
 
 const PORTS = { machines: 8356, people: 8357, streams: 8358 }
@@ -189,19 +191,21 @@ try {
     'before the delete, the words are in the post and in the version it kept')
   const memberDeletesOther = await as(carol, 'DELETE', `/v1/messages/${bobsPost}`)
   check(memberDeletesOther.status === 403 && memberDeletesOther.json.error === 'Only the author or a team admin can delete a post.', `a member cannot delete someone else's post (${memberDeletesOther.status} ${memberDeletesOther.text})`)
+  const fileBefore = existsSync(join(kit.filesDir, String(upload.json.attachmentId).slice(0, 2), String(upload.json.attachmentId)))
   const adminDeletes = await as(alice, 'DELETE', `/v1/messages/${bobsPost}`)
   const gone = await q1('select body, deleted_at, deleted_by, edited_at, seq from messages where id = $1', [bobsPost])
-  check(adminDeletes.status === 200 && adminDeletes.json.deleted === true && gone.body === null && gone.deleted_at !== null && gone.deleted_by === kit.people.alice,
+  check(adminDeletes.status === 200 && adminDeletes.json.deleted === true && gone.body === '' && gone.deleted_at !== null && gone.deleted_by === kit.people.alice,
     `an admin deletes another person's post, and the row says who (${adminDeletes.status} ${adminDeletes.text})`)
   check((await foundInDatabase(kit.db, secretWords)).length === 0, `the deleted words are in no column of the database (${(await foundInDatabase(kit.db, secretWords)).join(', ')})`)
   check((await q('select 1 from attachments where message_id = $1', [bobsPost])).length === 0 && (await kit.download(alice, `/v1/attachments/${upload.json.attachmentId}`)).status === 404
     && (await q('select 1 from reactions where message_id = $1', [bobsPost])).length === 0 && (await q('select 1 from pins where message_id = $1', [bobsPost])).length === 0,
     "the post's file, reactions and pin go with it, and the file no longer opens")
-  const deletedShape = await within(20, async () => (await shapeRows(kit.PEOPLE, carol, 'messages', { conversation: conversations.teamRoom })).rows.some((r) => r.id === bobsPost && r.body === null))
+  check(fileBefore && !existsSync(join(kit.filesDir, String(upload.json.attachmentId).slice(0, 2), String(upload.json.attachmentId))), "the deleted post's bytes are gone from the attachments folder")
+  const deletedShape = await within(20, async () => (await shapeRows(kit.PEOPLE, carol, 'messages', { conversation: conversations.teamRoom })).rows.some((r) => r.id === bobsPost && r.body === '' && r.deleted_at !== null))
   const messagesShape = await shapeRows(kit.PEOPLE, carol, 'messages', { conversation: conversations.teamRoom })
   const placeholder = messagesShape.rows.find((r) => r.id === bobsPost)
-  check(deletedShape && placeholder.body === null && placeholder.deleted_by === kit.people.alice && placeholder.deleted_at !== null && String(placeholder.seq) === String(gone.seq),
-    'the messages shape gives the placeholder body: null, with deleted_at and deleted_by, in its place in the order')
+  check(deletedShape && placeholder.body === '' && placeholder.deleted_by === kit.people.alice && placeholder.deleted_at !== null && String(placeholder.seq) === String(gone.seq),
+    'the messages shape gives the placeholder an empty body with deleted_at and deleted_by, in its place in the order')
   const again = await as(alice, 'DELETE', `/v1/messages/${bobsPost}`)
   check(again.status === 200 && (await q1('select deleted_by from messages where id = $1', [bobsPost])).deleted_by === kit.people.alice, 'deleting a deleted post changes nothing')
   const after2 = await Promise.all([
@@ -232,6 +236,49 @@ try {
   check((await foundInDatabase(kit.db, dmWords)).length >= 3, `a post to an agent is in its event, its turn and its command as well (${(await foundInDatabase(kit.db, dmWords)).join(', ')})`)
   await as(alice, 'DELETE', `/v1/messages/${dmPost}`)
   check((await foundInDatabase(kit.db, dmWords)).length === 0, `deleting it takes the words out of the agent's prompt records too (${(await foundInDatabase(kit.db, dmWords)).join(', ')})`)
+
+  // 9. A delete reaches the copies. A room's turn that has finished has read the post into its prompt, and
+  // its machine has replayed that prompt as a raw line.
+  const roomWords = `quokka-${kit.id}-granite`
+  const room2 = await kit.conversation('room', 'team', [kit.people.alice, kit.people.bob], true)
+  const roomPost = await say(bob, room2, `Status update ${roomWords}`)
+  const finishedSession = (await q1('select id from sessions where conversation_id = $1', [room2])).id as string
+  const turnPrompt = await q1(`select text from events where session_id = $1 and kind = 'user' order by seq limit 1`, [finishedSession])
+  const finished = await fetch(`${kit.MACHINES}/v1/sessions/${finishedSession}/events`, {
+    method: 'POST', headers: { authorization: `Bearer ${kit.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      events: [{ clientId: 'a1', kind: 'assistant', text: 'PASS', body: { text: 'PASS' } }, { clientId: 'u1', kind: 'usage', body: { total_cost_usd: 0 } }],
+      raw: [{ clientId: 'r1', line: { type: 'user', message: { role: 'user', content: turnPrompt.text } } }], status: 'idle',
+    }),
+  })
+  check(finished.status === 200 && (await q1(`select outcome from turns where conversation_id = $1`, [room2])).outcome === 'pass', 'the room agent finishes its turn, having read the post')
+  const before = await foundInDatabase(kit.db, roomWords)
+  check(['events.text', 'events.body', 'turns.payload', 'commands.payload', 'raw_events.line'].every((c) => before.includes(c)),
+    `before the delete the words are in the turn's event, turn, command and replayed raw line (${before.join(', ')})`)
+  check((await as(alice, 'DELETE', `/v1/messages/${roomPost}`)).status === 200 && (await foundInDatabase(kit.db, roomWords)).length === 0,
+    `deleting the post takes its words from the finished turn's prompt records and raw line (${(await foundInDatabase(kit.db, roomWords)).join(', ')})`)
+  const kept = await q1(`select text from events where session_id = $1 and kind = 'user' order by seq limit 1`, [finishedSession])
+  check(String(kept.text).includes('[deleted post]') && String(kept.text).includes(`${bob}:`), "the turn's prompt keeps who spoke, with the words replaced")
+
+  // A reply quotes the post it answers in its own prompt.
+  const quoteWords = `okapi-${kit.id}-basalt`
+  const quoted = await say(alice, conversations.dm, `Original ${quoteWords}`)
+  const answer = await say(alice, conversations.dm, 'My follow up', { replyToMessageId: quoted })
+  check((await handedOver(answer)).includes(quoteWords), "the reply's command to the machine quotes the post it answers")
+  await as(alice, 'DELETE', `/v1/messages/${quoted}`)
+  check((await foundInDatabase(kit.db, quoteWords)).length === 0 && (await handedOver(answer)) === `(In reply to ${alice}: "[deleted post]") My follow up`,
+    `deleting the original takes its words from the reply's prompt records too (${(await foundInDatabase(kit.db, quoteWords)).join(', ')})`)
+
+  // A post deleted before its machine got the turn is not run with nothing to read.
+  const boxId = (await q1(`insert into instances (team_id, name, kind, token_sha256) values ($1, 'sleeper', 'box', $2) returning id`, [kit.teamId, sha256(`machine_${randomBytes(24).toString('base64url')}`)])).id as string
+  const boxAgent = (await q1(`insert into agents (team_id, name, home_instance_id, visibility) values ($1, 'napper', $2, 'team') returning id`, [kit.teamId, boxId])).id as string
+  const boxDm = await q1(`insert into conversations (team_id, kind, agent_id, visibility) values ($1, 'dm', $2, 'private') returning id`, [kit.teamId, boxAgent])
+  await q('insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3)', [kit.teamId, boxDm.id, kit.people.alice])
+  const waitingPost = await say(alice, boxDm.id as string, 'Wake up and read this')
+  const waiting = await q1(`select t.status, t.wait from turns t join events e on e.id = t.event_id where e.client_id = $1`, [`message:${waitingPost}`])
+  await as(alice, 'DELETE', `/v1/messages/${waitingPost}`)
+  const after3 = await q1(`select t.status from turns t join events e on e.id = t.event_id where e.client_id = $1`, [`message:${waitingPost}`])
+  check(waiting.status === 'waiting' && after3.status === 'cancelled', `a turn still waiting for its machine is cancelled with its deleted post (${waiting.status}, then ${after3.status})`)
 } finally {
   if (failures.length) console.log(`\nthe API printed:\n${kit.api.text().slice(-1500)}`)
   for (const client of clients) await client.close().catch((error: unknown) => { console.error(error) })

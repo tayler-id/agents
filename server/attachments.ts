@@ -9,16 +9,28 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { hasCode, messageOf } from '../shared/errors.ts'
+import { envSecrets } from '../shared/scrub.ts'
+import { secretsIn } from '../shared/secret-scan.ts'
 import {
-  AttachmentId, cleanFileName, MAX_ATTACHMENT_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
+  AttachmentId, AttachmentRow, cleanFileName, MAX_ATTACHMENT_BYTES, MAX_PENDING_BYTES, PENDING_HOURS, sortUpload, type UploadAnswer,
 } from '../shared/attachments.ts'
 import { canSeeConversation, canSeeSession } from './access.ts'
-import { many, maybe, pool, type Db } from './db.ts'
-import { HttpError, scrub, type Person } from './record.ts'
+import { many, maybe, one, pool, type Db } from './db.ts'
+import { HttpError, type Person } from './record.ts'
 import { scopedTeams } from './runner.ts'
 
-export const ATTACHMENTS_DIR = process.env.AGENTS_ATTACHMENTS_DIR
-  ?? join(process.env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'attachments')
+// Where the bytes live. Unless the server is told a folder, it is named for the database it serves, so every file
+// in it has its row in that database. A server on agents_test then never reads the live server's folder, and the
+// sweep for files with no row can't take live files for strays.
+const DATABASE_NAME = z.string().regex(/^[A-Za-z0-9_-]+$/, 'a database name of letters, digits, dashes and low lines')
+function attachmentsFolder(env: NodeJS.ProcessEnv): string {
+  if (env.AGENTS_ATTACHMENTS_DIR) return env.AGENTS_ATTACHMENTS_DIR
+  const url = z.url().safeParse(env.DATABASE_URL)
+  const name = url.success ? DATABASE_NAME.safeParse(new URL(url.data).pathname.slice(1)) : null
+  if (!name?.success) throw new Error('DATABASE_URL must name a database, or AGENTS_ATTACHMENTS_DIR a folder, so attachments know where to live')
+  return join(env.AGENTS_HOME ?? join(homedir(), '.agents-app'), 'attachments', name.data)
+}
+export const ATTACHMENTS_DIR = attachmentsFolder(process.env)
 
 const fileOf = (id: string) => join(ATTACHMENTS_DIR, id.slice(0, 2), id)
 
@@ -26,24 +38,6 @@ const fileOf = (id: string) => join(ATTACHMENTS_DIR, id.slice(0, 2), id)
 const columns = (alias: string) => ['id', 'team_id', 'conversation_id', 'session_id', 'message_id', 'kind', 'name', 'media_type', 'width', 'height',
   'added_by_person', 'added_by_agent'].map((c) => `${alias}.${c}`).concat(`${alias}.event_id::text as event_id`, `${alias}.size::int as size`).join(', ')
 const COLUMNS = columns('attachments')
-
-export const AttachmentRow = z.object({
-  id: AttachmentId,
-  team_id: z.uuid(),
-  conversation_id: z.uuid().nullable(),
-  session_id: z.uuid().nullable(),
-  message_id: z.uuid().nullable(),
-  event_id: z.string().nullable(),
-  kind: z.enum(['image', 'file']),
-  name: z.string(),
-  media_type: z.string(),
-  size: z.int(),
-  width: z.int().nullable(),
-  height: z.int().nullable(),
-  added_by_person: z.uuid().nullable(),
-  added_by_agent: z.uuid().nullable(),
-})
-export type AttachmentRow = z.infer<typeof AttachmentRow>
 
 // Where an upload sits: in a chat, in a task's session, or nowhere yet.
 export type Place = { conversationId: string } | { sessionId: string } | null
@@ -56,6 +50,12 @@ export async function saveUpload(db: Db, input: {
 }): Promise<UploadAnswer> {
   if (input.bytes.length === 0) throw new HttpError(400, 'That file is empty.')
   if (input.bytes.length > MAX_ATTACHMENT_BYTES) throw new HttpError(413, `A file can be ${MAX_ATTACHMENT_BYTES} bytes at most.`)
+  // Counted before the write and not under a lock, so two uploads at once can pass together by one file.
+  if ('personId' in input.by) {
+    const held = await one<{ bytes: string }>(db, 'what the person has waiting',
+      `select coalesce(sum(size), 0) as bytes from attachments where added_by_person = $1 and message_id is null and event_id is null`, [input.by.personId])
+    if (Number(held.bytes) + input.bytes.length > MAX_PENDING_BYTES) throw new HttpError(409, 'Too many files are waiting to be sent. Send them in a post first.')
+  }
   const sorted = sortUpload(input.bytes, input.declaredType)
   const id = AttachmentId.parse(randomUUID())
   const name = cleanFileName(input.name)
@@ -163,16 +163,10 @@ export async function removeFiles(ids: readonly string[]) {
   await Promise.all(ids.map((id) => rm(fileOf(id), { force: true })))
 }
 
-// Whether a file's text holds a secret value this server knows, so an agent can't share one.
-export function holdsSecret(bytes: Buffer): boolean {
-  if (bytes.includes(0)) return false
-  const text = bytes.toString('utf8')
-  return scrub(text) !== text
-}
-
-// A file an agent shares can't be sent unless its text is clean.
+// A file an agent shares can't be sent if its bytes hold a secret this server knows. The machine checks
+// the secrets only it knows before the file is sent (daemon/share-guard.ts), and this is the second look.
 export function refuseSecret(bytes: Buffer) {
-  if (holdsSecret(bytes)) throw new HttpError(400, 'That file holds a secret this team keeps, so it was not shared.')
+  if (secretsIn(bytes, envSecrets(process.env)).length > 0) throw new HttpError(400, 'That file holds a secret this team keeps, so it was not shared.')
 }
 
 // Files that sit in the store with no row, from an upload that crashed between the two. A file is
@@ -194,7 +188,12 @@ async function sweepOnce() {
     const names = await readdir(join(ATTACHMENTS_DIR, shard))
     const old: string[] = []
     for (const name of names) {
-      if ((await stat(join(ATTACHMENTS_DIR, shard, name))).mtimeMs < Date.now() - ORPHAN_GRACE_MS) old.push(name)
+      // A file a delete removed since the listing is gone, which is what the sweep wants.
+      const info = await stat(join(ATTACHMENTS_DIR, shard, name)).catch((error: unknown) => {
+        if (hasCode(error, 'ENOENT')) return null
+        throw error
+      })
+      if (info && info.mtimeMs < Date.now() - ORPHAN_GRACE_MS) old.push(name)
     }
     if (old.length === 0) continue
     const kept = new Set((await many<{ id: string }>(pool, 'select id from attachments where id = any($1::uuid[])', [old.filter((n) => z.uuid().safeParse(n).success)])).map((r) => r.id))
