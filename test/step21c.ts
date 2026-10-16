@@ -9,7 +9,7 @@
 
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -120,25 +120,29 @@ const projectDir = (claudeDir: string, cwd: string) => join(claudeDir, 'projects
 
 // One Claude Code session's transcript, written as Claude Code writes it: where and
 // when it started, a prompt and the reply that ends the turn. `changed` sets when the
-// file last changed, which orders the page's list.
+// file last changed, which orders the page's list. `turn` adds another turn, as
+// Claude Code does to a session still running.
 function transcript(claudeDir: string, cwd: string, startedAt: Date, prompt: string, changed?: Date) {
   const session = randomUUID()
   const dir = projectDir(claudeDir, cwd)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `${session}.jsonl`)
-  const timestamp = startedAt.toISOString()
-  const line = (fields: Record<string, unknown>) => ({ parentUuid: null, isSidechain: false, userType: 'external', cwd, sessionId: session, version: '2.1.299', uuid: randomUUID(), timestamp, ...fields })
-  const lines = [
-    { type: 'queue-operation', operation: 'enqueue', timestamp, sessionId: session },
-    line({ type: 'user', message: { role: 'user', content: prompt }, turnOrigin: 'human' }),
-    line({ type: 'assistant', message: {
-      id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model: 'claude-haiku-4-5', stop_reason: 'end_turn',
-      content: [{ type: 'text', text: 'Done.' }], usage: { input_tokens: 10, output_tokens: 2 },
-    } }),
-  ]
-  writeFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join(''))
+  const text = (lines: unknown[]) => lines.map((l) => `${JSON.stringify(l)}\n`).join('')
+  const turnLines = (said: string, at: Date) => {
+    const line = (fields: Record<string, unknown>) => ({
+      parentUuid: null, isSidechain: false, userType: 'external', cwd, sessionId: session, version: '2.1.299', uuid: randomUUID(), timestamp: at.toISOString(), ...fields,
+    })
+    return [
+      line({ type: 'user', message: { role: 'user', content: said }, turnOrigin: 'human' }),
+      line({ type: 'assistant', message: {
+        id: `msg_${randomBytes(8).toString('hex')}`, type: 'message', role: 'assistant', model: 'claude-haiku-4-5', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Done.' }], usage: { input_tokens: 10, output_tokens: 2 },
+      } }),
+    ]
+  }
+  writeFileSync(path, text([{ type: 'queue-operation', operation: 'enqueue', timestamp: startedAt.toISOString(), sessionId: session }, ...turnLines(prompt, startedAt)]))
   if (changed) utimesSync(path, changed, changed)
-  return { session, path }
+  return { session, path, turn: (said: string) => { appendFileSync(path, text(turnLines(said, new Date()))) } }
 }
 
 let desktop: ElectronApplication | null = null
@@ -377,13 +381,25 @@ try {
   check(keptOffClick && keptOff === `${keptName} is off. Sessions you start in it from now on stay on this Mac, though it is inside shop, which the team sees. The ones already in the record stay there.`
     && keptPressed && keptNoted && shopSentinelLanded && !keptLanded,
   `Off on a folder inside a connected one keeps its sessions on this Mac, and the row says so: ${keptOff}`)
+  // A session in api lands through shop until api has a choice of its own. That choice decides from then on, and the
+  // session started before it, so the rest of the session stays on the Mac.
+  const throughShop = transcript(claudeDir, inner, new Date(), 'In api, landing through shop.')
+  const throughLanded = await until('the session in api landing through shop', LANDS_SEC, async () => (await turnsEnded(throughShop.session)) === 1)
+  const throughFolder = (await sessionOf(throughShop.session))?.folder_id
   // A folder inside shop that is Just me, turned Off, keeps its next sessions on this Mac too, rather than sending them to the team through shop.
   await group('api').getByRole('button', { name: 'Just me', exact: true }).click()
   const apiPrivate = await said('api')
   const apiRow = must(await folderRow(inner), 'the api folder')
   const apiRun = transcript(claudeDir, inner, new Date(apiRow.connected_at), 'In api while it is Just me.')
+  // Once a session started after Just me lands as api's, the daemon knows api's choice.
   const apiLanded = await until('the session in api', LANDS_SEC, async () => (await turnsEnded(apiRun.session)) === 1)
   const apiSession = await sessionOf(apiRun.session)
+  throughShop.turn('More in api, after it is Just me.')
+  const throughSentinel = transcript(claudeDir, shop, new Date(), 'A sentinel in shop, after api is Just me.')
+  const throughSentinelLanded = await until('the sentinel after api is Just me', LANDS_SEC, async () => (await turnsEnded(throughSentinel.session)) === 1)
+  const throughMore = await until('the next turn of the session that landed through shop, which must not land', 3, async () => (await turnsEnded(throughShop.session)) > 1)
+  check(throughLanded && throughFolder === (await folderRow(shop))?.id && apiLanded && throughSentinelLanded && !throughMore,
+    'a session landing through shop stops once the folder inside shop it runs in gets a choice of its own')
   const apiOffClick = await clicked(group('api').getByRole('button', { name: 'Off', exact: true }))
   const apiOff = await said('api')
   const apiAfterOff = transcript(claudeDir, inner, new Date(), 'In api after Off.')
