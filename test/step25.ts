@@ -285,6 +285,12 @@ async function main() {
   const bobSees = await within(20, async () => (await shapeRows(PEOPLE, bob, 'secret_sets')).rows.some((row) => row.name === 'SENTRY_TOKEN' && row.instance_id === instanceA))
   check(bobSees && !holds(JSON.stringify((await shapeRows(PEOPLE, bob, 'secret_sets')).rows), value.first), 'a teammate sees the name, the computer and the time, and nothing of the value')
 
+  // The other agent, already running, repeats the value, and it is scrubbed at once. No session has started since
+  // the value was set, so only the daemon learning the value when it arrives can scrub it.
+  const writerReply = await exchange(writerDm, 'What is the token?') ?? ''
+  check(writerReply.includes('[secret:SENTRY_TOKEN]') && !holds(writerReply, value.first),
+    `an agent that repeats the value has it replaced by its name, though its session began before the value was set (${writerReply})`)
+
   // The agent's next message starts with the plugin, which gets the value.
   const scoutReplied = await exchange(scoutDm, 'hello again') === 'fake reply'
   const scoutSession = (await one('select id from sessions where conversation_id = $1 and agent_id = $2 order by created_at desc limit 1', [scoutDm, scout])).id as string
@@ -324,11 +330,6 @@ async function main() {
   check(onComputer.join() === ['secrets.json', configFile].sort().join(),
     `on the computer the value is in its secrets file and the config that starts the plugin, and no other file (${onComputer.join(', ')})`)
   check(daemons[0]?.text().includes('secret SENTRY_TOKEN stored') === true, 'the daemon logs the name it stored and nothing else')
-
-  // The other agent, already running, repeats the value, and it is scrubbed at once.
-  const writerReply = await exchange(writerDm, 'What is the token?') ?? ''
-  check(writerReply.includes('[secret:SENTRY_TOKEN]') && !holds(writerReply, value.first),
-    `an agent that repeats the value has it replaced by its name, though its session began before the value was set (${writerReply})`)
 
   // A teammate, a stranger and values that cannot be set.
   const bobTries = await ask(bob, 'POST', valueRoute, { value: value.third })

@@ -143,6 +143,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
   const first = `ui-first-${engine}-${randomBytes(10).toString('hex')}`
   const second = `ui-second-${engine}-${randomBytes(10).toString('hex')}`
   const typed = `typed-by-bob-${engine}-${randomBytes(10).toString('hex')}`
+  const unsent = `typed-never-sent-${engine}-${randomBytes(10).toString('hex')}`
   const browser = await must(ENGINES[engine], engine).launch(LAUNCH[engine])
   const errors: string[] = []
   const open = async (who: string, agent: string, options: Record<string, unknown> = {}) => {
@@ -206,10 +207,18 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     await line.getByRole('button', { name: 'Yes, remove' }).click()
     check(await visible(page, '.secrets > li', 15, /Not set on mac-a/) && !('SENTRY_TOKEN' in JSON.parse(readFileSync(secretsFile, 'utf8'))), `${engine}: removed, the row says it is not set and the computer no longer holds it`)
 
-    // A computer that is stopped says so, and takes no value.
+    // A computer that is stopped says so, and takes no value. Nothing runs on it to report its status, so the check
+    // sets it by hand: running while a value is typed, and stopped after.
+    await db.query(`update instances set status = 'online' where name = $1`, [computer.b])
     const stoppedPage = await open(bob, bobby)
-    check(await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/) && await visible(stoppedPage, '.secrets > li p', LISTS_SEC, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
-    check(await stoppedPage.getByRole('button', { name: 'Set value' }).isDisabled(), `${engine}: and the page does not offer to send it a value`)
+    const jiraField = stoppedPage.getByLabel('Value of JIRA_TOKEN')
+    await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/)
+    await jiraField.fill(unsent)
+    await db.query(`update instances set status = 'offline' where name = $1`, [computer.b])
+    check(await visible(stoppedPage, '.secrets > li p', LISTS_SEC, new RegExp(`${computer.b} is stopped`)), `${engine}: a stopped computer is named as stopped on the page`)
+    check(await stoppedPage.getByRole('button', { name: 'Set value' }).isDisabled() && await jiraField.inputValue() === unsent,
+      `${engine}: a value typed before its computer stopped stays in the field, and Set value waits for the computer`)
+    check(await jiraField.isDisabled(), `${engine}: and the field takes nothing more while the computer is stopped`)
     await shot(stoppedPage, `${engine}-secrets-stopped-desktop`)
 
     // The page sent the value in one request, to the route that sets a value.
@@ -219,6 +228,8 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
       `${engine}: the value left the page in one request, in the body of the post that sets it`)
     const echoed = people.heard.filter((heard) => heard.kind === 'response' && [first, second, typed].some((text) => holds(heard.body, text)))
     check(echoed.length === 0, `${engine}: no answer the API sent holds a value`)
+    const typedOnly = people.heard.filter((heard) => heard.kind === 'request' && holds(`${heard.url}\n${JSON.stringify(heard.headers)}\n${heard.body}`, unsent))
+    check(typedOnly.length === 0, `${engine}: what was typed and never set left the page in no request, so nothing is saved as it is typed`)
 
     // Phone width: the same page fits the screen, with the field and its buttons in reach.
     const phone = await open(alice, scout, { viewport: WIDTHS.phone, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
