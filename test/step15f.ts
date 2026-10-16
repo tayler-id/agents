@@ -1,10 +1,12 @@
 // Every person's own computer, step 15f. Runs the migration that gives every
-// person a computer and moves agents whose home is a Mac to their person's
-// computer, on a Postgres of its own in a throwaway container, so no shared
-// database changes. The migrations before it make the schema, the check adds
+// person a computer, on a Postgres of its own in a throwaway container, so no
+// shared database changes. The migrations before it make the schema, the check adds
 // people, Macs, boxes and agents, and the migration runs twice: the first run
-// makes the computers, asleep, and moves the agents, and the second changes
-// nothing. Then a moved agent's conversation goes on at its new home through
+// makes the computers, asleep, and moves no agent, and the second changes
+// nothing. The step that moves agents whose home is a Mac to their person's
+// computer moves none while the image is not built, or while neither the team's
+// token nor the person's sign-in is there. It moves each agent whose computer can
+// run it, and a second run moves only what could not move before. Then a moved agent's conversation goes on at its new home through
 // conversationSession, unless its session on the Mac is still working or has
 // a turn that is not over.
 //   node --env-file=.env --env-file=.env.test test/step15f.ts
@@ -81,6 +83,7 @@ try {
     franks: await agent(other, 'franks', frankMac, null),
   }
 
+  const unmoved = JSON.stringify(Object.fromEntries((await q('select id, home_instance_id from agents order by id')).map((row) => [row.id, row.home_instance_id])))
   await run(mine)
   const computers = await q(`select owner_id, name, kind, claimed_by, seat_cap, cpus, memory_gib, team_id, stopped_at is not null as asleep,
       (select count(*)::int from seats s where s.instance_id = i.id) as seats
@@ -100,6 +103,27 @@ try {
   const homes = async () => Object.fromEntries((await db.query<{ id: string; home_instance_id: string | null }>('select id, home_instance_id from agents order by id')).rows
     .map((row) => [row.id, row.home_instance_id]))
   const computerOf = async (owner: string) => String((await one('select id from instances where owner_id = $1 and personal', [owner])).id)
+  check(JSON.stringify(await homes()) === unmoved, 'the migration moves no agent, whatever its home')
+
+  // The step that moves them. Nothing moves without the image, nor with the image
+  // and no login. With the team's token everyone moves. Without it, only the
+  // person who signed in has their agents move.
+  const { pool: serverPool } = await import('../server/db.ts')
+  const { moveMacAgents } = await import('../server/rehome.ts')
+  const noImage = await moveMacAgents(serverPool, team, { imageBuilt: false, teamToken: true })
+  check(noImage.moved.length === 0 && JSON.stringify(await homes()) === unmoved, 'with the box image not built, no agent moves')
+  const noLogin = await moveMacAgents(serverPool, team, { imageBuilt: true, teamToken: false })
+  check(noLogin.moved.length === 0 && JSON.stringify(await homes()) === unmoved && noLogin.stayed.length === 4,
+    `with the image built and no Claude login, no agent moves, and each says why (${noLogin.stayed.map((left) => left.agent).join(', ')})`)
+  await db.query(`insert into claude_logins (team_id, instance_id, person_id, status, url, valid_until)
+    select team_id, id, owner_id, 'signed_in', 'https://login.test/x', now() + interval '10 days' from instances where owner_id = $1 and personal`, [carol])
+  const signedIn = await moveMacAgents(serverPool, team, { imageBuilt: true, teamToken: false })
+  const partial = await homes()
+  check(signedIn.moved.join() === 'fixer' && partial[agents.ownOwner] === await computerOf(carol) && partial[agents.macOwner] === aliceMac,
+    "once Carol has signed in, her agent moves to her computer and Alice's, with no login, stays")
+  const full = await moveMacAgents(serverPool, team, { imageBuilt: true, teamToken: true })
+  check(full.moved.length === 2 && full.stayed.length === 1 && full.stayed[0]?.agent === 'improver', 'with the team token saved the rest move, and the improver, with no owner, says it stayed')
+  await moveMacAgents(serverPool, other, { imageBuilt: true, teamToken: true })
   const moved = await homes()
   check(moved[agents.macOwner] === await computerOf(alice) && moved[agents.ownOwner] === await computerOf(carol) && moved[agents.daves] === await computerOf(dave)
     && moved[agents.franks] === await computerOf(frank),
@@ -108,6 +132,8 @@ try {
     'an agent with no owner on a Mac with none stays, and agents on boxes or with no home stay where they are')
 
   // The second run changes nothing.
+  const again = await moveMacAgents(serverPool, team, { imageBuilt: true, teamToken: true })
+  check(again.moved.length === 0 && JSON.stringify(await homes()) === JSON.stringify(moved), 'running the step again moves nothing more')
   const before = JSON.stringify(await q('select id, name, owner_id, token_sha256 from instances order by id'))
   await run(mine)
   check(JSON.stringify(await q('select id, name, owner_id, token_sha256 from instances order by id')) === before
@@ -116,7 +142,6 @@ try {
   // A moved agent's conversation goes on at its new home. A session whose turn
   // is still running on the Mac keeps the conversation until the turn ends.
   const { conversationSession } = await import('../server/record.ts')
-  const { pool: serverPool } = await import('../server/db.ts')
   const dm = async (agentId: string) => String((await one(`insert into conversations (team_id, kind, agent_id) values ($1, 'dm', $2) returning id`, [team, agentId])).id)
   const session = async (conversation: string, agentId: string, status: string) => String((await one(
     `insert into sessions (team_id, conversation_id, instance_id, agent_id, status) values ($1, $2, $3, $4, $5) returning id`,

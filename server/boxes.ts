@@ -225,6 +225,19 @@ export function boxLoginProblem(): string | null {
   return `Boxes have no Claude login yet. Run \`claude setup-token\`, save the token in ${CLAUDE_TOKEN_FILE} on the server, and run the pipeline again.`
 }
 
+// The team's Claude token is saved on the server, so a computer can run Claude before its person signs in.
+export const teamTokenSaved = (): boolean => existsSync(CLAUDE_TOKEN_FILE)
+
+// The box image is built, so a computer can start.
+export async function boxImageBuilt(): Promise<boolean> {
+  try {
+    await run('docker', ['image', 'inspect', IMAGE])
+    return true
+  } catch {
+    return false
+  }
+}
+
 // People's own boxes are not in the pool: runs never claim them and the limit does not count them.
 export async function claimBox(client: pg.PoolClient, teamId: string, runId: string): Promise<string | null> {
   // One claim at a time per team, so two runners cannot both take the last free box.

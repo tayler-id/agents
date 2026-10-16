@@ -1,8 +1,9 @@
--- Every person has their own computer, agents whose home is a Mac move to
--- their person's computer, and a turn can wait for a seat. Tayler's call of
--- 2026-10-16 is "Every agent has its own desktop, with no setup" in
+-- Every person has their own computer, and a turn can wait for a seat. Tayler's
+-- call of 2026-10-16 is "Every agent has its own desktop, with no setup" in
 -- docs/decisions.md, and docs/data-model.md says what changes. Running it
--- again changes nothing.
+-- again changes nothing. Agents whose home is a Mac do not move here. A computer
+-- with no Claude login or no built image cannot run them, so `move-agents` in
+-- server/admin.ts moves them once it can (server/rehome.ts).
 
 -- A turn on a person's computer waits for a seat while every seat is busy.
 alter table turns drop constraint if exists turns_wait_check;
@@ -39,11 +40,3 @@ begin
     end loop;
   end loop;
 end $$;
-
--- An agent whose home is a Mac moves to the computer of its owner, or of the
--- Mac's owner when the agent has none. An agent with neither stays.
-update agents a set home_instance_id = computer.id
-from instances mac, instances computer
-where mac.id = a.home_instance_id and mac.kind = 'mac'
-  and computer.personal and computer.team_id = a.team_id
-  and computer.owner_id = coalesce(a.owner_id, mac.owner_id);
