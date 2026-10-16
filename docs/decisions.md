@@ -393,6 +393,16 @@ Tayler went with the coordinator's picks on all of these.
 - **The design's picks, which Tayler let stand on 2026-10-15.** Hosted connectors are called from the server's gateway, so no connector token reaches a computer (13). An agent acts as the person whose turn it is, and team accounts are for service accounts only (14). Read-only tools are on and other tools ask (16). MCP apps are off for each connector until a manager turns them on (18). The app offers reads, opening a page and two writes the person confirms as WebMCP tools, never approvals or secrets (19). An agent's browser takes tools from no site until the team lists its origins (20).
 - **Status.** Designed. Building starts after seats, with secrets from the app first.
 
+### Agent setup, copies and recipe files
+
+- **Purpose.** A person copies a teammate's agent and gets its setup, an agent runs the Claude Code hooks its setup names, and a hook's effect lands in the record.
+- **How it works.**
+  - An agent has hooks, commands its machine runs when a message arrives, a tool runs, a turn ends or a session starts. The agent's owner or a team admin adds them, since a hook is as strong as a plugin's command. The daemon writes them to `.claude/settings.local.json` and starts Claude Code with hook events on, so each run is a notice in the session's record. A file a hook writes in a task's folder is a document.
+  - Copy makes a new agent for the person who asks, on a machine they may use, with the source's title, instructions, skills, plugins, routines and hooks, and the team's memories only when they ask. It never carries what the agent remembers about a person, and never a secret value. It saves no template.
+  - One shape, `Recipe`, serves copies and templates. Templates keep hooks and no memories.
+- **Implementation.** `shared/recipe.ts`, `server/agents.ts`, `daemon/agentfiles.ts`, `app/src/Hooks.tsx`, `app/src/CopyAgent.tsx` and migration 0017, checked by `test/step24.ts` and `test/step24b.ts`. Where the build differs from the design, "Templates, sharing and cloning" in `docs/design/target-architecture.md` says so.
+- **Status.** Built on the branch `agent-copies`, not landed, and tried only with the stand-in for Claude. The real CLI was run with no model call to see how it reads the settings file and what it prints for a hook, and no turn of real Claude has run these hooks through the daemon.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
