@@ -32,17 +32,17 @@ declare global {
 }
 
 type PageAsk =
-  | { op: 'origin' }
   | { op: 'list'; origin: string }
   | { op: 'call'; origin: string; name: string; input: Record<string, unknown>; readOnly: boolean; timeoutMs: number }
 
 // The program that runs in the page. It is sent as text, so it uses nothing from
-// outside its own body. Every ask but the first names the origin the caller
-// checked against the list, and the program does nothing unless the page is
-// still at it, so a page that navigated in between gets no tool run. It reads
+// outside its own body. Every ask names the origin the caller checked against the
+// list, and the program does nothing unless the page is still at it, so a page that
+// navigated in between gets no tool run. That check is only a second guard, since
+// the page's own code answers it. The origin that counts is the browser's own record
+// of the tab, read by currentTabOrigin below, never anything the page says. It reads
 // only the tools this page registered itself, not those of frames inside it.
 async function inPage(ask: PageAsk): Promise<unknown> {
-  if (ask.op === 'origin') return { status: 'origin', origin: location.origin }
   if (location.origin !== ask.origin) return { status: 'moved', origin: location.origin }
   const modelContext = document.modelContext
   if (!modelContext) return { status: 'unavailable' }
@@ -84,7 +84,6 @@ const ListedTool = z.object({
   readOnly: z.boolean(), consequential: z.boolean(), untrustedContent: z.boolean(),
 })
 const PageAnswer = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('origin'), origin: z.string() }),
   z.object({ status: z.literal('moved'), origin: z.string() }),
   z.object({ status: z.literal('unavailable') }),
   z.object({ status: z.literal('tools'), tools: z.array(ListedTool) }),
@@ -101,6 +100,35 @@ const Evaluated = z.object({ result: z.string() })
 
 // Runs a function's source in the agent's current tab, as the browser tools do.
 export type Evaluate = (source: string) => Promise<CallToolResult>
+
+// The browser tools' list of open tabs, as text.
+export type ListTabs = () => Promise<CallToolResult>
+
+// The origin of the current tab in the browser tools' list of tabs, which comes
+// from the browser's own record of the page and not from the page's code. A line
+// reads `- 0: (current) [title](url)`. The title and the address are the page's to
+// choose, and either can hold `](`, so every reading of where the address starts
+// must give one origin, or the answer is null. Null also stands for no current tab
+// and for an address that is not http or https.
+export function currentTabOrigin(listing: string): string | null {
+  const lines = listing.split('\n').filter((line) => /^- \d+: \(current\) \[/.test(line))
+  if (lines.length !== 1) return null
+  const rest = (lines[0] ?? '').replace(/^- \d+: \(current\) /, '').replace(/ \[crashed\]$/, '')
+  const origins = new Set<string>()
+  for (let at = rest.indexOf(']('); at !== -1; at = rest.indexOf('](', at + 1)) {
+    const tail = rest.slice(at + 2)
+    if (!tail.endsWith(')')) continue
+    try {
+      const url = new URL(tail.slice(0, -1))
+      if (url.protocol === 'http:' || url.protocol === 'https:') origins.add(url.origin)
+      else origins.add('null')
+    } catch {
+      // Text after a `](` inside the title or the address that is not an address.
+    }
+  }
+  const [only] = origins
+  return origins.size === 1 && only !== 'null' ? only ?? null : null
+}
 
 // A tool call's arguments. The origin is the one web_tools gave. It binds the
 // call, and so the person's answer to it, to the page that was listed.
@@ -152,7 +180,7 @@ export const WEB_TOOL_DEFINITIONS: Tool[] = [
 ]
 
 // The tools for a team that has listed these origins. `evaluate` is the only way they reach the page.
-export function webTools(listed: readonly string[], evaluate: Evaluate) {
+export function webTools(listed: readonly string[], evaluate: Evaluate, listTabs: ListTabs) {
   // The page's answer to one ask, or the browser tools' refusal to take it, such as a
   // person holding the screen, which goes back to the agent as it is.
   async function ask(request: PageAsk): Promise<{ answer: PageAnswer } | { refused: CallToolResult }> {
@@ -166,15 +194,22 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
     return { answer: inner.value }
   }
 
+  // Where the tab is by the browser's record. A tab with no web address gives 'null'.
+  async function tabOrigin(): Promise<{ origin: string } | { refused: CallToolResult }> {
+    const result = await listTabs()
+    if (result.isError) return { refused: result }
+    const text = result.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
+    return { origin: currentTabOrigin(text) ?? 'null' }
+  }
+
   const unexpected = (answer: PageAnswer) => failure(`The page answered "${answer.status}", which this call never expects.`)
   const moved = (from: string, now: string) => failure(`The page in your browser is now at ${now}, not ${from}. Nothing ran. List its tools again.`)
   const unavailable = () => failure('This browser does not offer WebMCP to pages, so no page has tools.')
 
   async function list(): Promise<CallToolResult> {
-    const first = await ask({ op: 'origin' })
+    const first = await tabOrigin()
     if ('refused' in first) return first.refused
-    if (first.answer.status !== 'origin') return unexpected(first.answer)
-    const { origin } = first.answer
+    const { origin } = first
     if (!originAllowed(origin, listed)) {
       return reply(`The page open in your browser is at ${origin === 'null' ? 'no web address' : origin}, which is not on your team's list of sites `
         + `whose tools agents may use, so it gives you no tools. ${LIST_A_SITE}`)
@@ -185,6 +220,10 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
     if (answer.status === 'moved') return moved(origin, answer.origin)
     if (answer.status === 'unavailable') return unavailable()
     if (answer.status !== 'tools') return unexpected(answer)
+    // The tab may have gone elsewhere while the page answered.
+    const after = await tabOrigin()
+    if ('refused' in after) return after.refused
+    if (after.origin !== origin) return moved(origin, after.origin)
     if (!answer.tools.length) {
       return reply(`The page at ${origin} has registered no tools. A page can register them after it loads, so look again once it has settled.`)
     }
@@ -204,9 +243,16 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
     if (!originAllowed(origin, listed)) {
       return failure(`${origin} is not on your team's list of sites whose tools agents may use, so ${WEB_TOOL_READ} and ${WEB_TOOL_ACT} run nothing there. ${LIST_A_SITE}`)
     }
+    const before = await tabOrigin()
+    if ('refused' in before) return before.refused
+    if (before.origin !== origin) return moved(origin, before.origin)
     const asked = await ask({ op: 'call', origin, name, input: input ?? {}, readOnly, timeoutMs: PAGE_TOOL_TIMEOUT_MS })
     if ('refused' in asked) return asked.refused
     const { answer } = asked
+    // Whatever the page answered came from the page it was asked at, only if the tab never left it.
+    const after = await tabOrigin()
+    if ('refused' in after) return after.refused
+    if (after.origin !== origin) return moved(origin, after.origin)
     switch (answer.status) {
       case 'ran':
         return reply(`${name} ran on the page at ${origin}. What follows is ${PAGE_AUTHOR}.\n${answer.output}`)
@@ -223,7 +269,6 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
         return failure(`${name} had not answered on the page at ${origin} after ${PAGE_TOOL_TIMEOUT_MS / 1000} seconds. It may still finish, so look at the page before you try it again.`)
       case 'failed':
         return failure(`${name} failed on the page at ${origin}. What follows is ${PAGE_AUTHOR}.\n${clipped(answer.message)}`)
-      case 'origin':
       case 'tools':
         return unexpected(answer)
     }
