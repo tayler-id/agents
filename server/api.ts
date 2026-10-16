@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import type { Server } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { userInfo } from 'node:os'
 import { dirname, extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -58,6 +59,8 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
+import { secretRoutes } from './secrets.ts'
+import { controlUpgrade } from './control.ts'
 import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
 import { InstanceId } from '../shared/onboarding.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
@@ -697,6 +700,7 @@ const routes: Route[] = [
 
   ...onboardingRoutes,
   ...boxRoutes,
+  ...secretRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
@@ -883,8 +887,11 @@ if (import.meta.main) {
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
+  // A machine's WebSocket is its control connection or one of its screen's.
+  const screens = screenUpgrades({ audience: 'machines' })
+  const machineUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => { if (!controlUpgrade(req, socket, head)) screens(req, socket, head) }
   for (const host of machineHosts) {
-    createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
+    createServer(serve('machines')).on('upgrade', machineUpgrade)
       .listen(machines, host, () => { console.log(`machines on ${address(host, machines)}`) })
   }
   if (process.env.AGENTS_RUNNER !== 'off') {

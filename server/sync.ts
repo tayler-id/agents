@@ -129,6 +129,8 @@ const personShapes: Record<string, PersonShape> = {
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
   secrets: async (p) => ({ table: 'secrets', where: 'team_id = $1', params: [p.team_id] }),
+  // Where a secret was set from the app and when. Still no value.
+  secret_sets: async (p) => ({ table: 'secret_sets', where: 'team_id = $1', params: [p.team_id] }),
   turns: async (p, args) => ({ table: 'turns', where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
