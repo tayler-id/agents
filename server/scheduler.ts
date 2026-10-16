@@ -128,6 +128,7 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
   // the next, until the reclaim rule gives it to another agent.
   if (machine.takes_work && machine.seated && machine.agent_id !== null
     && (await takeSeat(client, machine.id, machine.agent_id)).kind === 'busy') {
+    await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
     for (const turn of turns) {
       if (turn.status === 'queued') await moveTurn(client, turn.id, { to: 'waiting', wait: 'seat', instanceId: machine.id })
       else await client.query(`update turns set wait = 'seat' where id = $1 and status = 'waiting'`, [turn.id])

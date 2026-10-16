@@ -4,11 +4,13 @@
 // in to Claude it runs Claude on the team's token, which this check keeps in a
 // file of its own and finds in no table and no log, and once he has, on his.
 // Every seat has a real desktop: JWM with title bars and a dock along the
-// bottom. With the computer tool, the agent opens a terminal from the dock and
-// types into it, switches windows with alt+Tab, opens the whiteboard from the
-// dock, draws a rectangle in it and saves a screenshot. A seat that another
-// agent takes loses the last agent's windows, and a second seat has its own
-// dock. Prints the computer's memory, and each seat's, with the new desktop.
+// bottom. The scheduler gives each agent's turn a seat. With the computer
+// tool, the agent opens a terminal from the dock and types into it, switches
+// windows with alt+Tab, opens the whiteboard from the dock, draws a rectangle
+// in it and saves a screenshot. A second agent's seat has its own dock. With
+// the computer down to two seats, a third agent's turn waits for a seat and
+// says so, then takes back the first agent's idle seat, without the windows
+// left there. Prints the computer's memory, and each seat's, with the new desktop.
 // The box reaches this check's API only on 7701, the machine port the box
 // firewall opens for checks, so run it holding ~/.agents-app/checks/run.lock.
 //   node --env-file=.env --env-file=.env.test test/step15g.ts
@@ -28,8 +30,7 @@ import { servePeople } from './people.ts'
 import { dockButton, measure, pixelsOf, seatMemory, seatTools, type Pixels } from './seats.ts'
 import { DOCK_HEIGHT, TERMINAL_BACKGROUND } from '../daemon/dock.ts'
 import { DRAWING_KEY, WHITEBOARD_URL } from '../daemon/whiteboard.ts'
-import { AgentId } from '../shared/ids.ts'
-import { InstanceId } from '../shared/onboarding.ts'
+import { TURN_WAIT_COLUMNS, TurnWaitRow, turnLine } from '../shared/turns.ts'
 import { messageOf } from '../shared/errors.ts'
 
 const PEOPLE_PORT = 7988
@@ -142,8 +143,8 @@ try {
   writeFileSync(join(work, 'team-token'), `${teamToken}\n`, { mode: 0o600 })
   node('server/migrate.ts')
   node('server/admin.ts', 'add-team', team, alice)
-  const { takeSeat } = await import('../server/seats.ts')
-  const { tx, pool } = await import('../server/db.ts')
+  const { RECLAIM_IDLE_MIN } = await import('../server/seats.ts')
+  const { pool } = await import('../server/db.ts')
   closers.push(() => pool.end())
 
   node('server/boxes.ts', 'build')
@@ -261,40 +262,31 @@ try {
 
   const idle = await measure(container, async () => { await sleep(SAMPLE_MS); return seatMemory(container) })
 
-  // Another agent taking seat 1 gets it without the last agent's windows.
+  // Once Bob signs in, his agents run on his own token. Painter keeps seat 1.
+  execFileSync('docker', ['exec', '-i', container, 'sh', '-c', 'umask 077 && cat > /home/agent/.agents-app/claude-token'], { input: `${bobToken}\n` })
+  const signedIn = await runTask(container, painterId, 'Look after signing in')
+  check(signedIn.tokenSha === sha256(bobToken), "once Bob has signed in, his agent's Claude runs on his own token")
+
+  // From here the computer holds two seats, so a third agent finds both busy.
+  await db.query('update instances set seat_cap = 2 where id = $1', [instanceId])
+  // A second agent's task takes seat 2, whose dock is its own.
   const sketcher = await post(bob, '/v1/agents', { name: 'sketcher', homeInstanceId: instanceId })
   const sketcherId: string = must(sketcher.json?.agentId, "Bob's second agent")
-  const seatFor = (agentId: string) => tx((client) => takeSeat(client, InstanceId.parse(instanceId), AgentId.parse(agentId)))
-  const painterSeat = await seatFor(painterId)
-  const cleared = await within(30, async () => onDisplay(container, 1, 'xterm').length === 0
-    && !pagesOf(container, 1).some((page) => page.url === WHITEBOARD_URL))
-  const painterReady = await within(60, async () => (await one('select status from seats where instance_id = $1 and n = 1', [instanceId]))?.status === 'ready')
-  check(painterSeat.kind === 'seated' && painterSeat.seat.n === 1 && cleared && painterReady && onDisplay(container, 1, 'jwm').length === 1,
-    'an agent given seat 1 gets it without the terminal and whiteboard left there, and the dock stays')
-
-  // A second seat has a dock of its own.
-  const sketcherSeat = await seatFor(sketcherId)
-  const seat2Ready = await within(90, async () => (await one('select status from seats where instance_id = $1 and n = 2', [instanceId]))?.status === 'ready')
   const second = await runTask(container, sketcherId, 'Sketch on seat 2')
+  const seat2 = await one('select n, status from seats where instance_id = $1 and agent_id = $2', [instanceId, sketcherId])
   const tools2 = await toolsOf(container, second.sessionId, second.workspace)
   await act(tools2, { action: 'left_click', coordinate: dockButton('Terminal') })
   await act(tools2, { action: 'left_click', coordinate: dockButton('Whiteboard') })
   const seat2Windows = await within(20, async () => onDisplay(container, 2, 'xterm').length === 1
     && pagesOf(container, 2).some((page) => page.url === WHITEBOARD_URL))
-  check(sketcherSeat.kind === 'seated' && sketcherSeat.seat.n === 2 && seat2Ready && onDisplay(container, 2, 'jwm').length === 1 && seat2Windows
-    && onDisplay(container, 1, 'xterm').length === 0,
-  "seat 2 has its own dock, whose terminal and whiteboard open on seat 2's screen only")
+  check(seat2?.n === 2 && seat2.status === 'ready' && onDisplay(container, 2, 'jwm').length === 1 && seat2Windows && onDisplay(container, 1, 'xterm').length === 1,
+    "a second agent's task takes seat 2, whose own dock opens a terminal and the whiteboard on seat 2's screen only")
 
-  // Seat 1 gets a terminal and the whiteboard again, and both seats are measured with them open.
-  const painterAgain = await runTask(container, painterId, 'Look again on seat 1')
-  const tools1 = await toolsOf(container, painterAgain.sessionId, painterAgain.workspace)
-  await act(tools1, { action: 'left_click', coordinate: dockButton('Terminal') })
-  await act(tools1, { action: 'left_click', coordinate: dockButton('Whiteboard') })
-  await within(20, async () => onDisplay(container, 1, 'xterm').length === 1 && pagesOf(container, 1).some((page) => page.url === WHITEBOARD_URL))
+  // Both seats, each with a terminal and the whiteboard, worked at once.
   const working = await measure(container, async () => {
     const until = Date.now() + SAMPLE_MS
     while (Date.now() < until) {
-      await Promise.all([tools1, tools2].map(async (seatTools) => {
+      await Promise.all([tools, tools2].map(async (seatTools) => {
         await act(seatTools, { action: 'left_click_drag', start_coordinate: [400, 300], coordinate: [600, 450] })
         await act(seatTools, { action: 'key', text: 'ctrl+z' })
       }))
@@ -302,10 +294,26 @@ try {
     return seatMemory(container)
   })
 
-  // Once Bob signs in, his agents run on his own token.
-  execFileSync('docker', ['exec', '-i', container, 'sh', '-c', 'umask 077 && cat > /home/agent/.agents-app/claude-token'], { input: `${bobToken}\n` })
-  const signedIn = await runTask(container, painterId, 'Look after signing in')
-  check(signedIn.tokenSha === sha256(bobToken), "once Bob has signed in, his agent's Claude runs on his own token")
+  // A third agent's turn waits while both seats are busy, and says so.
+  const inker = await post(bob, '/v1/agents', { name: 'inker', homeInstanceId: instanceId })
+  const inkerId: string = must(inker.json?.agentId, "Bob's third agent")
+  const inkerTask = await post(bob, '/v1/tasks', { title: 'Ink on a free seat', instructions: 'Look at it.', agentId: inkerId })
+  const inkerSession: string = must(inkerTask.json?.sessionId, "inker's session")
+  const turnOf = () => one(`select ${TURN_WAIT_COLUMNS.join(', ')} from turns where session_id = $1 order by requested_at desc limit 1`, [inkerSession])
+  const waiting = await within(30, async () => (await turnOf())?.wait === 'seat')
+  const machine = must(await one('select name, personal, owner_id, seat_cap from instances where id = $1', [instanceId]), 'the computer')
+  const line = waiting ? turnLine(TurnWaitRow.parse(await turnOf()), { name: String(machine.name), personal: Boolean(machine.personal), owner_id: String(machine.owner_id), seat_cap: Number(machine.seat_cap) },
+    bobId, { name: 'Bob', login: bob }, (time) => time) : '(no wait)'
+  check(waiting && line === 'Waiting for a seat on your computer, 2 of 2 busy', `a third agent's turn waits for a seat while both are busy ("${line}")`)
+
+  // Painter's seat has been idle longer than the reclaim rule asks, so the
+  // runner gives it to the waiting turn, and seat 1 is cleared for it.
+  await db.query(`update seats set last_turn_at = now() - make_interval(mins => $3 + 1) where instance_id = $1 and agent_id = $2`, [instanceId, painterId, RECLAIM_IDLE_MIN])
+  const ran = await within(120, async () => (await one('select status from turns where session_id = $1 order by requested_at desc limit 1', [inkerSession]))?.status === 'done')
+  const seat1 = await one('select agent_id, status from seats where instance_id = $1 and n = 1', [instanceId])
+  check(ran && seat1?.agent_id === inkerId && seat1.status === 'ready' && onDisplay(container, 1, 'xterm').length === 0
+    && !pagesOf(container, 1).some((page) => page.url === WHITEBOARD_URL) && onDisplay(container, 1, 'jwm').length === 1,
+  "once painter's seat has been idle long enough, the waiting turn takes it back and runs there, without painter's terminal and whiteboard, and the dock stays")
 
   // The team's token is in no table and in no log.
   const tables = (await db.query(`select table_name from information_schema.columns where table_schema = 'public' and column_name = 'team_id'`)).rows.map((row) => String(row.table_name))
