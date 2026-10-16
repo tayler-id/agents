@@ -234,10 +234,11 @@ try {
   // 3. scout asks to make an agent. It waits on Alice's yes, and is made only with it.
   await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Make a copy editor for us.' })
   const asking = await within(TURN_SECONDS, async () => (await one(`select id from asks where session_id = $1 and status = 'open'`, [scoutDm])) !== undefined)
-  const ask = must(await one(`select * from asks where session_id = $1 and status = 'open'`, [scoutDm]), 'the ask')
-  check(asking && ask.kind === 'tool_approval' && ask.payload.toolName === CREATE_AGENT_TOOL && ask.conversation_id === dm && ask.payload.input.name === 'copyedit'
+  const opened = await one(`select * from asks where session_id = $1 and status = 'open'`, [scoutDm])
+  check(asking && opened?.kind === 'tool_approval' && opened.payload.toolName === CREATE_AGENT_TOOL && opened.conversation_id === dm && opened.payload.input.name === 'copyedit'
     && (await agentNamed('copyedit')) === undefined,
   'making an agent waits on an ask in the DM, and no agent exists while it waits')
+  const ask = must(opened, 'the ask')
   const aliceId = must(await one('select id from people where login = $1', [alice]), 'Alice').id
   const shown = { question: ask.payload.question, choices: ask.payload.choices, answerer: ask.payload.answerer }
   check(JSON.stringify(shown) === JSON.stringify({
@@ -257,8 +258,11 @@ try {
   check(made && copyedit?.owner_id === aliceId && copyedit.home_instance_id === macId
     && copyedit.made_by_session === scoutDm && copyedit.made_by_ask === ask.id && copyedit.title === 'Copy edits drafts',
   "once Alice says yes, the new agent exists: Alice's, on scout's machine, made by scout's session with that yes")
+  // With copyedit archived its name is free again, so only the yes itself stands in the way of a second one.
+  await db.query('update agents set archived_at = now() where id = $1', [copyedit?.id])
   const reused = await asSession(token, scoutDm, 'POST', '/v1/team-agents/agents', { name: 'copyedit', title: 'Copy edits drafts', instructions: 'Fix spelling and grammar.' })
-  check(reused.status === 403, `one yes makes one agent (${reused.status})`)
+  const copies = await one(`select count(*)::int as n from agents where made_by_ask = $1 or (name = 'copyedit' and team_id = $2)`, [ask.id, copyedit?.team_id])
+  check(reused.status === 403 && Number(copies?.n) === 1, `one yes makes one agent: using it again is refused (${reused.status}), and there is still one copyedit`)
   await post(alice, `/v1/conversations/${dm}/messages`, { text: 'Make a second helper too.' })
   await within(TURN_SECONDS, async () => (await one(`select id from asks where session_id = $1 and status = 'open'`, [scoutDm])) !== undefined)
   const second = must(await one(`select id from asks where session_id = $1 and status = 'open'`, [scoutDm]), 'the second ask')
