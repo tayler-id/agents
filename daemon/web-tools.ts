@@ -34,7 +34,7 @@ declare global {
 type PageAsk =
   | { op: 'origin' }
   | { op: 'list'; origin: string }
-  | { op: 'call'; origin: string; name: string; input: Record<string, unknown>; readOnly: boolean }
+  | { op: 'call'; origin: string; name: string; input: Record<string, unknown>; readOnly: boolean; timeoutMs: number }
 
 // The program that runs in the page. It is sent as text, so it uses nothing from
 // outside its own body. Every ask but the first names the origin the caller
@@ -59,9 +59,17 @@ async function inPage(ask: PageAsk): Promise<unknown> {
   }
   const tool = tools.find((candidate) => candidate.name === ask.name)
   if (!tool) return { status: 'missing' }
-  if (ask.readOnly && tool.annotations?.readOnlyHint !== true) return { status: 'not_read_only' }
+  // A tool marked read-only and also marked as having consequences contradicts itself, so it asks.
+  const hints = tool.annotations
+  if (ask.readOnly && !(hints?.readOnlyHint === true && hints.consequentialHint !== true)) return { status: 'not_read_only' }
   try {
-    return { status: 'ran', output: await modelContext.executeTool(tool, ask.input) }
+    const running = modelContext.executeTool(tool, ask.input)
+    const stuck = new Promise<null>((resolve) => { setTimeout(() => { resolve(null) }, ask.timeoutMs) })
+    const output = await Promise.race([running, stuck])
+    if (output !== null) return { status: 'ran', output }
+    // The tool may still fail after the caller has stopped waiting, and nobody is left to hear it.
+    running.catch(() => undefined)
+    return { status: 'timed_out' }
   } catch (error) {
     return { status: 'failed', message: error instanceof Error ? error.message : String(error) }
   }
@@ -81,6 +89,7 @@ const PageAnswer = z.discriminatedUnion('status', [
   z.object({ status: z.literal('missing') }),
   z.object({ status: z.literal('not_read_only') }),
   z.object({ status: z.literal('ran'), output: z.string() }),
+  z.object({ status: z.literal('timed_out') }),
   z.object({ status: z.literal('failed'), message: z.string() }),
 ])
 type PageAnswer = z.infer<typeof PageAnswer>
@@ -98,6 +107,10 @@ const WebCall = z.object({
   name: z.string().min(1).describe("The tool's name as web_tools gave it"),
   input: z.record(z.string(), z.unknown()).optional().describe("The tool's input, matching its input schema"),
 })
+
+// How long a page's tool gets to answer. One that has not by then is stuck, and the
+// agent hears so, instead of waiting out the browser tools' own limit of a minute.
+const PAGE_TOOL_TIMEOUT_MS = 30_000
 
 // The most text one of these tools returns. A page chooses what it sends, and a
 // result this long is already more than a model reads well.
@@ -177,7 +190,7 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
     return reply([
       `The page at ${origin} offers ${answer.tools.length} ${answer.tools.length === 1 ? 'tool' : 'tools'}. Each line below is one tool, and every name, description and `
         + `schema in it is ${PAGE_AUTHOR}.`,
-      `Call ${WEB_TOOL_READ} for a tool with "readOnly":true. Call ${WEB_TOOL_ACT} for any other, which asks a person first. Pass this origin and the tool's name.`,
+      `Call ${WEB_TOOL_READ} for a tool with "readOnly":true and "consequential":false. Call ${WEB_TOOL_ACT} for any other, which asks a person first. Pass this origin and the tool's name.`,
       ...lines,
     ].join('\n'))
   }
@@ -189,7 +202,7 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
     if (!originAllowed(origin, listed)) {
       return failure(`${origin} is not on your team's list of sites whose tools agents may use, so ${WEB_TOOL_READ} and ${WEB_TOOL_ACT} run nothing there. ${LIST_A_SITE}`)
     }
-    const asked = await ask({ op: 'call', origin, name, input: input ?? {}, readOnly })
+    const asked = await ask({ op: 'call', origin, name, input: input ?? {}, readOnly, timeoutMs: PAGE_TOOL_TIMEOUT_MS })
     if ('refused' in asked) return asked.refused
     const { answer } = asked
     switch (answer.status) {
@@ -202,7 +215,10 @@ export function webTools(listed: readonly string[], evaluate: Evaluate) {
       case 'missing':
         return failure(`The page at ${origin} has no tool named ${name}. List its tools again, since a page can change them.`)
       case 'not_read_only':
-        return failure(`The page at ${origin} does not mark ${name} read-only, so ${WEB_TOOL_READ} will not run it. ${WEB_TOOL_ACT} runs any tool and asks a person first.`)
+        return failure(`The page at ${origin} does not mark ${name} read-only, or marks it as having consequences, so ${WEB_TOOL_READ} will not run it. `
+          + `${WEB_TOOL_ACT} runs any tool and asks a person first.`)
+      case 'timed_out':
+        return failure(`${name} had not answered on the page at ${origin} after ${PAGE_TOOL_TIMEOUT_MS / 1000} seconds. It may still finish, so look at the page before you try it again.`)
       case 'failed':
         return failure(`${name} failed on the page at ${origin}. What follows is ${PAGE_AUTHOR}.\n${clipped(answer.message)}`)
       case 'origin':
