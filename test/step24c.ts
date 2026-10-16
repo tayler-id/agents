@@ -114,11 +114,10 @@ async function run(engine: string, machineA: string, folder: string) {
     // Alice exports from the agent's page.
     const page = await open(alice)
     await page.goto(`/#/a/${source}`)
-    await page.getByText('Export as a file').click()
-    const form = page.getByRole('form', { name: 'Export as a file' })
-    check(!await form.getByLabel(/With the team's memories \(2\)/).isChecked(), `${engine}: the export form counts the team's memories and starts without them`)
+    const form = page.getByRole('group', { name: 'Export as a file' })
+    check(!await form.getByLabel(/With the team's memories \(2\)/).isChecked(), `${engine}: the export counts the team's memories and starts without them`)
     await form.getByLabel(/With the team's memories/).check()
-    const [download] = await Promise.all([page.waitForEvent('download'), form.getByRole('button', { name: 'Download the recipe' }).click()])
+    const [download] = await Promise.all([page.waitForEvent('download'), form.getByRole('button', { name: 'Export as a file' }).click()])
     const path = join(folder, `${engine}-${download.suggestedFilename()}`)
     await download.saveAs(path)
     const saved = RecipeFile.safeParse(JSON.parse(readFileSync(path, 'utf8')))
@@ -128,36 +127,32 @@ async function run(engine: string, machineA: string, folder: string) {
     check(await visible(page, '[role="status"]', 10, new RegExp(`Saved ${name}\\.recipe\\.json`)), `${engine}: the export says what it saved`)
     check(!readFileSync(path, 'utf8').includes(ABOUT_ALICE) && !readFileSync(path, 'utf8').includes(KEY), `${engine}: the file holds nothing the agent remembers about a person, and no key`)
     await page.screenshot({ path: join(SHOTS, `${engine}-export-light.png`) })
-    check(await serious(page) === 0, `${engine}: the agent page with the export form has no serious accessibility problems`)
+    check(await serious(page) === 0, `${engine}: the agent page with the export has no serious accessibility problems`)
 
     // Dana, on another team, imports it from New agent.
     const danaPage = await open(dana)
     await danaPage.goto('/#/n/agent')
-    await danaPage.getByText('Start from a file').click()
-    const importForm = danaPage.getByRole('form', { name: 'Start from a file' })
+    const importForm = danaPage.getByRole('group', { name: 'Start from a file' })
     await importForm.getByLabel('Recipe file').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('this is not a recipe') })
-    check(await visible(danaPage, '[role="alert"]', 10, /That file is not JSON/), `${engine}: a file that is not JSON is refused in the form`)
+    check(await visible(danaPage, '[role="alert"]', 10, /That file is not JSON/), `${engine}: a file that is not JSON is refused in the page`)
     await importForm.getByLabel('Recipe file').setInputFiles({ name: 'other.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'something-else' })) })
-    check(await visible(danaPage, '[role="alert"]', 10, /not a recipe from Agents/), `${engine}: a JSON file that is not a recipe is refused in the form`)
+    check(await visible(danaPage, '[role="alert"]', 10, /not a recipe from Agents/), `${engine}: a JSON file that is not a recipe is refused in the page`)
     await importForm.getByLabel('Recipe file').setInputFiles(path)
     check(await visible(danaPage, 'ul.items[aria-label="What the file runs"] li', 15, /note-prompts.*mkdir -p task/s)
       && await visible(danaPage, 'ul.items[aria-label="What the file runs"] li', 5, /lucky.*node lucky\.js/s)
       && await visible(danaPage, 'p', 5, /LUCKY_TOKEN/),
-    `${engine}: the form shows each hook and plugin command the file would run, and the secret it names, before it makes anything`)
-    // The machines load a moment after the form opens, so the count is read once one is there.
-    const machines = importForm.getByLabel('Machine for the new agent').locator('option')
-    await within(15, async () => (await machines.count()) > 0)
-    check(await importForm.getByLabel('Name of the new agent').inputValue() === name && await machines.count() === 1,
-      `${engine}: the form offers the file's name, and Dana's machine alone`)
+    `${engine}: the page shows each hook and plugin command the file would run, and the secret it names, before it makes anything`)
+    // It asks for no name and no machine, since the server names the agent from the file and puts it on Dana's own machine.
+    check(await visible(danaPage, 'p', 10, new RegExp(`^${name}, from a file`)) && await importForm.getByRole('textbox').count() === 0 && await importForm.getByRole('combobox').count() === 0,
+      `${engine}: the import shows the file's name and asks for no name or machine`)
     await danaPage.screenshot({ path: join(SHOTS, `${engine}-import-light.png`), fullPage: true })
-    check(await serious(danaPage) === 0, `${engine}: the New agent page with the import form open has no serious accessibility problems`)
+    check(await serious(danaPage) === 0, `${engine}: the New agent page with the import open has no serious accessibility problems`)
     const phone = await open(dana, { viewport: { width: 390, height: 844 }, isMobile: engine !== 'firefox', hasTouch: engine !== 'firefox' })
     await phone.goto('/#/n/agent')
-    await phone.getByText('Start from a file').click()
-    await phone.getByRole('form', { name: 'Start from a file' }).getByLabel('Recipe file').setInputFiles(path)
+    await phone.getByRole('group', { name: 'Start from a file' }).getByLabel('Recipe file').setInputFiles(path)
     await visible(phone, 'ul.items[aria-label="What the file runs"] li', 15, /note-prompts/)
     await phone.screenshot({ path: join(SHOTS, `${engine}-import-phone.png`), fullPage: true })
-    check(await noSideScroll(phone, ['.page-head', '.page-body', '.items']), `${engine}: at phone width the import form, with the file's commands shown, fits without sideways scrolling`)
+    check(await noSideScroll(phone, ['.page-head', '.page-body', '.items']), `${engine}: at phone width the import, with the file's commands shown, fits without sideways scrolling`)
     await importForm.getByRole('button', { name: 'Make the agent' }).click()
     check(await visible(danaPage, '.page-head h1', 20, new RegExp(name)) && await visible(danaPage, 'ul.items[aria-label="Hooks"] li', 15, /stamp-writes.*After a tool runs · Write/s)
       && await visible(danaPage, 'ul.memories li', 10, new RegExp(TEAM_NOTE)), `${engine}: Make the agent opens the new agent, with its hooks and the team's memories`)
@@ -250,6 +245,12 @@ try {
   `an import refuses a file that is no recipe, one that holds a key, and a plugin that holds a value or a secret that is no name, and makes nothing: ${[notRecipe, withKey, withValue, withBadSecret].map((a) => a.status).join(' ')}`)
   check(taken.status === 409 && theirMachine.status === 404 && tooMany.status === 400 && !(await made('on-alices-machine')) && !(await made('too-many')),
     `an import needs a free name and a machine of the person's own team, and a file with more than a thousand of a thing is refused: ${taken.status} ${theirMachine.status} ${tooMany.status}`)
+
+  // Sent only the file, an import names the agent from the file's name, the next free one when that is taken, and puts it on the person's own machine.
+  const bare = await as(dana, 'POST', '/v1/agents/import', { file })
+  const bareRow = await row('select name, home_instance_id from agents where id = $1', [bare.json?.agentId])
+  check(bare.status === 200 && bare.json?.name === 'release-notes-2' && bareRow?.name === 'release-notes-2' && bareRow.home_instance_id === machineB,
+    `an import sent only the file takes the next free name and Dana's own machine: ${bare.status} ${JSON.stringify(bare.json?.name)}`)
 
   for (const engine of engines) await run(engine, machineA, folder)
 } catch (error) {

@@ -174,10 +174,14 @@ BREAKS.push(
     edits: [{ file: 'shared/recipe-file.ts', anchor: '.every((list) => list.length <= MAX_RECIPE_ITEMS)', replace: '.every((list) => list.length >= 0)' }] },
   { name: 'route-memories-flag', checks: ['step24c'], why: 'an export takes any word for whether to carry memories', red: ['memories must be true or false'],
     edits: [{ file: 'server/api.ts', anchor: "    if (memories !== 'true' && memories !== 'false') throw new HttpError(400, 'memories must be true or false')\n", replace: '' }] },
-  { name: 'ui-export-memories-default', checks: ['step24c'], why: "the export form starts with the team's memories chosen", red: ["the export form counts the team's memories and starts without them"],
-    edits: [{ file: 'app/src/RecipeFile.tsx', anchor: 'const [withMemories, setWithMemories] = useState(false)', replace: 'const [withMemories, setWithMemories] = useState(true)' }] },
-  { name: 'ui-import-hides-commands', checks: ['step24c'], why: 'the import form does not show the commands a file would run', red: ['the form shows each hook and plugin command the file would run'],
-    edits: [{ file: 'app/src/RecipeFile.tsx', anchor: '<ul className="items" aria-label="What the file runs">', replace: '<ul hidden className="items" aria-label="What the file runs">' }] },
+  { name: 'import-default-name', checks: ['step24c'], why: 'an import sent no name takes the file\'s name even when it is taken', red: ['an import sent only the file takes the next free name'],
+    edits: [{ file: 'server/recipe-files.ts', anchor: "freeName(client, person.team_id, ask.file.name, '')", replace: 'ask.file.name' }] },
+  { name: 'import-default-machine', checks: ['step24c'], why: 'an import sent no machine goes nowhere', red: ['an import sent only the file takes the next free name'],
+    edits: [{ file: 'server/recipe-files.ts', anchor: 'ask.homeInstanceId ?? await defaultMachine(client, person)', replace: "ask.homeInstanceId ?? ''" }] },
+  { name: 'ui-export-memories-default', checks: ['step24c'], why: "the export starts with the team's memories chosen", red: ["the export counts the team's memories and starts without them"],
+    edits: [{ file: 'app/src/agent/RecipeFile.tsx', anchor: 'const [withMemories, setWithMemories] = useState(false)', replace: 'const [withMemories, setWithMemories] = useState(true)' }] },
+  { name: 'ui-import-hides-commands', checks: ['step24c'], why: 'the import does not show the commands a file would run', red: ['the page shows each hook and plugin command the file would run'],
+    edits: [{ file: 'app/src/agent/RecipeFile.tsx', anchor: '<ul className="items" aria-label="What the file runs">', replace: '<ul hidden className="items" aria-label="What the file runs">' }] },
 )
 
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')

@@ -6,7 +6,8 @@ import {
 import { Markdown } from './Markdown.tsx'
 import { CreateCopy } from './agent/CreateCopy.tsx'
 import { Hooks } from './agent/Hooks.tsx'
-import { copyAgent, removeHook, saveHook } from './agent/copies.ts'
+import { copyAgent, importRecipeFile, recipeFileOf, removeHook, saveHook } from './agent/copies.ts'
+import { ExportRecipe, ImportRecipe } from './agent/RecipeFile.tsx'
 import { HookRow, mayChangeHooks } from '../../shared/recipe.ts'
 
 // One agent's setup: who it is, its skills, plugins, routines and hooks, and what it
@@ -85,6 +86,10 @@ export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
           ))}
           {!own(memories).length && <li className="muted small empty">Nothing yet. The agent writes here with its update_memory tool.</li>}
         </ul>
+
+        <h2 className="kicker section">Share</h2>
+        <ExportRecipe agentName={agent.name} teamMemories={own(memories).filter((m) => m.scope === 'team' && m.content !== '').length}
+          load={(withMemories) => recipeFileOf(agentId, withMemories)} />
       </div>
     </section>
   )
@@ -262,6 +267,7 @@ export function NewAgent({ me }: { me: Me }) {
     <section className="page" aria-label="New agent">
       <header className="page-head"><div><p className="kicker">New</p><h1>A new agent</h1></div></header>
       <div className="page-body">
+        <ImportRecipe make={(file) => importRecipeFile(file)} opened={(made) => { go({ agent: made.agentId }) }} />
         <form className="form" onSubmit={act(submit)} aria-label="New agent">
           <label htmlFor="new-agent-name">Name</label>
           <input id="new-agent-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="reviewer" />
