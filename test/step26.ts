@@ -27,6 +27,7 @@ function check(ok: unknown, label: string) {
 const world: World = await buildWorld('hist', PORTS)
 const { sessions, logins, long } = world
 const [ava, ben, cleo] = [world.as(logins.ava), world.as(logins.ben), world.as(logins.cleo)]
+const dana = world.as(world.other.login)
 const idOf = new Map(Object.entries(sessions).map(([name, id]) => [id, name]))
 const names = (ids: string[]) => ids.map((id) => idOf.get(id) ?? id)
 
@@ -68,6 +69,9 @@ try {
   check(JSON.stringify(names(idsOf(cleoList))) === JSON.stringify(['long', 'terminal', 'run', 'task', 'room', 'dm', 'old']),
     `Cleo's list has the team's sessions and no private one (${names(idsOf(cleoList)).join(', ')})`)
 
+  const danaList = await listed(dana)
+  check(danaList.length === 1 && danaList[0].id === world.other.session && danaList[0].person.login === world.other.login
+    && ![avaList, benList, cleoList].some((list) => list.some((s) => s.id === world.other.session)), 'another team has a list of its own, and no one in the first team sees its session')
   const row = (name: keyof typeof sessions) => avaList.find((s) => s.id === sessions[name])
   const dm = row('dm')
   check(dm?.subject.kind === 'conversation' && dm.subject.conversation === 'dm' && JSON.stringify(dm.subject.people) === JSON.stringify([logins.ava]),
@@ -95,12 +99,12 @@ try {
   check(old !== undefined && Date.now() - new Date(old.last_active_at.replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00')).getTime() > 2 * 86_400_000, 'the old session was last active days ago')
 
   // The sessions the app's own shapes give each person, which are read by rules of their own.
-  for (const person of [ava, ben, cleo]) {
+  for (const person of [ava, ben, cleo, dana]) {
     const shapes = (await Promise.all(['conversations', 'tasks', 'folders'].map((of) => world.shapeRows(person.login, 'sessions', { of })))).flat()
     const mine = idsOf(await listed(person))
     check(sameSet(mine, shapes.map(idString)), `${person.login.split('-')[0]}: the list holds the sessions the app's other reads give, and no other (${String(mine.length)})`)
     const verdicts: boolean[] = []
-    for (const id of Object.values(sessions)) {
+    for (const id of [...Object.values(sessions), world.other.session]) {
       const res = await fetch(`${world.people}/v1/shape/events?offset=-1&session=${id}`, { headers: { 'tailscale-user-login': person.login } })
       await res.body?.cancel()
       verdicts.push((res.status === 200) === mine.includes(id))
@@ -146,6 +150,10 @@ try {
   check(sessionsOf(await hitsOf(cleo, WORDS.terminal)).join() === 'terminal', 'and so does Cleo')
   check((await hitsOf(ben, WORDS.privateTerminal)).length === 0 && (await hitsOf(cleo, WORDS.privateTerminal)).length === 0 && (await hitsOf(ava, WORDS.privateTerminal)).length === 1,
     'a word only in Ava\'s private folder is found by Ava and by no one else')
+  const danaHits = await hitsOf(dana, WORDS.terminal)
+  check(danaHits.length === 1 && danaHits[0].session.id === world.other.session, 'a word two teams say is found in a team\'s own sessions and in no other\'s')
+  const either = await hitsOf(ava, `${WORDS.privateTerminal} ${WORDS.privateDm}`)
+  check(sessionsOf(either).sort().join() === 'privateDm,privateTerminal', 'a search finds a step that has any of its words')
   check((await hitsOf(ben, WORDS.privateDm)).length === 0 && (await hitsOf(ben, WORDS.privateTask)).length === 0 && (await hitsOf(ava, WORDS.privateDm)).length === 1
     && (await hitsOf(ava, WORDS.privateTask)).length === 1, 'words from a private conversation and a private task are found only by their people')
   check((await hitsOf(ava, WORDS.bensTerminal)).length === 0 && (await hitsOf(ben, WORDS.bensTerminal)).length === 1, 'and Ben\'s private folder is Ben\'s alone')
@@ -243,6 +251,7 @@ try {
     'Ben and Cleo find Ava\'s private sessions nowhere in the replay')
   check(await refused(ava, sessions.bensTerminal) && await refused(cleo, sessions.bensTerminal), 'and Ben\'s private folder is a session Ava and Cleo cannot open')
   check((await Promise.all(privates.map(async (n) => (await ava.json(`/v1/history/sessions/${sessions[n]}`)).status === 200))).every(Boolean), 'while Ava opens all three')
+  check(await refused(ava, world.other.session) && await refused(dana, sessions.long) && await refused(dana, sessions.terminal), 'a person of another team opens none of the first team\'s sessions, and none of hers opens theirs')
   check(await refused(ava, '00000000-0000-4000-8000-000000000000') && (await ava.json('/v1/history/sessions/not-an-id')).status === 404, 'a session that is not there reads the same')
   check((await fetch(`${world.people}/v1/history`)).status === 401 && (await world.machine(world.tokens.avaMac, 'GET', '/v1/history')).status === 404
     && (await world.machine(world.tokens.avaMac, 'GET', '/v1/search?q=a')).status === 404, 'a request with no person is refused, and machines have no History')
@@ -255,6 +264,8 @@ try {
   const quokkaAgent = await asAgent(WORDS.dm)
   check(quokkaAgent.length === 4 && quokkaAgent.filter((h) => h.source === 'message').length === 1 && quokkaAgent.filter((h) => h.source === 'event').length === 3,
     'and finds a conversation post as well as the steps')
+  const anyOfThese = await asAgent(`${WORDS.terminal} ${WORDS.task}`)
+  check([...new Set(anyOfThese.map((h) => h.session_id))].sort().join() === [sessions.terminal, sessions.task].sort().join(), 'and finds a step that has any of its words')
   check((await asAgent(WORDS.privateTerminal)).length === 0 && (await asAgent(WORDS.privateDm)).length === 0 && (await asAgent(WORDS.privateTask)).length === 0,
     'and finds nothing private')
 

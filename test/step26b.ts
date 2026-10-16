@@ -201,6 +201,7 @@ async function run(engine: string) {
     const paused = await currentStep(ava)
     await sleep(900)
     check(passed && (await currentStep(ava)) === paused && paused >= 12, `${engine}: playing runs on through the steps, and pausing holds the step it is on (${String(paused)})`)
+    check(ava.url().endsWith(`#/history/${sessions.long}/${String(paused)}`), `${engine}: once paused, the address names the step, so the page can be shared`)
     const played = await ava.locator('li.replay-step.ahead').count()
     check(played > 0 && (await ava.locator('li.replay-step.current').count()) === 1, `${engine}: the steps after the current one are marked as not reached`)
     await shoot(ava, 'replay', 'desktop')

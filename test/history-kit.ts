@@ -63,6 +63,8 @@ export type World = {
   // The long session's shape: its steps' numbers that went wrong, those that are bookkeeping, and the one with the big result.
   long: { errors: number[]; hidden: number[]; last: number; big: number; shown: number }
   tokens: { avaMac: string; benMac: string }
+  // Another team, whose session says the same words, and whom the first team must never see.
+  other: { team: string; login: string; session: string }
   folders: { shop: string; diary: string; notes: string }
   api: string
   people: string
@@ -221,6 +223,14 @@ export async function buildWorld(name: string, ports: Ports, options: { buildApp
   ])
   const bensTerminal = await terminal(benMac.token, folders.notes, '/Users/ben/notes', [typed(`Note to self about ${WORDS.bensTerminal}`), said('Saved.'), turnEnded(0.01), everyone()])
 
+  // Another team with a session of its own, in a shared folder, saying a word the first team says too.
+  const otherTeam = `${name}-other-${id}`
+  const dana = `dana-${id}@local`
+  node('server/admin.ts', 'add-team', otherTeam, dana)
+  const danaMac = JSON.parse(node('server/admin.ts', 'add-instance', otherTeam, `dana-mac-${id}`, 'mac', dana)) as { token: string }
+  const danaFolder = await folder(danaMac.token, '/Users/dana/work', 'team')
+  const otherSession = await terminal(danaMac.token, danaFolder, '/Users/dana/work', [typed(`${WORDS.terminal} in another team`), said('Noted.'), turnEnded(0.01), everyone()])
+
   // 10. A long session. Every fifth step is a tool call and its result is the one after it, every ninth number is bookkeeping,
   // some results fail, one is far longer than the text column keeps, and one step is an error.
   const longEvents: Posted[] = [started()]
@@ -263,7 +273,7 @@ export async function buildWorld(name: string, ports: Ports, options: { buildApp
     team, logins, sessions, folders, api, people, db,
     ids: { ava: await personId(logins.ava), ben: await personId(logins.ben), cleo: await personId(logins.cleo), scout: scout.agentId, fixer: fixer.agentId, project, repo, run },
     long: { errors, hidden, last: longEvents.length, big, shown: longEvents.length - hidden.length },
-    tokens: { avaMac: avaMac.token, benMac: benMac.token },
+    tokens: { avaMac: avaMac.token, benMac: benMac.token }, other: { team: otherTeam, login: dana, session: otherSession },
     as, machine,
     shapeRows: async (login, shape, params = {}) => {
       const stream = new ShapeStream<Row>({
@@ -276,7 +286,7 @@ export async function buildWorld(name: string, ports: Ports, options: { buildApp
       for (const child of children) child.kill('SIGTERM')
       proxy.close()
       await sleep(1000)
-      if (!keep) await db.query('delete from teams where name = $1', [team]).catch(() => undefined)
+      if (!keep) await db.query('delete from teams where name = any($1)', [[team, otherTeam]]).catch(() => undefined)
       await db.end().catch(() => undefined)
     },
   }
