@@ -432,6 +432,16 @@ Tayler went with the coordinator's picks on all of these.
   - Tayler approved the four protected files in the landing of step 1, the folder switches and the shape fix: `daemon/agentsd.ts`, `server/runner.ts`, `server/framework.ts` and `server/migrations/0014_door.sql`.
 - **Status.** Seats are being built. The framework move comes next.
 
+### Voice: talking to agents, not only typing
+
+- **Decided by Tayler on 2026-10-16:** "voice is going to be important we need to be able to talk to the agents through voice not just type transcription is improtatn". This changes decision 12 from "not now" to building voice in the app. Meetings and phone calls stay later.
+- **What it means.**
+  - Dictation. The microphone in the message box turns speech into text the person can edit before sending.
+  - Voice chat. A person talks with an agent. Their speech becomes the agent's turn, and the agent's reply is spoken back as it streams, sentence by sentence. Talking over the agent stops it. The conversation is saved in the record as text, like any other.
+  - Agents keep thinking in Claude Code, as decision 1 says. Voice turns speech into turns and replies into speech, and no separate voice model answers for the agent.
+- **The coordinator's pick, which Tayler can change.** Speech runs locally on the server Mac, using the stack Tayler chose for their own voice setup on 2026-09-12: Parakeet for speech to text and Qwen3-TTS for text to speech, with no cloud account. On AWS it runs on the server host.
+- **Status.** Next in line after chat attachments, as agents free up.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
