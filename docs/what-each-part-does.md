@@ -644,3 +644,29 @@ The design is "A scheduler places every turn" in `docs/design/target-architectur
 
 - **Solves now.** It drives the conversation and task views in Chromium, Firefox and WebKit at desktop and phone width against a real API and runner, with a person's box that cannot start because its image does not exist. It expects "Starting your computer" with Docker's words and a Cancel button, the name of a box nobody holds that is offline, a teammate's view naming whose computer is starting, the same line on a task's page, and a quiet turn saying since when. Cancelling takes the line away and cancels the turn. It scans for accessibility problems, checks the phone fit and keeps screenshots in `test/ui-shots`. It uses ports 8150 to 8151 and 8250, so it needs no run lock.
 - **Not done.** WebKit logs three Content Security Policy console errors on the task page, with or without a waiting line, which agentsctl's visual shot reports and which this check does not fail on, since it records page errors only.
+
+## Agents working together
+
+The design is "Agents creating, messaging and delegating to agents" in `docs/design/target-architecture.md`, step 6 of its build order, with Tayler's calls of 2026-10-16.
+
+### The team-agents tools (`daemon/team-agents-mcp.ts`, `shared/team-agents.ts`)
+
+- **Solves now.** Every agent session but a pipeline stage's gets an MCP server beside team-record, with five tools. `list_agents` shows the team's agents, whose each is, and whether it takes this agent's messages. `send_to_agent` messages another agent and returns at once. `delegate_task` hands another agent a task of its own. `report_back` sends a handed task's result back. `create_agent` makes a new agent once its owner says yes. The daemon allows the first four without asking and never `create_agent`, so the engine asks a person before each call. The server acts as the session through the API, and `shared/team-agents.ts` holds what each tool sends and gets back, the tools' names and the hop limit.
+- **Helps later.** `ask_people` and `check_task` from the design join the same server.
+
+### Messages, answers and handed tasks (`server/team-agents.ts`, `server/agent-turns.ts`)
+
+- **Solves now.** A message from one agent to another goes into their thread, a conversation of kind `agents` with the two of them in it, which the team reads and nobody else posts to, and becomes a turn for the other agent through `requestTurn`, with source `agent`. When that turn ends, the runner sends its last words, or why it failed, back to the turn that sent the message, as a new turn in the sending session, once. So the first agent carries on with the answer where it was asked, in a DM or a task. A handed task is a task with source `agent`, its own workspace and a session started by the handing session, and its result goes back as a `delegation` turn when its agent calls `report_back` or a person marks it done. An agent messages its owner's other agents freely, and another person's agent only when that person turns on Other people's agents for it. A message or task is one hop more than the turn that sent it, and the API refuses hop 5. Each agent's user event in another's session names it in `events.author_agent`. A room or a private conversation or task sends nothing yet, and a pipeline stage gets no tools.
+- **Helps later.** The meter and budgets read each turn's source and hops, and a chain's spend can be capped where the hop limit is checked.
+
+### Making an agent with its owner's yes (`makeAgent` in `server/team-agents.ts`, `openAsk` and `answerAsk` in `server/record.ts`)
+
+- **Solves now.** An agent's `create_agent` call opens an ask in its conversation or task, which the server gives a question, a choice for each answer and the one person who may choose, the asking agent's owner. No standing rule answers it, Always and Never are refused, and anyone else's answer is refused. The API makes the agent only with that owner's answered yes for exactly the agent asked for, once per yes, as the owner's, on the asking agent's machine. An agent with no owner or no machine is told no at once.
+
+### Agents together in the app (`app/src/AgentThread.tsx`, `app/src/NewAgentAsk.tsx`, `app/src/AgentAccepts.tsx`)
+
+- **Solves now.** A thread between two agents lists with the conversations by the two names, and opens with no composer and a line that only the agents write there. An ask to make an agent shows its question with a lettered choice for each answer to its owner, and to everyone else whose choice it waits for. An agent's page has a row with a switch for Other people's agents, which only its owner gets, or an admin for an agent with no owner. Tasks agents hand each other list with the tasks people start.
+
+### The step 26 checks (`test/step26.ts`, `test/step26b.ts`, `test/step26-breaks.ts`, `test/fake-claude-agents.ts`)
+
+- **Solves now.** `test/fake-claude-agents.ts` runs the stand-in for Claude as it is and makes the tool calls a scenario names around it, over MCP to the session's own servers, asking the daemon first for a tool the session does not allow, as Claude Code does. step26 drives a message and its answer, a handed task and its report, a task marked done, a create that waits on its owner's yes, another owner's agent before and after its owner allows it, a room, a relay of agents that stops at its fifth hop with every answer still coming back, and a person's post that meets a turn's end in one DM, on ports 8310 to 8312. step26b drives the thread, the ask and the switch in Chromium, Firefox and WebKit at desktop and phone width, on ports 8313 to 8315. `test/step26-breaks.ts` breaks each guard in turn and watches its line go red.
