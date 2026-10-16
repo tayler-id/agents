@@ -4,7 +4,7 @@
 // values. It holds no memory about a person either, only the team's.
 
 import { z } from 'zod'
-import { AgentHook, AgentPlugin, AgentSkill } from './types.ts'
+import { AgentHook, AgentPlugin, AgentSkill, HookEvent } from './types.ts'
 import { AgentId } from './ids.ts'
 
 export const RecipeRoutine = z.object({ name: z.string(), prompt: z.string(), schedule: z.string() })
@@ -51,6 +51,13 @@ export const carriedBy = (recipe: Recipe): Carried => ({
   skills: recipe.skills.length, plugins: recipe.plugins.length, routines: recipe.routines.length,
   hooks: recipe.hooks.length, memories: recipe.memories.length,
 })
+
+// An agent_hooks row as the app reads it through the agent_hooks shape.
+export const HookRow = z.object({
+  id: z.string(), agent_id: z.string(), name: z.string(), event: HookEvent, matcher: z.string().nullable(), command: z.string(),
+  timeout_sec: z.number().nullable(),
+})
+export type HookRow = z.infer<typeof HookRow>
 
 // A hook runs a command on the agent's machine, as a plugin does, so only the
 // agent's owner or a team admin changes one. The server refuses anyone else, and

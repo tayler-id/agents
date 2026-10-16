@@ -21,6 +21,7 @@ export type Me = MemberView
 export type Person = Row & { id: string; login: string; name: string | null; role: TeamRole }
 export type Agent = Row & {
   id: string; name: string; title: string | null; role: string | null; model: string | null; home_instance_id: string | null; instructions: string
+  owner_id: string | null; copied_from_agent_id: string | null
 }
 export type Instance = Row & {
   id: string; name: string; kind: string; status: 'online' | 'stale' | 'offline'; last_seen_at: string | null

@@ -254,6 +254,7 @@ a { color: inherit; text-underline-offset: 2px; }
 .items li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
 /* A name or login with no spaces wraps inside its row rather than push a phone screen wide. */
 .items li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.items .hook { display: grid; gap: 2px; }
 .memories li { padding: 8px 0; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
 .add summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
 .add .form { margin: 6px 0 10px; }

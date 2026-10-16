@@ -4,10 +4,13 @@ import {
   act, api, clock, useSnapshot, type Agent, type Instance, type Me, type Memory, type Person, type Plugin, type Routine, type Skill, type Template,
 } from './data.ts'
 import { Markdown } from './Markdown.tsx'
+import { CopyAgent } from './CopyAgent.tsx'
+import { Hooks } from './Hooks.tsx'
+import { machinesFor, startMachine } from './machines.ts'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
 // remembers. Anyone on the team can change it.
-export function AgentPage({ agentId }: { agentId: string }) {
+export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
   const { rows: skills } = useSnapshot<Skill>('skills', {}, 4000)
   const { rows: plugins } = useSnapshot<Plugin>('plugins', {}, 4000)
@@ -16,6 +19,7 @@ export function AgentPage({ agentId }: { agentId: string }) {
   const { rows: people } = useSnapshot<Person>('people', {}, 30000)
   const agent = agents.find((a) => a.id === agentId)
   const [notice, setNotice] = useState('')
+  const [copying, setCopying] = useState(false)
   if (!agent) return <section className="page"><p className="muted">Loading the agent…</p></section>
 
   const own = <T extends { agent_id: string | null }>(rows: T[]) => rows.filter((r) => r.agent_id === agentId)
@@ -31,14 +35,17 @@ export function AgentPage({ agentId }: { agentId: string }) {
           <p className="kicker">Agent</p>
           <h1>{agent.name}</h1>
           <p className="muted small">{agent.title ?? 'No title yet'}{agent.model ? ` · ${agent.model}` : ''}</p>
+          {agent.copied_from_agent_id && <p className="muted small">Copied from {agents.find((a) => a.id === agent.copied_from_agent_id)?.name ?? 'an agent that is gone'}</p>}
         </div>
         <div className="head-actions">
           <button type="button" className="ghost" onClick={act(async () => go({ conversation: (await api.openDm(agent.name)).conversationId }))}>Message</button>
+          <button type="button" className="ghost" aria-expanded={copying} aria-controls="copy-agent" onClick={() => { setCopying(!copying) }}>Copy</button>
           <button type="button" className="ghost" onClick={act(template)}>Save as template</button>
         </div>
       </header>
       <div className="page-body">
         {notice && <p className="note-line" role="status">{notice}</p>}
+        {copying && <CopyAgent agent={agent} me={me} teamMemories={own(memories).filter((m) => m.scope === 'team').length} />}
         <Profile agent={agent} />
 
         <h2 className="kicker section">Skills</h2>
@@ -61,6 +68,8 @@ export function AgentPage({ agentId }: { agentId: string }) {
           {' '}<button type="button" className="link small" onClick={act(async () => go({ conversation: (await api.runRoutine(r.id)).conversationId }))}>Run now</button>
         </>} onRemove={(r) => api.removeItem(agentId, 'routines', r.name)} />
         <RoutineForm agentId={agentId} />
+
+        <Hooks agent={agent} me={me} />
 
         <h2 className="kicker section">What it remembers</h2>
         <ul className="memories" aria-label="Memory">
@@ -92,7 +101,7 @@ function Items<T extends { id: string }>({ rows, render, onRemove, empty }: { ro
 }
 
 // A small form that reports its own errors.
-function useSubmit(action: () => Promise<unknown>, reset: () => void) {
+export function useSubmit(action: () => Promise<unknown>, reset: () => void) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const submit = async (event: SyntheticEvent) => {
@@ -237,8 +246,8 @@ export function NewAgent({ me }: { me: Me }) {
   const [template, setTemplate] = useState('')
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
-  const machines = instances.filter((i) => (i.kind === 'mac' || i.claimed_by) && (!i.personal || i.owner_id === me.person.id))
-  const chosen = home || (machines.find((i) => i.personal) ?? machines[0])?.id
+  const machines = machinesFor(instances, me)
+  const chosen = home || startMachine(machines)
   const { submit, error, busy } = useSubmit(async () => {
     const { agentId } = await api.createAgent({
       name, homeInstanceId: chosen, title, instructions, templateSlug: template || undefined,
