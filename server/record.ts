@@ -8,7 +8,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
 import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.ts'
-import { maybe, one } from './db.ts'
+import { maybe, one, type Db } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
@@ -18,6 +18,8 @@ import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
 import { requestTurn, signalSession } from './scheduler.ts'
+import { pendingUploads, placeUploads, withFiles } from './attachments.ts'
+import { reactionsNote } from './reactions.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -255,6 +257,8 @@ type NewMessage = {
   clientId: string
   sessionId?: string
   eventId?: string
+  // The post this one answers, in the same conversation.
+  quotedMessageId?: string
 }
 
 export async function appendMessage(
@@ -269,10 +273,10 @@ export async function appendMessage(
 
   const seq = Number(conversation.last_seq) + 1
   const row = await one<{ id: string }>(client, 'the new message',
-    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id, quoted_message_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
     [conversation.team_id, conversationId, seq, message.speaker, message.personId ?? null, message.agentId ?? null,
-      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId])
+      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId, message.quotedMessageId ?? null])
   await client.query('update conversations set last_seq = $2 where id = $1', [conversationId, seq])
   return { id: row.id, seq, fresh: true }
 }
@@ -332,13 +336,12 @@ export async function openDm(client: pg.PoolClient, person: Person, agentName: s
   return created.id
 }
 
-// A person's post. In a main or DM conversation its agent answers: the post goes
-// into that agent's session for the conversation, and asks the scheduler for the
-// agent's turn.
-export async function sendPersonMessage(
-  client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
-): Promise<{ messageId: string; seq: number }> {
-  const conversation = await maybe<{ id: string; kind: string; agent_id: string | null; member: boolean; visibility: string; source: string | null }>(client,
+type PostableConversation = { id: string; kind: string; agent_id: string | null; member: boolean; visibility: string; source: string | null }
+
+// A conversation the person may post in, or the refusal. They post in the ones they are a member of,
+// and in a team room they can see, which posting makes them a member of.
+export async function postableConversation(client: Db, person: Person, conversationId: string): Promise<PostableConversation> {
+  const conversation = await maybe<PostableConversation>(client,
     `select c.id, c.kind, c.agent_id, c.visibility, c.source,
        exists (select 1 from conversation_members m where m.conversation_id = c.id and m.person_id = $2) as member
      from conversations c where c.id = $1 and c.team_id = $3 and c.archived_at is null`, [conversationId, person.id, person.team_id])
@@ -349,6 +352,27 @@ export async function sendPersonMessage(
     throw new HttpError(400, `${conversation.kind} conversations take no posts`)
   }
   if (conversation.source === 'pipeline') throw new HttpError(400, "a pipeline's room is for its runs' posts")
+  return conversation
+}
+
+// What the agent reads of the post this one answers.
+async function replyContext(client: pg.PoolClient, conversationId: string, replyToMessageId: string): Promise<string> {
+  const quoted = await maybe<{ who: string; body: string | null }>(client,
+    `select coalesce(p.login, a.name, 'someone') as who, m.body from messages m
+     left join people p on p.id = m.person_id left join agents a on a.id = m.agent_id
+     where m.id = $1 and m.conversation_id = $2`, [replyToMessageId, conversationId])
+  if (!quoted || quoted.body === null) throw new HttpError(400, 'replyToMessageId: that post is not in this chat, or was deleted')
+  return `(In reply to ${quoted.who}: "${quoted.body.slice(0, 200)}")`
+}
+
+// A person's post, with its text, the files it carries and the post it answers. In a main or DM
+// conversation its agent answers: the post goes into that agent's session for the conversation, and
+// asks the scheduler for the agent's turn.
+export async function sendPersonMessage(
+  client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
+  extras: { attachmentIds?: readonly string[]; replyToMessageId?: string } = {},
+): Promise<{ messageId: string; seq: number }> {
+  const conversation = await postableConversation(client, person, conversationId)
   // Posting in a team room you can see makes you a member of it.
   if (!conversation.member) {
     await client.query('insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3) on conflict do nothing',
@@ -356,9 +380,14 @@ export async function sendPersonMessage(
   }
 
   const message = await appendMessage(client, conversationId, {
-    speaker: 'person', personId: person.id, body: text, clientId: `person:${clientId}`,
+    speaker: 'person', personId: person.id, body: text, clientId: `person:${clientId}`, quotedMessageId: extras.replyToMessageId,
   })
   if (!message.fresh) return { messageId: message.id, seq: message.seq }
+  const files = extras.attachmentIds?.length ? await pendingUploads(client, person, extras.attachmentIds, { conversationId }) : []
+  if (files.length) await placeUploads(client, files.map((f) => f.id), { conversationId, messageId: message.id })
+  const reply = extras.replyToMessageId ? await replyContext(client, conversationId, extras.replyToMessageId) : ''
+  // What the agent reads is the words, the post they answer, and the files.
+  const prompt = withFiles([reply, text].filter(Boolean).join(' '), files)
   if (conversation.kind === 'room') {
     await queueTurns(client, person, conversationId, text)
     return { messageId: message.id, seq: message.seq }
@@ -369,12 +398,14 @@ export async function sendPersonMessage(
   if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
   const session = await conversationSession(client, person.team_id, person.id, conversationId, agent)
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text, messageId: message.id }, text }],
+    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id }, text: prompt }],
   }, person.id)
   if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 
+  // Reactions to the agent's earlier posts reach it with this turn, and not in the record of the person's post.
+  const reactions = await reactionsNote(client, agent.id, { conversationId })
   const payload: MessagePayload = {
-    permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
+    permissions: CONVERSATION_PERMISSIONS, text: scrub([reactions, prompt].filter(Boolean).join('\n\n')), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
   await requestTurn(client, {

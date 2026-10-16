@@ -7,13 +7,16 @@ import { maybe, one } from './db.ts'
 import { agentKit, appendEvents, HttpError, scrub, type Person } from './record.ts'
 import { CONVERSATION_PERMISSIONS, WORKSPACE_PERMISSIONS } from './permissions.ts'
 import { requestTurn } from './scheduler.ts'
+import { pendingUploads, placeUploads, withFiles } from './attachments.ts'
+import { reactionsNote } from './reactions.ts'
 import { AgentId, SessionId, TaskId, TeamId } from '../shared/ids.ts'
 import type { MessagePayload } from '../shared/types.ts'
 
 // It runs once the workspace is set up, since the machine handles a session's commands in order.
 // `said` is the person's own words when the app wrapped them in text of its own.
 // The event keeps it, since coach counts only a person's words as their correction.
-export async function sendToSession(client: pg.PoolClient, person: Person, sessionId: string, text: string, said = text) {
+// `attachmentIds` are the person's pending uploads this message carries, which the agent is told of.
+export async function sendToSession(client: pg.PoolClient, person: Person, sessionId: string, text: string, said = text, attachmentIds: readonly string[] = []) {
   const session = await maybe<{ id: string; team_id: string; task_id: string | null; instance_id: string; workspace_id: string | null; harness_session_id: string | null; agent_id: string }>(client,
     'select id, team_id, task_id, instance_id, workspace_id, harness_session_id, agent_id from sessions where id = $1 and team_id = $2 for update',
     [sessionId, person.team_id])
@@ -31,13 +34,20 @@ export async function sendToSession(client: pg.PoolClient, person: Person, sessi
   }
   const agent = await one<{ id: string; harness: 'claude' | 'codex'; model: string | null; instructions: string }>(client, "the session's agent",
     'select id, harness, model, instructions from agents where id = $1', [session.agent_id])
+  const files = attachmentIds.length ? await pendingUploads(client, person, attachmentIds, { sessionId }) : []
+  const prompt = withFiles(text, files)
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text, body: said === text ? { text } : { text, said } }],
+    events: [{ clientId: `person:${randomBytes(8).toString('hex')}`, kind: 'user', text: prompt, body: said === prompt ? { text: prompt } : { text: prompt, said } }],
   }, person.id)
   if (seq === undefined) throw new Error(`the message to session ${session.id} was not recorded`)
+  if (files.length) {
+    const event = await one<{ id: string }>(client, 'the new event', 'select id from events where session_id = $1 and seq = $2', [session.id, seq])
+    await placeUploads(client, files.map((f) => f.id), { sessionId, eventId: event.id })
+  }
+  const reactions = await reactionsNote(client, agent.id, { sessionId })
   const payload: MessagePayload = {
     permissions: session.workspace_id ? WORKSPACE_PERMISSIONS : CONVERSATION_PERMISSIONS,
-    text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
+    text: scrub([reactions, prompt].filter(Boolean).join('\n\n')), agentId: agent.id, harness: agent.harness, model: agent.model, instructions: agent.instructions,
     harnessSessionId: session.harness_session_id, workspaceId: session.workspace_id ?? undefined, ...(await agentKit(client, agent.id, [person.id])),
   }
   await requestTurn(client, {

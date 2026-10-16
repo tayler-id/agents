@@ -180,6 +180,7 @@ function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Rec
       command: process.execPath, args: [COMPUTER_MCP],
       env: {
         AGENTS_SCREEN_SOCKET: computer.socket, AGENTS_BROWSER_MCP: computer.browserMcp, AGENTS_BROWSER_CDP: computer.cdpUrl,
+        AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId,
         ...(taskFolder ? { AGENTS_TASK_FOLDER: taskFolder } : {}),
       },
     }
