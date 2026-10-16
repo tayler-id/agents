@@ -22,7 +22,7 @@ const PENDING = join(WORK, 'pending.json')
 const RUN_TIMEOUT_MS = 10 * 60 * 1000
 
 type Edit = { file: string; anchor: string; replace: string }
-type CheckName = 'step24' | 'step24b' | 'step24d'
+type CheckName = 'step24' | 'step24b' | 'step24c' | 'step24d'
 // `checks` are the checks the break is run against, and `red` holds a piece of each check line it must turn red.
 type Break = { name: string; checks: CheckName[]; why: string; red: string[]; edits: Edit[] }
 
@@ -162,6 +162,24 @@ const BREAKS: Break[] = [
     edits: [{ file: 'app/src/Session.tsx', anchor: "new Set<unknown>(['init', 'interrupted', 'screen', 'hook_response'])", replace: "new Set<unknown>(['init', 'interrupted', 'screen'])" }] },
 ]
 
+// The recipe file's breaks. They go with step24c and the files it checks, and can be left out with them.
+BREAKS.push(
+  { name: 'export-memories-flag', checks: ['step24c'], why: "an export holds the team's memories whether or not they were asked for", red: ['an export is a recipe file'],
+    edits: [{ file: 'server/recipe-files.ts', anchor: 'const recipe = await recipeOf(client, agent.id, withMemories)', replace: 'const recipe = await recipeOf(client, agent.id, true)' }] },
+  { name: 'export-unscrubbed', checks: ['step24c'], why: 'a key pasted into a skill leaves the team in a file as it was', red: ['a key someone pasted into a skill leaves the team scrubbed'],
+    edits: [{ file: 'server/recipe-files.ts', anchor: 'scrub({ format: RECIPE_FILE_FORMAT, version: 1, name: agent.name, recipe })', replace: '({ format: RECIPE_FILE_FORMAT, version: 1, name: agent.name, recipe })' }] },
+  { name: 'import-key-accepted', checks: ['step24c'], why: 'an import takes a file that holds a key', red: ['an import refuses a file that is no recipe, one that holds a key'],
+    edits: [{ file: 'server/recipe-files.ts', anchor: 'if (!isDeepStrictEqual(scrub(ask.file), ask.file)) {', replace: 'if (false) {' }] },
+  { name: 'import-too-much', checks: ['step24c'], why: 'an import takes a file with any number of hooks', red: ['a file with more than a thousand of a thing is refused'],
+    edits: [{ file: 'shared/recipe-file.ts', anchor: '.every((list) => list.length <= MAX_RECIPE_ITEMS)', replace: '.every((list) => list.length >= 0)' }] },
+  { name: 'route-memories-flag', checks: ['step24c'], why: 'an export takes any word for whether to carry memories', red: ['memories must be true or false'],
+    edits: [{ file: 'server/api.ts', anchor: "    if (memories !== 'true' && memories !== 'false') throw new HttpError(400, 'memories must be true or false')\n", replace: '' }] },
+  { name: 'ui-export-memories-default', checks: ['step24c'], why: "the export form starts with the team's memories chosen", red: ["the export form counts the team's memories and starts without them"],
+    edits: [{ file: 'app/src/RecipeFile.tsx', anchor: 'const [withMemories, setWithMemories] = useState(false)', replace: 'const [withMemories, setWithMemories] = useState(true)' }] },
+  { name: 'ui-import-hides-commands', checks: ['step24c'], why: 'the import form does not show the commands a file would run', red: ['the form shows each hook and plugin command the file would run'],
+    edits: [{ file: 'app/src/RecipeFile.tsx', anchor: '<ul className="items" aria-label="What the file runs">', replace: '<ul hidden className="items" aria-label="What the file runs">' }] },
+)
+
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const Pending = z.array(z.object({ file: z.string(), sha: z.string() }))
 const at = (file: string) => join(ROOT, file)
@@ -191,7 +209,7 @@ function edited(b: Break): Map<string, string> {
 
 function runCheck(name: CheckName): Promise<string> {
   return new Promise((resolve, reject) => {
-    const env = name === 'step24b' ? { ...process.env, AGENTS_UI_ENGINES: 'chromium' } : process.env
+    const env = name === 'step24b' || name === 'step24c' ? { ...process.env, AGENTS_UI_ENGINES: 'chromium' } : process.env
     const child = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', `test/${name}.ts`], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })
