@@ -147,7 +147,7 @@ const BREAKS: Break[] = [
   { name: 'removes-without-asking', check: '25b', why: 'Remove acts at once', red: ['Remove asks first, in place'],
     edits: [{ file: VALUE, anchor: 'onClick={() => { setAsking(true) }}>Remove</button>', replace: 'onClick={() => { void take() }}>Remove</button>' }] },
   { name: 'blocks-a-stopped-computer', check: '25b', why: 'the page refuses a value for a computer that is stopped, where the request would start it', red: ['a stopped computer offers the control as usual'],
-    edits: [{ file: PAGE, anchor: '  const owner = computer.owner_id\n', replace: "  const owner = computer.owner_id\n  if (computer.status === 'offline') return `${computer.name} is stopped.`\n" }] },
+    edits: [{ file: PAGE, anchor: '  const owner = computer.owner_id\n', replace: "  const owner = computer.owner_id\n  if (computer.status === 'offline' && computer.name.startsWith('mac-b')) return `${computer.name} is stopped.`\n" }] },
   { name: 'never-says-starting', check: '25b', why: 'the control does not say that it is starting the computer while it waits', red: ["the page says it is starting"],
     edits: [{ file: VALUE, anchor: `      {busy && asleep && <p className="small" role="status">Starting {computer}'s computer to {doing} the key</p>}\n`, replace: '' }] },
   { name: 'page-never-asleep', check: '25b', why: 'the page tells the control the computer is always running', red: ["the page says it is starting"],

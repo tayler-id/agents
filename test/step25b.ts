@@ -308,7 +308,7 @@ async function run(engine: string, scout: string, bobby: string, people: Tap) {
     const jiraSet = button(stoppedPage, 'Set value of JIRA_TOKEN')
     const jiraField = stoppedPage.getByLabel('Value of JIRA_TOKEN', { exact: true })
     await visible(stoppedPage, '.secrets > li', LISTS_SEC, /JIRA_TOKEN/)
-    check(await jiraSet.isEnabled() && await stoppedPage.locator('.secrets > li p').filter({ hasText: /is stopped/ }).count() === 0, `${engine}: a stopped computer offers the control as usual, with no words about it stopped`)
+    check(await jiraSet.count() === 1 && await jiraSet.isEnabled() && await stoppedPage.locator('.secrets > li p').filter({ hasText: /is stopped/ }).count() === 0, `${engine}: a stopped computer offers the control as usual, with no words about it stopped`)
     await jiraSet.click()
     await jiraField.fill(unsent)
     await jiraField.press('Escape')
