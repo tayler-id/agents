@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import pg from 'pg'
 import { z } from 'zod'
 import { messageOf } from '../shared/errors.ts'
@@ -78,7 +79,8 @@ try {
   await servePeople(PEOPLE_PORT, peopleSocket(work))
   await within(20, () => fetch(API).then(() => true, () => false))
 
-  check((await origins(alice)).length === 0, 'a team that has listed nothing has an empty list')
+  const empty = await people(alice, 'GET', '/v1/team/webmcp-origins')
+  check(empty.status === 200 && isDeepStrictEqual(empty.json, { origins: [] }), `a team that has listed nothing is answered with an empty list (${empty.status})`)
   const listed = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: SITE })
   check(listed.status === 200 && listed.json?.origins?.length === 1 && listed.json.origins[0].origin === SITE && listed.json.origins[0].addedBy === alice,
     `an admin lists a site for the team, and the list says who did (${listed.status})`)
