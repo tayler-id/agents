@@ -20,8 +20,16 @@ const FROM_SESSIONS = `from sessions s
   left join people p on p.id = s.started_by
   cross join (select conversation_id, task_id from sessions where id = $2) own`
 
-// Any word matches, ranked by how well. A question in plain words still finds things.
-const QUERY = `replace(plainto_tsquery('english', $3)::text, '&', '|')::tsquery`
+// What a search matches, for agents here and for people in server/history.ts. Any
+// word matches, ranked by how well, so a question in plain words still finds things.
+export const matching = (words: string) => `replace(plainto_tsquery('english', ${words})::text, '&', '|')::tsquery`
+// The expressions the full-text indexes on events.text and messages.body are built
+// on. A query must repeat them exactly to use an index.
+export const STEP_VECTOR = `to_tsvector('english', coalesce(e.text, ''))`
+const MESSAGE_VECTOR = `to_tsvector('english', m.body)`
+// How much of a match a snippet shows, and the snippet of a document against the query q.
+export const SNIPPET = 'MaxFragments=2, MaxWords=40, MinWords=12'
+export const headline = (document: string, options = `'${SNIPPET}'`) => `ts_headline('english', ${document}, q.query, ${options})`
 
 export type Hit = {
   source: 'event' | 'message'; session_id: string | null; conversation_id: string | null; seq: string
@@ -31,19 +39,19 @@ export type Hit = {
 export async function searchRecord(teamId: string, ownSession: string, query: string, limit: number): Promise<Hit[]> {
   if (!query.trim()) return []
   const { rows } = await pool.query<Hit & { rank: number }>(
-    `with q as (select ${QUERY} as query)
+    `with q as (select ${matching('$3')} as query)
      (select 'event' as source, e.session_id, s.conversation_id, e.seq::text, e.kind, e.tool_name, a.name as agent, p.login as person,
-        ts_headline('english', e.text, q.query, 'MaxFragments=2, MaxWords=40, MinWords=12') as snippet,
-        ts_rank(to_tsvector('english', coalesce(e.text, '')), q.query) as rank, e.created_at::text
+        ${headline('e.text')} as snippet,
+        ts_rank(${STEP_VECTOR}, q.query) as rank, e.created_at::text
       ${FROM_SESSIONS}
       join events e on e.session_id = s.id
       cross join q
       where ${READABLE} and s.id <> $2 and e.team_id = $1
-        and to_tsvector('english', coalesce(e.text, '')) @@ q.query)
+        and ${STEP_VECTOR} @@ q.query)
      union all
      (select 'message', m.session_id, m.conversation_id, m.seq::text, m.speaker, null, a.name, p.login,
-        ts_headline('english', m.body, q.query, 'MaxFragments=2, MaxWords=40, MinWords=12'),
-        ts_rank(to_tsvector('english', m.body), q.query), m.created_at::text
+        ${headline('m.body')},
+        ts_rank(${MESSAGE_VECTOR}, q.query), m.created_at::text
       from messages m
       join conversations c on c.id = m.conversation_id
       left join agents a on a.id = m.agent_id
@@ -51,7 +59,7 @@ export async function searchRecord(teamId: string, ownSession: string, query: st
       cross join (select conversation_id from sessions where id = $2) own
       cross join q
       where m.team_id = $1 and c.visibility = 'team' and m.conversation_id is distinct from own.conversation_id
-        and to_tsvector('english', m.body) @@ q.query)
+        and ${MESSAGE_VECTOR} @@ q.query)
      order by rank desc, created_at desc limit $4`,
     [teamId, ownSession, query, limit])
   return rows

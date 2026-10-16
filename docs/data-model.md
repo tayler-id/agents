@@ -319,3 +319,8 @@ Sites whose tools agents may use, in `server/migrations/0018_webmcp_origins.sql`
 
 - **`webmcp_origins`, new.** One row for each site an admin lists for a team: the team, the origin, who listed it and when. An origin is a scheme and a host, with an optional port, or `*` for any port. Examples are `https://example.com` and `http://127.0.0.1:*`. It is stored in the form the API normalized it to, and it is unique in a team. An agent's browser takes tools from a page only while the page's origin is listed here. A team with no rows gives its agents' browsers no page tools at all. Only admins add or remove a row.
 - **Used for the first time, with no schema change.** A message command's payload gains `webmcpOrigins`, the team's list as of that message. The daemon restarts a session whose list changed, on its next message.
+
+History, in `server/migrations/0022_history.sql`. The History page lists every session a person may see, searches the text of steps, and replays a session. Search reads the same full-text index on `events.text` that agents' `search_record` reads.
+
+- **`events_errors`, an index and no table.** It covers the steps that went wrong: `error` events, and `tool_result` events whose body says `isError`. A list counts a session's errors, and a replay jumps to the next one, by reading only those entries and none of the session's other steps. It is partial, so it holds one entry per failed step and costs a write only when a step fails.
+- **Used for the first time, with no schema change.** `events.text` is cut to 8,000 characters, and `events.body` holds a tool call's whole input and a tool result's whole content. A replay shows the body. It reads a session in ranges of `seq`, which the key on `(session_id, seq)` serves.

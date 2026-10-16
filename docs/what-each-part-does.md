@@ -542,6 +542,47 @@ The design, with what is not done and the calls waiting on Tayler, is `docs/desi
 - **Solves now.** It connects folders from the app the way a person does. It writes Claude Code's transcripts into a stand-in home folder, runs the real API, daemon and Electric, drives the Electron app's Terminal folders page, and opens the page in Chromium, Firefox and WebKit at desktop and phone width, on ports 8140 to 8144, in about 45 seconds. Its 51 lines cover the socket's modes, the list and its order, Team, Just me and Off with the sessions that land or stay on the Mac, a folder inside a connected one, the question before a private folder's sessions are shown the team and the daemon's own refusal without it, the home folder and root refusals, what the bridge refuses, one change per click, a second daemon, a crashed daemon's socket, every request the daemon and the page sent the server, and a search of every Postgres table and the API's log for the names of folders never connected.
 - **Helps later.** When the signed download changes how the daemon starts, this check says whether the page still connects folders and keeps the names of the others on the Mac.
 
+## History and replay
+
+Where a person finds every session the team and its agents have had, searches what was said and done in them, and replays one. The build is step 9 of `docs/design/target-architecture.md`, without its summaries.
+
+### The History routes (`server/history.ts`, `server/history-routes.ts`, `server/steps.ts`, `shared/history.ts`)
+
+- **Solves now.** Four routes on the people port. `GET /v1/history` lists the sessions a person may see, newest active first, and filters them by agent, person, kind (conversation, task, run or terminal), project, repo and day. `GET /v1/search` finds steps by the words in their text, newest first, with the same filters and a scope that reads every step, only messages, only tool calls and results, or only the steps that went wrong. `GET /v1/history/sessions/{id}` says which steps a session has and where the ones that went wrong are. `GET /v1/history/sessions/{id}/steps` gives the steps between two numbers, each with its whole input or result, read from the event's body, since the text column is cut at 8,000 characters. Lists and searches page by a cursor the server writes. A session a person may not see is in none of them, and answers 404 as one that is not there.
+- **Helps later.** The shell's search can read from the same routes, and a summary of a session or a day can link to the steps it rests on by their numbers.
+- **Not done.** Search reads the text column, which holds a tool call's one-line summary and a result's first 8,000 characters. A word deep in a long result, or in a tool call's input, is not found. Posts in a conversation that no session mirrors, such as a room with no agent or a pipeline's progress post, are not searched.
+
+### One rule for who may see a session (`server/access.ts`)
+
+- **Solves now.** `VISIBLE_SESSION` says a session is seen when its conversation, its task or its connected folder is seen, and `canSeeSession` uses it. The History list, the search, the replay and the sync proxy's `events` shape all ask the same rule. `test/step26.ts` compares the History list for each person with the sessions the app's other reads give them, which are read by rules of their own.
+- **Helps later.** A new place that lists sessions asks the same question.
+
+### Search for people and for agents (`server/teamrecord.ts`)
+
+- **Solves now.** The words of a search, the expression the full-text index is built on and the shape of a snippet are written once, and `search_record` and `GET /v1/search` both use them. A step with any of the words matches, so a question in plain words finds things. The two differ in who may read, in their filters, and in how they mark the words that matched: agents get `<b>` tags, and people get control characters a page splits on, so a snippet is never read as markup.
+- **Helps later.** A change to how the record is searched is made once.
+
+### The errors index (`server/migrations/0022_history.sql`)
+
+- **Solves now.** A partial index on the steps that went wrong, which are `error` events and tool results that say `isError`. A list counts a session's errors, and a replay jumps to the next one, by reading only those entries. It holds one entry per failed step, so a step that goes right costs nothing.
+- **Helps later.** Anything that asks where a session went wrong, such as a summary or a check of how often a tool fails, reads the same entries.
+
+### How a replay moves (`shared/replay.ts`)
+
+- **Solves now.** One function from the replay's state and a move to its next state. The state holds the steps loaded, the step the replay is on, whether it is playing, and the range it is waiting for. A move is a step forward or back, a jump to a number, play, pause, a tick of the clock or a page arriving. The function asks for the next page before the replay reaches the end of the steps it holds, never asks for more than 100 step numbers, keeps the 200 steps nearest the current one, and ignores the answer to a request a newer one replaced. The page only runs the request the state names and shows what the state holds.
+- **Helps later.** Another view of a session, such as a preview beside a list of results, moves the same way.
+
+### The History page and the replay (`app/src/History.tsx`, `app/src/Replay.tsx`, `app/src/history.ts`, `app/src/history.css`)
+
+- **Solves now.** History is a link in the sidebar. The page has a search field, a choice of what to search, and choices for agent, person, kind, project, repo and day, and it lists sessions or results, thirty at a time. The choices are in the address, as `#/history?q=...`, so Back returns to them. A row opens the replay at `#/history/{session id}`, and a result opens it at `#/history/{session id}/{step}`. The replay plays a session at 1, 2, 4 or 8 times speed, pauses, steps forward and back, jumps to the previous or next step that went wrong, and goes anywhere through a slider with a mark for each error. The current step is shown whole and the others fold their long parts. A link goes back to the session's conversation, task, run or terminal page. The address names the step a paused replay is on.
+- **Helps later.** The page is one component and one hash, so the shell's redesign can take it as it is or draw its own from the same routes.
+- **Not done.** The Session panel and the terminal page have no Replay link yet.
+
+### The History checks (`test/step26.ts`, `test/step26b.ts`, `test/step26-breaks.ts`, `test/history-kit.ts`)
+
+- **Solves now.** `step26` reads the record through the API for three people of one team and one of another, with ten sessions of every kind, some private, one with 420 steps, and a result far longer than the text column. It compares what each person gets with the app's other reads, and runs the replay's moves as plain functions. `step26b` drives the page in Chromium, Firefox and WebKit at desktop and phone width, takes screenshots, scans for accessibility problems, and fails on a refused script or style. `step26-breaks` breaks each thing they guard, one at a time, and puts every file back byte for byte. `history-kit.ts` builds the team they share.
+- **Helps later.** A change to who sees a session, how a search matches or how a replay moves is answered in about a minute.
+
 ## Worktrees and landing (`daemon/agents-git/`, `test/step22.ts`, `test/fake-gh.ts`, `test/fake-docker.ts`)
 
 - **Solves now.** `agents-git` runs the git side of an agent's work the same way every time, and each rule in `AGENTS.md` that a machine can check is a command that does it or refuses. Run it from inside the repo as `node daemon/agents-git/main.ts <command>`. `docs/design/agents-git.md` has every command, how `check` and `land` run, and which rule each one enforces.

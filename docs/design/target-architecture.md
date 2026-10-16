@@ -632,6 +632,7 @@ Agents search the record with Postgres full-text search (`server/teamrecord.ts`)
 - **Owner.** `server/teamrecord.ts`, which holds the query, and `app/src/Search.tsx` (new).
 - **One action.** Tayler searches "flaky webhook". Events and messages come back newest first, and each opens its session at that step.
 - **Stays, changes, new.** The query and the access rules stay. The route and the page are new.
+- **Built in step 9, without summaries.** `GET /v1/search` takes words, a scope (every step, messages, tool calls and results, or the steps that went wrong) and the filters agent, person, kind, project, repo and day, and returns steps newest first with a cursor. It shares its match, its index expression and its snippet with `search_record` in `server/teamrecord.ts`. The page is History, `app/src/History.tsx`, which also lists sessions and replays one, and not a separate `Search.tsx`. The search reads `events.text`, as `search_record` does, so it finds no word beyond a result's first 8,000 characters or inside a tool call's input, and it does not read conversation posts that no session mirrors. Whether the search should read steps' bodies is Tayler's call, since it needs an index over `events.body`.
 
 ### Summaries
 

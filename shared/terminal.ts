@@ -19,6 +19,11 @@ export const FolderPath = z.string().max(4096).startsWith('/')
   .refine((path) => path !== '/', "the root folder holds every folder on the Mac and can't be connected")
   .regex(/[^/]$/, 'a folder path has no trailing slash')
 
+// Where a terminal session ran: its folder's name, and the folder inside it the session started in.
+export function placeOf(folderPath: string, cwd: string): string {
+  return `${folderPath.split('/').pop() ?? folderPath}${cwd.slice(folderPath.length)}`
+}
+
 // Whether a path is the folder or inside it. A sibling that shares the folder's
 // name as a prefix, such as /a/repo-old beside /a/repo, is outside it. Every
 // path is inside the root folder.
