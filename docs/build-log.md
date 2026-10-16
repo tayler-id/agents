@@ -1146,3 +1146,19 @@ A security fix, so it goes to Tayler. Tayler approved the work on branch `shape-
   - Reading a subset of a shape, which on-demand sync in the client needs, is now refused. Turning it on is Tayler's call. `queryable_columns` is already set for shapes that hide columns, and the refusal is the one line to remove.
   - step4b and step6b, which drive the app in three browsers, did not run. step4b runs real Claude and step6b uses the forge. Firefox and WebKit were not tried.
   - Nothing ran on the live system and nothing is deployed.
+
+### Voice: dictation and voice chat (2026-10-16)
+
+Branch `voice`, from main de6d961. Design in `docs/design/voice.md`. No migration: transcripts are ordinary messages, and audio is never kept.
+
+- **Dictation.** `POST /v1/transcribe` takes `audio/wav` or `audio/webm` from a signed-in person, at most 10 MB and 60 s, and returns `{ text }`. WebM goes through ffmpeg to 16 kHz mono WAV. At most 3 clips are read at once. Failures give 503, 504, 502, 429, 415, 413 or 400 with a sentence a person reads. `api.ts` lets this one path take an audio content type where every other change must be JSON.
+- **Voice chat.** A WebSocket at `/v1/voice/conversations/{id}` for a conversation with one agent. Audio in is 16 kHz PCM binary frames, `{"type":"end"}` posts the transcript as the person's message through `sendPersonMessage`, and the agent's reply is read from the record every 250 ms and spoken a sentence at a time as 24 kHz PCM frames of 200 ms. Markdown and code blocks are not spoken. Audio from the person, or `{"type":"stop"}`, silences the reply.
+- **Why HTTP to mlx_audio.server and not the qwaudio service on 8767.** The 8767 service is a full-duplex pipeline with its own local language model and no endpoint for a clip or a sentence. `mlx_audio.server`, in the same environment, serves the same two models over HTTP.
+- **Checks.** `test/step24v.ts` (27 lines) and `test/step24w.ts` (36 lines), on ports 8340 to 8346, no run lock, against `test/fake-speech.ts`. The stand-in answers a clip with words only when it received the fixture's exact samples. I broke 15 things for step24v and 11 for step24w and each went red (the one miss on a label, `rate`, was caught by the WebM text line instead). Files restored byte for byte, both green after.
+- **Protected paths touched.** None. `server/screens.ts` now exports `refuse`, and `server/api.ts` carries the two small changes.
+- **Not done.**
+  - No run against the real speech service. It cannot start until `webrtcvad` and `python-multipart` are installed in `~/.local/share/uv/tools/speech-to-speech`.
+  - No silence detection and no partial transcripts, so the page decides when a turn ends.
+  - Voice chat is for one-agent conversations, not rooms.
+  - The reply is read by polling the record. Whether an agent's assistant text grows inside one event while it streams was not checked against a real daemon, so sentence-by-sentence may in practice mean event-by-event.
+  - Nothing ran on the live system. Nothing starts the speech service at boot.

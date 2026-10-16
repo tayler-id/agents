@@ -18,6 +18,8 @@ Start it on the server Mac with:
 
 `AGENTS_SPEECH_URL=http://127.0.0.1:8770` tells the API where it is. Without that variable the API treats speech as not set up.
 
+**This does not start yet.** `mlx_audio.server` imports `webrtcvad` and its upload route needs `python-multipart`, and neither is installed in that environment. Both are small packages. Installing them is Tayler's call (see the build log). I did not install anything. What I checked by hand with the cached models, importing `mlx_audio` directly: Parakeet loaded in 5.5 s and read the fixture back as exactly "Please schedule the design review for Tuesday morning." in 1.0 s, and Qwen3-TTS (speaker Aiden, as in Tayler's setup) made 2.3 s of 24 kHz audio in 1.05 s. The HTTP layer in front of them has not run, so the request shapes in `server/speech.ts` come from reading the server's code.
+
 ## How the API reaches it
 
 `server/speech.ts` is the one place that talks to the service. It has two calls, `transcribe(wav)` and `speak(text)`. Everything else in the server sees only text, PCM and `HttpError`. A stand-in server that speaks the same two endpoints stands in for the service in checks.
@@ -52,7 +54,7 @@ The voice chat socket checks the page's origin against `AGENTS_PEOPLE_ORIGINS`, 
 
 ## Latency
 
-- Parakeet turns a 10 second clip into text in well under a second once loaded. The first clip after the service starts also loads the model, which takes several seconds. The 30 s limit covers it.
+- Measured by hand on this Mac with the cached model: Parakeet loads in 5.5 s, then reads a 3 second clip in 1.0 s. The first clip after the service starts pays the load. The 30 s limit covers it.
 - Voice chat speaks one sentence at a time. The first sentence is on its way as soon as the agent finishes it, so the wait is the agent's time to first sentence plus one speech request, not the whole reply.
 
 ## What the record keeps
