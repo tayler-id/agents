@@ -1,6 +1,7 @@
 // Connected folders and the terminal sessions in them. Only a Mac connects or
-// disconnects its own folders, with its machine token, so no one in the app can
-// make a person's sessions leave their Mac. The Mac's daemon reports each Claude
+// disconnects its own folders, with its machine token, from the folders command
+// or from the Agents app on that Mac through its daemon, so no one else can make
+// a person's sessions leave their Mac. The Mac's daemon reports each Claude
 // Code session it finds in a connected folder, and this module gives it the
 // record's session for it. The design is docs/design/local-sessions.md.
 

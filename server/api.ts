@@ -312,7 +312,8 @@ const routes: Route[] = [
 
   // The folders on this Mac whose terminal sessions land in the record, how many
   // sessions each holds, and the Mac's own id. Only the Mac itself connects or
-  // disconnects one, so nobody in the app can.
+  // disconnects one, from the folders command or from the Agents app on that Mac
+  // through its daemon, so no person's request can.
   ['machines', 'GET', /^\/v1\/instance\/folders$/, async (req) => {
     const instance = await instanceFrom(req)
     const answer: FolderList = { instanceId: InstanceId.parse(instance.id), ...await connectedFolders(instance) }
