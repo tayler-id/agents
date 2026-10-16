@@ -424,6 +424,14 @@ Tayler went with the coordinator's picks on all of these.
 - **How a teammate joins.** An admin invites their email in the app, and Tailscale emails them. They install Tailscale and sign in, then open the invite link. Tailscale tells the app who they are, so there is no password, and they are on the team. From that page they download the app, signed with Tayler's Developer ID, and open it. It finds the server and sets up their Mac. Their cloud computer already exists, and it signs in to Claude through the team's account until they sign in their own.
 - **Status.** The download is being built.
 
+### The coding framework builds Agents itself, after seats
+
+- **Decided by Tayler on 2026-10-16.**
+  - Right after seats land, building Agents moves onto the coding framework. Its reviewers run on their own machine, its verification points at the real checklist in `.claude/skills/verify-agents/`, and this repo is registered with its policy. From then on the runner runs every gate and records the evidence, and changes go through the app.
+  - Until then, the coordinator lands by hand, and every file a landing touches that matches `protectedPaths` in `ops/policies/agents.json` stops for Tayler's approval. That's the policy's list, not only the shorter one in `AGENTS.md`.
+  - Tayler approved the four protected files in the landing of step 1, the folder switches and the shape fix: `daemon/agentsd.ts`, `server/runner.ts`, `server/framework.ts` and `server/migrations/0014_door.sql`.
+- **Status.** Seats are being built. The framework move comes next.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
