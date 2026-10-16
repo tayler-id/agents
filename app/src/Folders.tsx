@@ -1,7 +1,7 @@
 import { useCallback, useId, useState } from 'react'
 import { z } from 'zod'
 import {
-  AppConnected, AppRefusal, FolderAnswer, FolderRow, holdsHome, insideFolder, MacFolders, type FolderVisibility, type MacFolder,
+  AppAskFirst, AppConnected, AppRefusal, FolderAnswer, FolderRow, holdsHome, insideFolder, MacFolders, type FolderVisibility, type MacFolder,
 } from '../../shared/terminal.ts'
 import { act, day, messageOf, usePolled, useSnapshot, useSnapshotOf, type Instance, type Me } from './data.ts'
 
@@ -9,7 +9,7 @@ import { act, day, messageOf, usePolled, useSnapshot, useSnapshotOf, type Instan
 // Every answer is outside data, read through its schema.
 type MacBridge = {
   list: () => Promise<unknown>
-  connect: (path: string, visibility: FolderVisibility) => Promise<unknown>
+  connect: (path: string, visibility: FolderVisibility, confirmed?: number) => Promise<unknown>
   disconnect: (path: string) => Promise<unknown>
 }
 declare global {
@@ -36,6 +36,16 @@ async function asked<S extends z.ZodType>(schema: S, answer: Promise<unknown>): 
   const { status, body } = BridgeAnswer.parse(await answer)
   if (status !== 200) throw new Error(AppRefusal.parse(body).error)
   return schema.parse(body)
+}
+
+// A connect's answer. Team that would show the team sessions in the record they can't see now comes back as their
+// count, for the row to ask about.
+async function connectAnswer(answer: Promise<unknown>): Promise<AppConnected | AppAskFirst> {
+  const { status, body } = BridgeAnswer.parse(await answer)
+  if (status === 200) return AppConnected.parse(body)
+  const askFirst = AppAskFirst.safeParse(body)
+  if (status === 409 && askFirst.success) return askFirst.data
+  throw new Error(AppRefusal.parse(body).error)
 }
 
 const nameOf = (path: string) => path.split('/').pop() ?? path
@@ -90,10 +100,10 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const [said, setSaid] = useState<Said | null>(null)
   const [asking, setAsking] = useState<Asking | null>(null)
 
-  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team asks first
-  // whenever it would show the team sessions in the record they can't see now, counted afresh, unless the person
-  // just said yes to that.
-  const choose = act(async (row: MacFolder, choice: Choice, confirmed: boolean) => {
+  // A change runs within 5 seconds of the person's click, while the bridge still counts it as theirs. Team that would
+  // show the team sessions in the record they can't see now comes back from the daemon with their count, and the row
+  // asks. Yes sends that count back, and the daemon takes Team only when it still finds that many.
+  const choose = act(async (row: MacFolder, choice: Choice, confirmed?: number) => {
     const before = chosen(row)
     if (choice === before) return
     const name = nameOf(row.path)
@@ -101,17 +111,13 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
     setSaid(null)
     setAsking(null)
     try {
-      if (choice === 'team' && !confirmed) {
-        const now = (await asked(MacFolders, bridge.list())).folders.find((r) => r.path === row.path)
-        if (now && now.hiddenSessions > 0) {
-          setAsking({ path: row.path, sessions: now.hiddenSessions })
-          return
-        }
+      if (choice === 'off') {
+        setSaid({ path: row.path, text: disconnectedText(name, await asked(FolderAnswer, bridge.disconnect(row.path))), failed: false })
+        return
       }
-      const text = choice === 'off'
-        ? disconnectedText(name, await asked(FolderAnswer, bridge.disconnect(row.path)))
-        : connectedText(name, before, await asked(AppConnected, bridge.connect(row.path, choice)))
-      setSaid({ path: row.path, text, failed: false })
+      const done = await connectAnswer(bridge.connect(row.path, choice, confirmed))
+      if ('hiddenSessions' in done) setAsking({ path: row.path, sessions: done.hiddenSessions })
+      else setSaid({ path: row.path, text: connectedText(name, before, done), failed: false })
     } catch (e) {
       setSaid({ path: row.path, text: messageOf(e), failed: true })
     } finally {
@@ -133,7 +139,8 @@ function ThisMac({ bridge, me }: { bridge: MacBridge; me: Me }) {
   const item = (row: MacFolder) => (
     <FolderItem key={row.path} row={row} home={value.home} connected={connected} busy={busy !== null} working={busy === row.path}
       said={said?.path === row.path ? said : null} asking={asking?.path === row.path && chosen(row) !== 'team' ? asking.sessions : null}
-      onChoose={(choice) => { choose(row, choice, false) }} onConfirm={() => { choose(row, 'team', true) }} onKeep={() => { keep(row) }} />
+      onChoose={(choice) => { choose(row, choice) }} onConfirm={() => { choose(row, 'team', asking?.path === row.path ? asking.sessions : undefined) }}
+      onKeep={() => { keep(row) }} />
   )
   const recent = value.folders.filter((row) => !row.temporary)
   const temporary = value.folders.filter((row) => row.temporary)

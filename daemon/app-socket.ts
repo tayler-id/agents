@@ -16,11 +16,11 @@ import { readBody } from '../shared/body.ts'
 import { messageOf } from '../shared/errors.ts'
 import { listenOnSocket } from '../shared/socket.ts'
 import {
-  AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder, type MacFolders,
-  type UnlistedFolder,
+  AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppAskFirst, type AppConnected, type AppRefusal, type FolderAnswer, type MacFolder,
+  type MacFolders, type UnlistedFolder,
 } from '../shared/terminal.ts'
 import { ApiError, type Api } from './api.ts'
-import { connectedFolders, connectFolder, disconnectFolder, FolderRefused } from './folders.ts'
+import { connectedFolders, connectFolder, disconnectFolder, folderPath, FolderRefused } from './folders.ts'
 import { claudeFolders } from './transcripts.ts'
 
 // In a folder of its own in the daemon's home. desktop/main.cjs looks for it there.
@@ -41,6 +41,17 @@ class BadAsk extends Error {
   constructor(status: 400 | 404 | 413, message: string) {
     super(message)
     this.status = status
+  }
+}
+
+// Team on a folder would show the team sessions in the record they can't see
+// now, and the ask didn't carry the person's yes to that many.
+class AskFirst extends Error {
+  readonly hiddenSessions: number
+  constructor(path: string, hiddenSessions: number) {
+    super(`Team shows the team the ${hiddenSessions} session${hiddenSessions === 1 ? '' : 's'} already in the record from ${path}, which they can't see now. `
+      + 'Ask the person first, and send how many they said yes to.')
+    this.hiddenSessions = hiddenSessions
   }
 }
 
@@ -75,6 +86,7 @@ export function serveAppSocket({ home, api, signal }: { home: string; api: Api; 
     if (route === 'GET /folders') return listFolders(home, api)
     if (route === 'POST /folders/connect') {
       const ask = AppConnect.parse(await readJson(req))
+      if (ask.visibility === 'team') await askedFirst(api, folderPath(ask.path, true), ask.confirmed)
       const { path, ...connected } = await connectFolder(api, ask.path, ask.visibility)
       return connected
     }
@@ -111,9 +123,18 @@ async function listFolders(home: string, api: Api): Promise<MacFolders> {
   return { instanceId, home: realpathSync.native(homedir()), folders, unlisted }
 }
 
+// Team shows the team every session of the folder in the record they can't see now, so the daemon takes it only with
+// the person's yes to that many, counted again here. The page asks, and sends the count it asked about. A count that
+// changed since is refused with the new one.
+async function askedFirst(api: Api, path: string, confirmed: number | undefined) {
+  const hidden = (await connectedFolders(api)).hiddenSessions[path] ?? 0
+  if (hidden > 0 && confirmed !== hidden) throw new AskFirst(path, hidden)
+}
+
 // What the app is told when nothing changed, with the words it shows.
-function refusal(error: unknown): [number, AppRefusal] {
+function refusal(error: unknown): [number, AppRefusal | AppAskFirst] {
   if (error instanceof BadAsk) return [error.status, { error: error.message }]
+  if (error instanceof AskFirst) return [409, { error: error.message, hiddenSessions: error.hiddenSessions }]
   if (error instanceof z.ZodError) return [400, { error: z.prettifyError(error) }]
   if (error instanceof FolderRefused) return [error.kind === 'usage' ? 400 : 409, { error: error.message }]
   // The team's server failed, or Node's fetch could not reach it, which it reports as a TypeError of this message.

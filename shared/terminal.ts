@@ -79,8 +79,9 @@ export type UnlistedFolder = z.infer<typeof UnlistedFolder>
 // This Mac's id, its person's home folder, which can't be connected, its folders, newest first, and the ones left out.
 export const MacFolders = z.object({ instanceId: InstanceId, home: FolderPath, folders: z.array(MacFolder), unlisted: z.array(UnlistedFolder) })
 export type MacFolders = z.infer<typeof MacFolders>
-// The app connects a folder by choosing who sees its sessions, and Off disconnects it.
-export const AppConnect = z.object({ path: FolderPath, visibility: FolderVisibility })
+// The app connects a folder by choosing who sees its sessions, and Off disconnects it. Team on a folder whose
+// sessions in the record the team can't see carries how many of them the person said yes to showing the team.
+export const AppConnect = z.object({ path: FolderPath, visibility: FolderVisibility, confirmed: z.number().int().min(1).optional() })
 export type AppConnect = z.infer<typeof AppConnect>
 // The daemon's answer to a connect from the app, with anything that will keep the folder's sessions from landing.
 export const AppConnected = ConnectAnswer.extend({ warnings: z.array(z.string()) })
@@ -88,6 +89,10 @@ export type AppConnected = z.infer<typeof AppConnected>
 // The daemon's answer when it changed nothing, in words the app shows as they are.
 export const AppRefusal = z.object({ error: z.string() })
 export type AppRefusal = z.infer<typeof AppRefusal>
+// The daemon's refusal of Team when the ask didn't carry the person's yes to the sessions it would show the team,
+// with how many those are now, for the app to ask about.
+export const AppAskFirst = AppRefusal.extend({ hiddenSessions: z.number().int().min(1) })
+export type AppAskFirst = z.infer<typeof AppAskFirst>
 
 // The daemon found a Claude Code session that started in a connected folder.
 // The API answers with the record's session for it, the same one each time.

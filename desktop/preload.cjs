@@ -11,6 +11,6 @@ const change = (ask, body) => (navigator.userActivation.isActive ? ipcRenderer.i
 
 contextBridge.exposeInMainWorld('agentsMac', {
   list: () => ipcRenderer.invoke('agents-mac', 'list'),
-  connect: (path, visibility) => change('connect', { path, visibility }),
+  connect: (path, visibility, confirmed) => change('connect', { path, visibility, confirmed }),
   disconnect: (path) => change('disconnect', { path }),
 })
