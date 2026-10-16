@@ -68,7 +68,7 @@ export function WebmcpSitesList({ sites, onAdd, onRemove }: {
         {sites?.length === 0 && <li className="muted small empty">No sites are listed, so agents take no tools from any page.</li>}
       </ul>
       <div className="form inline-form">
-        <input aria-label="Add a site" aria-describedby={hint} placeholder="Add a site, such as https://example.com" value={draft} disabled={busy}
+        <input aria-label="Add a site" aria-describedby={hint} placeholder="Add a site, such as https://example.com" value={draft} readOnly={busy}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={keys} autoComplete="off" spellCheck={false} />
         <button type="button" className="primary" disabled={busy || !draft.trim()} onClick={add}>Add</button>
       </div>
