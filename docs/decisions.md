@@ -414,6 +414,16 @@ Tayler went with the coordinator's picks on all of these.
   - The desktop is a real one, with a dock holding a browser, a terminal and a whiteboard, and normal windows.
 - **Status.** Seats are built. Joining them to step 1 comes next, with these defaults, and so do the agent's Computer tab and the desktop.
 
+### How teammates get the app and sign in
+
+- **Decided by Tayler on 2026-10-16.**
+  - The Agents app for Mac lives in the menu bar, like Slack or Tailscale. Closing its window keeps it in the menu bar, still saving terminal sessions, and it opens at login as an ordinary Login Item the person can turn off. Quitting it from the menu bar stops it, and the app says what stops with it. There is no separate background helper.
+  - Teammates download the app from the team's own server, through a page the invite links to, reachable only on the tailnet.
+  - Tailscale invites are on for the live server. Its settings live only in the live API's launchd file, so no check reaches the real tailnet.
+- **The coordinator's picks.** The machine token sits in a 0600 file, since a Keychain item would prompt the background daemon. The bundle id is `com.taylerramsay.agents`.
+- **How a teammate joins.** An admin invites their email in the app, and Tailscale emails them. They install Tailscale and sign in, then open the invite link. Tailscale tells the app who they are, so there is no password, and they are on the team. From that page they download the app, signed with Tayler's Developer ID, and open it. It finds the server and sets up their Mac. Their cloud computer already exists, and it signs in to Claude through the team's account until they sign in their own.
+- **Status.** The download is being built.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
