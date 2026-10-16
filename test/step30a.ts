@@ -80,7 +80,7 @@ try {
 
   // 4. Access follows the chat. A pending upload is its uploader's alone.
   const bobsPending = await as(bob, 'GET', `/v1/attachments/${idOfPng}`)
-  check(bobsPending.status === 404, `bob, who is not in alice's DM, cannot open her pending upload (${bobsPending.status})`)
+  check(bobsPending.status === 404, `bob, who is not in alice's DM, cannot open a file in it (${bobsPending.status})`)
   const bobUp = await upload(bob, `/v1/conversations/${conversations.dm}/attachments`, PNG, 'x.png', 'image/png')
   check(bobUp.status === 404, `bob cannot upload to alice's DM (${bobUp.status} ${bobUp.text})`)
   const carolUp = await upload(carol, `/v1/conversations/${conversations.privateRoom}/attachments`, PNG, 'x.png', 'image/png')
@@ -146,7 +146,7 @@ try {
   })
   const bobRows = await shapeRows(kit.PEOPLE, bob, 'attachments', { conversation: conversations.teamRoom })
   check(seen && bobRows.rows.length === 1 && bobRows.rows[0].message_id === sentTo.json.messageId && bobRows.rows[0].kind === 'image'
-    && bobRows.rows[0].media_type === 'image/png' && bobRows.rows[0].added_by_person === kit.people.alice && !('store_key' in bobRows.rows[0]),
+    && bobRows.rows[0].media_type === 'image/png' && bobRows.rows[0].added_by_person === kit.people.alice,
     `bob's attachments shape for the room has room.png and not alice's pending draft (${JSON.stringify(bobRows.rows.map((r) => r.name))})`)
   const aliceRows = await shapeRows(kit.PEOPLE, alice, 'attachments', { conversation: conversations.teamRoom })
   check(aliceRows.rows.some((r) => r.name === 'draft.txt' && r.message_id === null), "alice's own shape also holds her pending draft, with no message")

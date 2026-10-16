@@ -5,6 +5,7 @@
 // the database. The API is real, on ports 8356 to 8358, which no other check uses.
 //   node --env-file=.env --env-file=.env.test test/step30b.ts
 
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -190,6 +191,7 @@ try {
     'before the delete, the words are in the post and in the version it kept')
   const memberDeletesOther = await as(carol, 'DELETE', `/v1/messages/${bobsPost}`)
   check(memberDeletesOther.status === 403 && memberDeletesOther.json.error === 'Only the author or a team admin can delete a post.', `a member cannot delete someone else's post (${memberDeletesOther.status} ${memberDeletesOther.text})`)
+  const fileBefore = existsSync(join(kit.filesDir, String(upload.json.attachmentId).slice(0, 2), String(upload.json.attachmentId)))
   const adminDeletes = await as(alice, 'DELETE', `/v1/messages/${bobsPost}`)
   const gone = await q1('select body, deleted_at, deleted_by, edited_at, seq from messages where id = $1', [bobsPost])
   check(adminDeletes.status === 200 && adminDeletes.json.deleted === true && gone.body === '' && gone.deleted_at !== null && gone.deleted_by === kit.people.alice,
@@ -198,6 +200,7 @@ try {
   check((await q('select 1 from attachments where message_id = $1', [bobsPost])).length === 0 && (await kit.download(alice, `/v1/attachments/${upload.json.attachmentId}`)).status === 404
     && (await q('select 1 from reactions where message_id = $1', [bobsPost])).length === 0 && (await q('select 1 from pins where message_id = $1', [bobsPost])).length === 0,
     "the post's file, reactions and pin go with it, and the file no longer opens")
+  check(fileBefore && !existsSync(join(kit.filesDir, String(upload.json.attachmentId).slice(0, 2), String(upload.json.attachmentId))), "the deleted post's bytes are gone from the attachments folder")
   const deletedShape = await within(20, async () => (await shapeRows(kit.PEOPLE, carol, 'messages', { conversation: conversations.teamRoom })).rows.some((r) => r.id === bobsPost && r.body === '' && r.deleted_at !== null))
   const messagesShape = await shapeRows(kit.PEOPLE, carol, 'messages', { conversation: conversations.teamRoom })
   const placeholder = messagesShape.rows.find((r) => r.id === bobsPost)

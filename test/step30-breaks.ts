@@ -51,7 +51,7 @@ const BREAKS: Break[] = [
       { file: ATTACHMENTS, anchor: '  if (input.bytes.length > MAX_ATTACHMENT_BYTES) throw', replace: '  if (false) throw' },
     ] },
   // Who sees a file.
-  { name: 'pending-open', check: 'step30a', why: "anyone who can see the chat opens a file its uploader has not sent", red: ["cannot open her pending upload", "cannot open alice's pending draft in the room"],
+  { name: 'pending-open', check: 'step30a', why: "anyone who can see the chat opens a file its uploader has not sent", red: ["cannot open alice's pending draft in the room"],
     edits: [{ file: ATTACHMENTS, anchor: '    : found.added_by_person === person.id)', replace: '    : true)' }] },
   { name: 'chat-access', check: 'step30a', why: 'a file in a private chat opens for anyone on the team', red: ['bob gets 404 and no bytes for a file in a private room'],
     edits: [{ file: ATTACHMENTS, anchor: '    ? found.conversation_id !== null ? await canSeeConversation(person, found.conversation_id)', replace: '    ? found.conversation_id !== null ? true' }] },
@@ -162,6 +162,8 @@ const BREAKS: Break[] = [
     edits: [{ file: ACTIONS, anchor: "update messages set body = '', deleted_at = now(), deleted_by = $2 where id = $1`, [messageId, person.id])", replace: "update messages set body = '', deleted_at = now() where id = $1 and $2::uuid is not null`, [messageId, person.id])" }] },
   { name: 'delete-versions', check: 'step30b', why: "a deleted post's earlier words stay in its versions", red: ['the deleted words are in no column of the database'],
     edits: [{ file: ACTIONS, anchor: "  await client.query('delete from message_versions where message_id = $1', [messageId])\n", replace: '' }] },
+  { name: 'delete-bytes', check: 'step30b', why: "a deleted post's bytes stay on disk until the sweep", red: ["the deleted post's bytes are gone from the attachments folder"],
+    edits: [{ file: ROUTES, anchor: '    await removeFiles(files)\n    return { deleted: true }', replace: '    return { deleted: true }' }] },
   { name: 'delete-files', check: 'step30b', why: "a deleted post's files stay", red: ["the post's file, reactions and pin go with it"],
     edits: [{ file: ACTIONS, anchor: '  const files = await deleteAttachmentsOf(client, { messageId })', replace: '  const files: string[] = []' }] },
   { name: 'delete-prompt', check: 'step30b', why: "a deleted post's own prompt keeps its words", red: ["deleting it takes the words out of the agent's prompt records too"],
