@@ -182,6 +182,20 @@ try {
   const sixth = await asSession(yDm.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: 'Plain note 6.' })
   check(yDm.held && asked.status === 200 && passed && more.every((m) => m.status === 200) && sixth.status === 409,
     `an answer passing through y's turn is not one of its sends: y sends ${MAX_SENDS_PER_TURN} of its own and the next is refused (${more.map((m) => m.status).join(' ')}, then ${sixth.status})`)
+
+  // 4. A call from the machine port is tied to a turn running on that machine. A session
+  // that names itself with no turn running, such as an idle one, gets nothing.
+  const idle = await make('idler')
+  const { conversationId: idleDm } = await post('/v1/conversations', { kind: 'dm', agent: 'idler' })
+  await post(`/v1/conversations/${idleDm}/messages`, { text: 'Say hello.' })
+  const idleSession = await within(TURN_SECONDS, async () => (await one(
+    `select 1 from turns t join sessions s on s.id = t.session_id where s.conversation_id = $1 and t.status = 'done'`, [idleDm])) !== undefined)
+    ? await sessionOf(String(idleDm), idle) : ''
+  const listed = await asSession(idleSession, 'GET', '/v1/team-agents')
+  const reported = await asSession(idleSession, 'POST', '/v1/team-agents/agents', { name: 'idle-made' })
+  const alive = await asSession(yDm.session, 'GET', '/v1/team-agents')
+  check(idleSession !== '' && listed.status === 403 && reported.status === 403 && alive.status === 200,
+    `a session with no turn running on the machine gets no agent tools, and one with a turn running does (${listed.status} ${reported.status}, then ${alive.status})`)
   check(!/deadlock detected/.test(apiLog()), 'the API reported no deadlock')
 } catch (error) {
   failures.push(messageOf(error))

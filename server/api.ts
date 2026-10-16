@@ -140,6 +140,19 @@ async function agentScope(req: IncomingMessage, url: URL) {
   return { teamId: instance.team_id, sessionId }
 }
 
+// The team-agents tools act as the agent whose turn is running in the session they
+// name, so the session must have a turn running on the calling machine now. A session
+// that is idle, or whose turn ended, is no longer an agent acting. This does not tell
+// two sessions on one machine apart: the machine's token, which every agent session on
+// it can read, still lets a session name another one that has a turn running.
+async function agentToolsScope(req: IncomingMessage, url: URL) {
+  const scope = await agentScope(req, url)
+  const instance = await instanceFrom(req)
+  const running = await maybe(pool, `select 1 from turns where session_id = $1 and instance_id = $2 and status = 'running'`, [scope.sessionId, instance.id])
+  if (!running) throw new HttpError(403, 'agent tools work only in a session with a turn running on this machine')
+  return scope
+}
+
 const bounded = (value: string | null, fallback: number, max: number) =>
   Math.min(max, Math.max(1, Number(value) || fallback))
 const UUID = '([0-9a-f-]{36})'
@@ -202,12 +215,12 @@ const routes: Route[] = [
   // An agent working with its team's other agents, from inside one of its sessions,
   // through its team-agents tools. server/team-agents.ts checks who may do what.
   ['machines', 'GET', /^\/v1\/team-agents$/, async (req, _params, url) => {
-    const { teamId, sessionId } = await agentScope(req, url)
+    const { teamId, sessionId } = await agentToolsScope(req, url)
     return tx(async (client) => listAgents(client, await callerOf(client, teamId, sessionId)))
   }],
 
   ['machines', 'POST', /^\/v1\/team-agents\/(messages|tasks|report|agents)$/, async (req, [action], url) => {
-    const { teamId, sessionId } = await agentScope(req, url)
+    const { teamId, sessionId } = await agentToolsScope(req, url)
     const body = await readJson(req)
     const answer = await tx(async (client) => {
       const caller = await callerOf(client, teamId, sessionId)
