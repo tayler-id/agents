@@ -8,7 +8,7 @@ import { AgentSecrets } from './Secrets.tsx'
 
 // One agent's setup: who it is, its skills, plugins and routines, and what it
 // remembers. Anyone on the team can change it.
-export function AgentPage({ agentId }: { agentId: string }) {
+export function AgentPage({ agentId, me }: { agentId: string; me: Me }) {
   const { rows: agents } = useSnapshot<Agent>('agents', {}, 4000)
   const { rows: skills } = useSnapshot<Skill>('skills', {}, 4000)
   const { rows: plugins } = useSnapshot<Plugin>('plugins', {}, 4000)
@@ -56,7 +56,7 @@ export function AgentPage({ agentId }: { agentId: string }) {
         </>} onRemove={(p) => api.removeItem(agentId, 'plugins', p.name)} />
         <PluginForm agentId={agentId} />
 
-        <AgentSecrets agent={agent} />
+        <AgentSecrets agent={agent} me={me} />
 
         <h2 className="kicker section">Routines</h2>
         <Items rows={own(routines)} empty="No routines yet" render={(r) => <>

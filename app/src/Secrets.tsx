@@ -1,6 +1,6 @@
 import { useId, useState, type SyntheticEvent } from 'react'
-import { SecretRemoved, SecretRow, SecretSetRow, SecretStored } from '../../shared/secrets.ts'
-import { call, clock, day, messageOf, parseTime, useSnapshot, useSnapshotOf, type Agent, type Instance, type Person } from './data.ts'
+import { mayPutOn, SecretRemoved, SecretRow, SecretSetRow, SecretStored } from '../../shared/secrets.ts'
+import { call, clock, day, messageOf, parseTime, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me, type Person } from './data.ts'
 import './Secrets.css'
 
 // How often the lists are read again. A value just set or removed shows at once,
@@ -24,8 +24,9 @@ function heldNow(row: SecretSetRow | undefined, recent: Recent | undefined): Hel
 
 // The secrets an agent's plugins name. A person sets each one's value here, and it
 // goes to the agent's computer and nowhere else. The app keeps the name, where it
-// is set and when, never the value.
-export function AgentSecrets({ agent }: { agent: Agent }) {
+// is set and when, never the value. A value put on the computer by hand, or in the
+// daemon's environment, works as well, and shows here as not set from the app.
+export function AgentSecrets({ agent, me }: { agent: Agent; me: Me }) {
   const { rows: secrets, error } = useSnapshotOf(SecretRow, 'secrets', {}, REFRESH_MS)
   const { rows: sets } = useSnapshotOf(SecretSetRow, 'secret_sets', {}, REFRESH_MS)
   const { rows: instances } = useSnapshot<Instance>('instances', {}, REFRESH_MS)
@@ -33,6 +34,8 @@ export function AgentSecrets({ agent }: { agent: Agent }) {
   const [recent, setRecent] = useState<Record<string, Recent>>({})
   const mine = secrets.filter((secret) => secret.scope === 'agent' && secret.agent_id === agent.id).sort((a, b) => a.name.localeCompare(b.name))
   const computer = instances.find((instance) => instance.id === agent.home_instance_id)
+  // A person not loaded yet reads as someone.
+  const login = (id: string) => people.find((p) => p.id === id)?.login ?? 'someone'
   return (
     <>
       <h2 className="kicker section">Secrets</h2>
@@ -41,7 +44,7 @@ export function AgentSecrets({ agent }: { agent: Agent }) {
       {!!mine.length && (
         <p className="muted small">
           {computer ? `A value you set here goes to ${computer.name}, where the agent runs, and nowhere else.` : 'This agent has no computer, so a value cannot be set.'}
-          {' '}The app keeps only its name, where it is set and when.
+          {' '}The app keeps only its name, where it is set and when. A value already in the computer's secrets.json or in its daemon's environment works without being set here.
         </p>
       )}
       {!!mine.length && (
@@ -50,8 +53,8 @@ export function AgentSecrets({ agent }: { agent: Agent }) {
             const row = computer ? sets.find((s) => s.instance_id === computer.id && s.name === secret.name) : undefined
             return (
               <SecretLine
-                key={secret.id} secret={secret} computer={computer} held={heldNow(row, recent[secret.id])}
-                login={(id) => people.find((p) => p.id === id)?.login ?? 'someone'}
+                key={secret.id} secret={secret} computer={computer} held={heldNow(row, recent[secret.id])} login={login}
+                mayPut={computer !== undefined && mayPutOn(computer.owner_id, me.person.id)}
                 done={(what) => { setRecent((now) => ({ ...now, [secret.id]: what === 'removed' ? { kind: 'removed', was: row?.set_at ?? null } : { kind: 'set', at: what.at } })) }}
               />
             )
@@ -62,8 +65,8 @@ export function AgentSecrets({ agent }: { agent: Agent }) {
   )
 }
 
-function SecretLine({ secret, computer, held, login, done }: {
-  secret: SecretRow; computer: Instance | undefined; held: Held | null; login: (id: string) => string
+function SecretLine({ secret, computer, mayPut, held, login, done }: {
+  secret: SecretRow; computer: Instance | undefined; mayPut: boolean; held: Held | null; login: (id: string) => string
   done: (what: 'removed' | { at: string }) => void
 }) {
   const field = useId()
@@ -106,11 +109,14 @@ function SecretLine({ secret, computer, held, login, done }: {
         {secret.description && <span className="muted small">{secret.description}</span>}
       </div>
       <p className="small secret-state" role="status">
-        {held ? <><span className="glyph" aria-hidden="true">✓</span> Set on {where}, {when}, by {held.by ? login(held.by) : 'you'}</> : `Not set on ${where}`}
+        {held ? <><span className="glyph" aria-hidden="true">✓</span> Set on {where}, {when}, by {held.by ? login(held.by) : 'you'}</> : `Not set from the app on ${where}`}
       </p>
       {stopped && <p className="small">{where} is stopped, so it can't take a value now. Set it once the computer is running.</p>}
       {silent && <p className="small">{where} has stopped answering the server. A value may not reach it until it is back.</p>}
-      {computer && (
+      {computer && !mayPut && computer.owner_id !== null && (
+        <p className="small">{where} is {login(computer.owner_id)}'s own computer, so only they can set a value on it.</p>
+      )}
+      {computer && mayPut && (
         <form className="secret-form" onSubmit={set} aria-label={`${held ? 'Replace' : 'Set'} ${secret.name}`}>
           <label className="sr-only" htmlFor={field}>Value of {secret.name}</label>
           <input
