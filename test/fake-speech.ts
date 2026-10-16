@@ -13,7 +13,7 @@ import { readBody } from '../shared/body.ts'
 import { pcmToWav } from '../server/audio.ts'
 import { VOICE_OUT_RATE } from '../shared/voice.ts'
 
-export type SpeechMode = 'ok' | 'error' | 'garbage' | 'hold'
+export type SpeechMode = 'ok' | 'error' | 'garbage' | 'hold' | 'stall'
 
 export type Heard = { model: string; responseFormat: string; wav: Buffer }
 export type Spoken = { model: string; voice: string; language: string; input: string }
@@ -65,6 +65,11 @@ const json = (res: ServerResponse, status: number, body: string) => void res.wri
 async function answer(fake: FakeSpeech, held: (() => void)[], req: IncomingMessage, res: ServerResponse) {
   try {
     if (fake.mode === 'hold') await new Promise<void>((resolve) => { held.push(resolve) })
+    if (fake.mode === 'stall') {
+      // Headers and the start of a body that never finishes.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
+      return void res.write('{"te')
+    }
     if (fake.mode === 'error') return json(res, 500, '{"detail":"the model fell over"}')
     if (req.method === 'POST' && req.url === '/v1/audio/transcriptions') {
       const form = await new Response(new Uint8Array(await readAll(req)), { headers: { 'content-type': req.headers['content-type'] ?? '' } }).formData()

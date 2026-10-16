@@ -5,7 +5,6 @@
 
 import { z } from 'zod'
 import { HttpError } from './record.ts'
-import { messageOf } from '../shared/errors.ts'
 import { SPEECH_WORDS, Transcript, VOICE_OUT_RATE } from '../shared/voice.ts'
 
 // The models Tayler chose for their own voice setup on 2026-09-12. They are in the Hugging Face
@@ -47,19 +46,31 @@ function service(): URL {
 
 // A request to the service. A refused or dropped connection means it is not running. Waiting too
 // long and an error from the service each get their own words.
-async function ask(path: string, init: RequestInit, timeoutMs: number, cancel?: AbortSignal): Promise<Response> {
+async function ask(path: string, init: RequestInit, timeoutMs: number, cancel?: AbortSignal): Promise<Buffer> {
   let response: Response
+  let body: Buffer
   try {
     response = await fetch(new URL(path, service()), { ...init, signal: cancel ? AbortSignal.any([cancel, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) })
+    // The answer's body is read under the same limit, since a service can send its headers and then stall.
+    body = Buffer.from(await response.arrayBuffer())
   } catch (error) {
     if (error instanceof Error && error.name === 'TimeoutError') throw new HttpError(504, SPEECH_WORDS.tooSlow)
     throw new HttpError(503, SPEECH_WORDS.notRunning)
   }
   if (!response.ok) {
-    console.error(`speech service ${path} answered ${response.status}: ${(await response.text().catch(messageOf)).slice(0, 300)}`)
+    console.error(`speech service ${path} answered ${response.status}: ${body.toString('utf8', 0, 300)}`)
     throw new HttpError(502, SPEECH_WORDS.unreadable)
   }
-  return response
+  return body
+}
+
+// The service's answer as JSON, or null when it is not.
+function parseJson(body: Buffer): unknown {
+  try {
+    return JSON.parse(body.toString('utf8'))
+  } catch {
+    return null
+  }
 }
 
 let inFlight = 0
@@ -74,8 +85,8 @@ export async function transcribe(wav: Buffer): Promise<string> {
     form.set('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'clip.wav')
     form.set('model', STT_MODEL)
     form.set('response_format', 'json')
-    const response = await ask('/v1/audio/transcriptions', { method: 'POST', body: form }, STT_TIMEOUT_MS)
-    const body = Transcript.safeParse(await response.json().catch(() => null))
+    const answer = await ask('/v1/audio/transcriptions', { method: 'POST', body: form }, STT_TIMEOUT_MS)
+    const body = Transcript.safeParse(parseJson(answer))
     if (!body.success) {
       console.error('speech service sent a transcript that is not {text}')
       throw new HttpError(502, SPEECH_WORDS.unreadable)
@@ -113,9 +124,9 @@ function pcmOf(wav: Buffer): Buffer {
 
 // One sentence as 16-bit little-endian mono PCM at VOICE_OUT_RATE.
 export async function speak(sentence: string, cancel?: AbortSignal): Promise<Buffer> {
-  const response = await ask('/v1/audio/speech', {
+  const audio = await ask('/v1/audio/speech', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: TTS_MODEL, input: sentence, voice: TTS_VOICE, lang_code: TTS_LANGUAGE, response_format: 'wav' }),
   }, TTS_TIMEOUT_MS, cancel)
-  return pcmOf(Buffer.from(await response.arrayBuffer()))
+  return pcmOf(audio)
 }

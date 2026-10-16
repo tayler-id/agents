@@ -118,6 +118,10 @@ try {
   check(big.status === 413 && big.error === SPEECH_WORDS.tooLarge, 'a body past 10 MB is refused with 413 and its words')
   const long = await post(api, wavOf(61), 'audio/wav')
   check(long.status === 413 && long.error === SPEECH_WORDS.tooLong, 'a 61 second clip is refused with 413 and its words')
+  const longWebm = join(work, 'long.webm')
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '61', '-c:a', 'libopus', longWebm])
+  const longWeb = await post(api, readFileSync(longWebm), 'audio/webm')
+  check(longWeb.status === 413 && longWeb.error === SPEECH_WORDS.tooLong, 'a 61 second WebM is refused with 413 and its words')
   const edge = await post(api, wavOf(60), 'audio/wav')
   check(edge.status === 200, 'a 60 second clip is taken')
   const notWav = await post(api, Buffer.from('this is not audio at all, it is words'), 'audio/wav')
@@ -170,6 +174,12 @@ try {
     `a service that never answers gives 504 and "The speech service took too long. Try a shorter clip." after about ${SLOW_MS / 1000} s (took ${Math.round(waited / 1000)} s)`)
   speech.mode = 'ok'
   speech.release()
+  speech.mode = 'stall'
+  const stallStart = Date.now()
+  const stalled = await post(api, fixture, 'audio/wav')
+  check(stalled.status === 504 && stalled.error === SPEECH_WORDS.tooSlow && Math.abs(Date.now() - stallStart - SLOW_MS) < SLOW_MARGIN_MS,
+    'a service that sends its headers and then stalls also gives 504 and the same words')
+  speech.mode = 'ok'
 
   // ---- the service is down ----
   await new Promise<void>((resolve) => { speech?.server.close(() => { resolve() }); speech?.server.closeAllConnections() })
