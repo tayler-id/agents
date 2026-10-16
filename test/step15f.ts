@@ -114,9 +114,9 @@ try {
     && names[erin]?.[0] === 'box-person' && /^box-gus-[0-9a-f]{6}$/.test(names[gus]?.[0] ?? '') && names[frank]?.[0] === 'box-frank',
   `each is named as joining names one, past names that are taken (${JSON.stringify(Object.values(names).flat())})`)
   const made = computers.filter((computer) => computer.owner_id !== bob)
-  check(made.every((computer) => computer.kind === 'box' && computer.claimed_by === computer.owner_id && computer.seat_cap === 4 && computer.cpus === 4
+  check(made.length === 6 && made.every((computer) => computer.kind === 'box' && computer.claimed_by === computer.owner_id && computer.seat_cap === 4 && computer.cpus === 4
     && computer.memory_gib === 8 && computer.seats === 4),
-  "each new one is a person's computer, held by its owner, with 4 seats, 4 CPUs and 8 GiB")
+  `each of the ${made.length} new ones is a person's computer, held by its owner, with 4 seats, 4 CPUs and 8 GiB`)
   check(of(frank)[0]?.team_id === other && of(alice)[0]?.team_id === team, "each is on its owner's team")
 
   const homes = async () => Object.fromEntries((await db.query<{ id: string; home_instance_id: string | null }>('select id, home_instance_id from agents order by id')).rows
