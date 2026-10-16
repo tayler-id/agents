@@ -98,6 +98,10 @@ try {
   const slashRow = (await origins(alice)).find((site) => site.origin === 'https://slash.test')
   check(slash.status === 200 && slashRow !== undefined, 'a site pasted with one slash after the host is listed without it')
   if (slashRow) await people(alice, 'POST', `/v1/team/webmcp-origins/${slashRow.id}/delete`, {})
+  const caps = await people(alice, 'POST', '/v1/team/webmcp-origins', { origin: 'HTTPS://Caps.EXAMPLE.test' })
+  const capsRow = (await origins(alice)).find((site) => site.origin === 'https://caps.example.test')
+  check(caps.status === 200 && capsRow !== undefined, 'a host written in capitals is listed in lower case')
+  if (capsRow) await people(alice, 'POST', `/v1/team/webmcp-origins/${capsRow.id}/delete`, {})
   const strangerRead = await origins(carol)
   const strangerRemove = await people(carol, 'POST', `/v1/team/webmcp-origins/${(await origins(alice))[0]?.id ?? ''}/delete`, {})
   check(strangerRead.length === 0 && strangerRemove.status === 404 && (await origins(alice)).length === 1,
