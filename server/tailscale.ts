@@ -223,7 +223,8 @@ export async function removeKey() {
 export const tailscale = {
   users: async () => (await read(z.object({ users: z.array(User) }), '/tailnet/-/users')).users,
   devices: async () => (await read(z.object({ devices: z.array(Device) }), '/tailnet/-/devices')).devices,
-  invites: () => read(z.array(Invite), '/tailnet/-/user-invites'),
+  // Tailscale answers null, not [], when no invite is open.
+  invites: async () => (await read(z.array(Invite).nullable(), '/tailnet/-/user-invites')) ?? [],
   invite: (inviteId: string) => read(Invite, `/user-invites/${segment(inviteId)}`),
   async createInvite(email: string): Promise<TailscaleInvite> {
     const [invite] = parsed(z.tuple([Invite]), await call(await savedKey(), 'POST', '/tailnet/-/user-invites', [{ role: 'member', email }]))
