@@ -34,7 +34,8 @@ alter table turns
   add column asked_by_session uuid references sessions on delete set null,
   add column answer_to_turn uuid references turns on delete set null,
   add column answer_sent_at timestamptz,
-  add column hops int not null default 0;
+  add column hops int not null default 0,
+  add column sent_by_turn uuid references turns on delete set null;
 alter table turns add constraint turns_hops check ((source in ('agent', 'delegation')) = (hops > 0));
 -- The runner finds the turns whose answer is still to go back to an agent.
 create index turns_answer_due on turns (finished_at) where answer_to_turn is not null and answer_sent_at is null;

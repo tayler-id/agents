@@ -108,8 +108,8 @@ async function nextHop(caller: Caller, turn: { id: TurnId; hops: number; origin:
 
 // Refuses the send or hand-off that would be the 6th of one harness turn. A session
 // that took in a second message while it ran has two running turns for one harness
-// turn, so what both sent counts together. Messages a turn sent are the turns that
-// answer to it, and tasks it handed over name it as theirs. Two sends at once wait
+// turn, so what both sent counts together. Messages a turn sent name it in sent_by_turn, and tasks it
+// handed over name it as theirs. An answer passing through is neither. Two sends at once wait
 // for each other on the lock, so neither slips past.
 async function checkFanout(client: pg.PoolClient, caller: Caller) {
   // An advisory lock, not the session's row. A send goes on to lock the target's session,
@@ -117,7 +117,7 @@ async function checkFanout(client: pg.PoolClient, caller: Caller) {
   await client.query(`select pg_advisory_xact_lock(hashtext('fanout:' || $1))`, [caller.id])
   const sent = await one<{ n: number }>(client, 'the count of what the turn sent',
     `with running as (select id from turns where session_id = $1 and status = 'running')
-     select ((select count(*) from turns where answer_to_turn in (select id from running) and source = 'agent')
+     select ((select count(*) from turns where sent_by_turn in (select id from running))
            + (select count(*) from tasks where asked_by_turn in (select id from running)))::int as n`, [caller.id])
   if (sent.n >= MAX_SENDS_PER_TURN) {
     throw new HttpError(409, `This turn has sent ${MAX_SENDS_PER_TURN} messages and tasks already, and one turn sends at most ${MAX_SENDS_PER_TURN}, so nothing was sent. Answer with what you have.`)
@@ -173,7 +173,7 @@ export async function sendToAgent(client: pg.PoolClient, caller: Caller, ask: Se
   const text = `${caller.name} sent you a message, in your thread with ${caller.name}:\n\n${ask.text}\n\n`
     + `What you say last in this turn goes back to ${caller.name} as your answer.`
   const turnId = await sendAgentTurn(client, SessionId.parse(session.id), { text, clientId: `message:${message.id}`, links: { messageId: message.id } }, caller.agent_id,
-    { source: 'agent', askedBySession: caller.id, answerTo: turn.id, hops, originConversation: turn.origin })
+    { source: 'agent', askedBySession: caller.id, answerTo: turn.id, hops, originConversation: turn.origin, sentByTurn: turn.id })
   if (turnId === null) throw new Error(`message ${message.id} reached ${target.name}'s session before it was sent`)
   return { threadId, turnId, hops }
 }
@@ -191,7 +191,7 @@ export async function delegateTask(client: pg.PoolClient, caller: Caller, ask: D
      values ($1, $2, $3, $4, $5, $6, 'agent', $7) returning id`,
     [caller.team_id, slugOf(ask.title), ask.title, ask.instructions, caller.owner_id, target.id, turn.id]))
   const sessionId = await launchHandedTask(client, task.id, { agentId: caller.agent_id, name: caller.name },
-    { source: 'delegation', askedBySession: caller.id, answerTo: null, hops, originConversation: turn.origin })
+    { source: 'delegation', askedBySession: caller.id, answerTo: null, hops, originConversation: turn.origin, sentByTurn: null })
   return { taskId: task.id, sessionId, hops }
 }
 

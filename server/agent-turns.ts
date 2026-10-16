@@ -86,7 +86,7 @@ export async function deliverTaskResult(client: pg.PoolClient, task: { id: TaskI
   await postAnswer(client, { conversationId: asked.conversation_id, hops: asked.hops, agentId: asked.agent_id },
     { agentId: task.agentId, sessionId: fromSession, body: posted, clientId: `result-post:${task.id}:${resultId}` })
   const turnId = await sendAgentTurn(client, asked.session_id, { text, clientId: `result:${task.id}:${resultId}`, links: { taskId: task.id } }, task.agentId,
-    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin })
+    { source: 'delegation', askedBySession: fromSession, answerTo: asked.answer_to_turn, hops: asked.hops + 1, originConversation: asked.origin, sentByTurn: null })
   if (turnId === null) throw new Error(`the result of task ${task.id} was recorded already, with a client id made just now`)
   return turnId
 }
@@ -160,7 +160,7 @@ async function answerTurn(client: pg.PoolClient, turnId: TurnId) {
   await postAnswer(client, { conversationId: turn.waiting_conversation, hops: turn.waiting_hops, agentId: turn.waiting_agent },
     { agentId: turn.agent_id, sessionId: turn.session_id, body: answer.posted, clientId: `answer-post:${turn.id}` })
   await sendAgentTurn(client, turn.waiting_session, { text: answer.toAgent, clientId: `answer:${turn.id}`, links: { answers: turn.id } }, turn.agent_id,
-    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin })
+    { source: 'agent', askedBySession: turn.session_id, answerTo: turn.waiting_answer_to, hops: turn.hops, originConversation: turn.waiting_origin, sentByTurn: null })
   await client.query('update turns set answer_sent_at = now() where id = $1', [turn.id])
 }
 

@@ -18,7 +18,7 @@ import { stopAll } from './computers.ts'
 import { stopStandIns } from './stand-ins.ts'
 import { must } from './must.ts'
 import { messageOf } from '../shared/errors.ts'
-import { CREATE_AGENT_TOOL } from '../shared/team-agents.ts'
+import { CREATE_AGENT_TOOL, MAX_SENDS_PER_TURN } from '../shared/team-agents.ts'
 
 // The same ports as step28, which this never runs beside.
 const PORTS = { machines: 8310, people: 8311, streams: 8312 }
@@ -40,6 +40,8 @@ const PARK = 'PARK-IT'
 const SCENARIO = {
   turns: [],
   calls: [
+    // A relay through z: it passes a message on to aa, and aa's answer comes back to z.
+    { match: 'PASS-ON', unless: 'answered you', say: 'Passed it on.', calls: [{ tool: 'mcp__team-agents__send_to_agent', input: { to: 'aa', text: 'Plain hello from z.' } }] },
     { match: PARK, say: 'Parked.', calls: [{ tool: CREATE_AGENT_TOOL, input: { name: 'parked-never-made' } }] },
   ],
 }
@@ -97,8 +99,8 @@ try {
   await node('server/migrate.ts')
   const finalFile = await one(`select 1 as ok from schema_migrations where version like '0019_agents_together%'`)
   const columns = await all(`select table_name || '.' || column_name as name from information_schema.columns
-    where (table_name = 'messages' and column_name in ('kind', 'asked_agent_id')) or (table_name = 'turns' and column_name = 'origin_conversation_id')`)
-  check(finalFile?.ok === 1 && columns.length === 3,
+    where (table_name = 'messages' and column_name in ('kind', 'asked_agent_id')) or (table_name = 'turns' and column_name in ('origin_conversation_id', 'sent_by_turn'))`)
+  check(finalFile?.ok === 1 && columns.length === 4,
     `the migrator built the final 0019 into this database: ${columns.map((c) => String(c.name)).sort().join(', ')}`)
   await node('server/admin.ts', 'add-team', team, alice)
   const added = JSON.parse(await node('server/admin.ts', 'add-instance', team, `mac-${id}`, 'mac', alice))
@@ -166,6 +168,20 @@ try {
     return [report.status, person.status]
   }))
   check(reports.flat().every((s) => s === 200), `a report on each task and a person's message to it at the same moment all went through (${reports.flat().join(' ')})`)
+
+  // 3. A turn sends 5 messages of its own while answers pass through it. y's message to z
+  // makes z ask aa, and aa's answer comes back to z as a turn that answers to y's turn.
+  const [y] = [await make('why'), await make('z'), await make('aa')]
+  const yDm = await parkInDm('why', y)
+  const asked = await asSession(yDm.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: 'PASS-ON please' })
+  const yTurn = must(await one(`select id from turns where session_id = $1 and status = 'running'`, [yDm.session]), "y's running turn").id
+  const passed = await within(TURN_SECONDS, async () => Number((await one(
+    `select count(*)::int as n from turns where answer_to_turn = $1 and source = 'agent'`, [yTurn]))?.n) >= 2)
+  const more = []
+  for (let k = 0; k < MAX_SENDS_PER_TURN - 1; k++) more.push(await asSession(yDm.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: `Plain note ${k}.` }))
+  const sixth = await asSession(yDm.session, 'POST', '/v1/team-agents/messages', { to: 'z', text: 'Plain note 6.' })
+  check(yDm.held && asked.status === 200 && passed && more.every((m) => m.status === 200) && sixth.status === 409,
+    `an answer passing through y's turn is not one of its sends: y sends ${MAX_SENDS_PER_TURN} of its own and the next is refused (${more.map((m) => m.status).join(' ')}, then ${sixth.status})`)
   check(!/deadlock detected/.test(apiLog()), 'the API reported no deadlock')
 } catch (error) {
   failures.push(messageOf(error))
