@@ -146,12 +146,20 @@
       "name": "Secrets",
       "paths": [
         "daemon/agentsd.ts",
+        "daemon/agentfiles.ts",
+        "daemon/control-link.ts",
         "shared/scrub.ts",
-        "server/agents.ts"
+        "shared/secrets.ts",
+        "server/agents.ts",
+        "server/secrets.ts",
+        "server/control.ts",
+        "app/src/Secrets.tsx"
       ],
       "checks": [
         "test/step10.ts",
-        "test/step10b.ts"
+        "test/step10b.ts",
+        "test/step25.ts",
+        "test/step25b.ts"
       ]
     },
     {
