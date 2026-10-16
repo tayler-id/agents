@@ -5,7 +5,7 @@
 // Env: AGENTS_API, AGENTS_TOKEN, AGENTS_SESSION (set by the daemon in the session's MCP config).
 
 import { realpath, readFile, stat } from 'node:fs/promises'
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -165,6 +165,8 @@ server.registerTool('log_decision', {
   },
 }, () => text('Logged in the decision log.'))
 
+// Whether a path from `relative` leads out of the folder it is relative to.
+const outside = (path: string) => path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)
 const here = { api: API, token: TOKEN, session: SESSION }
 
 server.registerTool('share_file', {
@@ -177,7 +179,13 @@ server.registerTool('share_file', {
   const root = await realpath(process.cwd())
   const file = await realpath(resolve(root, path)).catch(() => { throw new Error(`There is no file at ${path}.`) })
   const inside = relative(root, file)
-  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error(`share_file only shares files inside your working folder, ${root}.`)
+  if (outside(inside)) throw new Error(`share_file only shares files inside your working folder, ${root}.`)
+  // A file saved for another chat or task is not this one's to share.
+  const saved = relative(join(root, 'attachments'), file)
+  const savedHere = relative(join(root, 'attachments', SESSION), file)
+  if (!outside(saved) && outside(savedHere)) {
+    throw new Error('share_file shares only the files saved for this chat or task from attachments/. A file saved for another one is not yours to share.')
+  }
   const info = await stat(file)
   if (!info.isFile()) throw new Error(`${path} is not a file.`)
   if (info.size > MAX_ATTACHMENT_BYTES) throw new Error(`${path} is ${info.size} bytes, and a file can be ${MAX_ATTACHMENT_BYTES} at most.`)

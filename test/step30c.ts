@@ -152,8 +152,14 @@ try {
 
   // Saving what a person attached.
   const saved = await call(record, 'get_attachment', { attachment_id: sentFile })
-  const savedPath = join(work, 'attachments', `${sentFile.slice(0, 8)}-wave.gif`)
+  const savedPath = join(work, 'attachments', dmSession, `${sentFile.slice(0, 8)}-wave.gif`)
   check(!saved.failed && saved.text === `Saved at ${savedPath}.` && readFileSync(savedPath).equals(GIF_30x20), `get_attachment saves the picture under attachments/ (${saved.text})`)
+  // A file saved for one chat is not there to share from another chat of the same agent.
+  const otherChat = await connect('daemon/record-mcp.ts', asSession(tasks.team.sessionId))
+  const crossShare = await call(otherChat, 'share_file', { path: `attachments/${dmSession}/${sentFile.slice(0, 8)}-wave.gif` })
+  const ownShare = await call(record, 'share_file', { path: `attachments/${dmSession}/${sentFile.slice(0, 8)}-wave.gif` })
+  check(crossShare.failed && crossShare.text.includes('A file saved for another one is not yours to share') && !ownShare.failed,
+    `a file saved for one chat can't be shared from another, and can from its own (${crossShare.text.slice(0, 80)} | ${ownShare.text})`)
   const privateFile = (await upload(alice, `/v1/conversations/${conversations.privateRoom}/attachments`, PNG, 'private.png', 'image/png')).json.attachmentId as string
   await send(alice, conversations.privateRoom, { text: 'private', attachmentIds: [privateFile] })
   const notHere = await call(record, 'get_attachment', { attachment_id: privateFile })

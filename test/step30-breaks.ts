@@ -120,6 +120,8 @@ const BREAKS: Break[] = [
     edits: [{ file: ATTACHMENTS, anchor: '  if (secretsIn(bytes, envSecrets(process.env)).length > 0) throw', replace: '  if (false) throw' }] },
   { name: 'caption-scrub', check: 'step30c', why: "an agent's caption goes out unscrubbed", red: ['a secret in a caption is scrubbed'],
     edits: [{ file: 'server/record.ts', anchor: '      scrub(message.body), message.sessionId', replace: '      message.body, message.sessionId' }] },
+  { name: 'saved-shared-folder', check: 'step30c', why: "a file saved for one chat can be shared into another chat of the same agent", red: ["a file saved for one chat can't be shared from another"],
+    edits: [{ file: 'daemon/record-mcp.ts', anchor: '  if (!outside(saved) && outside(savedHere)) {', replace: '  if (false) {' }] },
   { name: 'save-other-chat', check: 'step30c', why: "an agent saves a file from a chat that is not its own", red: ['a file from another chat is not available to this session'],
     edits: [{ file: ATTACHMENTS, anchor: '       and (a.conversation_id = s.conversation_id\n', replace: '       and (true or a.conversation_id = s.conversation_id\n' }] },
   { name: 'save-unsent', check: 'step30c', why: "an agent saves a file nobody has sent yet", red: ['a file nobody has sent yet is not available to the agent'],
