@@ -8,6 +8,7 @@
 //   node test/step26-breaks.ts --check                 each anchor is there once, and nothing runs
 
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -19,6 +20,9 @@ const BACKUP = join(WORK, 'backup')
 const PENDING = join(WORK, 'pending.json')
 // step26 takes under a minute and step26b about a minute. A break that leaves something waiting is cut off by the check's own limits.
 const RUN_TIMEOUT_MS = 10 * 60 * 1000
+// The checks listen on ports from here (step26 on the first three, step26b on the three after one spare). Neither check uses port 7701, so
+// neither needs the run lock. The base is not the checks' own default, so a run beside another branch's checks cannot collide.
+const PORT_BASE = Number(process.env.HISTORY_PORT_BASE ?? 8370)
 
 type Edit = { file: string; anchor: string; replace: string }
 // `check` is the step the break is run through. `red` holds a piece of each check line the break must turn red.
@@ -202,11 +206,29 @@ function edited(b: Break): Map<string, string> {
   return files
 }
 
+const portFree = (port: number) => new Promise<boolean>((resolve) => {
+  const probe = createServer()
+  probe.once('error', () => { resolve(false) })
+  probe.listen(port, '127.0.0.1', () => { probe.close(() => { resolve(true) }) })
+})
+
+// A check that did not get as far as its last line was not run. That is the runner's error, never a break's red line.
+const finished = (output: string) => /all passed \(test team removed\)|failed \(team /.test(output)
+
 // Runs a check and returns everything it printed.
-function run(check: Break['check']): Promise<string> {
+async function run(check: Break['check']): Promise<string> {
+  for (let i = 0; i < 7; i++) {
+    if (!(await portFree(PORT_BASE + i))) throw new Error(`port ${String(PORT_BASE + i)} is in use, so step${check} cannot start. Set HISTORY_PORT_BASE to another block of seven`)
+  }
+  const output = await spawnCheck(check)
+  if (!finished(output)) throw new Error(`step${check} did not finish, so nothing can be judged. Its last lines were:\n${output.split('\n').slice(-12).join('\n')}`)
+  return output
+}
+
+function spawnCheck(check: Break['check']): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--env-file=.env', '--env-file=.env.test', `test/step${check}.ts`], {
-      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, AGENTS_UI_ENGINES: 'chromium' },
+      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, AGENTS_UI_ENGINES: 'chromium', HISTORY_PORT_BASE: String(PORT_BASE) },
     })
     let output = ''
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })

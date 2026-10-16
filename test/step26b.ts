@@ -23,8 +23,9 @@ import { must } from './must.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const SHOTS = join(ROOT, 'test', 'ui-shots')
-// Ports 8184 to 8186 are this check's: machines, people, streams.
-const PORTS = { machines: 8184, people: 8185, streams: 8186 }
+// Three ports from HISTORY_PORT_BASE + 4 (8184 by default): machines, people, streams. The breaks runner sets another base.
+const BASE = Number(process.env.HISTORY_PORT_BASE ?? 8180) + 4
+const PORTS = { machines: BASE, people: BASE + 1, streams: BASE + 2 }
 // Over the tailnet the app runs on plain HTTP, which browsers treat as insecure. Chromium and Firefox reach the test server by a
 // non-local name to match. WebKit has no way to map a name, so it uses 127.0.0.1.
 const INSECURE = `http://agents.test:${String(PORTS.people)}`

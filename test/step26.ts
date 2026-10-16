@@ -15,8 +15,9 @@ import type { Row } from '@electric-sql/client'
 import type { Step, StepsPage } from '../shared/history.ts'
 import { AHEAD, MAX_LOADED, PAGE, OPEN_BEFORE, playbackDelay, reduce, START, type Bounds, type Move, type Replay } from '../shared/replay.ts'
 
-// Ports 8180 to 8182 are this check's: machines, people, streams.
-const PORTS = { machines: 8180, people: 8181, streams: 8182 }
+// Three ports from HISTORY_PORT_BASE (8180 by default): machines, people, streams. The breaks runner sets another base.
+const BASE = Number(process.env.HISTORY_PORT_BASE ?? 8180)
+const PORTS = { machines: BASE, people: BASE + 1, streams: BASE + 2 }
 const started = Date.now()
 const failures: string[] = []
 
