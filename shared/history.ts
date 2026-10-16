@@ -6,7 +6,7 @@
 import { z } from 'zod'
 import { AgentId, ConversationId, FolderId, PersonId, RepoId, RunId, SessionId, TaskId } from './ids.ts'
 import { ProjectId } from './projects.ts'
-import { EVENT_KINDS, SESSION_STATUSES, type EventKind } from './types.ts'
+import { CONVERSATION_KINDS, EVENT_KINDS, SESSION_STATUSES, type EventKind } from './types.ts'
 
 // A time as Postgres writes it, such as 2026-10-12 00:05:12.123+00, which is how
 // the shapes send times too. The app's parseTime reads it.
@@ -61,8 +61,10 @@ export type SearchQuery = z.infer<typeof SearchQuery>
 // What a session was for. The kind decides what the rest says.
 export const Subject = z.discriminatedUnion('kind', [
   z.object({
-    kind: z.literal('conversation'), id: ConversationId, conversation: z.enum(['main', 'dm', 'room', 'pr', 'slack_thread']),
+    kind: z.literal('conversation'), id: ConversationId, conversation: z.enum(CONVERSATION_KINDS),
     name: z.string().nullable(), people: z.array(z.string()),
+    // The agents in it, by name, which name a thread between two agents.
+    agents: z.array(z.string()),
   }),
   z.object({ kind: z.literal('task'), id: TaskId, title: z.string() }),
   z.object({ kind: z.literal('run'), id: RunId, task_id: TaskId, title: z.string(), pipeline: z.string(), replay: z.boolean() }),

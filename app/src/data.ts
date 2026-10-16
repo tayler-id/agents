@@ -13,6 +13,7 @@ import {
 import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
 import type { AcceptsAgents } from '../../shared/team-agents.ts'
+import type { ConversationKind } from '../../shared/types.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'
@@ -37,7 +38,7 @@ export type Instance = Row & {
   stopped_at: string | null
 }
 export type Conversation = Row & {
-  id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
+  id: string; kind: ConversationKind; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
 }
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
 export type Message = Row & {

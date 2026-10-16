@@ -14,6 +14,11 @@ export const SESSION_STATUSES = [
 ] as const
 export type SessionStatus = (typeof SESSION_STATUSES)[number]
 
+// The kinds of conversation, as the conversations table's check holds them. Migration 0019 added
+// agents, a thread between two agents of a team.
+export const CONVERSATION_KINDS = ['main', 'dm', 'room', 'pr', 'slack_thread', 'agents'] as const
+export type ConversationKind = (typeof CONVERSATION_KINDS)[number]
+
 // The most a request body may hold. The API refuses a bigger one with 413, and
 // the daemon sizes its posts of a transcript to fit.
 export const MAX_BODY_BYTES = 20 * 1024 * 1024

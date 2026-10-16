@@ -118,6 +118,7 @@ export function titleOf(session: HistorySession): string {
   switch (subject.kind) {
     case 'conversation':
       if (subject.conversation === 'room') return `# ${subject.name ?? 'room'}`
+      if (subject.conversation === 'agents') return subject.agents.join(' and ') || 'Two agents'
       if (subject.name !== null) return subject.name
       return subject.conversation === 'dm' ? `Direct message with ${subject.people.join(', ') || 'someone'}` : 'Main conversation'
     case 'task': return subject.title

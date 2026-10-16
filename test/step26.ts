@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto'
 import {
-  BIG_END, BIG_RESULT, buildWorld, TEXT_COLUMN, WORDS, type World,
+  BIG_END, BIG_RESULT, buildWorld, said, TEXT_COLUMN, WORDS, type World,
 } from './history-kit.ts'
 import { snippetParts, MARK_END, MARK_START, STEPS_SPAN_MAX } from '../shared/history.ts'
 import type { Row } from '@electric-sql/client'
@@ -278,6 +278,34 @@ try {
   check([...new Set(anyOfThese.map((h) => h.session_id))].sort().join() === [sessions.terminal, sessions.task].sort().join(), 'and finds a step that has any of its words')
   check((await asAgent(WORDS.privateTerminal)).length === 0 && (await asAgent(WORDS.privateDm)).length === 0 && (await asAgent(WORDS.privateTask)).length === 0,
     'and finds nothing private')
+
+  // ---- A thread between two agents, the kind of conversation agents working together made. It is
+  // the newest session, so the list's first page, a search and its replay each read it.
+  const THREAD_WORD = 'kookaburra'
+  const scoutRow = (await world.db.query<{ team_id: string; home_instance_id: string }>('select team_id, home_instance_id from agents where id = $1', [world.ids.scout])).rows[0]
+  if (!scoutRow) throw new Error('scout is not in the database')
+  const thread = (await world.db.query<{ id: string }>(`insert into conversations (team_id, kind, visibility) values ($1, 'agents', 'team') returning id`, [scoutRow.team_id])).rows[0]?.id
+  if (!thread) throw new Error('the thread was not made')
+  await world.db.query('insert into conversation_members (team_id, conversation_id, agent_id) values ($1, $2, $3), ($1, $2, $4)', [scoutRow.team_id, thread, world.ids.scout, world.ids.fixer])
+  const threadSession = (await world.db.query<{ id: string }>(`insert into sessions (team_id, conversation_id, instance_id, agent_id, status) values ($1, $2, $3, $4, 'idle') returning id`,
+    [scoutRow.team_id, thread, scoutRow.home_instance_id, world.ids.fixer])).rows[0]?.id
+  if (!threadSession) throw new Error('the thread\'s session was not made')
+  const threadPost = await world.machine(world.tokens.avaMac, 'POST', `/v1/sessions/${threadSession}/events`, {
+    events: [said(`The ${THREAD_WORD} is in the tree.`), said(`The ${THREAD_WORD} sang at dawn.`)], status: 'idle',
+  })
+  if (threadPost.status !== 200) throw new Error(`the thread's steps were not posted: ${String(threadPost.status)}`)
+  const firstPage = await ben.json('/v1/history?limit=5')
+  const head = firstPage.body?.sessions?.[0]
+  check(firstPage.status === 200 && head?.id === threadSession && head.subject.kind === 'conversation' && head.subject.conversation === 'agents'
+    && JSON.stringify(head.subject.agents) === JSON.stringify(['fixer', 'scout']),
+  'a thread between two agents is listed, first, as a conversation of kind agents with its two agents')
+  const threadHits = await ben.json(`/v1/search?q=${THREAD_WORD}`)
+  check(threadHits.status === 200 && threadHits.body.hits.length === 2 && threadHits.body.hits.every((h: { session: { id: string } }) => h.session.id === threadSession),
+    'a search finds the thread\'s steps')
+  const threadView = await ben.json(`/v1/history/sessions/${threadSession}`)
+  const threadSteps = await ben.json(`/v1/history/sessions/${threadSession}/steps?from=1&to=10`)
+  check(threadView.status === 200 && threadView.body.session.subject.conversation === 'agents' && threadSteps.status === 200 && threadSteps.body.steps.length === 2,
+    'and its replay opens on its two steps')
 
   // ---- How a replay moves, as plain functions
   const bounds: Bounds = { first: 1, last: 499 }

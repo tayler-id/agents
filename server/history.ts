@@ -60,6 +60,8 @@ const SESSION = `jsonb_build_object(
     when s.task_id is not null then jsonb_build_object('kind', 'task', 'id', t.id, 'title', t.title)
     else jsonb_build_object('kind', 'conversation', 'id', c.id, 'conversation', c.kind, 'name', c.name, 'people',
       (select coalesce(jsonb_agg(coalesce(pp.name, pp.login) order by pp.login), '[]') from conversation_members m join people pp on pp.id = m.person_id
+       where m.conversation_id = c.id),
+      'agents', (select coalesce(jsonb_agg(ma.name order by ma.name), '[]') from conversation_members m join agents ma on ma.id = m.agent_id
        where m.conversation_id = c.id))
   end,
   'status', s.status,
