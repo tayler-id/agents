@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { readBody } from '../shared/body.ts'
 import { messageOf } from '../shared/errors.ts'
-import { listenOnSocket } from '../shared/socket.ts'
+import { listenOnSocket, socketPathProblem } from '../shared/socket.ts'
 import {
   AppConnect, DisconnectFolder, FolderPath, insideFolder, type AppAskFirst, type AppConnected, type AppRefusal, type MacFolder, type MacFolders,
   type OffAnswer, type UnlistedFolder,
@@ -26,8 +26,6 @@ import { claudeFolders } from './transcripts.ts'
 
 // In a folder of its own in the daemon's home. desktop/main.cjs looks for it there.
 export const appSocketPath = (home: string) => join(home, 'run', 'app.sock')
-// macOS cuts a socket's path at this many bytes, so the app would look for it where it isn't.
-const LONGEST_SOCKET_PATH = 103
 // The app sends a folder's path and one word, so an ask larger than this is a mistake.
 const LARGEST_ASK_BYTES = 64 * 1024
 
@@ -61,8 +59,11 @@ class AskFirst extends Error {
 export function serveAppSocket({ home, api, signal }: { home: string; api: Api; signal: AbortSignal }): void {
   const socket = appSocketPath(home)
   const unserved = (why: string) => { console.error(`app socket ${socket}: ${why}. The Agents app on this Mac can't reach this daemon.`) }
-  if (Buffer.byteLength(socket) > LONGEST_SOCKET_PATH) {
-    unserved(`its path is longer than the ${LONGEST_SOCKET_PATH} bytes macOS allows`)
+  // The app would look for a socket macOS cut where it isn't. listenOnSocket refuses one too, and this says so
+  // before a server is made.
+  const problem = socketPathProblem(socket)
+  if (problem) {
+    unserved(problem)
     return
   }
   const server = createServer((req, res) => {
