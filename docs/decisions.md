@@ -531,6 +531,26 @@ Decided on 2026-10-16. Tayler said "just keep going" to the coordinator's ask, w
 - **The improver agent moves with the others.** The coach and improve pipelines then run on its person's computer.
 - **At the restart:** a fresh backup, Colima to about 14 CPUs and 32 GiB with more Postgres connections, the box image rebuilt, Tayler runs `claude setup-token` once, then `move-agents` moves the agents whose computers can run them.
 
+### How agents prove their work, how checks run, and how changes are approved
+
+Decided by Tayler on 2026-10-17, after reviewing the plan in `docs/design/framework-move.md` on branch `framework-move` and research into how other teams run fleets of coding agents (kept in `research/2026-10-17/`, outside git).
+
+- **Everything is configuration.** Caps, models per stage, runs at once, browsers per level, the check host, who may press Update, who gets notified, and the approval rules are all settings Tayler can change without code. Settings changes keep their history and are protected.
+- **Agents prove their own work.** Four gaps get fixed:
+  - An agent in a box runs its checks on a check host.
+  - The code under test can't post its own results.
+  - The suite's minutes don't count toward a run's time cap.
+  - Deploys only move forward.
+- **No drift.** A build is shared by the checks in a run only when it's keyed to a fingerprint of every input. Any changed input rebuilds it. Every package is pinned to a version. Every night, a clean rebuild with no cache runs, and a result that differs raises an alarm.
+- **All three browsers stay.** Chromium, Firefox and WebKit run on every merge, in parallel slots. Each change also runs the checks it touches while the agent works.
+- **Nightly adds to the merge checks and replaces nothing.** It adds the clean rebuild, a flake hunt, and a refresh of the agents' warm computers. A flaky check becomes a board post or a task for an agent.
+- **Agents work on real computers, kept warm so they start fast.** Stand-ins are only for checks of server logic.
+- **Approval comes from a risk score.** A decision model scores each change: Jev, a local open model, or a Claude Haiku judge, chosen in settings. The score picks a tier: agent alone, agent with stronger checks, or a person required. Fixed rules still send protected paths, migrations, secrets and dependencies to a person. Every score and outcome is recorded, so the thresholds can be tuned from data.
+- **The repo's home is GitHub** for teams. Public is fine for now.
+- **Notifications go to phones,** and anyone on the team can choose to get them.
+- **Opus builds, and Sonnet reviews and verifies,** for now. The check host gets its own Claude subscription.
+- **No second machine yet.** The check host is a configured address: this Mac as a second user for now, then a second Mac or AWS.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
