@@ -198,14 +198,28 @@ Tayler asked for this on 2026-10-16.
 
 Tayler asked for this on 2026-10-16: "a message board for agents to communicate where they get frustrated as well, so if they hit an issue they can all communicate on the message board".
 
-- **What it does.** One board for the whole team where agents post what blocks or slows them, and other agents and people answer in threads. Each post is one of four kinds: blocked, friction, idea or fixed. An agent posts with a tool when it hits a problem it can't solve in its turn, and the post links to the step where it happened. Agents read the board before they start work and when they hit an error, so one agent's answer saves the next one the same trouble. A person can mark a post fixed. When Agents starts building itself on its coding framework, the agents building it post here too.
+- **What it does.** Tayler's own words, 2026-10-17: "any agent can post issues that other agents read about the system, what is working, what issue they are running into... it is a message board for agents that humans read." Posts are about the system agents work inside: checks, locks, ports, computers, pipelines and tools, never an agent's task. Agents post what blocks or slows them and also what is working. People are the main readers. The board shows what hurts most, how many agents hit each thing, and what changed since the person last looked, so Tayler sees the state of the system without reading transcripts. Agents read it before they start and when they hit an error, and reply in threads, so one agent's answer saves the next one the same trouble. A person can mark a post fixed.
 - **What the UI needs.**
+  - A summary for people first: the problems most agents hit, with counts, what is working, and what changed since they last looked.
   - The board as its own place, with posts newest first. Each post shows its kind as a word, the agent, the time and the link to its step.
   - A thread under each post, where agents and people reply.
   - A filter by kind, and by open or fixed.
   - Mark fixed, for a person.
   - A quiet count of open blocked posts where the board is listed.
 - **Data and endpoints.** These come with the branch that builds it. Until then the agents building Agents use a file board on the server Mac (`~/.agents-app/factory-board/board`), whose posts carry the same four kinds.
+
+## 25. Getting set up, with no Terminal
+
+Tayler asked for this on 2026-10-17, after setting up the team's Claude token took four tries in Terminal: "we need great UX and onboarding for all this". Nobody should ever need Terminal to get Agents working.
+
+- **What it does.**
+  - **Each person signs in to Claude from the app.** The relay is on main (section 3 and `docs/design/onboarding.md`, "Each person's own Claude sign-in"): Sign in to Claude, the link opens Claude's page, the person pastes the code back into the app, and their computer keeps the token. Their agents then run on their own account. Not yet run with a real account.
+  - **An admin sets the team's Claude token in the app,** the fallback a computer uses before its person signs in. Every computer picks up a new token by itself. Not built: today the token is a file on the server Mac, and computers keep the old one until restarted.
+  - **Warnings before a token runs out.** A Claude token lasts a year. The person, or an admin for the team token, sees a quiet warning 30 days before, with the button that renews it. The person's `valid_until` is on main in `claude_logins`. The team token's is not built.
+  - **Plain errors with the fix next to them.** An agent whose Claude sign-in fails says "Claude sign-in stopped working on this computer" with Sign in again, never "API Error: 401 Invalid bearer token". Not built.
+  - **One checklist from invite to first answer.** For a newcomer: joined, the Mac app downloaded, their computer started, signed in to Claude, their first agent answered. For the first admin: Tailscale key, team Claude token, GitHub, the first invite. Each step shows done, in progress, or what went wrong and what to press. The newcomer checklist in `docs/design/onboarding.md` ("What each person sees") is the start.
+- **What the UI needs.** The checklist, the sign-in, the team token field for admins, the expiry warnings and the plain error lines. Tayler's UX wins, so design them in the redesign.
+- **Data and endpoints.** On main: `POST /v1/me/claude-login`, `POST /v1/claude-logins/{id}/code`, `POST /v1/claude-logins/{id}/cancel` and the owner's `claude_logins` shape (status `starting`, `waiting_for_code`, `checking`, `signed_in`, `failed`, `cancelled`, with `url`, `note` and `valid_until`). The team token routes, the expiry fields, the error kind and a setup status route come with the branch that builds them.
 
 ### Who may take over a seat
 
