@@ -1429,3 +1429,16 @@ Tayler said on 2026-10-16, "I don't see where I can view all the history of cont
   - What a move leaves behind: an agent's files on its Mac stay there, a plugin whose secret lives only on the Mac fails on the computer until the secret is set there, and a moved conversation starts without the old session's Claude context. The coach and improve pipelines run where the improver agent's home is, so they move with it.
   - One agent's drawing stays on its seat for the next agent that takes it.
   - A person who takes over a seat can read the daemon's environment from the terminal, the machine token and the team's Claude token among it, as the browser and the box's agents already could.
+
+### The second landing batch: eight branches on one tree (2026-10-16)
+
+Branch `land-batch2`, from main `9faf363`: voice, attachments, agents-together, secrets, agent-copies, webmcp-browsers, history and seats, each merged with `--no-ff`, then each branch's review fixes merged again. Every conflict kept both sides. The combinations no branch wrote alone are these. Each History step is one of `SHOWN_NOTICES`, hook runs included. `ownServers`, then webmcp's `mcpConfig`, drop a plugin named like the session's own `team-agents` server. `setupOf` restarts an idle session for a changed seat, hook or listed site, and for a stale secret.
+
+- **Fixes from the landing reviews**, one commit each.
+  - History lists a thread between two agents, where it answered 500.
+  - A key wakes a sleeping personal box through the runner. A computer with no owner takes no key, and a Mac that is not connected is refused at once. A key the computer holds by hand reads as held.
+  - Hooks, copies and imports put no commands on a teammate's machine unless an admin does it. A template's plugins stay as on main, since holding them broke step10b. A hook's name is picked under a lock.
+  - A key, token or password given a value in a hook or plugin is refused. Each session's hooks are in its own settings file. A PreToolUse or Stop hook can no longer answer an ask or keep a turn running, which the real Claude Code 2.1.301 did in step24d.
+  - A deleted post's words leave message commands through `server/durability.ts`, so the door's rule in step23 holds.
+- **Checks.** Each new or changed line went red on the code before its fix. Each new break turned its lines red, with its files back byte for byte. All ran on a Postgres and Electric of this worktree's own, made from the migrations on an empty database: 0015, 0016, 0017, 0018, 0019, 0022, 0024 and 0025 in order. Under the run lock, step21w went red with webmcp's plugin-name filter taken out and green with it back, and seats' box checks and step23 passed.
+- **Not run.** The full suite, which the coordinator runs with `.scratch/land-suite.sh`. step17 and step17b cannot run on a private database while agentsctl takes its database from `.env.test` alone.
