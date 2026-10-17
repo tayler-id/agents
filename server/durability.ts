@@ -34,6 +34,20 @@ const SEAT_TURN_TIME = `seated as (
 // without being handed over first, and it fails the message's placed turn in the
 // same statement. A message a machine took ends through moveMessages. Says whether
 // the message was still queued.
+// A deleted post's words leave the message commands that carry them, as they leave the rest of the record
+// (server/message-actions.ts). Only the words in a command's payload change, never its status, and this file
+// is the one that changes a message command after the scheduler wrote it.
+export async function replaceInMessageCommands(client: pg.PoolClient, eventIds: string[], words: string, replacement: string): Promise<void> {
+  await client.query(
+    `update commands set payload = jsonb_set(payload, '{text}', to_jsonb(replace(payload->>'text', $2, $3))) where event_id = any($1) and kind = 'message' and payload ? 'text'`,
+    [eventIds, words, replacement])
+}
+
+// A deleted post's own prompt is blanked in the message commands that carry it.
+export async function blankMessageCommands(client: pg.PoolClient, eventIds: string[]): Promise<void> {
+  await client.query(`update commands set payload = jsonb_set(payload, '{text}', '""') where event_id = any($1) and kind = 'message' and payload ? 'text'`, [eventIds])
+}
+
 export async function failUntakenMessage(db: Db, commandId: string, error: string): Promise<boolean> {
   const failed = await many<{ id: string }>(db,
     `with failed as (

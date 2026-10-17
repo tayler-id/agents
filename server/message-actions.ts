@@ -6,6 +6,7 @@ import type pg from 'pg'
 import { canSeeConversation } from './access.ts'
 import { deleteAttachmentsOf } from './attachments.ts'
 import { cancelWaitingTurn } from './scheduler.ts'
+import { blankMessageCommands, replaceInMessageCommands } from './durability.ts'
 import { TurnId } from '../shared/ids.ts'
 import { maybe, one } from './db.ts'
 import { HttpError, scrub, type Person } from './record.ts'
@@ -67,8 +68,7 @@ async function eraseCopies(client: pg.PoolClient, post: Post, texts: string[]) {
          where id = any($1)`, [carrying, t, GONE])
       await client.query(
         `update turns set payload = jsonb_set(payload, '{text}', to_jsonb(replace(payload->>'text', $2, $3))) where event_id = any($1) and payload ? 'text'`, [carrying, t, GONE])
-      await client.query(
-        `update commands set payload = jsonb_set(payload, '{text}', to_jsonb(replace(payload->>'text', $2, $3))) where event_id = any($1) and kind = 'message' and payload ? 'text'`, [carrying, t, GONE])
+      await replaceInMessageCommands(client, carrying, t, GONE)
       // A line is JSON, so the words are in it as JSON writes them.
       await client.query(
         `update raw_events set line = jsonb_build_object('erased', true)
@@ -79,7 +79,7 @@ async function eraseCopies(client: pg.PoolClient, post: Post, texts: string[]) {
   const turns = (await client.query<{ id: string }>(`select id from turns where event_id = any($1) and status in ('queued', 'waiting') for update`, [own])).rows
   for (const turn of turns) await cancelWaitingTurn(client, TurnId.parse(turn.id))
   await client.query(`update turns set payload = jsonb_set(payload, '{text}', '""') where event_id = any($1) and payload ? 'text'`, [own])
-  await client.query(`update commands set payload = jsonb_set(payload, '{text}', '""') where event_id = any($1) and kind = 'message' and payload ? 'text'`, [own])
+  await blankMessageCommands(client, own)
 }
 
 // Deletes a post: its author may, and so may a team admin. The row stays with `deleted_at` and
