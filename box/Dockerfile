@@ -12,11 +12,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The desktop. TigerVNC's Xvnc is the X display and the VNC server in one
-# process, matchbox gives each window the whole screen, xclip puts text the agent
-# types outside ASCII on the clipboard to paste, and tini reaps the browser's
-# child processes, which the daemon as process 1 would leave behind.
+# process, JWM is the window manager, with title bars, Alt+Tab and a dock along
+# the bottom, xterm is the dock's terminal, xclip puts text the agent types
+# outside ASCII on the clipboard to paste, and tini reaps the browser's child
+# processes, which the daemon as process 1 would leave behind.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini tigervnc-standalone-server matchbox-window-manager xclip \
+ && apt-get install -y --no-install-recommends tini tigervnc-standalone-server jwm xterm xclip \
  && rm -rf /var/lib/apt/lists/*
 # Playwright 1.64.0, the version package-lock.json pins, then each engine's
 # system libraries and browser, one layer each so each engine's cost shows:
@@ -38,6 +39,24 @@ ENV AGENTS_BROWSER_MCP=/usr/local/lib/node_modules/@playwright/mcp/cli.js
 ENV AGENTS_DESKTOP=1280x800
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.296 && npm cache clean --force
+
+# The dock's whiteboard: Excalidraw 0.17.6's browser build with its fonts, and
+# React 18.3.1, which it runs on, all three under the MIT licence. The daemon
+# serves them on the box's loopback (daemon/whiteboard.ts). Each download must
+# match its hash.
+ENV AGENTS_WHITEBOARD=/opt/whiteboard
+RUN mkdir -p /opt/whiteboard && cd /opt/whiteboard \
+ && npm pack --silent @excalidraw/excalidraw@0.17.6 react@18.3.1 react-dom@18.3.1 \
+ && printf '%s\n' \
+   '480dd1ea12156d84acd8af0605fcec894326c07f152f7ed2212145b9864ed4e7  excalidraw-excalidraw-0.17.6.tgz' \
+   '8d9bed01a672e7eaf387942d781ad47c6a43089a30a0306060f9fd5ac7870347  react-18.3.1.tgz' \
+   '031d4427a99f2f3f6cac18bbbf308594a67e4f47d10f4896fdec446505b040e0  react-dom-18.3.1.tgz' | sha256sum -c - \
+ && tar -xzf excalidraw-excalidraw-0.17.6.tgz --strip-components=2 \
+   package/dist/excalidraw.production.min.js package/dist/excalidraw.production.min.js.LICENSE.txt package/dist/excalidraw-assets \
+ && tar -xzf react-18.3.1.tgz --strip-components=2 package/umd/react.production.min.js \
+ && tar -xzf react-dom-18.3.1.tgz --strip-components=2 package/umd/react-dom.production.min.js \
+ && tar -xzf react-18.3.1.tgz --strip-components=1 package/LICENSE && mv LICENSE react.LICENSE \
+ && rm ./*.tgz && npm cache clean --force
 
 RUN useradd --create-home --shell /bin/bash agent
 WORKDIR /opt/agents

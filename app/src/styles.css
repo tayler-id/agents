@@ -148,6 +148,13 @@ button.link:focus-visible { text-decoration-thickness: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line); background: var(--bg); }
+.thread-note { padding: 12px 20px 16px; border-top: 1px solid var(--line); }
+.choices { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.choices button { display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left; }
+.choice-letter { font-weight: 600; color: var(--muted); }
+.setting { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.setting .error { flex-basis: 100%; }
+.switch[aria-checked="true"] { background: var(--raised); font-weight: 600; }
 .composer textarea:focus { outline: none; border-color: var(--text); }
 .composer textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; min-height: 44px; }
 .composer .error { grid-column: 1 / -1; }
@@ -307,6 +314,13 @@ button.ghost[aria-expanded="true"] { background: var(--raised); font-weight: 600
 .steps .glyph { width: 1.2em; flex-shrink: 0; text-align: center; color: var(--muted); }
 .steps li.done .glyph { color: var(--text); }
 .box-state { display: flex; align-items: baseline; }
+/* A box's seats, one hairline-divided row each. A seat an agent holds reads in heavier type. */
+.seats { list-style: none; margin: 0; padding: 0; display: grid; max-width: 620px; }
+.seats li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.seats .seat-number { width: 4.5em; flex-shrink: 0; color: var(--muted); }
+.seats .seat-holder { min-width: 0; overflow-wrap: anywhere; }
+.seats li.held .seat-holder { font-weight: 600; }
+.seats li button { margin-left: auto; }
 /* Docker's words can hold a long image name with no spaces, which a phone would scroll sideways for. */
 .box-reason { overflow-wrap: anywhere; }
 .sign-in { display: grid; gap: 8px; max-width: 620px; }

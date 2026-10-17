@@ -1,10 +1,8 @@
 import { useMemo } from 'react'
+import { isShownStep, STEP_LABELS } from '../../shared/history.ts'
 import { byNumber, clock, useRows, useSnapshot, type EventRow, type Instance, type Session } from './data.ts'
 
-const LABELS: Record<string, string> = {
-  user: 'Message', assistant: 'Reply', thinking: 'Thinking', tool_call: 'Tool', tool_result: 'Result',
-  ask: 'Asked', answer: 'Answer', notice: 'Notice', error: 'Error', usage: 'Turn ended',
-}
+const LABELS: Record<string, string> = STEP_LABELS
 
 // Everything one session did, in order, live.
 export function EventList({ sessionId }: { sessionId: string }) {
@@ -12,10 +10,10 @@ export function EventList({ sessionId }: { sessionId: string }) {
   const sorted = useMemo(() => [...events].sort(byNumber((e: EventRow) => e.seq)), [events])
   return (
     <ol className="events" tabIndex={0} aria-label="Events">
-      {sorted.filter((e) => e.kind !== 'notice' || e.body.subtype === 'init' || e.body.subtype === 'interrupted' || e.body.subtype === 'screen').map((e) => (
+      {sorted.filter((e) => isShownStep(e.kind, e.body.subtype)).map((e) => (
         <li key={String(e.id)} className={`event ${e.kind}${e.parent_tool_use_id ? ' sub' : ''}`}>
           <div className="meta">
-            <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
+            <span className="kicker">{e.body.subtype === 'interrupted' ? 'Interrupted' : e.body.subtype === 'hook_response' ? 'Hook' : LABELS[e.kind] ?? e.kind}{e.tool_name ? ` · ${e.tool_name}` : ''}</span>
             <span className="muted small">{clock(e.created_at)}</span>
           </div>
           {e.text && (e.text.length > 280

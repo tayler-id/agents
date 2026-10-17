@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { JoinRequestRow, type JoinAnswer } from '../../shared/onboarding.ts'
 import { isWorking } from '../../shared/lifecycle.ts'
+import { FIRST_SEAT, SeatInPath } from '../../shared/seats.ts'
 import {
   act, conversationLabel, messageOf, api, type Agent, type Conversation, type Instance, type Me, type Member, type Person, type Pipeline, type Repo, type Run, type Session, type Task,
   useSnapshot, useSnapshotOf,
@@ -21,18 +22,22 @@ import { NewRoom, NewTask, TaskView } from './Work.tsx'
 import { NewProject, ProjectPage, ReposView } from './Projects.tsx'
 import { ProjectRow } from '../../shared/projects.ts'
 import { TerminalSessionView, terminalOwner, terminalPlace } from './Terminal.tsx'
+import { HistoryPage } from './History.tsx'
+// Erased when built, so the screen's code still loads only when a screen opens.
+import type { ScreenTarget } from './Screen.tsx'
 import { FolderRow, TerminalSessionRow } from '../../shared/terminal.ts'
 import { FoldersPage } from './Folders.tsx'
 
 // Pages with no id of their own, such as the team and the team's repos.
-const PAGES = ['team', 'tailscale', 'box', 'repos', 'folders'] as const
+const PAGES = ['team', 'tailscale', 'box', 'repos', 'folders', 'history'] as const
 type Page = (typeof PAGES)[number]
 
 // The VNC client and its schemas load only when someone opens a screen.
 const ScreenPanel = lazy(async () => ({ default: (await import('./Screen.tsx')).ScreenPanel }))
 
-// A box's screen open beside the work, and the session it was opened from.
-type ScreenRoute = { instance: string; session: string | null }
+// A box's screen open beside the work: the seat a session runs on, or a seat by
+// its number, as the box's page opens one.
+type ScreenRoute = { instance: string; session: string | null; seat: number | null }
 
 // Where the app is: a conversation, run, task, pipeline, agent, project, terminal
 // session, page or new-thing form in the middle, and maybe a session, a document, a
@@ -52,7 +57,9 @@ const CREATE = ['agent', 'room', 'task', 'project'] as const
 const isCreate = (value: string): value is (typeof CREATE)[number] => CREATE.some((kind) => kind === value)
 
 function readRoute(): Route {
-  const [, kind = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
+  const [, kindAndQuery = '', id = '', sub, subId, subSession] = window.location.hash.split('/')
+  // The History page keeps its filters after a question mark.
+  const kind = kindAndQuery.split('?')[0] ?? ''
   const route = { ...EMPTY }
   if (kind in KINDS) route[KINDS[kind as keyof typeof KINDS]] = id || null
   if (kind === 'n' && isCreate(id)) {
@@ -64,7 +71,10 @@ function readRoute(): Route {
   if (sub === 's') route.session = subId || null
   if (sub === 'd') route.document = subId || null
   if (sub === 'f') route.file = subId || null
-  if (sub === 'screen' && subId) route.screen = { instance: subId, session: subSession || null }
+  if (sub === 'screen' && subId) route.screen = { instance: subId, session: subSession || null, seat: null }
+  // A page with no id of its own opens a seat's screen by the seat's number.
+  const seat = SeatInPath.safeParse(subId)
+  if (route.page && id === 'screen' && sub && seat.success) route.screen = { instance: sub, session: null, seat: seat.data }
   return route
 }
 
@@ -73,7 +83,8 @@ export function go(to: Partial<Route>) {
   const side = r.session ? `/s/${r.session}` : r.document ? `/d/${r.document}` : r.file ? `/f/${r.file}`
     : r.screen ? `/screen/${r.screen.instance}${r.screen.session ? `/${r.screen.session}` : ''}` : ''
   const found = Object.entries(KINDS).find(([, key]) => r[key])
-  window.location.hash = r.page ? `#/${r.page}`
+  const pageSide = r.screen?.seat ? `/screen/${r.screen.instance}/${r.screen.seat}` : ''
+  window.location.hash = r.page ? `#/${r.page}${pageSide}`
     : r.create ? `#/n/${r.create}${r.inProject ? `/${r.inProject}` : ''}`
       : found ? `#/${found[0]}/${r[found[1]]}${side}` : '#/'
 }
@@ -126,8 +137,8 @@ function Workspace({ me }: { me: Me }) {
   // Documents and files hold lines of text, so their panel takes more of the width.
   const wide = Boolean(route.document || route.file)
   const taskOfPanel = route.task ?? runs.find((r) => r.id === route.run)?.task_id ?? null
-  const back = () => go({ conversation: route.conversation, run: route.run, task: route.task })
-  const openScreen = (instance: string, session: string | null) => go({ conversation: route.conversation, run: route.run, task: route.task, screen: { instance, session } })
+  const back = () => go({ page: route.page, conversation: route.conversation, run: route.run, task: route.task })
+  const openScreen = (instance: string, session: string | null) => go({ conversation: route.conversation, run: route.run, task: route.task, screen: { instance, session, seat: null } })
   return (
     <div className={`shell${side ? ' with-panel' : ''}${wide ? ' wide' : ''}${route.screen ? ' with-screen' : ''}${menuOpen ? ' menu-open' : ''}`}>
       <header className="topbar">
@@ -138,19 +149,20 @@ function Workspace({ me }: { me: Me }) {
       <Sidebar me={me} route={route} runs={runs} openPalette={togglePalette} />
       {palette && <Palette me={me} onClose={() => setPalette(false)} />}
       <main className="main" tabIndex={-1} aria-label={route.page === 'team' ? 'Team' : route.page === 'tailscale' ? 'Tailscale' : route.page === 'box' ? 'Your box'
-        : route.page === 'repos' ? 'Repos' : route.page === 'folders' ? 'Terminal folders' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
+        : route.page === 'repos' ? 'Repos' : route.page === 'folders' ? 'Terminal folders' : route.page === 'history' ? 'History' : route.run ? 'Run' : route.task ? 'Task' : route.pipeline ? 'Pipeline' : route.agent ? 'Agent'
           : route.project ? 'Project' : route.terminal ? 'Terminal session' : 'Conversation'}>
         {route.page === 'team' ? <TeamPage me={me} />
           : route.page === 'tailscale' ? <TailscalePage me={me} />
           : route.page === 'box' ? <BoxPage me={me} />
           : route.page === 'repos' ? <ReposView me={me} />
           : route.page === 'folders' ? <FoldersPage me={me} />
+          : route.page === 'history' ? <HistoryPage me={me} />
           : route.conversation ? <ConversationView key={route.conversation} me={me} conversationId={route.conversation} sessionOpen={route.session} />
           : route.run ? <RunView key={route.run} runId={route.run} openSession={route.session} openFile={route.file} />
             : route.task ? <TaskView key={route.task} me={me} taskId={route.task} openSession={route.session} openFile={route.file}
               screenOpen={route.screen !== null} onScreen={openScreen} />
               : route.pipeline ? <PipelineView key={route.pipeline} pipelineId={route.pipeline} />
-                : route.agent ? <AgentPage key={route.agent} agentId={route.agent} />
+                : route.agent ? <AgentPage key={route.agent} me={me} agentId={route.agent} />
                   : route.project ? <ProjectPage key={route.project} projectId={route.project} />
                     : route.terminal ? <TerminalSessionView key={route.terminal} me={me} sessionId={route.terminal} />
                       : route.create === 'agent' ? <NewAgent me={me} />
@@ -162,9 +174,10 @@ function Workspace({ me }: { me: Me }) {
       {route.session && (route.conversation || route.run || route.task) && (
         <SessionPanel key={route.session} sessionId={route.session} of={route.conversation ? 'conversations' : 'tasks'} onClose={back} onScreen={openScreen} />
       )}
-      {route.screen && (route.conversation || route.run || route.task) && (
+      {route.screen && (route.conversation || route.run || route.task || route.page === 'box') && (
         <Suspense fallback={<aside className="panel" aria-label="Screen"><p className="muted small screen-status">Loading the screen…</p></aside>}>
-          <ScreenPanel key={route.screen.instance} me={me} instanceId={route.screen.instance} sessionId={route.screen.session} onClose={back} />
+          <ScreenPanel key={`${route.screen.instance}/${String(route.screen.seat ?? route.screen.session)}`} me={me} instanceId={route.screen.instance}
+            target={screenTarget(route.screen, route.conversation ? 'conversations' : 'tasks')} onClose={back} />
         </Suspense>
       )}
       {route.document && (route.run || route.task) && (
@@ -173,6 +186,14 @@ function Workspace({ me }: { me: Me }) {
       {route.file && taskOfPanel && <FilePanel key={route.file} changeId={route.file} taskId={taskOfPanel} onClose={back} />}
     </div>
   )
+}
+
+// Which seat's screen a route shows. A screen opened with neither a seat nor a
+// session is the box's first seat, the one screen a box had before seats.
+function screenTarget(screen: ScreenRoute, of: 'conversations' | 'tasks'): ScreenTarget {
+  if (screen.seat !== null) return { seat: screen.seat }
+  if (screen.session !== null) return { session: screen.session, of }
+  return { seat: FIRST_SEAT }
 }
 
 // A newcomer sees their first steps here until their box is ready and they are signed in to Claude.
@@ -266,9 +287,9 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
   const newestRuns = runs.filter((r) => !r.replay_of).sort((a, b) => b.created_at.localeCompare(a.created_at))
   const recentRuns = newestRuns.filter((r) => !projectOf.get(r.task_id)).slice(0, 8)
   const runOfSession = (s: Session) => runs.find((r) => r.task_id === s.task_id)
-  // Tasks people started, outside pipelines.
+  // Tasks people started, and tasks agents handed each other, outside pipelines.
   const runTasks = new Set(runs.map((r) => r.task_id))
-  const peopleTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message'))
+  const peopleTasks = tasks.filter((t) => !runTasks.has(t.id) && (t.source === 'app' || t.source === 'message' || t.source === 'agent'))
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
   const myTasks = peopleTasks.filter((t) => !t.project_id).slice(0, 6)
   const looseConversations = conversations.filter((c) => !c.project_id)
@@ -285,6 +306,7 @@ function Sidebar({ me, route, runs, openPalette }: { me: Me; route: Route; runs:
         </button>
         <button type="button" className={`link small${route.page === 'box' ? ' current' : ''}`} onClick={() => go({ page: 'box' })}>Your box</button>
         <button type="button" className={`link small${route.page === 'folders' ? ' current' : ''}`} onClick={() => go({ page: 'folders' })}>Terminal folders</button>
+        <button type="button" className={`link small${route.page === 'history' ? ' current' : ''}`} onClick={() => go({ page: 'history' })}>History</button>
         {admin && <button type="button" className={`link small${route.page === 'tailscale' ? ' current' : ''}`} onClick={() => go({ page: 'tailscale' })}>Tailscale</button>}
       </div>
       {keyAlert && (

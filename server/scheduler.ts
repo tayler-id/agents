@@ -15,8 +15,9 @@ import { InstanceId, movesInto } from '../shared/onboarding.ts'
 import { messageOf } from '../shared/errors.ts'
 import { WAITING_ON_PERSON } from '../shared/lifecycle.ts'
 import { TURN_MOVES, type WaitReason } from '../shared/turns.ts'
-import { SessionId, TurnId, type AgentId, type ConversationId, type PersonId, type RoutineId, type RunId, type TaskId, type TeamId } from '../shared/ids.ts'
+import { AgentId, SessionId, TurnId, type ConversationId, type PersonId, type RoutineId, type RunId, type TaskId, type TeamId } from '../shared/ids.ts'
 import { MessagePayload } from '../shared/types.ts'
+import { takeSeat } from './seats.ts'
 
 // How long a running turn may go without a new event before it is marked stuck,
 // long enough for a slow build or test run between two steps. Nothing is stopped.
@@ -33,14 +34,26 @@ const STUCK_AFTER_SEC = stuckAfterSec(process.env.AGENTS_TURN_STUCK_MIN)
 // Who asked for a turn, and what for. A person's message is for the DM or room
 // it was posted in, or the task whose session it went to. A routine's firing is
 // for its agent's main conversation, and a pipeline's stage, reminder or replay
-// for its run.
+// for its run. Another agent's message, its answer, a handed-over task and its
+// result are for the conversation or task of the session they go to.
 type Asker = { teamId: TeamId; agentId: AgentId }
 export type TurnAsk = Asker & (
   | { source: 'person'; askedBy: PersonId; conversationId: ConversationId }
   | { source: 'person'; askedBy: PersonId; taskId: TaskId }
   | { source: 'routine'; askedBy: PersonId | null; conversationId: ConversationId; routineId: RoutineId }
   | { source: 'pipeline'; runId: RunId }
+  | (AgentCause & ({ conversationId: ConversationId } | { taskId: TaskId }))
 )
+// What an agent's turn carries when another agent's session asked for it: the
+// session that asked, the turn that waits for its answer, if any, and how many
+// hops of the chain stand behind it.
+export type AgentCause = {
+  source: 'agent' | 'delegation'; askedBySession: SessionId; answerTo: TurnId | null; hops: number
+  // The conversation the chain started in, null when it started outside one.
+  originConversation: ConversationId | null
+  // The turn whose message to another agent this is, null for an answer or a handed task's result.
+  sentByTurn: TurnId | null
+}
 // A room's turn waits in the room's line, without a prompt, until the room gives
 // it its go. The deadline is how long it may take once it has the go.
 export type RoomTurnAsk = Asker & { conversationId: ConversationId; askedBy: PersonId; deadlineSec: number }
@@ -56,7 +69,10 @@ export type Prompt = { sessionId: SessionId; seq: number; payload: MessagePayloa
 // offline, as it did before the door. A box is held when a person or a run holds
 // it, which is when the runner starts it.
 const TAKES_WORK = `(i.kind <> 'box' or (i.status = 'online' and i.ready and i.stopped_at is null))`
-const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean() })
+// A person's computer gives each agent at work on it a seat of its own. Any
+// other box runs its sessions on seat 1, as before seats, so a pipeline's
+// stages keep their own placement on the box their run claimed.
+const Machine = z.object({ id: InstanceId, held: z.boolean(), takes_work: z.boolean(), seated: z.boolean(), agent_id: AgentId.nullable() })
 type Machine = z.infer<typeof Machine>
 
 // Where a session's turns run. Each runs on the machine its session started on,
@@ -68,7 +84,8 @@ type Machine = z.infer<typeof Machine>
 // turn is placed on a box before the mark or waits for it after, never between.
 async function whereTurnsRun(client: pg.PoolClient, sessionId: string): Promise<Machine> {
   return Machine.parse(await one(client, `the machine of session ${sessionId}`,
-    `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work
+    `select i.id, i.claimed_by is not null or i.claimed_by_run is not null as held, ${TAKES_WORK} as takes_work,
+       i.kind = 'box' and i.personal as seated, s.agent_id
      from sessions s join instances i on i.id = s.instance_id where s.id = $1 for key share of i`, [sessionId]))
 }
 
@@ -118,6 +135,20 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
   // read as starting, which the app shows as the agent thinking, and which the
   // watchdog marks lost once the machine stays silent, so it reads as idle.
   if (!machine.takes_work) await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
+  // Every turn of a session is its agent's, so they take one seat, or wait for one
+  // while every seat is busy. The seat is the agent's from now on, for this turn and
+  // the next, until the reclaim rule gives it to another agent.
+  // A session that gets no computer, such as a judge's, takes no seat and never waits for one.
+  const seatless = turns.every((turn) => MessagePayload.safeParse(turn.payload).data?.stage?.isolated === true)
+  if (machine.takes_work && machine.seated && machine.agent_id !== null && !seatless
+    && (await takeSeat(client, machine.id, machine.agent_id)).kind === 'busy') {
+    await client.query(`update sessions set status = 'idle' where id = $1 and status = 'starting'`, [sessionId])
+    for (const turn of turns) {
+      if (turn.status === 'queued') await moveTurn(client, turn.id, { to: 'waiting', wait: 'seat', instanceId: machine.id })
+      else await client.query(`update turns set wait = 'seat' where id = $1 and status = 'waiting'`, [turn.id])
+    }
+    return
+  }
   for (const turn of turns) {
     if (machine.takes_work) {
       const request = MessagePayload.safeParse(turn.payload)
@@ -149,7 +180,7 @@ async function placeSession(client: pg.PoolClient, sessionId: SessionId, giveUp?
 export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queued: TurnId }, prompt: Prompt): Promise<TurnId> {
   // Placing takes the session's row first, as appending its prompt did, and as the
   // runner's loop does, so the two never wait on each other.
-  await client.query('select 1 from sessions where id = $1 for update', [prompt.sessionId])
+  await client.query('select 1 from sessions where id = $1 for no key update', [prompt.sessionId])
   const event = await one<{ id: string }>(client, 'the turn\'s prompt in its session',
     'select id from events where session_id = $1 and seq = $2', [prompt.sessionId, prompt.seq])
   const payload = JSON.stringify(prompt.payload)
@@ -159,12 +190,14 @@ export async function requestTurn(client: pg.PoolClient, turn: TurnAsk | { queue
        where id = $1 and status = 'queued' and session_id is null returning id`, [turn.queued, prompt.sessionId, event.id, payload])
     : await one<{ id: string }>(client, 'the new turn',
       `insert into turns (team_id, agent_id, source, conversation_id, task_id, run_id, routine_id, asked_by_person,
-         session_id, event_id, payload, status, requested_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', clock_timestamp()) returning id`,
+         asked_by_session, answer_to_turn, hops, origin_conversation_id, sent_by_turn, session_id, event_id, payload, status, requested_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'queued', clock_timestamp()) returning id`,
       [turn.teamId, turn.agentId, turn.source,
         'conversationId' in turn ? turn.conversationId : null, 'taskId' in turn ? turn.taskId : null,
         turn.source === 'pipeline' ? turn.runId : null, turn.source === 'routine' ? turn.routineId : null,
-        turn.source === 'pipeline' ? null : turn.askedBy, prompt.sessionId, event.id, payload])
+        turn.source === 'person' || turn.source === 'routine' ? turn.askedBy : null,
+        'askedBySession' in turn ? turn.askedBySession : null, 'answerTo' in turn ? turn.answerTo : null, 'hops' in turn ? turn.hops : 0,
+        'originConversation' in turn ? turn.originConversation : null, 'sentByTurn' in turn ? turn.sentByTurn : null, prompt.sessionId, event.id, payload])
   await placeSession(client, prompt.sessionId)
   return TurnId.parse(row.id)
 }

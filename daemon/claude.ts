@@ -42,7 +42,7 @@ export const PARENT_SESSION_ENV = [
 export const CLAUDE_BIN = process.env.AGENTS_CLAUDE_BIN ?? 'claude'
 
 // Progress counters and command lists. They stay in the raw lines but make no event.
-const SKIPPED_SYSTEM = new Set(['thinking_tokens', 'commands_changed'])
+const SKIPPED_SYSTEM = new Set(['thinking_tokens', 'commands_changed', 'hook_started', 'hook_progress'])
 
 // The blocks of a message, as the CLI streams them and as a transcript keeps
 // them. A block of a kind this file maps names the fields it reads, with their
@@ -142,6 +142,22 @@ function blockEvent(line: Pick<Line, 'type' | 'parent_tool_use_id' | 'message'>,
   }
 }
 
+// A hook finishing, as Claude Code reports it. The hook's start and its progress stay in the raw lines.
+const HookResponse = z.looseObject({
+  hook_name: z.string(), outcome: optional(z.string()), exit_code: optional(z.number()), output: optional(z.string()),
+})
+
+// What a hook did, in a line a person reads, with its output under it.
+function hookEvent(clientId: string, line: Line, rest: Record<string, unknown>): NewEvent {
+  const body = { subtype: 'hook_response', ...rest }
+  const hook = HookResponse.safeParse(line)
+  if (!hook.success) return { clientId, kind: 'notice', text: 'hook_response', body }
+  const { hook_name: name, outcome, exit_code: code, output } = hook.data
+  const verdict = outcome === 'success' ? 'finished'
+    : outcome === 'cancelled' ? 'was cancelled' : `failed${code === undefined ? '' : ` with exit code ${String(code)}`}`
+  return { clientId, kind: 'notice', text: `Hook ${name} ${verdict}.${output?.trim() ? `\n${output.trim()}` : ''}`, body }
+}
+
 // One stdout line becomes one batch: its raw line, plus the events it holds.
 // Never emits a 'user' event: those come only from people, through the API.
 export function toBatch(line: Line): EventBatch {
@@ -156,6 +172,7 @@ export function toBatch(line: Line): EventBatch {
       raw, harnessSessionId: line.session_id, status: 'running',
     }
   }
+  if (type === 'system' && subtype === 'hook_response') return { events: [hookEvent(clientId, line, rest)], raw }
   if (type === 'system') {
     return { events: SKIPPED_SYSTEM.has(subtype ?? '') ? [] : [{ clientId, kind: 'notice', text: subtype, body: { subtype, ...rest } }], raw }
   }
@@ -394,6 +411,8 @@ class ClaudeSession implements HarnessSession {
     // Claude Code still asks before writes in .git and .claude, and outside cwd.
     if (options.acceptEdits) args.push('--permission-mode', 'acceptEdits')
     if (options.maxBudgetUsd) args.push('--max-budget-usd', options.maxBudgetUsd.toFixed(2))
+    if (options.hookEvents) args.push('--include-hook-events')
+    if (options.settings) args.push('--settings', options.settings)
     const env = { ...process.env }
     for (const name of PARENT_SESSION_ENV) delete env[name]
     // A box's owner signed in from the app. Their token wins over any team-wide one.

@@ -1,4 +1,4 @@
-import { FolderRow, TerminalSessionRow } from '../../shared/terminal.ts'
+import { FolderRow, placeOf, TerminalSessionRow } from '../../shared/terminal.ts'
 import { clock, useSnapshot, useSnapshotOf, type Instance, type Me, type Person } from './data.ts'
 import { EventList } from './Session.tsx'
 
@@ -10,11 +10,10 @@ export function terminalOwner(me: Me, people: Person[], personId: string | null)
   return person ? `${person.name ?? person.login.split('@')[0] ?? person.login}'s` : "someone's"
 }
 
-// Where a terminal session ran: its folder's name, and the folder inside it the session started in.
+// Where a terminal session ran, or its full working path when its folder is not read.
 export function terminalPlace(folders: FolderRow[], folderId: string, cwd: string): string {
   const folder = folders.find((f) => f.id === folderId)
-  if (!folder) return cwd
-  return `${folder.path.split('/').pop() ?? folder.path}${cwd.slice(folder.path.length)}`
+  return folder ? placeOf(folder.path, cwd) : cwd
 }
 
 // A Claude Code session a person ran in their own terminal, in a folder they connected.

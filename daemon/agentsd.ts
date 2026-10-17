@@ -13,35 +13,41 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isChangeMessage, Shape, ShapeStream, type Row } from '@electric-sql/client'
 import { z } from 'zod'
-import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { envSecrets, makeScrub, MIN_SECRET_LENGTH } from '../shared/scrub.ts'
 import { HEARTBEAT_SEC } from '../shared/lifecycle.ts'
 import { messageOf } from '../shared/errors.ts'
 import { ClaudeLoginId, LoginCodeReply, OPEN_CLAUDE_LOGIN } from '../shared/onboarding.ts'
+import type { FromDaemon, ToDaemon } from '../shared/link.ts'
 import { ScreenSizeText, type Heartbeat, type ScreenSize } from '../shared/screen.ts'
 import { MessagePayload, OtherCommand, Recovery, ResumeTurn, type Command, type EventBatch, type StageSpec } from '../shared/types.ts'
+import { SeatRow, SessionSeat, type SeatNumber, type SeatUp } from '../shared/seats.ts'
 import { LiveStream } from './live.ts'
 import { workspaces, type TaskFile } from './workspace.ts'
 import type { DocumentUpload } from '../shared/documents.ts'
 import { changeKey } from './changes.ts'
 import { ChangesReply, WorkspaceSetup } from '../shared/work.ts'
 import { gates } from './gates.ts'
-import { machineSecrets, pluginServers, writeSkills } from './agentfiles.ts'
+import { changeMachineSecret, forgetValueIn, heldSecretNames, machineSecrets, pluginSecretNames, pluginServers, SecretsFileError, writeHooks, writeSkills } from './agentfiles.ts'
+import { linkControl } from './control-link.ts'
 import { claude, CLAUDE_BIN } from './claude.ts'
 import { ownClaudeToken, saveClaudeToken, signIn, type SignIn } from './claude-login.ts'
 import { forgetHarness, rememberHarness, stopLeftHarnesses } from './fence.ts'
 import type { HarnessSession } from './harness.ts'
-import { startDesktop, type Desktop } from './desktop.ts'
-import { startScreenService, type ScreenService } from './screen.ts'
+import { startSeats, type SeatComputer, type Seats } from './seats.ts'
 import { linkScreen, type ScreenLink } from './screen-link.ts'
-import { COMPUTER_GUIDE, COMPUTER_SERVER, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL } from './computer-guide.ts'
+import { COMPUTER_GUIDE, COMPUTER_TOOLS_ALLOWED, VERIFY_SKILL, WEB_GUIDE } from './computer-guide.ts'
+import { COMPUTER_SERVER } from '../shared/webmcp.ts'
 import { ApiError, HOME, apiClient, loadConfig, postEvents } from './api.ts'
 import { followTerminalSessions } from './transcripts.ts'
 import { loginShellSecrets } from './secrets.ts'
 import { serveAppSocket } from './app-socket.ts'
+import { TEAM_AGENT_TOOLS_ALLOWED, TEAM_AGENTS_SERVER } from '../shared/team-agents.ts'
+import { serveShareGuard, shareGuardPath } from './share-guard.ts'
 
 // Each session's MCP config, and the process id of the harness running it.
 const SESSIONS_DIR = join(HOME, 'sessions')
 const RECORD_MCP = fileURLToPath(new URL('./record-mcp.ts', import.meta.url))
+const AGENTS_MCP = fileURLToPath(new URL('./team-agents-mcp.ts', import.meta.url))
 const STAGE_MCP = fileURLToPath(new URL('./stage-mcp.ts', import.meta.url))
 const COMPUTER_MCP = fileURLToPath(new URL('./computer-mcp.ts', import.meta.url))
 // The screen's sockets, outside the home volume, which outlives the container.
@@ -68,6 +74,9 @@ function ownToken(): string | null {
 
 // What the person's login shell exports, learned once, at start.
 let shellSecrets: [string, string][] = []
+// Values set again or removed from the app, by name. An agent that read one may
+// still repeat it, so it is scrubbed for as long as this daemon runs.
+const retiredSecrets: [string, string][] = []
 // Secrets this machine holds: its environment's, the plugins' in secrets.json,
 // its owner's Claude token and its login shell's. Read again for each new
 // session, so a secret added later is scrubbed too.
@@ -79,6 +88,7 @@ const knownSecrets = (): [string, string][] => {
     ...Object.entries(machineSecrets(HOME)).filter(([, value]) => typeof value === 'string' && value.length >= 8),
     ...signedIn,
     ...shellSecrets,
+    ...retiredSecrets,
   ].sort((a, b) => b[1].length - a[1].length)
 }
 let secrets = knownSecrets()
@@ -101,18 +111,27 @@ const liveHold = () => Math.max(160, ...secrets.map(([, value]) => value.length 
 const sessions = new Map<string, HarnessSession>()
 // What each running session's process was started with that the agent's page can change.
 const setups = new Map<string, string>()
-const setupOf = (p: MessagePayload) => JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.permissions])
+// The secrets the plugins of each running session take, and the sessions whose
+// plugins started with a value that was set again or removed since.
+const usedSecrets = new Map<string, string[]>()
+const staleSecrets = new Set<string>()
+// The sites the team lists for this agent's browser. A server from before this release sends none.
+const webmcpOriginsOf = (p: MessagePayload) => p.webmcpOrigins ?? []
+// The seat is part of it, so a session whose agent moved to another seat starts again there.
+const setupOf = (p: MessagePayload, seat: SeatNumber | null) =>
+  JSON.stringify([p.model, p.instructions, p.skills, p.plugins, p.hooks, p.permissions, webmcpOriginsOf(p), seat])
 const ws = workspaces(HOME, config.api, config.token)
 const checker = gates(HOME, config.api, config.token)
 let stopping = false
 
-// A box's image sets AGENTS_DESKTOP to the screen's size, with the browsers and
-// Playwright's MCP server beside it. A machine without it, such as a Mac, has no
-// desktop for agents.
+// A box's image sets AGENTS_DESKTOP to the screen's size, with the browsers,
+// Playwright's MCP server and the whiteboard beside it. A machine without it,
+// such as a Mac, has no desktop for agents.
 const DesktopEnv = z.object({
   AGENTS_DESKTOP: ScreenSizeText,
   PLAYWRIGHT_BROWSERS_PATH: z.string().min(1),
   AGENTS_BROWSER_MCP: z.string().min(1),
+  AGENTS_WHITEBOARD: z.string().min(1),
 })
 function desktopEnv(): z.infer<typeof DesktopEnv> | null {
   if (process.env.AGENTS_DESKTOP === undefined) return null
@@ -124,27 +143,32 @@ function desktopEnv(): z.infer<typeof DesktopEnv> | null {
   return parsed.data
 }
 const desktopConfig = desktopEnv()
-const desktop: Desktop | null = desktopConfig && startDesktop({
-  size: desktopConfig.AGENTS_DESKTOP, runDir: SCREEN_DIR, profileDir: join(HOME, 'browser'), browsersPath: desktopConfig.PLAYWRIGHT_BROWSERS_PATH,
+// The box's seats, each an agent's own display, browser and screen. Seat 1
+// starts now, and the others as the box's seat rows say.
+const seats: Seats | null = desktopConfig && startSeats({
+  size: desktopConfig.AGENTS_DESKTOP, runDir: SCREEN_DIR, home: HOME, browsersPath: desktopConfig.PLAYWRIGHT_BROWSERS_PATH,
+  whiteboard: desktopConfig.AGENTS_WHITEBOARD, browserMcp: desktopConfig.AGENTS_BROWSER_MCP, secrets: knownSecrets,
+  reportUp: async (n, agentId) => {
+    const up: SeatUp = { agentId }
+    await api('POST', `/v1/instance/seats/${n}/up`, up)
+  },
 })
-// Set once the desktop is up: the size the heartbeat reports, the service
-// sessions' `computer` servers talk to, what those servers need, and the box's
-// link to the API, through which people watch and take over.
-type Screen = { size: ScreenSize; service: ScreenService; link: ScreenLink; socket: string; cdpUrl: string; browserMcp: string }
+// Set once seat 1 is up: the size the heartbeat reports, and the box's link to
+// the API, through which people watch and take over each seat's screen.
+type Screen = { size: ScreenSize; link: ScreenLink }
 let screen: Screen | null = null
-// A box's sessions need its computer, so the daemon takes no work until its
-// desktop is up. `ready` gives up when a part of the desktop doesn't come up
-// within the desktop's start limit. Then the daemon stops, and the container's
-// restart policy starts the box again, so a box never works without its computer.
-const desktopUp: Promise<boolean> = desktop && desktopConfig
-  ? desktop.ready.then(() => {
-    const socket = join(SCREEN_DIR, 'agent.sock')
-    const service = startScreenService({ desktop, socketPath: socket, secrets: knownSecrets })
+// A box's sessions need their computers, so the daemon takes no work until seat
+// 1 is up. It gives up when a part of seat 1's desktop doesn't come up within
+// the desktop's start limit. Then the daemon stops, and the container's restart
+// policy starts the box again, so a box never works without its computer.
+const desktopUp: Promise<boolean> = seats && desktopConfig
+  ? seats.firstUp.then(() => {
+    const size = desktopConfig.AGENTS_DESKTOP
     screen = {
-      size: desktop.size, socket, cdpUrl: desktop.cdpUrl, browserMcp: desktopConfig.AGENTS_BROWSER_MCP, service,
-      link: linkScreen({ api: config.api, token: config.token, vncSocket: desktop.vncSocket, onControl: (control) => { service.setControl(control) } }),
+      size,
+      link: linkScreen({ api: config.api, token: config.token, vncSocket: (n) => seats.vncSocket(n), onControl: (n, control) => { seats.setControl(n, control) } }),
     }
-    console.log(`desktop up at ${desktop.size.width}x${desktop.size.height}`)
+    console.log(`desktop up at ${size.width}x${size.height}`)
     return true
   }, (error: unknown) => {
     console.error(`desktop: ${messageOf(error)}. Stopping, so the box starts again.`)
@@ -163,29 +187,39 @@ function agentHome(agentId: string): string {
 }
 
 // The session's MCP config: the team-record tools, acting as this session, and
-// for a pipeline stage the report_result tool. The file holds the machine's
-// token, so only this user can read it.
-// On a machine with a screen it adds the `computer` server, and in a task's
-// session tells it the task folder, where saved screenshots become documents.
-function mcpConfig(sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: Screen | null, taskFolder: string | null): string {
+// for a pipeline stage the report_result tool. Every session but a stage's also
+// gets the team-agents tools, since an answer from another agent would come back
+// outside the stage. The file holds the machine's token, so only this user can read it.
+// On a machine with a screen it adds the `computer` server, pointed at the
+// session's seat, and in a task's session tells it the task folder, where saved
+// screenshots become documents. It also tells it the sites the team lists, whose
+// pages' WebMCP tools the agent may use.
+function mcpConfig(
+  sessionId: string, stage: StageSpec | undefined, plugins: Record<string, unknown>, computer: SeatComputer | null, taskFolder: string | null,
+  webmcpOrigins: readonly string[],
+): { file: string; pluginNames: string[] } {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
   const file = join(SESSIONS_DIR, `${sessionId}.mcp.json`)
   const servers: Record<string, unknown> = { ...plugins }
   if (!stage?.isolated) {
-    servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
+    servers['team-record'] = { command: process.execPath, args: [RECORD_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId, AGENTS_SHARE_GUARD: shareGuardPath(HOME) } }
   }
   if (stage) servers.stage = { command: process.execPath, args: [STAGE_MCP], env: { AGENTS_STAGE_OUTCOMES: JSON.stringify(stage.outcomes) } }
+  else servers[TEAM_AGENTS_SERVER] = { command: process.execPath, args: [AGENTS_MCP], env: { AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId } }
   if (computer) {
     servers[COMPUTER_SERVER] = {
       command: process.execPath, args: [COMPUTER_MCP],
       env: {
         AGENTS_SCREEN_SOCKET: computer.socket, AGENTS_BROWSER_MCP: computer.browserMcp, AGENTS_BROWSER_CDP: computer.cdpUrl,
+        AGENTS_API: config.api, AGENTS_TOKEN: config.token, AGENTS_SESSION: sessionId,
         ...(taskFolder ? { AGENTS_TASK_FOLDER: taskFolder } : {}),
+        ...(webmcpOrigins.length ? { AGENTS_WEBMCP_ORIGINS: JSON.stringify(webmcpOrigins) } : {}),
       },
     }
   }
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 })
-  return file
+  // A plugin whose name a built-in server took has lost its entry, and its name must not allow the built-in's tools.
+  return { file, pluginNames: Object.keys(plugins).filter((name) => servers[name] === plugins[name]) }
 }
 
 // Documents already sent from task folders, by workspace and path, with their hashes.
@@ -284,7 +318,21 @@ async function sendDocuments(sessionId: string, workspaceId: string) {
   if (texts.length) await send(texts)
 }
 
-function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSession {
+// The seat a session runs on, as the API answers and records it: null on a
+// machine without seats, and for a session that gets no computer, such as a judge's.
+async function seatOf(command: Extract<Command, { kind: 'message' }>): Promise<SessionSeat> {
+  if (!seats || command.payload.stage?.isolated) return { seat: null, agentId: null }
+  return SessionSeat.parse(await api('POST', `/v1/instance/sessions/${command.sessionId}/seat`, {}))
+}
+
+// That seat's computer, once it is up.
+async function computerOf({ seat, agentId }: SessionSeat): Promise<SeatComputer | null> {
+  if (seat === null) return null
+  if (!seats) throw new Error(`the API placed a session on seat ${seat} of a machine without seats`)
+  return seats.computer(seat, agentId)
+}
+
+function startSession(command: Extract<Command, { kind: 'message' }>, seat: SeatNumber | null, computer: SeatComputer | null): HarnessSession {
   // From here the session's process is the one this starts, so a process stopped
   // for this restart can't report the session idle over a start that fails.
   sessions.delete(command.sessionId)
@@ -299,32 +347,42 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
   const plugins = pluginServers(payload.plugins ?? [], machineSecrets(HOME))
   if (plugins.missing.length) {
     throw new Error(`this machine has no value for ${[...new Set(plugins.missing)].join(', ')}, which the agent's plugins need. `
-      + `Set it in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
+      + `Set it on the agent's page in the app, or in the daemon's environment or in ${join(HOME, 'secrets.json')}.`)
   }
-  // A machine with a screen gives every session its computer, the standing
+  usedSecrets.set(command.sessionId, pluginSecretNames(payload.plugins ?? []))
+  staleSecrets.delete(command.sessionId)
+  // A machine with a screen gives every session its seat's computer, the standing
   // instructions to check work on it, and the verify-work skill, unless the agent
   // has a skill of that name itself. An isolated session, such as a judge's, gets
   // none of it, since the runner names the only tools a judge may use.
-  const computer = stage?.isolated ? null : screen
+  const webmcpOrigins = webmcpOriginsOf(payload)
   const agentSkills = payload.skills ?? []
   const skills = computer && !agentSkills.some((skill) => skill.name === VERIFY_SKILL.name) ? [...agentSkills, VERIFY_SKILL] : payload.skills
   if (skills) writeSkills(cwd, skills)
+  // A session sent no hooks runs none. Its hooks are in a settings file of its own, never in the folder, which
+  // another session, such as a judge's in the same task, may share.
+  const hooks = payload.hooks ?? []
+  const settings = writeHooks(join(SESSIONS_DIR, `${command.sessionId}.settings.json`), hooks)
+  const mcp = mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null, webmcpOrigins)
   const session = claude.start({
     cwd, model: payload.model, resume: payload.harnessSessionId,
-    instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', payload.instructions, payload.memory].filter(Boolean).join('\n\n'),
-    mcpConfig: mcpConfig(command.sessionId, stage, plugins.servers, computer, payload.workspaceId ? ws.taskFolder(payload.workspaceId) : null),
+    instructions: [TEAM_RECORD_GUIDE, computer ? COMPUTER_GUIDE : '', computer && webmcpOrigins.length ? WEB_GUIDE : '', payload.instructions, payload.memory]
+      .filter(Boolean).join('\n\n'),
+    mcpConfig: mcp.file,
     // A judge's session gets no team-record tools, so it cannot read the author's session.
     allowedTools: [
-      ...(stage?.isolated ? [] : ['mcp__team-record']), ...Object.keys(plugins.servers).map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : []),
+      ...(stage?.isolated ? [] : ['mcp__team-record']), ...mcp.pluginNames.map((name) => `mcp__${name}`), ...(stage ? ['mcp__stage', ...stage.allow] : TEAM_AGENT_TOOLS_ALLOWED),
       ...(computer ? COMPUTER_TOOLS_ALLOWED : []),
     ],
     acceptEdits: payload.permissions.workspaceWrites,
     // A server before this release sends a stage's budget only in the stage.
     maxBudgetUsd: payload.maxBudgetUsd ?? stage?.maxBudgetUsd,
+    hookEvents: hooks.length > 0,
+    settings,
     oauthToken: ownClaudeToken(HOME),
   })
   sessions.set(command.sessionId, session)
-  setups.set(command.sessionId, setupOf(payload))
+  setups.set(command.sessionId, setupOf(payload, seat))
   const { pid } = session
   if (pid !== undefined) rememberHarness(SESSIONS_DIR, command.sessionId, pid)
   const live = new LiveStream({
@@ -348,9 +406,61 @@ function startSession(command: Extract<Command, { kind: 'message' }>): HarnessSe
     if (sessions.get(command.sessionId) === session) {
       sessions.delete(command.sessionId)
       setups.delete(command.sessionId)
+      usedSecrets.delete(command.sessionId)
     }
   })()
   return session
+}
+
+// The names of the secrets this computer holds, for the API to match against what
+// it believes it set. A secrets file the daemon cannot read says nothing, so the
+// API keeps what it has.
+function helloSecrets(): FromDaemon | null {
+  try {
+    return { type: 'secrets_held', names: heldSecretNames(HOME) }
+  } catch (error) {
+    console.error(`the secrets file was not reported to the API: ${error instanceof SecretsFileError ? error.message : messageOf(error)}`)
+    return null
+  }
+}
+
+// Sets or removes one secret's value at the API's request, and answers. A value
+// the daemon cannot take is refused with the reason, which never quotes the
+// value or the file. The plugins of a session that started with the value being
+// replaced or removed still hold it, so an idle session is stopped, and one in a
+// turn is restarted with its next message.
+function holdSecret(frame: ToDaemon): FromDaemon {
+  const { id, name } = frame
+  const put = frame.type === 'secret_put'
+  const refused = (reason: string): FromDaemon => {
+    console.error(`secret ${name} was refused: ${reason}`)
+    return { type: 'secret_refused', id, name, reason: reason.slice(0, 500) }
+  }
+  // A plugin's secret is read from the daemon's environment before its secrets file, so a value
+  // stored under a name the environment holds would be set and never used. Saying so is better.
+  if (put && process.env[name] !== undefined) {
+    return refused(`This computer's environment already sets ${name}, and it is read before a value set here. Take it out of the daemon's environment first.`)
+  }
+  try {
+    const { had } = changeMachineSecret(HOME, name, put ? frame.value : null, (gone) => {
+      // A value the scrubber would ignore, or one it already remembers, is not kept again.
+      if (gone.length >= MIN_SECRET_LENGTH && !retiredSecrets.some(([retired, value]) => retired === name && value === gone)) retiredSecrets.push([name, gone])
+      forgetValueIn(SESSIONS_DIR, gone)
+      for (const [sessionId, names] of usedSecrets) {
+        if (!names.includes(name)) continue
+        const session = sessions.get(sessionId)
+        if (session && !session.busy) session.stop()
+        else staleSecrets.add(sessionId)
+      }
+    })
+    secrets = knownSecrets()
+    scrub = makeScrub(secrets)
+    console.log(`secret ${name} ${put ? 'stored' : 'removed'}`)
+    return put ? { type: 'secret_stored', id, name } : { type: 'secret_removed', id, name, had }
+  } catch (error) {
+    // The daemon's own words for a file it will not touch. Anything else is Node's, scrubbed.
+    return refused(error instanceof SecretsFileError ? error.message : `The daemon could not change what this computer holds. ${scrub(messageOf(error))}`)
+  }
 }
 
 // Whether the server still has the workspace's setup queued or running for this machine.
@@ -368,17 +478,21 @@ async function apply(command: Command): Promise<unknown> {
   if (command.kind === 'suite') return checker.suite(command.payload)
   const live = sessions.get(command.sessionId)
   if (command.kind === 'message') {
+    const place = await seatOf(command)
+    const seat = place.seat
     // A process keeps the setup it started with. Once the agent's instructions,
-    // skills, plugins or model change, the next message restarts the session with
-    // the new setup, resuming the same conversation. One mid-turn finishes first.
-    if (live?.alive && !live.busy && command.payload.harnessSessionId && setups.get(command.sessionId) !== setupOf(command.payload)) live.stop()
+    // skills, plugins, model or seat change, or a secret its plugins took is set
+    // again or removed, the next message restarts the session with the new setup,
+    // resuming the same conversation. One mid-turn finishes first.
+    if (live?.alive && !live.busy && command.payload.harnessSessionId
+      && (staleSecrets.has(command.sessionId) || setups.get(command.sessionId) !== setupOf(command.payload, seat))) live.stop()
     if (live?.alive) {
       live.send(command.payload.text, [command.id])
       return null
     }
     const { workspaceId } = command.payload
     if (workspaceId) await ws.ready(workspaceId, settingUp(workspaceId))
-    startSession(command).send(command.payload.text, [command.id])
+    startSession(command, seat, await computerOf(place)).send(command.payload.text, [command.id])
     return null
   }
   if (command.kind === 'stop') {
@@ -444,6 +558,8 @@ function failTurn(sessionId: string, covers: string[], why: string) {
 
 // Resumes a session the last run cut off, with one message that answers all of
 // its unfinished messages. A session that can't start fails them with the reason.
+// It goes in the session's queue, so a message that arrives meanwhile waits
+// for it rather than starting a second process on the same conversation.
 function resume(turn: unknown) {
   const parsed = ResumeTurn.safeParse(turn)
   if (!parsed.success) {
@@ -455,11 +571,14 @@ function resume(turn: unknown) {
   }
   const { command, covers } = parsed.data
   console.log(`resuming session ${command.sessionId} for ${covers.length} unfinished messages`)
-  try {
-    startSession(command).send(command.payload.text, covers)
-  } catch (error) {
-    failTurn(command.sessionId, covers, messageOf(error))
-  }
+  inOrder(command.sessionId, async () => {
+    try {
+      const place = await seatOf(command)
+      startSession(command, place.seat, await computerOf(place)).send(command.payload.text, covers)
+    } catch (error) {
+      failTurn(command.sessionId, covers, messageOf(error))
+    }
+  })
 }
 
 // The machine's queue arrives through sync. Each queued command is claimed, which
@@ -654,6 +773,25 @@ function followSignIns(signal: AbortSignal) {
   new Shape(stream).subscribe(({ rows }) => { settleSignIns(rows) })
 }
 
+// The box's seat rows, which say which seats run and for which agent.
+function followSeats(running: Seats, signal: AbortSignal) {
+  const stream = new ShapeStream<Row>({
+    url: `${config.api}/v1/shape/seats`,
+    headers: { authorization: `Bearer ${config.token}` },
+    signal,
+    onError: (error) => {
+      if (!stopping) console.error('seat sync:', error.message)
+      return stopping ? undefined : {}
+    },
+  })
+  new Shape(stream).subscribe(({ rows }) => {
+    const parsed = z.array(SeatRow).safeParse(rows)
+    // Rows this daemon can't read leave the seats as they are, and say why.
+    if (parsed.success) running.follow(parsed.data)
+    else console.error(`the box's seats: ${z.prettifyError(parsed.error)}`)
+  })
+}
+
 // Stops everything and exits with `code`, 0 when asked to stop and 1 when the
 // box can't work, so its restart policy starts it again. A session mid-turn is
 // left as a crash leaves it, for the next start to stop its process and resume
@@ -661,6 +799,8 @@ function followSignIns(signal: AbortSignal) {
 async function shutdown(code: 0 | 1) {
   if (stopping) return
   stopping = true
+  // Closing the connection first tells the API the computer is going, so a key set from here waits for it to start again.
+  control.stop()
   abort.abort()
   for (const refresh of refreshes.values()) if (refresh.timer) clearTimeout(refresh.timer)
   for (const [id, session] of sessions) {
@@ -671,21 +811,25 @@ async function shutdown(code: 0 | 1) {
   const deadline = Date.now() + 10_000
   while (sessions.size && Date.now() < deadline) await sleep(100)
   screen?.link.stop()
-  await screen?.service.stop()
-  await desktop?.stop()
+  await seats?.stop()
   await api('POST', '/v1/instance/heartbeat', { status: 'offline' }).catch(() => {})
   process.exit(code)
 }
 
 const abort = new AbortController()
+// The API's way to this computer for what must not be stored on the way, such as a secret's value.
+const control = linkControl({ api: config.api, token: config.token, hold: holdSecret, hello: helloSecrets })
 process.on('SIGINT', () => { void shutdown(0) })
 process.on('SIGTERM', () => { void shutdown(0) })
 console.log(`agentsd connected to ${config.api}`)
 void heartbeat()
 void desktopUp.then((up) => { if (up) void listen(abort.signal) })
 followSignIns(abort.signal)
+if (seats) followSeats(seats, abort.signal)
 // The person's own Claude Code sessions in the folders they connected on this Mac.
 void followTerminalSessions({ home: HOME, config, api, secrets: knownSecrets, ready: shellRead, signal: abort.signal })
   .catch((error: unknown) => { console.error('terminal sessions stopped:', messageOf(error)) })
 // The Agents app on this Mac lists and connects those folders through this socket.
 serveAppSocket({ home: HOME, api, signal: abort.signal })
+// Agents' tools ask it before they share a file, since only the daemon knows this machine's secrets.
+serveShareGuard({ socket: shareGuardPath(HOME), secrets: knownSecrets, signal: abort.signal })

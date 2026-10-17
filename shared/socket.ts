@@ -9,6 +9,13 @@ import { userInfo } from 'node:os'
 import { dirname } from 'node:path'
 import { hasCode } from './errors.ts'
 
+// macOS cuts a Unix socket's path at this many bytes, so a server would listen where no client looks for it.
+export const LONGEST_SOCKET_PATH = 103
+
+// Why a socket can't be served at this path, or null when it can.
+export const socketPathProblem = (path: string): string | null =>
+  (Buffer.byteLength(path) > LONGEST_SOCKET_PATH ? `its path is longer than the ${String(LONGEST_SOCKET_PATH)} bytes macOS allows` : null)
+
 // Whether something accepts connections on the Unix socket at this path. A
 // socket file left by a server that stopped refuses them. Any other failure, such
 // as a missing file, is the caller's to handle.
@@ -24,8 +31,11 @@ export function accepts(path: string): Promise<boolean> {
 // stops without closing its socket leaves the file behind, and it refuses
 // connections, so it is replaced. A socket that accepts them belongs to a running
 // server, and taking it over would send that server's clients here, so that
-// stops this one, and so does anything at the path that isn't a socket.
+// stops this one, and so does anything at the path that isn't a socket. A path
+// macOS would cut is refused before anything is made.
 export async function listenOnSocket(server: Server, path: string): Promise<void> {
+  const problem = socketPathProblem(path)
+  if (problem) throw new Error(problem)
   // The folder may not exist yet. Made here, only its owner can open it.
   const folder = dirname(path)
   await mkdir(folder, { recursive: true, mode: 0o700 })

@@ -141,8 +141,8 @@ async function run(engine: string) {
     const env = docker('inspect', '-f', '{{json .Config.Env}}', container)
     check(docker('inspect', '-f', '{{.Config.Image}}', container) === IMAGE
       && docker('inspect', '-f', '{{range .Mounts}}{{.Name}} {{end}}', container).includes(`${container}-home`)
-      && !env.includes('CLAUDE_CODE_OAUTH_TOKEN') && !env.includes(teamToken),
-    `${engine}: their box is a container from the box image, on its own home volume, without the team's Claude token`)
+      && env.includes(`CLAUDE_CODE_OAUTH_TOKEN=${teamToken}`),
+    `${engine}: their box is a container from the box image, on its own home volume, with the team's Claude token until they sign in`)
 
     // They sign in to Claude from the app.
     await page.getByRole('button', { name: 'Set up your box' }).click()

@@ -1,16 +1,18 @@
-// The box's computer: TigerVNC's Xvnc, which is both the X display and the VNC
-// server, matchbox as the window manager, and the box's Chromium. The daemon
-// starts all three, restarts any that exits, and stops them when it stops.
-// The design is docs/design/computers.md.
+// One seat's computer: TigerVNC's Xvnc, which is both the X display and the VNC
+// server, JWM as the window manager with the seat's dock (daemon/dock.ts), and
+// the seat's Chromium. The daemon starts all three for each seat
+// (daemon/seats.ts), restarts any that exits, and stops them when the seat or
+// the daemon stops. The design is docs/design/computers.md.
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { ScreenSize } from '../shared/screen.ts'
 import { messageOf } from '../shared/errors.ts'
+import { DOCK_BUTTONS, dockConfig, dockIcon, type DockButton } from './dock.ts'
 
 // What the desktop's programs need from the daemon's environment: where programs
 // are and the home folder. Never the rest of it, which holds the machine's token
@@ -20,12 +22,18 @@ const DesktopProcessEnv = z.object({ PATH: z.string().min(1), HOME: z.string().m
 
 export type DesktopConfig = {
   size: ScreenSize
+  // The X display's number, which names its lock files too.
+  display: number
+  // The browser's DevTools port, on the computer's loopback only.
+  cdpPort: number
   // Where the daemon keeps the screen's sockets, readable only by this user.
   runDir: string
   // The browser's profile, in the home volume so logins outlive the container.
   profileDir: string
   // Playwright's browsers folder, which holds the one Chromium the box uses.
   browsersPath: string
+  // The whiteboard the dock opens (daemon/whiteboard.ts).
+  whiteboardUrl: string
 }
 
 export type Desktop = {
@@ -36,6 +44,12 @@ export type Desktop = {
   ready: Promise<void>
   // Puts text on the screen's clipboard, as copying it in any app would.
   offerClipboard(text: string): Promise<ClipboardOffer>
+  // How many times the browser has started, so a reader can tell a browser
+  // that started again, with only what its profile kept.
+  browserStarts(): number
+  // Closes every window the dock opened outside the browser, such as terminals,
+  // by stopping everything the window manager started.
+  closeWindows(): Promise<void>
   stop(): Promise<void>
 }
 
@@ -48,9 +62,6 @@ export type ClipboardOffer = {
   taken(): Promise<boolean>
 }
 
-const DISPLAY = ':1'
-// Chrome's usual DevTools port, on the box's loopback only.
-const CDP_PORT = 9222
 // A process that ran this long was healthy, so its next crash restarts it at once.
 const HEALTHY_MS = 60_000
 const RESTART_FIRST_MS = 1_000
@@ -82,12 +93,20 @@ export function findChromium(browsersPath: string): string {
   return binary
 }
 
-type Supervised = { stop(): Promise<void> }
+type Supervised = {
+  // The running process's id, or null between runs.
+  pid(): number | null
+  stop(): Promise<void>
+}
+
+type Apps = { windowManager: Supervised; browser: Supervised }
+
+type Program = { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; beforeStart: () => void }
 
 // Runs a process, and runs it again whenever it exits or can't start, waiting
 // longer after each quick failure.
-function supervise(name: string, command: string, args: string[], env: NodeJS.ProcessEnv, beforeStart: () => void): Supervised {
-  let kill: ((signal: NodeJS.Signals) => void) | null = null
+function supervise(name: string, program: Program): Supervised {
+  let running: ChildProcess | null = null
   // Set by stop() while the loop below waits, so the loop reads it through a function.
   const state = { stopping: false }
   const stopping = () => state.stopping
@@ -95,9 +114,9 @@ function supervise(name: string, command: string, args: string[], env: NodeJS.Pr
   const stderr: string[] = []
   // Resolves with why the process ended.
   const runOnce = async (): Promise<string> => {
-    beforeStart()
-    const child = spawn(command, args, { env, stdio: ['ignore', 'ignore', 'pipe'] })
-    kill = (signal) => child.kill(signal)
+    program.beforeStart()
+    const child = spawn(program.command, program.args, { env: program.env, cwd: program.cwd, stdio: ['ignore', 'ignore', 'pipe'] })
+    running = child
     child.stderr.setEncoding('utf8').on('data', (text: string) => {
       stderr.push(...text.split('\n').filter(Boolean))
       stderr.splice(0, Math.max(0, stderr.length - STDERR_LINES))
@@ -112,7 +131,7 @@ function supervise(name: string, command: string, args: string[], env: NodeJS.Pr
       const started = Date.now()
       // A failure to start is retried like an exit, and logged below with its reason.
       const ended = await runOnce().catch((error: unknown) => `could not start: ${messageOf(error)}`)
-      kill = null
+      running = null
       if (stopping()) return
       delay = Date.now() - started > HEALTHY_MS ? RESTART_FIRST_MS : Math.min(RESTART_MAX_MS, delay * 2)
       console.error(`desktop: ${name} ended (${ended}), starting it again in ${delay / 1000}s${stderr.length ? `\n  ${stderr.slice(-5).join('\n  ')}` : ''}`)
@@ -121,15 +140,64 @@ function supervise(name: string, command: string, args: string[], env: NodeJS.Pr
     }
   })()
   return {
+    pid: () => running?.pid ?? null,
     async stop() {
       state.stopping = true
-      const stopNow = kill
-      if (!stopNow) return
-      stopNow('SIGTERM')
-      const killer = setTimeout(() => { stopNow('SIGKILL') }, STOP_GRACE_MS)
+      const child = running
+      if (!child) return
+      child.kill('SIGTERM')
+      const killer = setTimeout(() => { child.kill('SIGKILL') }, STOP_GRACE_MS)
       await done
       clearTimeout(killer)
     },
+  }
+}
+
+// A process's parent and state letter from /proc, or null once it has gone.
+function procStat(pid: number): { parent: number; state: string } | null {
+  let stat: string
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH')) return null
+    throw error
+  }
+  // The command's name is in parentheses and may hold spaces, so fields count from its end.
+  const [state = '', parent = ''] = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+  return { parent: Number(parent), state }
+}
+
+// Every process descended from `pid`: the programs a window manager started,
+// and everything they started.
+function descendantsOf(pid: number): number[] {
+  const children = new Map<number, number[]>()
+  for (const name of readdirSync('/proc').filter((entry) => /^[0-9]+$/.test(entry))) {
+    const stat = procStat(Number(name))
+    if (stat) children.set(stat.parent, [...(children.get(stat.parent) ?? []), Number(name)])
+  }
+  const found: number[] = []
+  const queue = [pid]
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    for (const child of children.get(next) ?? []) {
+      found.push(child)
+      queue.push(child)
+    }
+  }
+  return found
+}
+
+// A process that has exited but not been reaped yet counts as gone.
+const alive = (pid: number) => {
+  const stat = procStat(pid)
+  return stat !== null && stat.state !== 'Z'
+}
+
+function signal(pid: number, name: NodeJS.Signals) {
+  try {
+    process.kill(pid, name)
+  } catch (error) {
+    // It ended since it was found.
+    if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error
   }
 }
 
@@ -155,19 +223,26 @@ export function startDesktop(config: DesktopConfig): Desktop {
   mkdirSync(config.runDir, { recursive: true, mode: 0o700 })
   mkdirSync(config.profileDir, { recursive: true, mode: 0o700 })
   const vncSocket = join(config.runDir, 'vnc.sock')
-  const cdpUrl = `http://127.0.0.1:${CDP_PORT}`
+  const cdpUrl = `http://127.0.0.1:${config.cdpPort}`
   const chromium = findChromium(config.browsersPath)
   const { PATH, HOME } = DesktopProcessEnv.parse(process.env)
-  const env = { PATH, HOME, DISPLAY }
+  const display = `:${config.display}`
+  const env = { PATH, HOME, DISPLAY: display }
   const { width, height } = config.size
 
-  const xvnc = supervise('Xvnc', 'Xvnc', [
-    DISPLAY, '-geometry', `${width}x${height}`, '-depth', '24', '-desktop', 'Agents box',
+  // The dock's configuration and icons, in the seat's own folder.
+  const iconOf = (button: DockButton) => join(config.runDir, `${button.toLowerCase()}.svg`)
+  for (const button of DOCK_BUTTONS) writeFileSync(iconOf(button), dockIcon(button))
+  const jwmrc = join(config.runDir, 'jwmrc')
+  writeFileSync(jwmrc, dockConfig({ cdpUrl, whiteboardUrl: config.whiteboardUrl, iconOf }))
+
+  const xvnc = supervise('Xvnc', { command: 'Xvnc', env, cwd: HOME, args: [
+    display, '-geometry', `${width}x${height}`, '-depth', '24', '-desktop', 'Agents box',
     // Viewers come only through the daemon's tunnels, over this socket. No TCP at all.
     '-rfbunixpath', vncSocket, '-rfbunixmode', '0600', '-rfbport', '-1', '-nolisten', 'tcp',
     // X clients reach the display only through its socket file in this container's
     // /tmp. Xvnc's abstract socket belongs to the network namespace, so boxes on
-    // the host's network, as step 12c runs them, would fight over display :1.
+    // the host's network, as step 12c runs them, would fight over their displays.
     '-nolisten', 'local',
     // The daemon's own connection and every viewer's share the screen. None is a
     // reason to drop another, and nobody resizes it under the agent's coordinates.
@@ -176,38 +251,46 @@ export function startDesktop(config: DesktopConfig): Desktop {
     '-SendCutText=0', '-AcceptCutText=0',
     // Nothing on this screen uses GLX, and leaving it out keeps Mesa unloaded.
     '-extension', 'GLX',
-  ], env, () => {
+  ], beforeStart: () => {
     // A container restart leaves the last run's lock and socket behind, and Xvnc
-    // refuses to start while they exist. Only this daemon runs an X server here.
-    rmSync('/tmp/.X1-lock', { force: true })
-    rmSync('/tmp/.X11-unix/X1', { force: true })
+    // refuses to start while they exist. Only this daemon runs X servers here.
+    rmSync(`/tmp/.X${config.display}-lock`, { force: true })
+    rmSync(`/tmp/.X11-unix/X${config.display}`, { force: true })
     rmSync(vncSocket, { force: true })
     mkdirSync('/tmp/.X11-unix', { recursive: true, mode: 0o1777 })
-  })
-  const startApps = (): Supervised[] => [
-    supervise('matchbox', 'matchbox-window-manager', ['-use_titlebar', 'no'], env, () => undefined),
-    supervise('Chromium', chromium, [
+  } })
+  // A terminal the dock opens starts in the home folder, as the window manager does.
+  const startApps = (): Apps => ({
+    windowManager: supervise('JWM', { command: 'jwm', args: ['-f', jwmrc], env, cwd: HOME, beforeStart: () => undefined }),
+    browser: supervise('Chromium', { command: chromium, env, cwd: HOME, args: [
       // The container is the sandbox. Chromium's own needs user namespaces that
       // Docker doesn't grant, and --test-type hides the warning bar that brings.
       '--no-sandbox', '--test-type',
       // The "for automated testing only" bar would take 56 pixels off every screenshot.
       '--disable-infobars',
       '--no-first-run', '--no-default-browser-check', '--password-store=basic',
+      // Chromium 156 gives a page document.modelContext, where it registers the tools it
+      // offers to agents, only behind this feature. The computer server reads those tools
+      // only for sites the team lists (daemon/web-tools.ts).
+      '--enable-features=WebMCPTesting',
       // A box browser does what the agent asks and nothing else: no update checks,
       // field trials or sync.
       '--disable-background-networking', '--disable-component-update', '--disable-sync',
       // No GPU in a box. SwiftShader renders, rather than Chromium retrying EGL.
       '--use-angle=swiftshader', '--disable-dev-shm-usage',
-      `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${config.profileDir}`,
+      `--remote-debugging-port=${config.cdpPort}`, `--user-data-dir=${config.profileDir}`,
       '--window-position=0,0', `--window-size=${width},${height}`, '--start-maximized', 'about:blank',
-    ], env, () => {
+    ], beforeStart: () => {
       // A recreated container has a new hostname, and Chromium won't open a profile
       // its old self still seems to hold.
       for (const lock of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) rmSync(join(config.profileDir, lock), { force: true })
-    }),
-  ]
+      state.browserStarts += 1
+    } }),
+  })
 
-  const state: { apps: Supervised[]; stopped: boolean; clipboard: ChildProcess | null } = { apps: [], stopped: false, clipboard: null }
+  const state: { apps: Apps | null; stopped: boolean; clipboard: ChildProcess | null; browserStarts: number } = {
+    apps: null, stopped: false, clipboard: null, browserStarts: 0,
+  }
 
   // What the clipboard holds now, as an app pasting would get it. Empty when it
   // holds nothing, which xclip reports by failing.
@@ -285,11 +368,21 @@ export function startDesktop(config: DesktopConfig): Desktop {
     })
   })()
   return {
-    size: config.size, vncSocket, cdpUrl, ready, offerClipboard,
+    size: config.size, vncSocket, cdpUrl, ready, offerClipboard, browserStarts: () => state.browserStarts,
+    async closeWindows() {
+      const windowManager = state.apps?.windowManager.pid() ?? null
+      if (windowManager === null) return
+      const opened = descendantsOf(windowManager)
+      for (const pid of opened) signal(pid, 'SIGTERM')
+      // An interactive shell ignores SIGTERM, and goes when its terminal closes.
+      const deadline = Date.now() + STOP_GRACE_MS
+      while (opened.some(alive) && Date.now() < deadline) await sleep(POLL_MS)
+      for (const pid of opened.filter(alive)) signal(pid, 'SIGKILL')
+    },
     async stop() {
       state.stopped = true
       state.clipboard?.kill()
-      await Promise.all(state.apps.map((app) => app.stop()))
+      if (state.apps) await Promise.all([state.apps.windowManager.stop(), state.apps.browser.stop()])
       await xvnc.stop()
     },
   }

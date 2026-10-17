@@ -1,10 +1,11 @@
-// The API's side of agents' computers (docs/design/computers.md). A box
-// with a desktop keeps one control connection open to the machine port. When a
-// person opens the Screen view through the people socket, the API asks the box
-// for a tunnel and joins the two, reading what the person sends so that only the
-// one who holds the screen can type or click. The open row of screen_takeovers
-// records who holds it, and only the handoff state machine in shared/screen.ts
-// moves it.
+// The API's side of agents' computers (docs/design/computers.md). Each seat of a
+// box has a screen of its own. A box with a desktop keeps one control
+// connection open to the machine port. When a person opens a seat's Screen view
+// through the people socket, the API asks the box for a tunnel to that seat and
+// joins the two, reading what the person sends so that only the one who holds
+// that seat's screen can type or click. The open row of screen_takeovers for a
+// seat records who holds its screen, and only the handoff state machine in
+// shared/screen.ts moves it.
 
 import { randomUUID } from 'node:crypto'
 import { STATUS_CODES, type IncomingMessage } from 'node:http'
@@ -22,8 +23,9 @@ import {
   AGENT_HOLDS, FromBox, handoff, SCREEN_DEAD_MS, SCREEN_GRACE_MS, SCREEN_PING_MS, SCREEN_SWEEP_MS, ScreenClose,
   type HandoffEvent, type ScreenControl, type ToBox, type ToViewer,
 } from '../shared/screen.ts'
-import { PersonId, ScreenTakeoverId, SessionId, TunnelId } from '../shared/ids.ts'
+import { PersonId, ScreenTakeoverId, SeatId, SessionId, TunnelId } from '../shared/ids.ts'
 import { InstanceId } from '../shared/onboarding.ts'
+import { FIRST_SEAT, SeatInPath, SeatNumber } from '../shared/seats.ts'
 import { parseJson } from '../shared/json.ts'
 import { WORKING } from '../shared/lifecycle.ts'
 import { bytesOf } from '../shared/websocket.ts'
@@ -32,7 +34,7 @@ import { messageOf } from '../shared/errors.ts'
 // A box dials back within a second on a healthy connection. Ten seconds covers a
 // box under load without leaving a person looking at nothing.
 const TUNNEL_WAIT_MS = 10_000
-// A box that showed private work in the last day may still have it on screen,
+// A seat that showed private work in the last day may still have it on screen,
 // in a tab or a terminal, so only people who can see that work may watch.
 const PRIVATE_WORK_HOURS = 24
 // A viewer sends keys, clicks and small protocol messages. The largest it may
@@ -40,12 +42,16 @@ const PRIVATE_WORK_HOURS = 24
 const VIEWER_MAX_FRAME = 2 * 1024 * 1024
 // A box's tunnel carries the screen in chunks of a socket read, 64 KB at most.
 const BOX_MAX_FRAME = 16 * 1024 * 1024
-const VIEWER_PATH = /^\/v1\/screens\/([0-9a-f-]{36})$/
+// A screen named without a seat is the box's first seat, the one screen a box
+// had before seats.
+const VIEWER_PATH = /^\/v1\/screens\/([0-9a-f-]{36})(?:\/seats\/([0-9]+))?$/
 const TUNNEL_PATH = /^\/v1\/instance\/screen\/tunnels\/([0-9a-f-]{36})$/
 
+// One seat's screen: the box it is on, its number there, and its row.
+type Screen = { instanceId: InstanceId; n: SeatNumber; seatId: SeatId }
 type BoxLink = { instanceId: InstanceId; ws: WebSocket }
 type Viewer = {
-  tunnel: TunnelId; instanceId: InstanceId; person: Person; ws: WebSocket; filter: RfbInputFilter
+  tunnel: TunnelId; screen: Screen; person: Person; ws: WebSocket; filter: RfbInputFilter
   box: WebSocket | null
   // Bytes the viewer sent before its box's tunnel arrived.
   early: Uint8Array[]
@@ -54,87 +60,111 @@ type Viewer = {
 
 const boxes = new Map<InstanceId, BoxLink>()
 const viewers = new Map<TunnelId, Viewer>()
-// Each screen's control as last read from or written to the database. Every
-// change goes through this file, which updates both.
-const controls = new Map<InstanceId, ScreenControl>()
-// When a person's last view of a screen closed, by screen and person.
+// Each seat's screen control as last read from or written to the database.
+// Every change goes through this file, which updates both.
+const controls = new Map<SeatId, ScreenControl>()
+// When a person's last view of a seat's screen closed, by seat and person.
 const lastSeen = new Map<string, number>()
-const seenKey = (instanceId: InstanceId, personId: PersonId) => `${instanceId}/${personId}`
+const seenKey = (seatId: SeatId, personId: PersonId) => `${seatId}/${personId}`
 
 const peopleSockets = new WebSocketServer({ noServer: true, maxPayload: VIEWER_MAX_FRAME })
 const machineSockets = new WebSocketServer({ noServer: true, maxPayload: BOX_MAX_FRAME })
 
 const holds = (control: ScreenControl, personId: PersonId) => control.holder === 'person' && control.personId === personId
 
-// The open takeover of a screen, as the control it means.
+const ScreenRow = z.object({ seat_id: SeatId, n: SeatNumber })
+
+// The screens of a box's seats.
+async function screensOf(instanceId: InstanceId): Promise<Screen[]> {
+  return (await many(pool, 'select id as seat_id, n from seats where instance_id = $1 order by n', [instanceId]))
+    .map((row) => ScreenRow.parse(row)).map(({ seat_id: seatId, n }) => ({ instanceId, n, seatId }))
+}
+
+// The open takeover of a seat's screen, as the control it means.
 const OpenTakeover = z.object({ person_id: PersonId, login: z.string(), started_at: z.date() })
-async function readControl(db: pg.Pool | pg.PoolClient, instanceId: InstanceId): Promise<ScreenControl> {
+async function readControl(db: pg.Pool | pg.PoolClient, seatId: SeatId): Promise<ScreenControl> {
   const row = await maybe(db,
     `select t.person_id, p.login, t.started_at from screen_takeovers t join people p on p.id = t.person_id
-     where t.instance_id = $1 and t.ended_at is null`, [instanceId])
+     where t.seat_id = $1 and t.ended_at is null`, [seatId])
   if (!row) return AGENT_HOLDS
   const open = OpenTakeover.parse(row)
   return { holder: 'person', personId: open.person_id, login: open.login, since: open.started_at.toISOString() }
 }
 
-// Reads a screen's control into the cache the first time anyone connects to it.
-async function loadControl(instanceId: InstanceId) {
-  if (!controls.has(instanceId)) controls.set(instanceId, await readControl(pool, instanceId))
+// Reads a seat's screen control into the cache the first time anyone connects to it.
+async function loadControl(seatId: SeatId) {
+  if (!controls.has(seatId)) controls.set(seatId, await readControl(pool, seatId))
 }
 
-function controlOf(instanceId: InstanceId): ScreenControl {
-  const control = controls.get(instanceId)
-  if (!control) throw new Error(`the control of screen ${instanceId} was never read`)
+function controlOf(seatId: SeatId): ScreenControl {
+  const control = controls.get(seatId)
+  if (!control) throw new Error(`the control of seat ${seatId}'s screen was never read`)
   return control
 }
 
 const send = (ws: WebSocket, message: ToBox | ToViewer) => { ws.send(JSON.stringify(message)) }
 
-// Tells the box and everyone watching, and lets go of what a viewer who lost
-// control still holds down.
-function applyControl(instanceId: InstanceId, control: ScreenControl) {
-  controls.set(instanceId, control)
-  const box = boxes.get(instanceId)
-  if (box) send(box.ws, { type: 'control', control })
+// Tells the box and everyone watching the seat, and lets go of what a viewer
+// who lost control still holds down.
+function applyControl(screen: Screen, control: ScreenControl) {
+  controls.set(screen.seatId, control)
+  const box = boxes.get(screen.instanceId)
+  if (box) send(box.ws, { type: 'control', seat: screen.n, control })
   for (const viewer of viewers.values()) {
-    if (viewer.instanceId !== instanceId) continue
+    if (viewer.screen.seatId !== screen.seatId) continue
     for (const release of viewer.filter.setAllowInput(holds(control, PersonId.parse(viewer.person.id)))) viewer.box?.send(release)
     send(viewer.ws, { type: 'control', control })
   }
 }
 
-type Watchable = { id: InstanceId; teamId: string }
+const SeatOfBox = z.object({ id: SeatId, status: z.enum(['free', 'starting', 'ready']) })
 
-// A person may watch or take over a screen of their team's, unless the box ran
-// work in the last day that is private and not theirs to see.
-async function watchable(person: Person, instanceId: string): Promise<Watchable> {
+// A person may watch or take over a seat's screen on a box of their team's,
+// unless the seat ran work in the last day that is private and not theirs to
+// see. A box session with no seat ran on seat 1. A seat other than the first
+// runs only while an agent holds it.
+async function watchable(person: Person, instanceId: string, n: SeatNumber): Promise<Screen> {
   const id = InstanceId.safeParse(instanceId)
   if (!id.success) throw new HttpError(404, 'no such screen')
-  const instance = await maybe(pool, 'select 1 from instances where id = $1 and team_id = $2 and screen_width is not null', [id.data, person.team_id])
-  if (!instance) throw new HttpError(404, 'no such screen')
+  const found = await maybe(pool,
+    `select s.id, s.status from seats s join instances i on i.id = s.instance_id
+     where s.instance_id = $1 and s.n = $2 and i.team_id = $3 and i.screen_width is not null`, [id.data, n, person.team_id])
+  if (!found) throw new HttpError(404, 'no such screen')
+  const seat = SeatOfBox.parse(found)
+  if (n !== FIRST_SEAT && seat.status === 'free') throw new HttpError(409, `Seat ${n} is free, so its screen is off.`)
   const hidden = await one(pool, 'the count of hidden sessions',
     `select count(*)::int as n from sessions s
-     where s.team_id = $1 and s.instance_id = $3
+     where s.team_id = $1 and s.instance_id = $3 and (s.seat_id = $6 or (s.seat_id is null and $7::int = $8::int))
        and (s.status = any($4) or s.last_active_at > now() - make_interval(hours => $5))
        and not coalesce(s.conversation_id in (select id from conversations where team_id = $1 and ${VISIBLE_CONVERSATION}), false)
        and not coalesce(s.task_id in (select id from tasks where team_id = $1 and ${VISIBLE_TASK}), false)`,
-    [person.team_id, person.id, id.data, WORKING, PRIVATE_WORK_HOURS])
+    [person.team_id, person.id, id.data, WORKING, PRIVATE_WORK_HOURS, seat.id, n, FIRST_SEAT])
   if (z.object({ n: z.int() }).parse(hidden).n > 0) throw new HttpError(403, "This screen has shown work you can't see.")
-  return { id: id.data, teamId: person.team_id }
+  return { instanceId: id.data, n, seatId: seat.id }
 }
 
-// A notice in each session working on the box, and in the one the person was
-// looking at, so the record shows who had the screen and when.
-async function noteSessions(client: pg.PoolClient, instanceId: InstanceId, sessionId: SessionId | null, takeoverId: ScreenTakeoverId,
+// A notice in each session working on the seat, and in the one the person was
+// looking at, so the record shows who had the screen and when. The sessions come
+// from `lockSessions`, which locks them before the seat, as a turn's placement does.
+async function noteSessions(client: pg.PoolClient, sessions: SessionId[], takeoverId: ScreenTakeoverId,
   action: HandoffEvent['kind'], text: string, author: string | null) {
-  const sessions = await many(client,
-    `select id from sessions where instance_id = $1 and archived_at is null and (status = any($2) or id = $3)`,
-    [instanceId, WORKING, sessionId])
   for (const session of sessions) {
-    await appendEvents(client, SessionId.parse(session.id), {
+    await appendEvents(client, session, {
       events: [{ clientId: `screen:${takeoverId}:${action}`, kind: 'notice', text, body: { subtype: 'screen', action, takeoverId } }],
     }, author)
   }
+}
+
+// The sessions working on a seat, and the one the person was looking at, locked in
+// id order. A turn's placement locks its session and then the computer's seats, so
+// a change to a seat's screen must lock sessions before the seat or the two deadlock.
+async function lockSessions(client: pg.PoolClient, screen: Screen, sessionId: SessionId | null): Promise<SessionId[]> {
+  const rows = await many(client,
+    `select id from sessions where instance_id = $1 and archived_at is null
+       and ((status = any($2) and (seat_id = $4 or (seat_id is null and $5::int = $6::int))) or id = $3)
+     order by id for update`,
+    [screen.instanceId, WORKING, sessionId, screen.seatId, screen.n, FIRST_SEAT])
+  return rows.map((row) => SessionId.parse(row.id))
 }
 
 // The notice in the record when a person's hold on a screen ends.
@@ -149,75 +179,90 @@ function endNotice(event: HandoffEvent, login: string): string {
   }
 }
 
-// Moves control by one event, in one transaction with the takeover row it
-// opens or closes, then tells the box and the viewers.
-async function move(instanceId: InstanceId, event: HandoffEvent, person: { id: PersonId; login: string }, sessionId: SessionId | null): Promise<ScreenControl> {
+// Moves a seat's screen control by one event, in one transaction with the
+// takeover row it opens or closes, then tells the box and the viewers.
+async function move(screen: Screen, event: HandoffEvent, person: { id: PersonId; login: string }, sessionId: SessionId | null): Promise<ScreenControl> {
   const control = await tx(async (client) => {
-    // One change to a screen at a time.
-    await client.query('select 1 from instances where id = $1 for update', [instanceId])
-    const step = handoff(await readControl(client, instanceId), event)
+    // Sessions first, then the seat, the order a turn's placement takes them in.
+    const sessions = await lockSessions(client, screen, sessionId)
+    // One change to a seat's screen at a time.
+    await client.query('select 1 from seats where id = $1 for update', [screen.seatId])
+    const step = handoff(await readControl(client, screen.seatId), event)
     if (!step.ok) throw new HttpError(409, step.reason)
     switch (step.change) {
       case 'already_held':
         break
       case 'took_over': {
         const row = await one(client, 'the new takeover',
-          `insert into screen_takeovers (team_id, instance_id, person_id, session_id, started_at)
-           select team_id, id, $2, $3, $4 from instances where id = $1 returning id`,
-          [instanceId, person.id, sessionId, step.control.since])
-        await noteSessions(client, instanceId, sessionId, ScreenTakeoverId.parse(row.id), 'take', `${person.login} took over the screen`, person.id)
+          `insert into screen_takeovers (team_id, instance_id, seat_id, person_id, session_id, started_at)
+           select team_id, instance_id, id, $2, $3, $4 from seats where id = $1 returning id`,
+          [screen.seatId, person.id, sessionId, step.control.since])
+        await noteSessions(client, sessions, ScreenTakeoverId.parse(row.id), 'take', `${person.login} took over the screen`, person.id)
         break
       }
       case 'handed_back':
       case 'left': {
         const row = await one(client, 'the open takeover',
-          `update screen_takeovers set ended_at = now(), ended_by = $2 where instance_id = $1 and ended_at is null returning id`,
-          [instanceId, step.change])
-        await noteSessions(client, instanceId, sessionId, ScreenTakeoverId.parse(row.id), event.kind, endNotice(event, person.login),
+          `update screen_takeovers set ended_at = now(), ended_by = $2 where seat_id = $1 and ended_at is null returning id`,
+          [screen.seatId, step.change])
+        await noteSessions(client, sessions, ScreenTakeoverId.parse(row.id), event.kind, endNotice(event, person.login),
           step.change === 'handed_back' ? person.id : null)
         break
       }
     }
     return step.control
   })
-  applyControl(instanceId, control)
+  applyControl(screen, control)
   return control
 }
 
-export async function takeScreen(person: Person, instanceId: string, sessionId: SessionId | null): Promise<ScreenControl> {
-  const screen = await watchable(person, instanceId)
-  if (!boxes.has(screen.id)) throw new HttpError(409, 'The box is not connected, so nobody can take over its screen.')
-  const id = PersonId.parse(person.id)
-  return move(screen.id, { kind: 'take', personId: id, login: person.login, at: new Date().toISOString() }, { id, login: person.login }, sessionId)
+// Tayler's call of 2026-10-16: only a computer's owner and the team's admins
+// may take control of its seats, since a terminal on a seat reads what the
+// computer's daemon holds. Everyone else on the team may watch.
+export const NOT_CONTROLLER = "Only this computer's owner and team admins can take over its screen. You can watch it."
+
+export async function takeScreen(person: Person, instanceId: string, n: SeatNumber, sessionId: SessionId | null): Promise<ScreenControl> {
+  const found = InstanceId.safeParse(instanceId)
+  if (!found.success) throw new HttpError(404, 'no such screen')
+  // Asked first, so a teammate is told why they can't take over before anything about what they can't see.
+  const ours = await maybe(pool, 'select owner_id from instances where id = $1 and team_id = $2', [found.data, person.team_id])
+  if (!ours) throw new HttpError(404, 'no such screen')
+  if (person.role !== 'admin' && ours.owner_id !== person.id) throw new HttpError(403, NOT_CONTROLLER)
+  const screen = await watchable(person, instanceId, n)
+  if (!boxes.has(screen.instanceId)) throw new HttpError(409, 'The box is not connected, so nobody can take over its screen.')
+  const personId = PersonId.parse(person.id)
+  return move(screen, { kind: 'take', personId, login: person.login, at: new Date().toISOString() }, { id: personId, login: person.login }, sessionId)
 }
 
 // Handing back runs no watch rule, so a person cut off from a screen they held
 // can still give it back. Only its holder can, as the handoff says, and it must
-// be a screen of their team's.
-export async function handBackScreen(person: Person, instanceId: string, sessionId: SessionId | null): Promise<ScreenControl> {
+// be a seat on a box of their team's.
+export async function handBackScreen(person: Person, instanceId: string, n: SeatNumber, sessionId: SessionId | null): Promise<ScreenControl> {
   const id = InstanceId.safeParse(instanceId)
-  const ours = id.success && await maybe(pool, 'select 1 from instances where id = $1 and team_id = $2', [id.data, person.team_id])
+  const ours = id.success && await maybe(pool,
+    'select s.id from seats s join instances i on i.id = s.instance_id where s.instance_id = $1 and s.n = $2 and i.team_id = $3', [id.data, n, person.team_id])
   if (!id.success || !ours) throw new HttpError(404, 'no such screen')
   const personId = PersonId.parse(person.id)
-  return move(id.data, { kind: 'hand_back', personId }, { id: personId, login: person.login }, sessionId)
+  const screen: Screen = { instanceId: id.data, n, seatId: z.object({ id: SeatId }).parse(ours).id }
+  return move(screen, { kind: 'hand_back', personId }, { id: personId, login: person.login }, sessionId)
 }
 
-// Runs the watch rule again for everyone watching a screen, or every screen,
-// since work they can't see may have started on the box after they opened it.
-// A viewer who may no longer watch is closed, and a screen they held goes back
-// to the agent.
+// Runs the watch rule again for everyone watching a box's screens, or every
+// screen, since work they can't see may have started on a seat after they
+// opened it. A viewer who may no longer watch is closed, and a screen they held
+// goes back to the agent.
 export async function recheckViewers(instanceId: InstanceId | null) {
   for (const viewer of [...viewers.values()]) {
-    if (instanceId !== null && viewer.instanceId !== instanceId) continue
-    const refused = await watchable(viewer.person, viewer.instanceId).then(() => null, (error: unknown) => {
+    if (instanceId !== null && viewer.screen.instanceId !== instanceId) continue
+    const refused = await watchable(viewer.person, viewer.screen.instanceId, viewer.screen.n).then(() => null, (error: unknown) => {
       if (error instanceof HttpError) return error.message
       throw error
     })
     if (refused === null) continue
     viewer.ws.close(ScreenClose.notAllowed, refused)
     const personId = PersonId.parse(viewer.person.id)
-    if (holds(controlOf(viewer.instanceId), personId)) {
-      await move(viewer.instanceId, { kind: 'left', personId, why: 'not_allowed' }, { id: personId, login: viewer.person.login }, null)
+    if (holds(controlOf(viewer.screen.seatId), personId)) {
+      await move(viewer.screen, { kind: 'left', personId, why: 'not_allowed' }, { id: personId, login: viewer.person.login }, null)
     }
   }
 }
@@ -229,17 +274,19 @@ export function startScreenSweep(): () => void {
   // A screen nobody has opened since this server started counts from the start,
   // so a holder gets the same grace to come back after a restart.
   const started = Date.now()
-  const Open = z.object({ instance_id: InstanceId, person_id: PersonId, login: z.string() })
+  const Open = z.object({ instance_id: InstanceId, seat_id: SeatId, n: SeatNumber, person_id: PersonId, login: z.string() })
   const sweep = async () => {
     const teams = await scopedTeams()
     const open = await many(pool,
-      `select t.instance_id, t.person_id, p.login from screen_takeovers t join people p on p.id = t.person_id
+      `select t.instance_id, t.seat_id, s.n, t.person_id, p.login from screen_takeovers t
+       join seats s on s.id = t.seat_id join people p on p.id = t.person_id
        where t.ended_at is null and ($1::uuid[] is null or t.team_id = any($1))`, [teams])
     for (const row of open.map((r) => Open.parse(r))) {
-      const watching = [...viewers.values()].some((v) => v.instanceId === row.instance_id && v.person.id === row.person_id)
-      const since = lastSeen.get(seenKey(row.instance_id, row.person_id)) ?? started
+      const watching = [...viewers.values()].some((v) => v.screen.seatId === row.seat_id && v.person.id === row.person_id)
+      const since = lastSeen.get(seenKey(row.seat_id, row.person_id)) ?? started
       if (watching || Date.now() - since < SCREEN_GRACE_MS) continue
-      await move(row.instance_id, { kind: 'left', personId: row.person_id, why: 'view_closed' }, { id: row.person_id, login: row.login }, null)
+      const screen: Screen = { instanceId: row.instance_id, n: row.n, seatId: row.seat_id }
+      await move(screen, { kind: 'left', personId: row.person_id, why: 'view_closed' }, { id: row.person_id, login: row.login }, null)
     }
     await recheckViewers(null)
   }
@@ -250,7 +297,7 @@ export function startScreenSweep(): () => void {
   return () => { clearInterval(timer) }
 }
 
-function linkBox(instanceId: InstanceId, ws: WebSocket) {
+function linkBox(instanceId: InstanceId, screens: Screen[], ws: WebSocket) {
   // A box that reconnects replaces its old connection.
   boxes.get(instanceId)?.ws.terminate()
   boxes.set(instanceId, { instanceId, ws })
@@ -269,7 +316,7 @@ function linkBox(instanceId: InstanceId, ws: WebSocket) {
     clearInterval(check)
     if (boxes.get(instanceId)?.ws === ws) boxes.delete(instanceId)
   })
-  send(ws, { type: 'control', control: controlOf(instanceId) })
+  for (const screen of screens) send(ws, { type: 'control', seat: screen.n, control: controlOf(screen.seatId) })
 }
 
 // Pings a viewer or a tunnel, and drops it once it stops answering. A laptop that
@@ -286,9 +333,9 @@ function keepAlive(ws: WebSocket) {
   ws.on('close', () => { clearInterval(timer) })
 }
 
-function watch(person: Person, screen: Watchable, ws: WebSocket) {
-  const control = controlOf(screen.id)
-  const box = boxes.get(screen.id)
+function watch(person: Person, screen: Screen, ws: WebSocket) {
+  const control = controlOf(screen.seatId)
+  const box = boxes.get(screen.instanceId)
   if (!box) {
     ws.close(ScreenClose.notConnected, 'The box is not connected. It may be stopped.')
     return
@@ -296,7 +343,7 @@ function watch(person: Person, screen: Watchable, ws: WebSocket) {
   const tunnel = TunnelId.parse(randomUUID())
   const personId = PersonId.parse(person.id)
   const viewer: Viewer = {
-    tunnel, instanceId: screen.id, person, ws, filter: new RfbInputFilter(holds(control, personId)), box: null, early: [],
+    tunnel, screen, person, ws, filter: new RfbInputFilter(holds(control, personId)), box: null, early: [],
     waiting: setTimeout(() => { ws.close(ScreenClose.boxSilent, 'The box did not answer. Try again in a moment.') }, TUNNEL_WAIT_MS),
   }
   viewers.set(tunnel, viewer)
@@ -320,10 +367,10 @@ function watch(person: Person, screen: Watchable, ws: WebSocket) {
     clearTimeout(viewer.waiting)
     viewers.delete(tunnel)
     viewer.box?.close()
-    lastSeen.set(seenKey(screen.id, personId), Date.now())
+    lastSeen.set(seenKey(screen.seatId, personId), Date.now())
   })
   send(ws, { type: 'control', control })
-  send(box.ws, { type: 'open', tunnel })
+  send(box.ws, { type: 'open', seat: screen.n, tunnel })
 }
 
 function joinTunnel(viewer: Viewer, ws: WebSocket) {
@@ -339,15 +386,23 @@ function joinTunnel(viewer: Viewer, ws: WebSocket) {
 function waitingViewer(tunnelId: string, instance: Instance): Viewer {
   const tunnel = TunnelId.safeParse(tunnelId)
   const viewer = tunnel.success ? viewers.get(tunnel.data) : undefined
-  if (!viewer || viewer.instanceId !== instance.id || viewer.box) throw new HttpError(404, 'no such tunnel')
+  if (!viewer || viewer.screen.instanceId !== instance.id || viewer.box) throw new HttpError(404, 'no such tunnel')
   return viewer
 }
 
-function refuse(socket: Duplex, status: number, message: string) {
+export function refuse(socket: Duplex, status: number, message: string) {
   const body = JSON.stringify({ error: message })
   // HTTP allows an empty reason phrase, for a status Node has no name for.
   socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ''}\r\nconnection: close\r\ncontent-type: application/json\r\n`
     + `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
+}
+
+// The seat a screen's path names. A path that names none means the first seat.
+export function seatInPath(text: string | undefined): SeatNumber {
+  if (text === undefined || text === '') return FIRST_SEAT
+  const seat = SeatInPath.safeParse(text)
+  if (!seat.success) throw new HttpError(404, 'no such screen')
+  return seat.data
 }
 
 // Which listener an upgrade came in on. People's carries the origins the app's
@@ -380,8 +435,9 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
       if (path === '/v1/instance/screen') {
         const instance = await instanceFrom(req)
         const id = InstanceId.parse(instance.id)
-        await loadControl(id)
-        accept(machineSockets, `screen control of ${id}`, (ws) => { linkBox(id, ws) })
+        const screens = await screensOf(id)
+        for (const screen of screens) await loadControl(screen.seatId)
+        accept(machineSockets, `screen control of ${id}`, (ws) => { linkBox(id, screens, ws) })
         return
       }
       const tunnel = TUNNEL_PATH.exec(path)?.[1]
@@ -390,8 +446,10 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
       accept(machineSockets, `screen tunnel ${viewer.tunnel}`, (ws) => { joinTunnel(viewer, ws) })
       return
     }
-    const screenId = VIEWER_PATH.exec(path)?.[1]
-    if (!screenId) throw new HttpError(404, 'no such route')
+    const named = VIEWER_PATH.exec(path)
+    const screenId = named?.[1]
+    if (!named || !screenId) throw new HttpError(404, 'no such route')
+    const n = seatInPath(named[2])
     // A browser sends its page's origin with every WebSocket it opens. A page on
     // another site, open in a teammate's browser, would otherwise watch and take
     // over as them. Host is no help, since the page picks the host it connects to.
@@ -406,8 +464,8 @@ async function upgrade(side: UpgradeSide, req: IncomingMessage, socket: Duplex, 
     // reason, so a person who may not watch gets the socket closed with why.
     const allowed = await (async () => {
       const person = await personFrom(req)
-      const screen = await watchable(person, screenId)
-      await loadControl(screen.id)
+      const screen = await watchable(person, screenId, n)
+      await loadControl(screen.seatId)
       return { person, screen }
     })().catch((error: unknown) => {
       if (error instanceof HttpError) return { refused: error.message }

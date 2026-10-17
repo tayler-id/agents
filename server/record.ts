@@ -8,16 +8,22 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { BlobRow, MAX_IMAGE_BYTES, sniffImage, type DocumentUpload, type ImageMediaType } from '../shared/documents.ts'
 import { AgentId, ConversationId, SessionId, type BlobId } from '../shared/ids.ts'
-import { maybe, one } from './db.ts'
+import { maybe, one, type Db } from './db.ts'
 import { PersonId, TeamId, TeamRole } from '../shared/onboarding.ts'
 import { envSecrets, makeScrub } from '../shared/scrub.ts'
+import { inFlight } from '../shared/lifecycle.ts'
+import { UNFINISHED_TURNS } from '../shared/turns.ts'
 import { PERSON_KINDS, type AgentPlugin, type AgentSkill, type AnswerPayload, type Command, type EventBatch, type MessagePayload, type NewEvent } from '../shared/types.ts'
-import { memoryBlock } from './agents.ts'
+import { ASKS_EVERY_TIME } from '../shared/webmcp.ts'
+import { hooksOf, memoryBlock } from './agents.ts'
 import { finishTurn, nextTurn, PASS, queueTurns } from './rooms.ts'
 import { reportToConversation } from './tasks.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { closeTurnAsks, endMessages, MessageMoveRefused, moveMessages, takeOverEndedAsk } from './durability.ts'
 import { requestTurn, signalSession } from './scheduler.ts'
+import { pendingUploads, placeUploads, withFiles } from './attachments.ts'
+import { reactionsNote } from './reactions.ts'
+import { CREATE_AGENT_TOOL, newAgentQuestion } from '../shared/team-agents.ts'
 
 export const scrub = makeScrub(envSecrets(process.env))
 
@@ -49,13 +55,23 @@ type Session = { id: string; team_id: string; instance_id: string; last_seq: str
 type AgentSession = Extract<Session, { folder_id: null }>
 type Agent = { id: string; home_instance_id: string | null; harness: 'claude' | 'codex'; model: string | null; instructions: string }
 
+// Who wrote the events a caller appends: a person, by id, or another agent whose
+// message a user event carries, or nobody when the session's machine wrote them.
+export type EventAuthor = string | { agent: AgentId } | null
+
 // Gives new events the next numbers in their session, skipping any client id
 // already recorded, so a retried post leaves no gap and no duplicate.
 export async function appendEvents(
-  client: pg.PoolClient, sessionId: string, batch: EventBatch, author: string | null = null,
+  client: pg.PoolClient, sessionId: string, batch: EventBatch, author: EventAuthor = null,
 ): Promise<number[]> {
+  // A batch that ends a turn in a conversation posts there, which locks the
+  // conversation. A person's post locks the conversation before the session, so
+  // this takes the two in the same order, or the two writes deadlock.
+  if (batch.status === 'failed' || batch.events.some((e) => e.kind === 'usage')) {
+    await client.query('select 1 from conversations where id = (select conversation_id from sessions where id = $1) for no key update', [sessionId])
+  }
   const session = await maybe<Session>(client,
-    'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for update', [sessionId])
+    'select id, team_id, instance_id, conversation_id, agent_id, folder_id, last_seq from sessions where id = $1 for no key update', [sessionId])
   if (!session) throw new HttpError(404, 'no such session')
 
   const ids = batch.events.map((e) => e.clientId)
@@ -138,6 +154,26 @@ async function openAsk(client: pg.PoolClient, session: Session, event: NewEvent)
     await answerAsk(client, ask.id, null, 'deny', 'A replay never waits on a person.')
     return
   }
+  // Each new agent waits for its maker's owner, and no standing rule answers for
+  // them. The ask carries the question and the choices the app shows them. A maker
+  // with no owner has nobody to ask, and one with no machine has nowhere to put an
+  // agent, so either is told no at once.
+  if (body.toolName === CREATE_AGENT_TOOL && session.folder_id === null) {
+    const maker = await one<{ name: string; owner_id: string | null; login: string | null; machine: string | null }>(client, 'the asking agent',
+      `select a.name, a.owner_id, p.login, i.name as machine from agents a left join people p on p.id = a.owner_id
+       left join instances i on i.id = a.home_instance_id where a.id = $1`, [session.agent_id])
+    if (maker.owner_id === null || maker.login === null) {
+      await answerAsk(client, ask.id, null, 'deny', 'This agent has no owner to say yes to a new agent.')
+    } else if (maker.machine === null) {
+      await answerAsk(client, ask.id, null, 'deny', 'This agent has no machine to put a new agent on.')
+    } else {
+      const asked = newAgentQuestion(maker.name, body.input, { id: PersonId.parse(maker.owner_id), login: maker.login }, maker.machine)
+      await client.query('update asks set payload = payload || $2 where id = $1', [ask.id, JSON.stringify(asked)])
+    }
+    return
+  }
+  // A tool that asks every time is never answered by a rule, whatever the rules hold.
+  if (ASKS_EVERY_TIME.includes(body.toolName ?? '')) return
   const rule = await maybe<{ decision: 'allow' | 'deny' }>(client,
     `select decision from approval_rules
      where team_id = $1 and tool_name = $2 and (instance_id is null or instance_id = $3)
@@ -177,6 +213,19 @@ export async function recordAnswer(client: pg.PoolClient, ask: AskTarget, answer
     [ask.team_id, ask.instance_id, ask.session_id, JSON.stringify(payload), event.id])
 }
 
+// An agent asking to make an agent waits for its own owner, who says yes or no to
+// each one, so no standing rule ever answers for them. Nobody but a person says
+// yes. The API makes the agent only with that yes behind it.
+async function checkNewAgentAnswer(client: pg.PoolClient, agentId: string, person: Person | null, decision: Decision) {
+  if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'A new agent is approved or denied one at a time, so Always and Never are not offered.')
+  if (person === null && decision === 'deny') return
+  const maker = await one<{ owner_id: string | null; login: string | null }>(client, 'the asking agent',
+    'select a.owner_id, p.login from agents a left join people p on p.id = a.owner_id where a.id = $1', [agentId])
+  if (person?.id !== maker.owner_id) {
+    throw new HttpError(403, `Only ${maker.login ?? "the agent's owner"} can say yes or no to a new agent this one asks for.`)
+  }
+}
+
 // Records a person's answer (or a standing rule's), makes "always" and "never"
 // into rules, and sends the answer to the machine running the session.
 export async function answerAsk(
@@ -185,13 +234,17 @@ export async function answerAsk(
   // The session's lock comes before the ask's, the order a machine's recovery and
   // a harness's batches take them in, so neither can wait on the other forever.
   const owner = await maybe<{ session_id: string }>(client, 'select session_id from asks where id = $1', [askId])
-  if (owner) await client.query('select 1 from sessions where id = $1 for update', [owner.session_id])
+  if (owner) await client.query('select 1 from sessions where id = $1 for no key update', [owner.session_id])
   const ask = await maybe<AskTarget & { status: string; agent_id: string; request_ended_at: string | null }>(client,
     `select a.id, a.status, a.session_id, a.payload, a.request_ended_at, s.instance_id, s.agent_id, s.team_id
      from asks a join sessions s on s.id = a.session_id where a.id = $1 for update of a`, [askId])
   if (!ask) throw new HttpError(404, 'no such ask')
   if (ask.status === 'answered') throw new HttpError(409, 'this ask is already answered')
   if (ask.status !== 'open') throw new HttpError(409, 'this ask is no longer open, since the turn that raised it ended')
+  if (ask.payload.toolName === CREATE_AGENT_TOOL) await checkNewAgentAnswer(client, ask.agent_id, person, decision)
+  if ((decision === 'always' || decision === 'never') && ASKS_EVERY_TIME.includes(ask.payload.toolName ?? '')) {
+    throw new HttpError(400, `${ask.payload.toolName} asks every time. Answer allow for this call or deny it.`)
+  }
   await client.query(
     `update asks set status = 'answered', answer = $2, answered_by = $3, answered_at = now() where id = $1`,
     [askId, JSON.stringify({ decision, message: message ?? null }), person?.id ?? null])
@@ -235,15 +288,17 @@ export async function reportUnplaceableTurn(client: pg.PoolClient, turn: { turnI
 // In a terminal session only what the person writes carries their author, so its
 // batch names them on their prompts and on nothing Claude wrote. Any other
 // session takes the author its caller gives, such as the person a screen notice
-// says took over.
-async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: string | null) {
+// says took over, or the agent whose message a user event carries.
+async function insertEvent(client: pg.PoolClient, session: Session, seq: number, event: NewEvent, author: EventAuthor) {
   const text = event.text === undefined ? null : scrub(event.text).slice(0, TEXT_LIMIT)
   const authored = session.folder_id === null || PERSON_KINDS.includes(event.kind)
+  const person = authored && typeof author === 'string' ? author : null
+  const agent = author !== null && typeof author === 'object' ? author.agent : null
   await client.query(
-    `insert into events (team_id, session_id, seq, updated_seq, kind, author, parent_tool_use_id,
+    `insert into events (team_id, session_id, seq, updated_seq, kind, author, author_agent, parent_tool_use_id,
        tool_use_id, tool_name, text, body, client_id)
-     values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-    [session.team_id, session.id, seq, event.kind, authored ? author : null, event.parentToolUseId ?? null,
+     values ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [session.team_id, session.id, seq, event.kind, person, agent, event.parentToolUseId ?? null,
       event.toolUseId ?? null, event.toolName ?? null, text, JSON.stringify(scrub(event.body)), event.clientId])
 }
 
@@ -255,13 +310,18 @@ type NewMessage = {
   clientId: string
   sessionId?: string
   eventId?: string
+  // The post this one answers, in the same conversation.
+  quotedMessageId?: string
+  // A post, unless it carries an agent's result back or says a chain stopped.
+  kind?: 'post' | 'answer' | 'chain_stopped'
+  askedAgentId?: string
 }
 
 export async function appendMessage(
   client: pg.PoolClient, conversationId: string, message: NewMessage,
 ): Promise<{ id: string; seq: number; fresh: boolean }> {
   const conversation = await maybe<{ team_id: string; last_seq: string }>(client,
-    'select team_id, last_seq from conversations where id = $1 for update', [conversationId])
+    'select team_id, last_seq from conversations where id = $1 for no key update', [conversationId])
   if (!conversation) throw new HttpError(404, 'no such conversation')
   const existing = await maybe<{ id: string; seq: string }>(client,
     'select id, seq from messages where conversation_id = $1 and client_id = $2', [conversationId, message.clientId])
@@ -269,10 +329,11 @@ export async function appendMessage(
 
   const seq = Number(conversation.last_seq) + 1
   const row = await one<{ id: string }>(client, 'the new message',
-    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
+    `insert into messages (team_id, conversation_id, seq, speaker, person_id, agent_id, body, session_id, event_id, client_id, quoted_message_id, kind, asked_agent_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id`,
     [conversation.team_id, conversationId, seq, message.speaker, message.personId ?? null, message.agentId ?? null,
-      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId])
+      scrub(message.body), message.sessionId ?? null, message.eventId ?? null, message.clientId, message.quotedMessageId ?? null,
+      message.kind ?? 'post', message.askedAgentId ?? null])
   await client.query('update conversations set last_seq = $2 where id = $1', [conversationId, seq])
   return { id: row.id, seq, fresh: true }
 }
@@ -296,12 +357,15 @@ async function postAgentReply(client: pg.PoolClient, session: AgentSession, conv
   return reply.text
 }
 
-// What an agent brings to every session: its skills, its plugins and what it
-// remembers about the people involved and the team.
-export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'memory'>> {
+// What an agent brings to every session: its skills, its plugins, its hooks, what
+// it remembers about the people involved and the team, and the sites its team
+// lists for its browser to take WebMCP tools from.
+export async function agentKit(client: pg.PoolClient | pg.Pool, agentId: string, personIds: string[]): Promise<Pick<MessagePayload, 'skills' | 'plugins' | 'hooks' | 'memory' | 'webmcpOrigins'>> {
   const { rows: plugins } = await client.query<AgentPlugin>('select name, kind, config from plugins where agent_id = $1 order by name', [agentId])
   const memory = await memoryBlock(client, agentId, personIds)
-  return { skills: await skillsOf(client, agentId), plugins, memory: memory || undefined }
+  const { rows: sites } = await client.query<{ origin: string }>(
+    'select o.origin from webmcp_origins o join agents a on a.team_id = o.team_id where a.id = $1 order by o.origin', [agentId])
+  return { skills: await skillsOf(client, agentId), plugins, hooks: await hooksOf(client, agentId), memory: memory || undefined, webmcpOrigins: sites.map((site) => site.origin) }
 }
 
 // An agent's skills: its own and the team's.
@@ -332,13 +396,12 @@ export async function openDm(client: pg.PoolClient, person: Person, agentName: s
   return created.id
 }
 
-// A person's post. In a main or DM conversation its agent answers: the post goes
-// into that agent's session for the conversation, and asks the scheduler for the
-// agent's turn.
-export async function sendPersonMessage(
-  client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
-): Promise<{ messageId: string; seq: number }> {
-  const conversation = await maybe<{ id: string; kind: string; agent_id: string | null; member: boolean; visibility: string; source: string | null }>(client,
+type PostableConversation = { id: string; kind: string; agent_id: string | null; member: boolean; visibility: string; source: string | null }
+
+// A conversation the person may post in, or the refusal. They post in the ones they are a member of,
+// and in a team room they can see, which posting makes them a member of.
+export async function postableConversation(client: Db, person: Person, conversationId: string): Promise<PostableConversation> {
+  const conversation = await maybe<PostableConversation>(client,
     `select c.id, c.kind, c.agent_id, c.visibility, c.source,
        exists (select 1 from conversation_members m where m.conversation_id = c.id and m.person_id = $2) as member
      from conversations c where c.id = $1 and c.team_id = $3 and c.archived_at is null`, [conversationId, person.id, person.team_id])
@@ -349,6 +412,27 @@ export async function sendPersonMessage(
     throw new HttpError(400, `${conversation.kind} conversations take no posts`)
   }
   if (conversation.source === 'pipeline') throw new HttpError(400, "a pipeline's room is for its runs' posts")
+  return conversation
+}
+
+// What the agent reads of the post this one answers.
+async function replyContext(client: pg.PoolClient, conversationId: string, replyToMessageId: string): Promise<string> {
+  const quoted = await maybe<{ who: string; body: string; deleted: boolean }>(client,
+    `select coalesce(p.login, a.name, 'someone') as who, m.body, m.deleted_at is not null as deleted from messages m
+     left join people p on p.id = m.person_id left join agents a on a.id = m.agent_id
+     where m.id = $1 and m.conversation_id = $2`, [replyToMessageId, conversationId])
+  if (!quoted || quoted.deleted) throw new HttpError(400, 'replyToMessageId: that post is not in this chat, or was deleted')
+  return `(In reply to ${quoted.who}: "${quoted.body.slice(0, 200)}")`
+}
+
+// A person's post, with its text, the files it carries and the post it answers. In a main or DM
+// conversation its agent answers: the post goes into that agent's session for the conversation, and
+// asks the scheduler for the agent's turn.
+export async function sendPersonMessage(
+  client: pg.PoolClient, person: Person, conversationId: string, text: string, clientId: string,
+  extras: { attachmentIds?: readonly string[]; replyToMessageId?: string } = {},
+): Promise<{ messageId: string; seq: number }> {
+  const conversation = await postableConversation(client, person, conversationId)
   // Posting in a team room you can see makes you a member of it.
   if (!conversation.member) {
     await client.query('insert into conversation_members (team_id, conversation_id, person_id) values ($1, $2, $3) on conflict do nothing',
@@ -356,25 +440,33 @@ export async function sendPersonMessage(
   }
 
   const message = await appendMessage(client, conversationId, {
-    speaker: 'person', personId: person.id, body: text, clientId: `person:${clientId}`,
+    speaker: 'person', personId: person.id, body: text, clientId: `person:${clientId}`, quotedMessageId: extras.replyToMessageId,
   })
   if (!message.fresh) return { messageId: message.id, seq: message.seq }
+  const files = extras.attachmentIds?.length ? await pendingUploads(client, person, extras.attachmentIds, { conversationId }) : []
+  if (files.length) await placeUploads(client, files.map((f) => f.id), { conversationId, messageId: message.id })
+  // A reply must name a post in this chat, in a room as well. A room's prompt lists the posts without their quotes.
+  const reply = extras.replyToMessageId ? await replyContext(client, conversationId, extras.replyToMessageId) : ''
   if (conversation.kind === 'room') {
     await queueTurns(client, person, conversationId, text)
     return { messageId: message.id, seq: message.seq }
   }
+  // What the agent reads is the words, the post they answer, and the files.
+  const prompt = withFiles([reply, text].filter(Boolean).join(' '), files)
 
   const agent = await one<Agent>(client, 'the agent of the conversation',
     'select id, home_instance_id, harness, model, instructions from agents where id = $1', [conversation.agent_id])
   if (!agent.home_instance_id) throw new HttpError(409, 'this agent has no home machine')
   const session = await conversationSession(client, person.team_id, person.id, conversationId, agent)
   const [seq] = await appendEvents(client, session.id, {
-    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text, messageId: message.id }, text }],
+    events: [{ clientId: `message:${message.id}`, kind: 'user', body: { text: prompt, messageId: message.id, ...(prompt === text ? {} : { said: text }), ...(extras.replyToMessageId ? { quotedMessageId: extras.replyToMessageId } : {}) }, text: prompt }],
   }, person.id)
   if (seq === undefined) throw new Error(`the post ${message.id} did not reach its session`)
 
+  // Reactions to the agent's earlier posts reach it with this turn, and not in the record of the person's post.
+  const reactions = await reactionsNote(client, agent.id, { conversationId })
   const payload: MessagePayload = {
-    permissions: CONVERSATION_PERMISSIONS, text: scrub(text), agentId: agent.id, harness: agent.harness, model: agent.model,
+    permissions: CONVERSATION_PERMISSIONS, text: scrub([reactions, prompt].filter(Boolean).join('\n\n')), agentId: agent.id, harness: agent.harness, model: agent.model,
     instructions: agent.instructions, harnessSessionId: session.harness_session_id, ...(await agentKit(client, agent.id, [person.id])),
   }
   await requestTurn(client, {
@@ -385,15 +477,25 @@ export async function sendPersonMessage(
 
 type ConversationSession = { id: string; instance_id: string; harness_session_id: string | null }
 
-// The agent's open session for this conversation, or a new one on its home machine.
+// The agent's open session for this conversation, or a new one on its home
+// machine. A session left on a machine that is no longer the agent's home, as
+// when an agent moved from a Mac to its person's computer, is archived once its
+// turns are over, and the conversation goes on at home in a new session. The
+// conversation keeps every message, and the new session starts without the
+// old one's Claude context.
 export async function conversationSession(
   client: pg.PoolClient, teamId: string, startedBy: string | null, conversationId: string, agent: Pick<Agent, 'id' | 'home_instance_id' | 'harness' | 'model'>,
 ): Promise<ConversationSession> {
-  const found = await maybe<ConversationSession>(client,
-    `select id, instance_id, harness_session_id from sessions
-     where conversation_id = $1 and agent_id = $2 and archived_at is null
-     order by created_at desc limit 1`, [conversationId, agent.id])
-  if (found) return found
+  const found = await maybe<ConversationSession & { status: string; unfinished: boolean }>(client,
+    `select s.id, s.instance_id, s.harness_session_id, s.status,
+       exists (select 1 from turns t where t.session_id = s.id and t.status = any($3)) as unfinished
+     from sessions s
+     where s.conversation_id = $1 and s.agent_id = $2 and s.archived_at is null
+     order by s.created_at desc limit 1`, [conversationId, agent.id, UNFINISHED_TURNS])
+  if (found && (agent.home_instance_id === null || found.instance_id === agent.home_instance_id || inFlight(found.status) || found.unfinished)) {
+    return { id: found.id, instance_id: found.instance_id, harness_session_id: found.harness_session_id }
+  }
+  if (found) await client.query('update sessions set archived_at = now() where id = $1', [found.id])
   const created = await one<ConversationSession>(client, 'the new session',
     `insert into sessions (team_id, conversation_id, instance_id, agent_id, started_by, harness, model)
      values ($1, $2, $3, $4, $5, $6, $7) returning id, instance_id, harness_session_id`,

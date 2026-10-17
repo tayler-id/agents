@@ -1,0 +1,67 @@
+/* History and replay. Rows are split by hairlines and type carries the hierarchy.
+   Every border is one neutral hairline and every color is a token. The step a
+   replay is on is a brighter surface, never an outline. */
+
+.history-search { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 14px; max-width: 720px; }
+.history-search input {
+  flex: 1 1 260px; min-width: 0; font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+}
+.history-search input:focus { outline: none; border-color: var(--text); }
+
+.history-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 14px; }
+.history-filters label, .history-search label { display: grid; gap: 2px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.history-filters select, .history-search select {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 8px; min-width: 0; max-width: 100%;
+}
+.history-filters select:focus, .history-search select:focus { outline: none; border-color: var(--text); }
+
+.history-list { list-style: none; margin: 0; padding: 0; }
+.history-list li { border-bottom: 1px solid var(--line); min-width: 0; }
+.history-row { display: grid; gap: 2px; padding: 10px 8px; min-width: 0; color: inherit; text-decoration: none; border-radius: 6px; }
+.history-row:hover, .history-row:focus-visible { background: var(--raised); }
+.history-row .history-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.history-row .history-head > .muted { flex-shrink: 0; white-space: nowrap; }
+.history-row .history-title { font-weight: 600; overflow-wrap: anywhere; }
+.history-row .history-asked { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-row .history-snippet { overflow-wrap: anywhere; }
+mark { background: var(--mark); color: inherit; font-weight: 700; border-radius: 3px; }
+.history-back { align-self: center; font-size: 12.5px; }
+button.history-more { justify-self: start; }
+
+.replay-note { padding: 6px 20px 0; }
+.replay-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+.replay-controls label { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.replay-controls select {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
+}
+.replay-controls select:focus { outline: none; border-color: var(--text); }
+.replay-position { display: grid; gap: 4px; padding: 8px 20px; border-bottom: 1px solid var(--line); min-width: 0; }
+.replay-timeline { display: grid; min-width: 0; }
+.replay-timeline input[type="range"] { width: 100%; margin: 0; accent-color: var(--text); }
+.replay-timeline input[type="range"]:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+/* The steps that went wrong, as marks under the slider. A mark is a button wider than its line, so it is easy to hit. The marks are inset by half
+   a slider thumb, so one at either end stays inside the page and lines up with the thumb. */
+.replay-ticks { position: relative; height: 14px; margin: 0 8px; }
+.replay-tick { position: absolute; top: 0; width: 12px; height: 14px; margin-left: -6px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.replay-tick::after { content: ''; position: absolute; left: 5px; top: 0; width: 2px; height: 12px; background: var(--text); }
+.replay-tick:hover:not(:disabled), .replay-tick:focus-visible { background: var(--raised); }
+
+.replay-body { padding-top: 0; }
+.replay-steps { list-style: none; margin: 0; padding: 0; }
+.replay-step { display: grid; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+.replay-step.sub { padding-left: 28px; }
+.replay-step.ahead { color: var(--muted); }
+.replay-step.current { background: var(--surface); }
+.replay-step.current .kicker { color: var(--text); }
+.replay-step .replay-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.replay-step .replay-block { display: grid; gap: 2px; min-width: 0; }
+.replay-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.replay-step pre { background: var(--raised); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; max-width: 100%; }
+.replay-step details summary { cursor: pointer; overflow-wrap: anywhere; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+@media (max-width: 760px) {
+  .replay-note, .replay-controls, .replay-position { padding-left: 16px; padding-right: 16px; }
+  .history-row .history-head { flex-wrap: wrap; }
+}

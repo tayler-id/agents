@@ -4,6 +4,7 @@
 
 import { z } from 'zod'
 import { PersonId, SessionId, TunnelId } from './ids.ts'
+import { SeatNumber } from './seats.ts'
 
 export const ScreenSize = z.object({ width: z.int().positive(), height: z.int().positive() })
 export type ScreenSize = z.infer<typeof ScreenSize>
@@ -95,11 +96,12 @@ export function handoff(control: ScreenControl, event: HandoffEvent): Handoff {
 }
 
 // The box's control connection to the API's machine port. The API sends every
-// change of control and asks for a tunnel per viewer. The box pings, and the
-// API answers, so either side notices a dead connection.
+// change of control of each seat's screen, and asks for a tunnel per viewer to
+// the seat they watch. The box pings, and the API answers, so either side
+// notices a dead connection.
 export const ToBox = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('control'), control: ScreenControl }),
-  z.object({ type: z.literal('open'), tunnel: TunnelId }),
+  z.object({ type: z.literal('control'), seat: SeatNumber, control: ScreenControl }),
+  z.object({ type: z.literal('open'), seat: SeatNumber, tunnel: TunnelId }),
   z.object({ type: z.literal('pong') }),
 ])
 export type ToBox = z.infer<typeof ToBox>

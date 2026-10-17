@@ -5,7 +5,9 @@
 
 import type pg from 'pg'
 import { z } from 'zod'
-import { maybe, one } from './db.ts'
+import { many, maybe, one } from './db.ts'
+import { withFiles } from './attachments.ts'
+import { reactionsNote } from './reactions.ts'
 import { agentKit, appendEvents, conversationSession, HttpError, type Person } from './record.ts'
 import { CONVERSATION_PERMISSIONS } from './permissions.ts'
 import { cancelTurn, queueRoomTurn, requestTurn, signalSession } from './scheduler.ts'
@@ -112,17 +114,21 @@ export async function nextTurn(client: pg.PoolClient, roomId: string) {
     `select max(m.seq) as seq from messages m join turns t on t.conversation_id = m.conversation_id
      where m.conversation_id = $1 and t.agent_id = $2 and t.finished_at is not null and t.status <> 'cancelled'
        and m.created_at <= t.finished_at`, [roomId, agent.id])
-  const { rows: said } = await client.query<{ who: string; body: string }>(
-    `select coalesce(p.login, a.name, 'someone') as who, m.body from messages m
+  const { rows: said } = await client.query<{ id: string; who: string; body: string }>(
+    `select m.id, coalesce(p.login, a.name, 'someone') as who, m.body from messages m
      left join people p on p.id = m.person_id left join agents a on a.id = m.agent_id
      where m.conversation_id = $1 and m.seq > $2 and m.deleted_at is null order by m.seq desc limit 20`, [roomId, Number(last?.seq ?? 0)])
+  const files = await many<{ message_id: string; id: string; name: string; media_type: string; size: number }>(client,
+    'select message_id, id, name, media_type, size::int as size from attachments where message_id = any($1) order by created_at, id', [said.map((m) => m.id)])
+  const reactions = await reactionsNote(client, agent.id, { conversationId: roomId })
   const { rows: members } = await client.query<{ who: string }>(
     `select coalesce(p.login, a.name) as who from conversation_members m left join people p on p.id = m.person_id
      left join agents a on a.id = m.agent_id where m.conversation_id = $1`, [roomId])
   const text = `You are ${agent.name} in the room #${room.name}, with ${members.map((m) => m.who).filter((w) => w !== agent.name).join(', ')}.\n\n`
-    + `New in the room:\n${said.reverse().map((m) => `${m.who}: ${m.body}`).join('\n\n')}\n\n`
+    + `New in the room:\n${said.reverse().map((m) => `${m.who}: ${withFiles(m.body, files.filter((f) => f.message_id === m.id))}`).join('\n\n')}\n\n`
+    + (reactions ? `${reactions}\n\n` : '')
     + `It is your turn. Reply to the room if you have something useful to add. If you have nothing to add, reply with exactly ${PASS}.`
-  const [seq] = await appendEvents(client, session.id, { events: [{ clientId: `turn:${turn.id}`, kind: 'user', text, body: { text, turnId: turn.id } }] })
+  const [seq] = await appendEvents(client, session.id, { events: [{ clientId: `turn:${turn.id}`, kind: 'user', text, body: { text, turnId: turn.id, messageIds: said.map((m) => m.id) } }] })
   if (seq === undefined) throw new Error(`room turn ${turn.id}'s prompt did not reach its session`)
   const people = (await client.query<{ person_id: string }>(
     'select person_id from conversation_members where conversation_id = $1 and person_id is not null', [roomId])).rows.map((r) => r.person_id)

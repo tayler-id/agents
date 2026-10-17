@@ -14,6 +14,7 @@ import type { Audience } from './http.ts'
 import { HttpError, type Person } from './record.ts'
 import { DOCUMENT_COLUMNS, FILE_CHANGE_COLUMNS, FILE_CHANGE_DETAIL_COLUMNS, PUSH_COLUMNS, UNLISTED_CHANGE_COLUMNS } from '../shared/work.ts'
 import { TURN_WAIT_COLUMNS } from '../shared/turns.ts'
+import { AttachmentShapeRow, PinShapeRow, ReactionShapeRow } from '../shared/attachments.ts'
 
 const ELECTRIC_URL = process.env.ELECTRIC_URL ?? 'http://127.0.0.1:3000'
 
@@ -53,6 +54,20 @@ async function requireTaskOf(person: Person, sql: string, id: string): Promise<s
   return id
 }
 
+// A chat or a task's session the person may see, named by `conversation` or `session`. The filter on its
+// rows is by the column that names it.
+async function placeOf(person: Person, args: URLSearchParams): Promise<{ column: 'conversation_id' | 'session_id'; id: string }> {
+  if (args.has('session')) {
+    const id = arg(args, 'session')
+    if (!(await canSeeSession(person, id))) throw new HttpError(404, 'no such session')
+    return { column: 'session_id', id }
+  }
+  return { column: 'conversation_id', id: await requireConversation(person, args) }
+}
+
+const ATTACHMENT_COLUMNS = Object.keys(AttachmentShapeRow.shape)
+const REACTION_COLUMNS = Object.keys(ReactionShapeRow.shape)
+
 const personShapes: Record<string, PersonShape> = {
   people: async (p) => ({ table: 'people', where: 'team_id = $1', params: [p.team_id] }),
   // Never sync token hashes.
@@ -61,6 +76,8 @@ const personShapes: Record<string, PersonShape> = {
     columns: ['id', 'team_id', 'name', 'kind', 'owner_id', 'harnesses', 'status', 'last_seen_at', 'created_at',
       'claimed_by', 'claimed_by_run', 'claimed_at', 'idle_since', 'personal', 'start_error', 'screen_width', 'screen_height', 'stopped_at'],
   }),
+  // The seats of the team's computers, and the agent holding each.
+  seats: async (p) => ({ table: 'seats', where: 'team_id = $1', params: [p.team_id] }),
   invites: async (p) => {
     requireAdmin(p)
     return { table: 'invites', where: 'team_id = $1', params: [p.team_id] }
@@ -82,6 +99,20 @@ const personShapes: Record<string, PersonShape> = {
   messages: async (p, args) => ({
     table: 'messages', where: 'conversation_id = $1', params: [await requireConversation(p, args)],
   }),
+  // The files in a chat or a task's session. A file nobody has sent yet is its uploader's alone.
+  attachments: async (p, args) => {
+    const place = await placeOf(p, args)
+    return {
+      table: 'attachments', columns: ATTACHMENT_COLUMNS, params: [place.id, p.id],
+      where: `${place.column} = $1 and (message_id is not null or event_id is not null or added_by_person = $2)`,
+    }
+  },
+  reactions: async (p, args) => {
+    const place = await placeOf(p, args)
+    return { table: 'reactions', columns: REACTION_COLUMNS, where: `${place.column} = $1`, params: [place.id] }
+  },
+  // The messages pinned in a chat.
+  pins: async (p, args) => ({ table: 'pins', columns: Object.keys(PinShapeRow.shape), where: 'conversation_id = $1', params: [await requireConversation(p, args)] }),
   // Sessions the person may see: conversations', tasks', or the terminal sessions
   // of connected folders. They are separate shapes because Electric 1.8 never
   // sends a row that moves into a filter ORing two subqueries, so a new task's
@@ -132,6 +163,7 @@ const personShapes: Record<string, PersonShape> = {
   skills: async (p) => ({ table: 'skills', where: 'team_id = $1', params: [p.team_id] }),
   plugins: async (p) => ({ table: 'plugins', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
   routines: async (p) => ({ table: 'routines', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
+  agent_hooks: async (p) => ({ table: 'agent_hooks', where: 'agent_id in (select id from agents where team_id = $1)', params: [p.team_id] }),
   memories: async (p) => ({ table: 'memories', where: 'team_id = $1', params: [p.team_id] }),
   templates: async (p) => ({ table: 'templates', where: 'team_id = $1', params: [p.team_id] }),
   // Secret names a team's agents need, never values.
@@ -147,6 +179,8 @@ const personShapes: Record<string, PersonShape> = {
     }
     return { table: 'turns', where: `conversation_id = $1 and ${waiting}`, params: [await requireConversation(p, args)], columns: TURN_WAIT_COLUMNS }
   },
+  // Where a secret was set from the app and when. Still no value.
+  secret_sets: async (p) => ({ table: 'secret_sets', where: 'team_id = $1', params: [p.team_id] }),
   comments: async (p, args) => ({
     table: 'comments', where: 'artifact_id = $1',
     params: [await requireTaskOf(p, 'select task_id from artifacts where id = $1 and team_id = $2', arg(args, 'artifact'))],
@@ -235,6 +269,8 @@ const instanceShapes: Record<string, InstanceShape> = {
   claude_logins: async (i) => ({
     table: 'claude_logins', where: `instance_id = $1 and status in ('starting', 'waiting_for_code', 'checking')`, params: [i.id],
   }),
+  // This box's seats, which say which of them run and for which agent.
+  seats: async (i) => ({ table: 'seats', where: 'instance_id = $1', params: [i.id] }),
 }
 
 // Streams one shape request through to Electric with the server's own filter.

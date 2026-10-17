@@ -172,10 +172,11 @@ export async function up(options: UpOptions): Promise<{ state: ReadyState; alrea
 
     const fake = options.harness === 'fake'
     if (fake) writeScenario(join(scratch, 'scenario.json'))
-    // A real session runs `claude` from the PATH. The fake one follows the scenario.
+    // A real session runs `claude` from the PATH. The fake one follows the scenario,
+    // and calls the MCP tools a scenario's `calls` rules name, as Claude Code does.
     const daemonEnv = childEnv('daemon', {
       AGENTS_API: `http://127.0.0.1:${String(ports.machines)}`, AGENTS_TOKEN: seed.machine.token, AGENTS_HOME: join(scratch, 'daemon'),
-      ...(fake ? { AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude.ts'), AGENTS_FAKE_SCENARIO: join(scratch, 'scenario.json') } : {}),
+      ...(fake ? { AGENTS_CLAUDE_BIN: join(ROOT, 'test', 'fake-claude-agents.ts'), AGENTS_FAKE_SCENARIO: join(scratch, 'scenario.json') } : {}),
     })
     const daemon = await spawnRecorded('daemon', [process.execPath, join(ROOT, 'daemon', 'agentsd.ts')], { cwd: ROOT, env: daemonEnv, log: join(evidence, 'daemon.log') })
     state = { ...state, processes: [...state.processes, daemon] }

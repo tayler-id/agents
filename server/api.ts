@@ -10,9 +10,11 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, normalize } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
+import type pg from 'pg'
 import { z } from 'zod'
 import { adminFrom, checkAudience, instanceFrom, personFrom } from './auth.ts'
-import { fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
+import { Created, FileAnswer, fieldOf, optionalText, parseBody, pathId, readBody, readJson, text, type Audience, type Params, type Route } from './http.ts'
 import { connectedFolders, connectFolder, disconnectFolder, sessionWriter, terminalSession } from './folders.ts'
 import { ConnectFolder, DisconnectFolder, TerminalSessionAsk, type FolderList } from '../shared/terminal.ts'
 import { maybe, one, pool, tx } from './db.ts'
@@ -22,9 +24,13 @@ import { listenOnSocket } from '../shared/socket.ts'
 import { MACHINE_PORT, MachineHosts, Port } from '../shared/listen.ts'
 import { canSeeSession, canSeeTask } from './access.ts'
 import {
-  answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision,
+  answerAsk, appendEvents, claimCommand, HttpError, interruptSession, openDm, saveDocuments, scrub, sendPersonMessage, type Decision, type Person,
 } from './record.ts'
 import { proxyStream, startStreamServer } from './streams.ts'
+import { agentScope } from './agent-scope.ts'
+import { chatRoutes } from './chat-routes.ts'
+import { pendingUploads, placeUploads, startAttachmentSweep, withFiles } from './attachments.ts'
+import { AttachmentIds, PostBody } from '../shared/attachments.ts'
 import { MessageMoveRefused, moveMessages, recoverMachine } from './durability.ts'
 import { cancelWaitingTurn } from './scheduler.ts'
 import { agentProfile, pipelineHistory, readSession, recentActivity, searchRecord } from './teamrecord.ts'
@@ -41,7 +47,9 @@ import { answerRunAsk, cancelRun, pauseRun, resumeRun, startRun, startRunner, wa
 import { recordDecisions } from './framework.ts'
 import { openObligations, waive } from './obligations.ts'
 import { syncPipelines } from './pipelines.ts'
-import { createAgent, removeItem, savePlugin, saveRoutine, saveSkill, saveTemplate, updateAgent, writeMemory } from './agents.ts'
+import { copyAgent, createAgent, removeHook, removeItem, saveHook, savePlugin, saveRoutine, saveSkill, saveTemplate, setAcceptsAgents, updateAgent, writeMemory } from './agents.ts'
+import { callerOf, delegateTask, listAgents, makeAgent, reportBack, sendToAgent } from './team-agents.ts'
+import { DelegateTask, ReportBack, SendToAgent, SetAccepts } from '../shared/team-agents.ts'
 import { createRoom } from './rooms.ts'
 import { decideHunk } from './hunks.ts'
 import { HunkDecisionBody, HunkId } from '../shared/evidence.ts'
@@ -56,8 +64,20 @@ import { block, hold, markDone, prioritize, readyAnswer, reopen, unblock, unhold
 import { sendRoutine } from './routines.ts'
 import { onboardingRoutes } from './onboarding-routes.ts'
 import { boxRoutes } from './box-routes.ts'
-import { handBackScreen, recheckViewers, screenUpgrades, startScreenSweep, takeScreen } from './screens.ts'
+import { AUDIO_POST, voiceRoutes } from './voice.ts'
+import { checkSpeechSettings } from './speech.ts'
+import { kindOf } from './audio.ts'
+import { isVoiceUpgrade, voiceUpgrade } from './voice-chat.ts'
+import { secretRoutes } from './secrets.ts'
+import { controlUpgrade } from './control.ts'
+import { webmcpRoutes } from './webmcp.ts'
+import { historyRoutes } from './history-routes.ts'
+import { handBackScreen, recheckViewers, screenUpgrades, seatInPath, startScreenSweep, takeScreen } from './screens.ts'
+import { seatRoutes } from './seat-routes.ts'
 import { InstanceId } from '../shared/onboarding.ts'
+import { CopyAsk } from '../shared/recipe.ts'
+import { ImportAsk } from '../shared/recipe-file.ts'
+import { exportRecipe, importRecipe } from './recipe-files.ts'
 import { Heartbeat, ScreenMove, type ScreenMoved } from '../shared/screen.ts'
 import { DocumentUploads, ImageMediaType } from '../shared/documents.ts'
 import {
@@ -122,25 +142,34 @@ function paramsOf(path: RegExp, pathname: string): Params {
   return [groups[0] ?? '', groups[1] ?? '', groups[2] ?? '']
 }
 
-// An agent reads the record from inside one of its sessions, which must be
-// running on the calling machine. That session decides what it may see.
-async function agentScope(req: IncomingMessage, url: URL) {
+// The team-agents tools act as the agent whose turn is running in the session they
+// name, so the session must have a turn running on the calling machine now. A session
+// that is idle, or whose turn ended, is no longer an agent acting. This does not tell
+// two sessions on one machine apart: the machine's token, which every agent session on
+// it can read, still lets a session name another one that has a turn running.
+async function agentToolsScope(req: IncomingMessage, url: URL) {
+  const scope = await agentScope(req, url)
   const instance = await instanceFrom(req)
-  const sessionId = url.searchParams.get('session') ?? ''
-  const { rows } = /^[0-9a-f-]{36}$/.test(sessionId)
-    ? await pool.query('select 1 from sessions where id = $1 and instance_id = $2', [sessionId, instance.id])
-    : { rows: [] }
-  if (!rows[0]) throw new HttpError(403, 'record reads need a session running on this machine')
-  // A replay must do without the correction it is scored on, and the record holds it.
-  if (await maybe(pool, 'select 1 from session_replays where session_id = $1', [sessionId])) {
-    throw new HttpError(403, 'a replay reads nothing from the team record')
-  }
-  return { teamId: instance.team_id, sessionId }
+  const running = await maybe(pool, `select 1 from turns where session_id = $1 and instance_id = $2 and status = 'running'`, [scope.sessionId, instance.id])
+  if (!running) throw new HttpError(403, 'agent tools work only in a session with a turn running on this machine')
+  return scope
 }
 
 const bounded = (value: string | null, fallback: number, max: number) =>
   Math.min(max, Math.max(1, Number(value) || fallback))
 const UUID = '([0-9a-f-]{36})'
+// What an agent's team-agents tools post: a message, a handed-over task, a task's result, and a new agent.
+const TeamAgentAction = z.enum(['messages', 'tasks', 'report', 'agents'])
+
+// A new chat's first post: the words, the files, or both. Neither leaves the chat empty.
+const FirstPost = z.object({ text: z.string().nullish(), attachmentIds: AttachmentIds.nullish(), clientId: z.string().min(1).nullish() })
+async function withFirstPost(client: pg.PoolClient, person: Person, conversationId: string, body: Record<string, unknown>): Promise<string> {
+  const post = parsed(FirstPost, body)
+  if ((post.text ?? '').trim() !== '' || post.attachmentIds) {
+    await sendPersonMessage(client, person, conversationId, post.text ?? '', post.clientId ?? randomUUID(), { attachmentIds: post.attachmentIds ?? [] })
+  }
+  return conversationId
+}
 
 const routes: Route[] = [
   ['machines', 'GET', /^\/v1\/record\/search$/, async (req, _params, url) => {
@@ -193,6 +222,31 @@ const routes: Route[] = [
       await writeMemory(client, session.agent_id, teamId, { personId }, kind, scrub(content))
     })
     return { ok: true }
+  }],
+
+  // An agent working with its team's other agents, from inside one of its sessions,
+  // through its team-agents tools. server/team-agents.ts checks who may do what.
+  ['machines', 'GET', /^\/v1\/team-agents$/, async (req, _params, url) => {
+    const { teamId, sessionId } = await agentToolsScope(req, url)
+    return tx(async (client) => listAgents(client, await callerOf(client, teamId, sessionId)))
+  }],
+
+  ['machines', 'POST', /^\/v1\/team-agents\/(messages|tasks|report|agents)$/, async (req, [action], url) => {
+    const { teamId, sessionId } = await agentToolsScope(req, url)
+    const body = await readJson(req)
+    const answer = await tx(async (client) => {
+      const caller = await callerOf(client, teamId, sessionId)
+      switch (parsed(TeamAgentAction, action)) {
+        case 'messages': return sendToAgent(client, caller, parsed(SendToAgent, body))
+        case 'tasks': return delegateTask(client, caller, parsed(DelegateTask, body))
+        case 'report': return reportBack(client, caller, parsed(ReportBack, body))
+        case 'agents': return makeAgent(client, caller, body)
+      }
+    })
+    // A refusal that leaves a note is committed with it, and only then is the agent told no.
+    if ('refused' in answer) throw new HttpError(409, answer.refused)
+    void wakeRunner()
+    return answer
   }],
 
   ['machines', 'POST', /^\/v1\/instance\/heartbeat$/, async (req) => {
@@ -370,11 +424,14 @@ const routes: Route[] = [
     if (body.kind === 'room') {
       const list = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
       const projectId = optionalProject(body.projectId)
-      return { conversationId: await tx((client) => createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)) }
+      return { conversationId: await tx(async (client) => {
+        const conversationId = await createRoom(client, person, text(body.name, 'name'), list(body.people), list(body.agents), projectId)
+        return withFirstPost(client, person, conversationId, body)
+      }) }
     }
     if (body.kind !== 'dm') throw new HttpError(400, 'kind must be dm or room')
     const agent = text(body.agent, 'agent')
-    return { conversationId: await tx((client) => openDm(client, person, agent)) }
+    return { conversationId: await tx(async (client) => withFirstPost(client, person, await openDm(client, person, agent), body)) }
   }],
 
   ['people', 'POST', /^\/v1\/agents$/, async (req) => {
@@ -403,10 +460,51 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
+  // Whether agents with another owner may message the agent and hand it tasks. Only its owner says.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/accepts$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const { agents } = await parseBody(req, SetAccepts)
+    return tx((client) => setAcceptsAgents(client, person, agentId, agents))
+  }],
+
+  // Hooks run commands on the agent's machine, so they have routes of their own, and an owner's or admin's check.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const body = await readJson(req)
+    return { ok: true, name: await tx((client) => saveHook(client, person, agentId, body)) }
+  }],
+
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/hooks/([^/]+)/delete$`), async (req, [agentId, name]) => {
+    const person = await personFrom(req)
+    await tx((client) => removeHook(client, person, agentId, decodeURIComponent(name)))
+    return { ok: true }
+  }],
+
+  // An agent's setup as a file, and a new agent from one. Whether setups leave the team waits on Tayler's decision 11.
+  ['people', 'GET', new RegExp(`^/v1/agents/${UUID}/recipe$`), async (req, [agentId], url) => {
+    const person = await personFrom(req)
+    const memories = url.searchParams.get('memories')
+    if (memories !== 'true' && memories !== 'false') throw new HttpError(400, 'memories must be true or false')
+    return tx((client) => exportRecipe(client, person, agentId, memories === 'true'))
+  }],
+
+  ['people', 'POST', /^\/v1\/agents\/import$/, async (req) => {
+    const person = await personFrom(req)
+    const ask = parsed(ImportAsk, await readJson(req))
+    return tx((client) => importRecipe(client, person, ask))
+  }],
+
+  // A new agent with the setup of this one, owned by the person who asks.
+  ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/copy$`), async (req, [agentId]) => {
+    const person = await personFrom(req)
+    const ask = parsed(CopyAsk, await readJson(req))
+    return tx((client) => copyAgent(client, person, agentId, ask))
+  }],
+
   ['people', 'POST', new RegExp(`^/v1/agents/${UUID}/templates$`), async (req, [agentId]) => {
     const person = await personFrom(req)
     const body = await readJson(req)
-    return tx((client) => saveTemplate(client, person, agentId, text(body.name, 'name')))
+    return tx((client) => saveTemplate(client, person, agentId, body.name === undefined ? null : text(body.name, 'name')))
   }],
 
   // Runs a routine now, as if it had come due.
@@ -420,11 +518,24 @@ const routes: Route[] = [
 
   ['people', 'POST', /^\/v1\/tasks$/, async (req) => {
     const person = await personFrom(req)
-    const { repoId, ...task } = parsed(NewTask, await readJson(req))
+    const raw = await readJson(req)
+    const { repoId, ...task } = parsed(NewTask, raw)
+    const attachmentIds = parsed(AttachmentIds.optional(), raw.attachmentIds)
+    if (attachmentIds && task.draft) throw new HttpError(400, 'A draft takes no attachments yet. Attach files when the task starts.')
     const repoIds = repoId ? [repoId, ...task.repoIds] : task.repoIds
     // The workspace is cloned from each repo's default branch, which its owner can rename on the forge.
     if (!task.draft) await refreshDefaultBranches(person.team_id, repoIds)
-    return tx((client) => startTask(client, person, { ...task, repoIds }))
+    return tx(async (client) => {
+      // The files are named in the task's instructions, so its first turn reads them, and they sit in the
+      // session once it exists.
+      const files = attachmentIds ? await pendingUploads(client, person, attachmentIds, {}) : []
+      const started = await startTask(client, person, { ...task, repoIds, instructions: withFiles(task.instructions, files) })
+      if (files.length) {
+        const first = await one<{ id: string }>(client, "the task's first post", `select id from events where session_id = $1 and kind = 'user' order by seq limit 1`, [started.sessionId])
+        await placeUploads(client, files.map((f) => f.id), { sessionId: started.sessionId, eventId: first.id })
+      }
+      return started
+    })
   }],
 
   // The order of work. Each command answers whether there was anything to change.
@@ -548,8 +659,8 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/sessions/${UUID}/messages$`), async (req, [sessionId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    await tx((client) => messageTaskSession(client, person, sessionId, text(body.text, 'text')))
+    const body = await parseBody(req, PostBody)
+    await tx((client) => messageTaskSession(client, person, sessionId, body.text ?? '', body.attachmentIds ?? []))
     return { ok: true }
   }],
 
@@ -677,14 +788,15 @@ const routes: Route[] = [
     return { ok: true }
   }],
 
-  // A person takes over a box's screen, or hands it back to the agents. The body
+  // A person takes over the screen of a seat on a box, or hands it back to the
+  // agents. A screen named without a seat is the box's first seat. The body
   // names the session they were looking at, for the notice in its record.
-  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}/(take|hand-back)$`), async (req, [instanceId, action]) => {
+  ['people', 'POST', new RegExp(`^/v1/screens/${UUID}(?:/seats/([0-9]+))?/(take|hand-back)$`), async (req, [instanceId, seat, action]) => {
     const person = await personFrom(req)
     const body = ScreenMove.safeParse(await readJson(req))
     if (!body.success) throw new HttpError(400, z.prettifyError(body.error))
     const move = action === 'take' ? takeScreen : handBackScreen
-    const moved: ScreenMoved = { control: await move(person, instanceId, body.data.sessionId) }
+    const moved: ScreenMoved = { control: await move(person, instanceId, seatInPath(seat), body.data.sessionId) }
     return moved
   }],
 
@@ -705,13 +817,20 @@ const routes: Route[] = [
 
   ['people', 'POST', new RegExp(`^/v1/conversations/${UUID}/messages$`), async (req, [conversationId]) => {
     const person = await personFrom(req)
-    const body = await readJson(req)
-    const clientId = optionalText(body.clientId, 'clientId') ?? randomUUID()
-    return tx((client) => sendPersonMessage(client, person, conversationId, text(body.text, 'text'), clientId))
+    const body = await parseBody(req, PostBody)
+    return tx((client) => sendPersonMessage(client, person, conversationId, body.text ?? '', body.clientId ?? randomUUID(), {
+      attachmentIds: body.attachmentIds ?? [], replyToMessageId: body.replyToMessageId ?? undefined,
+    }))
   }],
 
+  ...chatRoutes,
   ...onboardingRoutes,
   ...boxRoutes,
+  ...voiceRoutes,
+  ...secretRoutes,
+  ...webmcpRoutes,
+  ...historyRoutes,
+  ...seatRoutes,
 ]
 
 const DECISIONS: Decision[] = ['allow', 'deny', 'always', 'never']
@@ -768,12 +887,17 @@ async function hook(req: IncomingMessage, url: URL): Promise<unknown> {
 // as that person. A post can't carry a JSON content type across sites without a CORS
 // preflight, which this API never grants, so people's changes must declare JSON.
 const JSON_TYPE = /^application\/json\s*(;|$)/i
+// An upload is the file's bytes under the file's own type. A custom header can't cross sites without a
+// preflight either, so an upload must carry X-File-Name.
+const UPLOAD = new RegExp(`^/v1/((conversations|sessions)/${UUID}/)?attachments$`)
 
 const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   try {
     checkAudience(audience, req)
-    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !JSON_TYPE.test(req.headers['content-type'] ?? '')) {
+    const recording = AUDIO_POST.test(url.pathname) && kindOf(req.headers['content-type']) !== null
+    if (audience === 'people' && req.method !== 'GET' && req.method !== 'HEAD' && !recording && !JSON_TYPE.test(req.headers['content-type'] ?? '')
+      && !(req.method === 'POST' && UPLOAD.test(url.pathname) && req.headers['x-file-name'] !== undefined)) {
       throw new HttpError(415, 'a change must be sent as JSON')
     }
     const shape = req.method === 'GET' ? SHAPE.exec(url.pathname)?.[1] : undefined
@@ -792,7 +916,9 @@ const handle = (audience: Audience) => async (req: IncomingMessage, res: ServerR
     const route = routes.find(([who, method, path]) => who === audience && method === req.method && path.test(url.pathname))
     if (!route) throw new HttpError(404, 'no such route')
     const result = await route[3](req, paramsOf(route[2], url.pathname), url)
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result))
+    if (result instanceof FileAnswer) return void res.writeHead(result.status, { ...result.headers, 'content-length': result.bytes.length }).end(result.bytes)
+    const created = result instanceof Created
+    res.writeHead(created ? 201 : 200, { 'content-type': 'application/json' }).end(JSON.stringify(created ? result.body : result))
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500
     if (status === 500) console.error(error)
@@ -847,30 +973,43 @@ if (import.meta.main) {
   if (!people.success) throw new Error('AGENTS_PEOPLE_SOCKET must be the absolute path of the socket tailscale serve sends people to')
   const origins = PeopleOrigins.safeParse(process.env.AGENTS_PEOPLE_ORIGINS)
   if (!origins.success) throw new Error(`AGENTS_PEOPLE_ORIGINS must list the origins the app is served from, such as http://agents-server.<tailnet>.ts.net: ${z.prettifyError(origins.error)}`)
+  checkSpeechSettings()
   const applied = await migrateWhenReady()
   if (applied.length) console.log(`applied ${applied.join(', ')}`)
   // handle() catches every error itself, so its promise never rejects.
   const serve = (audience: Audience) => (req: IncomingMessage, res: ServerResponse) => { void handle(audience)(req, res) }
   // A socket an API that stopped left behind is replaced. One a running API still serves stops this one, since taking it
   // over would send people here instead. tailscaled runs as this user, so the socket's mode 0600 lets it in.
-  await listenOnSocket(createServer(serve('people')).on('upgrade', screenUpgrades({ audience: 'people', origins: new Set(origins.data) })), people.data)
+  const peopleOrigins = new Set(origins.data)
+  const screens = screenUpgrades({ audience: 'people', origins: peopleOrigins })
+  // Screens and voice chat are the two WebSockets people open.
+  const peopleUpgrades = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (isVoiceUpgrade(req)) void voiceUpgrade(peopleOrigins, req, socket, head)
+    else screens(req, socket, head)
+  }
+  await listenOnSocket(createServer(serve('people')).on('upgrade', peopleUpgrades), people.data)
   console.log(`people on ${people.data}`)
   const streams = await startStreamServer()
   const stopSweep = startScreenSweep()
+  const stopAttachmentSweep = startAttachmentSweep()
   let githubWorker: ReturnType<typeof startGithubWorker> | null = null
   // Closing the stream store gives back what its database holds, such as System V
   // semaphores on macOS. An API killed without closing it leaked a set every time.
   // The GitHub worker finishes the round it is in and starts no other.
   const stop = () => {
     stopSweep()
+    stopAttachmentSweep()
     setTimeout(() => { console.error('the API did not stop in time'); process.exit(1) }, STOP_GRACE_MS).unref()
     Promise.all([githubWorker?.stop(), streams.stop()])
       .then(() => { process.exit(0) }, (error: unknown) => { console.error(`stopping the API: ${messageOf(error)}`); process.exit(1) })
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
+  // A machine's WebSocket is its control connection or one of its screen's.
+  const machineScreens = screenUpgrades({ audience: 'machines' })
+  const machineUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => { if (!controlUpgrade(req, socket, head)) machineScreens(req, socket, head) }
   for (const host of machineHosts) {
-    createServer(serve('machines')).on('upgrade', screenUpgrades({ audience: 'machines' }))
+    createServer(serve('machines')).on('upgrade', machineUpgrade)
       .listen(machines, host, () => { console.log(`machines on ${address(host, machines)}`) })
   }
   if (process.env.AGENTS_RUNNER !== 'off') {

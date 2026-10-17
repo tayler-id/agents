@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { SUITE_PAYLOAD, VERIFY_PAYLOAD } from './framework.ts'
+import { WebmcpOrigins } from './webmcp.ts'
 
 export const EVENT_KINDS = [
   'user', 'assistant', 'thinking', 'tool_call', 'tool_result', 'ask', 'answer', 'notice', 'error', 'usage',
@@ -12,6 +13,11 @@ export const SESSION_STATUSES = [
   'draft', 'starting', 'running', 'idle', 'needs_input', 'needs_approval', 'limited', 'lost', 'failed',
 ] as const
 export type SessionStatus = (typeof SESSION_STATUSES)[number]
+
+// The kinds of conversation, as the conversations table's check holds them. Migration 0019 added
+// agents, a thread between two agents of a team.
+export const CONVERSATION_KINDS = ['main', 'dm', 'room', 'pr', 'slack_thread', 'agents'] as const
+export type ConversationKind = (typeof CONVERSATION_KINDS)[number]
 
 // The most a request body may hold. The API refuses a bigger one with 413, and
 // the daemon sizes its posts of a transcript to fit.
@@ -79,6 +85,31 @@ export const AgentPlugin = z.discriminatedUnion('kind', [
 ])
 export type AgentPlugin = z.infer<typeof AgentPlugin>
 
+// The Claude Code hooks an agent's setup can name. A hook runs a command on the
+// agent's machine when its event happens. The two tool events can say which tools
+// they apply to, and the others take no matcher.
+export const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop'] as const
+export const HookEvent = z.enum(HOOK_EVENTS)
+export type HookEvent = z.infer<typeof HookEvent>
+const TOOL_HOOK_EVENTS: readonly HookEvent[] = ['PreToolUse', 'PostToolUse']
+export const takesMatcher = (event: HookEvent) => TOOL_HOOK_EVENTS.includes(event)
+// The longest time limit a hook may be given, since a hook holds up the turn it runs in. A hook
+// with no limit gets Claude Code's own, which cancelled one on a message after 30 seconds and let
+// one on each other event run past 130.
+export const HOOK_TIMEOUT_MAX_SEC = 600
+export const HOOK_COMMAND_MAX = 2000
+export const HOOK_MATCHER_MAX = 200
+export const AgentHook = z.object({
+  name: z.string().regex(NAME, 'a hook name is lowercase letters, digits and dashes'),
+  event: HookEvent,
+  matcher: z.string().min(1).max(HOOK_MATCHER_MAX).nullable().default(null),
+  command: z.string().trim().min(1).max(HOOK_COMMAND_MAX),
+  timeoutSec: z.number().int().min(1).max(HOOK_TIMEOUT_MAX_SEC).nullable().default(null),
+}).refine((hook) => hook.matcher === null || takesMatcher(hook.event), {
+  path: ['matcher'], message: 'only PreToolUse and PostToolUse hooks name the tools they apply to',
+})
+export type AgentHook = z.infer<typeof AgentHook>
+
 // A pipeline stage's session: the outcomes its report_result tool accepts, the
 // tools it may use without asking, and the most it may spend. The budget is
 // required, so a stage payload without one fails the daemon's parse instead of
@@ -106,10 +137,14 @@ export const MessagePayload = z.object({
   stage: StageSpec.optional(),
   // The most the session may spend, for a pipeline stage or a replay.
   maxBudgetUsd: z.number().optional(),
-  // The agent's skills, its plugins (MCP servers) and what it remembers.
+  // The agent's skills, its plugins (MCP servers), its hooks and what it remembers.
+  // A session sent no hooks, such as a pipeline stage's, runs none.
   skills: z.array(AgentSkill).optional(),
   plugins: z.array(AgentPlugin).optional(),
+  hooks: z.array(AgentHook).optional(),
   memory: z.string().optional(),
+  // The sites whose WebMCP tools the agent's browser may take, as the team lists them now. Left out, there are none.
+  webmcpOrigins: WebmcpOrigins.optional(),
 })
 export type MessagePayload = z.infer<typeof MessagePayload>
 

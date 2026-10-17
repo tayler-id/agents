@@ -22,12 +22,32 @@ export class MessageMoveRefused extends Error {}
 
 export type MovedMessage = { id: string; kind: 'message'; session_id: string; payload: MessagePayload }
 
+// A turn that starts or ends on a seat marks the seat's last turn then, which the
+// reclaim rule reads (server/seats.ts). It follows a statement's `turned` rows.
+const SEAT_TURN_TIME = `seated as (
+       update seats s set last_turn_at = now() from turned t where s.instance_id = t.instance_id and s.agent_id = t.agent_id
+     )`
+
 // The runner gives up on a message that no machine took, because the machine it
 // was queued for went silent. The lifecycle has no move from queued to failed, since
 // a queued message may still be handed over, so this is the one way a message ends
 // without being handed over first, and it fails the message's placed turn in the
 // same statement. A message a machine took ends through moveMessages. Says whether
 // the message was still queued.
+// A deleted post's words leave the message commands that carry them, as they leave the rest of the record
+// (server/message-actions.ts). Only the words in a command's payload change, never its status, and this file
+// is the one that changes a message command after the scheduler wrote it.
+export async function replaceInMessageCommands(client: pg.PoolClient, eventIds: string[], words: string, replacement: string): Promise<void> {
+  await client.query(
+    `update commands set payload = jsonb_set(payload, '{text}', to_jsonb(replace(payload->>'text', $2, $3))) where event_id = any($1) and kind = 'message' and payload ? 'text'`,
+    [eventIds, words, replacement])
+}
+
+// A deleted post's own prompt is blanked in the message commands that carry it.
+export async function blankMessageCommands(client: pg.PoolClient, eventIds: string[]): Promise<void> {
+  await client.query(`update commands set payload = jsonb_set(payload, '{text}', '""') where event_id = any($1) and kind = 'message' and payload ? 'text'`, [eventIds])
+}
+
 export async function failUntakenMessage(db: Db, commandId: string, error: string): Promise<boolean> {
   const failed = await many<{ id: string }>(db,
     `with failed as (
@@ -35,7 +55,8 @@ export async function failUntakenMessage(db: Db, commandId: string, error: strin
        where id = $1 and kind = 'message' and status = 'queued' returning id
      ), turned as (
        update turns set status = 'failed', finished_at = now() where command_id in (select id from failed) and status = 'placed'
-     )
+       returning instance_id, agent_id
+     ), ${SEAT_TURN_TIME}
      select id from failed`, [commandId, error])
   return failed.length > 0
 }
@@ -70,7 +91,8 @@ export async function moveMessages(
          started_at = case when $6::text = 'running' then now() else started_at end,
          finished_at = case when $6::text = 'running' then finished_at else now() end
        where command_id in (select id from moved) and status = any($7)
-     )
+       returning instance_id, agent_id
+     ), ${SEAT_TURN_TIME}
      select id, kind, session_id, payload from moved`,
     [wanted, COMMAND_STATUS_OF[to], sources, options.instanceId ?? null, options.error ?? null, turn, movesInto(TURN_MOVES, turn)])
   if (moved.length !== wanted.length) {
@@ -114,7 +136,7 @@ function canonical(value: unknown): unknown {
 
 // Two requests ask for the same thing when their inputs match, apart from the
 // description Claude writes for a person, which it words afresh each time.
-function sameInput(a: unknown, b: unknown): boolean {
+export function sameInput(a: unknown, b: unknown): boolean {
   const plain = (input: unknown): unknown => (typeof input === 'object' && input !== null && !Array.isArray(input)
     ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'description'))
     : input)

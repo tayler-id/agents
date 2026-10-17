@@ -361,6 +361,18 @@ Tayler went with the coordinator's picks on all of these.
   - The daemon refuses to save a screenshot while a page in the box's browser shows a known secret value. It can't cover a secret shown outside the page.
   - A page that can't give its text within 5 seconds, such as one an open alert holds, refuses every screenshot until it can. That takes away saving proof of a dialog, which an agent could do before.
 
+### Agent setup and copies
+
+- **Purpose.** A person copies a teammate's agent in one tap and gets its setup, an agent runs the Claude Code hooks its setup names, and a hook's effect lands in the record.
+- **How it works.**
+  - An agent has hooks, commands its machine runs when a message arrives, a tool runs, a turn ends or a session starts. The agent's owner or a team admin adds them, since a hook is as strong as a plugin's command. The daemon writes them to `.claude/settings.local.json` and starts Claude Code with hook events on, so each run is a notice in the session's record. A file a hook writes in a task's folder is a document.
+  - Create a copy makes a new agent for the person who asks, with the source's title, instructions, skills, plugins, routines and hooks and the team's memories. It never carries what the agent remembers about a person, and never a secret value. It saves no template. The button sends nothing, because the server picks the name (`name-copy`, then `name-copy-2`), the machine (the person's own box, else a Mac they own) and the memories, so the controls need no form. A person with no machine of their own is told to name one.
+  - One shape, `Recipe`, serves copies and templates. Templates keep hooks and no memories.
+  - A recipe leaves the team as a file (decision 11, option b, which Tayler chose on 2026-10-16). Export writes it as JSON with the team's memories only when asked, scrubbed of anything that looks like a secret. Import reads it with the same zod schema, shows every command it would run, and makes a new agent for the person, named from the file and put on their own machine unless they say otherwise. There is no gallery and no share link.
+  - The controls are small components that take props, in `app/src/agent/`, so the redesigned agent panel can use them. Its Share menu calls the copy endpoint for "Create a copy" and the template endpoint for "Share a template link".
+- **Implementation.** `shared/recipe.ts`, `shared/recipe-file.ts`, `server/agents.ts`, `server/recipe-files.ts`, `daemon/agentfiles.ts`, `app/src/agent/` and migration 0017. `test/step24.ts`, `test/step24b.ts` and `test/step24c.ts` check them with the stand-in for Claude, and `test/step24d.ts` checks the hooks with the real Claude Code against a stand-in for the Anthropic API. Where the build differs from the design, "Templates, sharing and cloning" in `docs/design/target-architecture.md` says so.
+- **Status.** Built on the branch `agent-copies`, not landed. Nothing has run on the live system, and no real model has run these hooks. A box runs an agent's hooks only after its image is rebuilt and its container recreated, and a Mac after its daemon restarts.
+
 ### The cloud half moves to AWS
 
 - **Purpose.** Boxes and long-running work keep going when this Mac sleeps.
@@ -382,7 +394,7 @@ Tayler went with the coordinator's picks on all of these.
   - A person's computer has 8 GB of memory and 4 CPUs, and holds 4 seats. This is decision 2, option (b).
   - Seats share one Unix user and the person's logins, as in the agent app we studied. There, each extra display's browser links its cookies and saved logins to the first one's, and a script copies cookies between them every 1.5 seconds (`docs/evidence/box/box-chrome-session.md`). Logging in once logs in every agent on the computer. One agent can read another's files and secrets on the same computer. The walls stay between people, since each person has their own computer. This is decision 3, option (a), with shared logins added.
 - **What it changes.** `AGENTS.md` says each cloud agent gets its own Docker container. With seats, a person's agents share one computer with a seat each, so that line needs Tayler's edit.
-- **Status.** Step 1, one entry point for every turn, is being built on branch `door`. Seats are step 2.
+- **Status.** Step 1, one entry point for every turn, is being built on branch `door`. Step 2's seat side, with each seat's display, browser and screen, shared logins and a person's computer at 4 seats, 4 CPUs and 8 GiB, is built on branch `seats`, and joins the scheduler once the door lands.
 
 ### Connectors, MCP apps and WebMCP
 
@@ -391,7 +403,7 @@ Tayler went with the coordinator's picks on all of these.
   - The app gets HTTPS on its tailnet name, since Slack's sign-in returns only to an HTTPS address and WebMCP works only on HTTPS pages. The server's tailnet name then appears in public certificate logs. Turning it on changes Tailscale settings and the live API's origins, so it happens with Tayler at build step 18. This is decision 15, option (a).
   - The regression is accepted. Only admins add team connectors, only an agent's owner or manager adds its servers, and a Mac's owner approves the exact command before a server runs on that Mac. Today any teammate can add a server to any agent. This is decision 17, option (a).
 - **The design's picks, which Tayler let stand on 2026-10-15.** Hosted connectors are called from the server's gateway, so no connector token reaches a computer (13). An agent acts as the person whose turn it is, and team accounts are for service accounts only (14). Read-only tools are on and other tools ask (16). MCP apps are off for each connector until a manager turns them on (18). The app offers reads, opening a page and two writes the person confirms as WebMCP tools, never approvals or secrets (19). An agent's browser takes tools from no site until the team lists its origins (20).
-- **Status.** Designed. Building starts after seats, with secrets from the app first.
+- **Status.** Designed. Secrets from the app, build step 16, is built on branch `secrets` and waits to land. The rest starts after seats.
 
 ### Agents working together and parallel coding computers come next
 

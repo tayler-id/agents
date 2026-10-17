@@ -12,15 +12,21 @@ import {
 } from '../../shared/onboarding.ts'
 import { Outcome, ReadyAnswer, type BlockAsk, type HoldAsk, type NewComment, type NewTask, type PullRequestAsk, type DraftEdit } from '../../shared/work.ts'
 import type { ArtifactId, PushId, SessionId, TaskId } from '../../shared/ids.ts'
+import type { AcceptsAgents } from '../../shared/team-agents.ts'
+import type { ConversationKind } from '../../shared/types.ts'
+export type { AttachmentShapeRow as Attachment, PinShapeRow as Pin, ReactionShapeRow as Reaction } from '../../shared/attachments.ts'
 import {
   AddRepoResult, GithubStatus, NewProjectResult, ReposOverview, type AddRepoBody, type NewProjectBody, type RepoRequestId,
 } from '../../shared/projects.ts'
+import { WebmcpOriginList } from '../../shared/webmcp.ts'
 
 export type Me = MemberView
 
 export type Person = Row & { id: string; login: string; name: string | null; role: TeamRole }
 export type Agent = Row & {
   id: string; name: string; title: string | null; role: string | null; model: string | null; home_instance_id: string | null; instructions: string
+  // Whose it is, whether other people's agents may message it, and the agent it was copied from.
+  owner_id: string | null; accepts_agents: AcceptsAgents; copied_from_agent_id: string | null
 }
 export type Instance = Row & {
   id: string; name: string; kind: string; status: 'online' | 'stale' | 'offline'; last_seen_at: string | null
@@ -31,18 +37,23 @@ export type Instance = Row & {
   screen_width: number | null; screen_height: number | null
   // When a person's own box went to sleep for having nothing to do. It wakes when something needs it.
   stopped_at: string | null
+  // How many seats the box has, one for each agent at work on it at once.
+  seat_cap: number
 }
 export type Conversation = Row & {
-  id: string; kind: string; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
+  id: string; kind: ConversationKind; name: string | null; agent_id: string | null; visibility: string; source: string | null; created_at: string; project_id: string | null
 }
 export type Member = Row & { conversation_id: string; person_id: string | null; agent_id: string | null }
 export type Message = Row & {
   id: string; conversation_id: string; seq: bigint; speaker: 'person' | 'agent'; person_id: string | null
   agent_id: string | null; body: string; session_id: string | null; task_id: string | null; client_id: string; created_at: string
+  quoted_message_id: string | null; edited_at: string | null; deleted_at: string | null; deleted_by: string | null
 }
 export type Session = Row & {
   id: string; conversation_id: string | null; task_id: string | null; instance_id: string; agent_id: string; stage: string | null
   status: string; model: string | null; turns: number; harness_session_id: string | null; created_at: string; last_active_at: string | null
+  // The seat of its box it last ran on. A box session with none ran on seat 1.
+  seat_id: string | null
 }
 export type EventRow = Row & {
   id: bigint; session_id: string; seq: bigint; kind: string; text: string | null; tool_name: string | null
@@ -207,9 +218,14 @@ export function useSnapshotOf<S extends z.ZodType>(schema: S, name: string, args
 }
 
 // How lists name a conversation: a room by its name, a DM by its agent and its
-// people. A person or agent not loaded yet reads as someone or agent.
+// people, and a thread between two agents by the two. A person or agent not
+// loaded yet reads as someone or agent.
 export function conversationLabel(c: Conversation, names: { me: Me; members: Member[]; agentName: Map<string, string>; login: Map<string, string> }): string {
   if (c.kind === 'room') return `# ${c.name ?? 'room'}`
+  if (c.kind === 'agents') {
+    const pair = names.members.flatMap((m) => (m.conversation_id === c.id && m.agent_id ? [names.agentName.get(m.agent_id) ?? 'agent'] : [])).sort()
+    return pair.length ? pair.join(' and ') : 'Two agents'
+  }
   const who = names.members.filter((m) => m.conversation_id === c.id)
     .flatMap((m) => (m.person_id ? [m.person_id === names.me.person.id ? 'you' : names.login.get(m.person_id) ?? 'someone'] : []))
   const agent = c.agent_id ? names.agentName.get(c.agent_id) ?? 'agent' : null
@@ -325,6 +341,7 @@ export const api = {
   removeItem: (agentId: string, kind: 'skills' | 'plugins' | 'routines', name: string) =>
     request('POST', `/v1/agents/${agentId}/${kind}/${encodeURIComponent(name)}/delete`, {}),
   saveTemplate: (agentId: string, name: string) => request<{ slug: string; version: number }>('POST', `/v1/agents/${agentId}/templates`, { name }),
+  setAcceptsAgents: (agentId: string, agents: AcceptsAgents) => call(Outcome, 'POST', `/v1/agents/${agentId}/accepts`, { agents }),
   createRoom: (name: string, people: string[], agents: string[], projectId?: string) =>
     request<{ conversationId: string }>('POST', '/v1/conversations', { kind: 'room', name, people, agents, projectId }),
   startTask: (body: z.input<typeof NewTask>) => request<{ taskId: TaskId; sessionId: SessionId }>('POST', '/v1/tasks', body),
@@ -357,6 +374,9 @@ export const api = {
   resolveComment: (commentId: string) => request('POST', `/v1/comments/${commentId}/resolve`, {}),
   runRoutine: (routineId: string) => request<{ conversationId: string }>('POST', `/v1/routines/${routineId}/run`, {}),
   releaseBox: (instanceId: string) => request('POST', `/v1/instances/${instanceId}/release`, {}),
+  webmcpOrigins: () => call(WebmcpOriginList, 'GET', '/v1/team/webmcp-origins'),
+  addWebmcpOrigin: (origin: string) => call(WebmcpOriginList, 'POST', '/v1/team/webmcp-origins', { origin }),
+  removeWebmcpOrigin: (originId: string) => call(WebmcpOriginList, 'POST', `/v1/team/webmcp-origins/${originId}/delete`, {}),
 }
 
 // How long something took, in words a person scans.

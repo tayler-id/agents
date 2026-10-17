@@ -7,6 +7,7 @@ import type pg from 'pg'
 import { many, maybe, type Db } from './db.ts'
 import { canSeeTask } from './access.ts'
 import { HttpError, type Person } from './record.ts'
+import { deliverMarkedDone } from './agent-turns.ts'
 import { TASK_ACTIONS, taskState, type BlockAsk, type HoldAsk, type Outcome, type ReadyAnswer, type StateOf, type TaskAction, type TaskState } from '../shared/work.ts'
 import type { SessionId, TaskId } from '../shared/ids.ts'
 
@@ -26,7 +27,7 @@ export async function lockedTask(client: pg.PoolClient, person: Person, taskId: 
     `select t.archived_at is not null as archived, t.done_at is not null as done,
        (select s.id from sessions s where s.task_id = t.id and s.status = 'draft' and s.archived_at is null
         order by s.created_at desc limit 1) as draft
-     from tasks t where t.id = $1 and t.team_id = $2 for update of t`, [taskId, person.team_id])
+     from tasks t where t.id = $1 and t.team_id = $2 for no key update of t`, [taskId, person.team_id])
   if (!row) throw new HttpError(404, 'no such task')
   const task = taskState(row)
   if (!TASK_ACTIONS[action].from.includes(task.state)) throw new HttpError(409, REFUSALS[task.state])
@@ -49,6 +50,8 @@ export async function markDone(client: pg.PoolClient, person: Person, taskId: Ta
   const task = await lockedTask(client, person, taskId, 'done')
   if (task.state === 'done') return { already: true }
   await client.query('update tasks set done_at = now() where id = $1', [taskId])
+  // A task an agent handed over tells that agent it is done.
+  await deliverMarkedDone(client, taskId, person.login)
   return { already: false }
 }
 

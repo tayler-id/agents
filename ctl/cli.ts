@@ -738,7 +738,7 @@ const upCommand = command({
       `people: ${after.seed.owner.login} (ada), ${after.seed.teammate.login} (ben)`,
       `agents: ${Object.keys(after.seed.agents).join(', ')} on the machine ${after.seed.machine.name}`,
       `app: http://127.0.0.1:${String(after.ports.people)}/ (${INVOKE} browser sends the login)`,
-      `claude: ${after.harness === 'fake' ? 'the fake harness, test/fake-claude.ts' : 'real Claude sessions'}`,
+      `claude: ${after.harness === 'fake' ? 'the fake harness, test/fake-claude.ts inside test/fake-claude-agents.ts' : 'real Claude sessions'}`,
       `pipelines: ${after.pipelines ? `bug-fix, improve and coach, from the forge org verify-${after.name}` : 'none (up --pipelines adds them)'}`,
       `evidence: ${relative(ROOT, after.evidence)}`,
     ].join('\n')

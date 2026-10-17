@@ -173,13 +173,21 @@ Secrets for one agent live in its seat's own files. A person sets one from the a
 3. The scheduler places the turn. The daemon starts the session with the `computer` MCP server pointed at `:4` and port 9225.
 4. Alice opens Screen on `scout`'s page, and the API pairs her with seat 4's tunnel. If she takes over, seats 1 to 3 keep working.
 
-When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 busy".
+When every seat is held, the scheduler reclaims the seat whose agent has no running or queued turn and no person on its screen, and whose `last_turn_at` is the oldest and more than 15 minutes ago. An archived agent's seat frees at once, once something archives agents. Nothing sets `agents.archived_at` today. When nothing can be reclaimed, the turn waits, and the conversation shows "Waiting for a seat on Alice's computer, 4 of 4 held".
 
 A Mac has no seats. Its agents run without a screen, as today, until the helper gives it one (see "People's own machines").
 
+**Built so far.** Seats are built on branch `seats`, joined to the scheduler from step 1: it takes a seat for each turn on a person's computer, and a turn waits with the `seat` reason while every seat is busy. `test/step15c.ts`, `test/step15d.ts`, `test/step15g.ts` and `test/step15h.ts` check it. It differs from the plan above in five ways.
+
+- A box follows its seat rows through sync, where the plan had `seat_open` commands, so a box that restarts brings back the seats its agents held.
+- A seat is `free`, `starting` or `ready`. A seat given to another agent goes back to `starting` for that agent, and the box closes the pages and windows the last agent had open before it reports the seat ready, so there is no `reclaiming`.
+- Seat 1 runs whenever its computer runs. A session whose agent holds no seat runs on seat 1, as every session on a box did before seats. A person can always open seat 1's screen, to sign in to a site once for every seat.
+- Only a person's computer gives out seats. A pool box runs every session on seat 1, as before seats, so a run's stages, which may be different agents', never wait 15 minutes for its one seat.
+- Each seat's browser has a profile of its own, and the box copies cookies between the seats' browsers every 1.5 seconds, as Tayler decided on 2026-10-15. Seat 1 keeps the profile a box had before seats, so its logins stay. A login a site keeps only in localStorage or IndexedDB stays in its seat. The profile for each agent in the plan above is not built.
+
 **Stays, changes, new.**
 
-- Stays: the image, Xvnc, matchbox, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`.
+- Stays: the image, Xvnc, the browser, the screen service, the takeover state machine in `shared/screen.ts` and the `computer` MCP server, all on main since `a553744`. One computer per person, from `addPersonalBox` in `server/boxes.ts`. JWM with a dock replaced matchbox on 2026-10-16, when Tayler asked for a real desktop.
 - Changes: one display per box becomes one per seat. `daemon/computer-mcp.ts` takes its display and DevTools port from the session's seat. The Screen routes in `server/screens.ts` name an agent's seat. The 24-hour privacy rule reads the sessions that ran on that seat, not on the whole box, so one agent's private task no longer hides its owner's other agents. The box limits of 4 GB and 2 CPUs become the computer's size (decision 2).
 - New: the `seats` table, the seat commands, the reclaim rule, the secret relay, archiving an agent, and a seat list on the computer's page.
 
@@ -305,6 +313,12 @@ A task already reports each turn to the conversation it came from (`reportToConv
 - Stays: rooms, engine subagents, and tasks reporting back.
 - Changes: the daemon adds the new server to each session's MCP config next to `team-record` (`mcpConfig` in `daemon/agentsd.ts`), except a judge's, which gets neither. Rooms get a member cap, and agents can be added after a room is made, which today only people can (`server/onboarding-routes.ts:59`).
 - New: the tools, the `agents` thread, chain limits, `author_agent`, the ask before a create, and a list of a session's subagents in its panel, read from `parent_tool_use_id`.
+- Built in step 6, on Tayler's calls of 2026-10-16: `list_agents`, `send_to_agent`, `delegate_task`, `report_back` and `create_agent`, the `agents` thread, the hop limit of 4, `author_agent`, `made_by_session`, and the owner's yes before each create, which the server writes as a question with lettered choices. Where it differs from the design above:
+  - A turn keeps `hops` and `answer_to_turn`, the turn its answer goes back to, and no `chain_id`, since nothing reads a chain's total until budgets land. There is no dollar cap, as Tayler decided.
+  - An answer goes back when the asked turn ends, failed or cancelled included, and the runner sends it, once. A message and an answer are both turns with source `agent`, and an answer has the hops of the turn that gave it, so each round trip between two agents is a hop.
+  - `accepts` is one column, `agents.accepts_agents`. The people half is step 11's.
+  - A room, a private conversation or task, and a pipeline stage send nothing. An answer would come back outside a room's turns or a stage's, and a thread between agents is the team's to read. Stages get no team-agents tools.
+  - `check_task`, `ask_people`, the room member cap, adding agents to a room after it is made, and the list of a session's subagents are not built. A handed task gets no repos, and joins no project.
 
 ## The usage meter and budgets
 
@@ -533,6 +547,18 @@ type Recipe = {                                   // changed. Today's fields, th
 - Changes: versions are kept, and the recipe gains fields.
 - New: copying an agent, export and import, provenance, hooks, and promoting a memory to the team.
 
+**Built so far.** Hooks and copies are built on branch `agent-copies`. `test/step24.ts`, `test/step24b.ts` and, with the real Claude Code, `test/step24d.ts` check them. The build differs from the plan above in seven ways.
+
+- A copy does not save a template version. It reads the source agent into a recipe and installs it in the new agent, so copying changes no template the team keeps. The new agent records the one it came from in `agents.copied_from_agent_id`, in place of `template_version_id`.
+- Versions are not kept. Saving a template again still overwrites it, and `template_versions` is not built.
+- The recipe gains `hooks` and `memories` and no other new field. The engine, the avatar, reference documents and the first message have no reader yet.
+- Hooks are rows of their own, in `agent_hooks`, with a typed event, matcher, command and time limit, in place of an untyped blob. Six events can be set. Only the agent's owner or a team admin changes them, since a hook is a command on the agent's machine. `docs/data-model.md` describes the table.
+- Create a copy is one tap with nothing to pick. The server names the copy after the agent with `-copy`, puts it on the person's own box or a Mac they own, and carries the team's memories unless the request says `memories: false`, where the plan had the person pick "with the team's memories". A person with no machine of their own is told to name one. The answer holds the person's new conversation with the copy.
+- The copy's first message places no turn on a seat, since the door and seats are other steps. It runs where any message to the agent runs.
+- Nothing promotes a memory about a person to the team's, offers a Mac's own Claude Code setup as a recipe, or adds recall and sort tools to memory.
+
+Export and import are built too, in files of their own, as decision 11's option (b), which Tayler chose on 2026-10-16.
+
 ## People's own machines
 
 Today a Mac runs the same daemon as a box (`daemon/agentsd.ts`), and agents can live there. Commands on a Mac ask first (`server/permissions.ts`). The desktop app is an Electron window on the server's tailnet address (`desktop/main.cjs`). On the terminal sessions branch, a person connects a folder with `daemon/folders.ts`, and `daemon/transcripts.ts` reads Claude Code's transcripts for sessions started there into the record (`server/migrations/0013_local_sessions.sql` there, with `connected_folders`, `sessions.folder_id` and `sessions.cwd`). The Mac computer-use helper is a design only, in `docs/design/computers.md`. `approval_rules.instance_id` exists, and no tool uses it.
@@ -614,6 +640,7 @@ Agents search the record with Postgres full-text search (`server/teamrecord.ts`)
 - **Owner.** `server/teamrecord.ts`, which holds the query, and `app/src/Search.tsx` (new).
 - **One action.** Tayler searches "flaky webhook". Events and messages come back newest first, and each opens its session at that step.
 - **Stays, changes, new.** The query and the access rules stay. The route and the page are new.
+- **Built in step 9, without summaries.** `GET /v1/search` takes words, a scope (every step, messages, tool calls and results, or the steps that went wrong) and the filters agent, person, kind, project, repo and day, and returns steps newest first with a cursor. It shares its match, its index expression and its snippet with `search_record` in `server/teamrecord.ts`. The page is History, `app/src/History.tsx`, which also lists sessions and replays one, and not a separate `Search.tsx`. The search reads `events.text`, as `search_record` does, so it finds no word beyond a result's first 8,000 characters or inside a tool call's input, and it does not read conversation posts that no session mirrors. Whether the search should read steps' bodies is Tayler's call, since it needs an index over `events.body`.
 
 ### Summaries
 
@@ -916,11 +943,25 @@ A value is 8 bytes to 4 KiB, since the scrubber ignores anything under 8 charact
 4. The API writes a `secret_sets` row, answers the ask, and requests a turn for scout with source `person`. The session starts with the plugin.
 5. The value is in no Postgres table, response, log, event or prompt. If her computer was stopped, step 3 started it first, and answered 409 only if it did not come up in time, so she pressed the button again.
 
+**Built so far.** The routes, the relay, the daemon's side and `SecretValue`, the control for one secret's value, are built on branch `secrets`, and `test/step25.ts` and `test/step25b.ts` check them. No screen in the app shows `SecretValue` yet. The agent panel's Secrets card, on branch `ui`, does, with `AgentSecrets` in `app/src/Secrets.tsx` as the wiring it needs. It differs from the plan above in these ways.
+
+- The route is `POST /v1/secrets/<id>/value`, and `POST /v1/secrets/<id>/remove` takes a value off. Every write in this API is a POST, and `agentsctl api` takes only GET, POST and HEAD.
+- The control connection is new, and every daemon opens it at `/v1/instance/control`. The screen's messages stay on the screen's own connection, since the seats branch changes both ends of that one. Moving them is a later change.
+- `secret_sets` is keyed by computer and name, not by secret, as `docs/data-model.md` says.
+- Each frame carries a request id, since two requests for one name can be in flight. The daemon also sends the names it holds each time it connects, and the API drops a row for a name the computer lacks.
+- A computer whose connection is not up gets 12 seconds, where the plan says 30. Nothing on this branch starts a stopped computer, which step 1 does, so a stopped one is refused at once and the 12 seconds cover a daemon reconnecting. Step 1 raises it when it can.
+- The card in the conversation is not built. A missing secret still stops the agent, and its stopped line now says to set the value on the agent's page.
+- A computer with an owner takes values only from its owner. One with no owner, such as a team box, takes none, since any teammate's run may use it and read what is there. A teammate sees whose computer it is and gets no control.
+- There is no form. The value reads as text, Set value or Replace value opens a masked field in place, Enter sends it, and Esc or Cancel puts it away. Leaving the field sends nothing, since the app never holds a value and cannot put one back.
+- A daemon refuses a value for a name its own environment sets, and says why, since the environment is read before the secrets file and the value would never be used.
+- The row says "Not set from the app" where the plan says "not set". The app knows only what it set, and a value put on the computer by hand works too.
+- Replacing or removing a value deletes the session configs that held it and stops the idle sessions started with it. The daemon keeps scrubbing the old value for as long as it runs.
+
 **Stays, changes, new.**
 
 - Stays: names in Postgres, values on the machine, `savePlugin` creating the secret rows, and the machine's environment as a source.
-- Changes: `stored_in` gains `server`. The agent page's note, that a value stays on the machine, gains a Set button. The daemon's failure for a missing secret becomes data the API turns into the ask.
-- New: `secret_sets`, the route, the control connection on every daemon, the `secret_request` ask, and a Secrets list on the agent page that shows set or not set for each computer.
+- Changes: `stored_in` gains `server`. The agent panel's Secrets card, which says how to put a value on the machine, gains Set value. The daemon's failure for a missing secret becomes data the API turns into the ask.
+- New: `secret_sets`, the route, the control connection on every daemon, the `secret_request` ask, and `SecretValue`, which the agent panel's Secrets card shows for each secret and computer as set or not set.
 - By decision 3, a value on a person's computer is readable by all of that person's agents. A value the server holds is not.
 
 ### MCP apps and widgets
@@ -1037,6 +1078,17 @@ Never offered: answering an ask, setting a secret, signing in to a connector, a 
 
 **One action, an agent's browser.** The team lists `http://127.0.0.1:*`. `qa`, on a box, starts a preview of the app and opens it. It calls `web_tools` and sees the app's tools, calls `web_read` with `list_asks`, and calls `web_act` with `send_message`. The card asks a person. The page's dialog opens too, and `qa` can press it, so the card is the gate here.
 
+**As built for agents' browsers (step 21, branch `webmcp-browsers`, checked 2026-10-15).** It follows the text above, with these differences.
+
+- Playwright's own collection of page tools stays off with `--no-webmcp` for every team, not only for a team with an empty list. With it on, Playwright prints the names, descriptions and schemas of a page's tools in each snapshot and in each page's status line, so an unlisted page's tool text would reach the agent through any snapshot. The three tools reach a page through the browser tools' `browser_evaluate`, in the tab those tools act on. The program they run reads `document.modelContext` only after the page's origin matched the list, and it reads only the tools the top page registered itself, not those of frames in it.
+- The tab's origin comes from the browser tools' own list of tabs (`browser_tabs`), read by the daemon's computer server, never from the page's code. An earlier version read `location.origin` inside the page, and a page could answer for itself (for one, by defining `Object.prototype.then`) and pass for a listed site. The list text holds the page's title and address, so `currentTabOrigin` takes an origin only when every reading of where the address starts gives the same one. The tab is read again after the page answers, and an answer from a tab that left the listed site is thrown away. A page at a listed site can still forge the tools and results it sends, which are its own words, labelled as such. `test/step21wc.ts` holds this.
+- `web_read` and `web_act` take the `origin` that `web_tools` gave, with the tool's name and its input. The program does nothing unless the tab is still at that origin, so the person's answer to a `web_act` card applies to the page they saw, and a tab that moved while the card waited runs nothing.
+- `web_tools` answers with one JSON object on each line for each tool, under a line that says whose words they are, so a description cannot forge another tool's line.
+- A tool the page marks read-only and also marks as consequential asks like any other. A tool that has not answered in 30 seconds is given up on. A result is cut at 30,000 characters.
+- The list is the table `webmcp_origins`, not a team setting, so it records who listed each site and when. A team's agents follow a change on their next message. Nothing is listed to start with, `http://127.0.0.1:*` included. A turn already running keeps the list it started with.
+- The box's browser starts with `--enable-features=WebMCPTesting` in `daemon/desktop.ts`. That is a change to the daemon and not to `box/`.
+- `computer-mcp.ts` still lists its tools once, at start. The three tools are fixed, and Playwright's own `webmcp_` tools, the ones that would change as a page does, stay off.
+
 **Stays, changes, new.**
 
 - Stays: Playwright's browser tools, the `computer` server, the takeover rules, and `--no-webmcp` when no origin is listed.
@@ -1045,8 +1097,8 @@ Never offered: answering an ask, setting a secret, signing in to a connector, a 
 
 ### What this section could not confirm
 
-- Whether the Chromium in the box image, and the one inside Electron, expose `document.modelContext`. Chrome's pages describe an origin trial and an early preview program and name no flag. One guide names `chrome://flags/#enable-webmcp-testing`. Steps 21 and 22 each start by checking this.
-- Whether the object is `document.modelContext` or `navigator.modelContext`. The spec draft of 2026-10-15 and Chrome's page say `document`. The first proposal and Tayler's note say `navigator`. The code reads both, as Playwright's does.
+- Whether the Chromium inside Electron exposes `document.modelContext`. Step 22 starts by checking this. The box's Chromium, 156.0.8078.4 from Playwright 1.64.0, exposes it only behind the feature `WebMCPTesting`, the one `chrome://flags/#enable-webmcp-testing` switches. Step 21 starts the box's browser with `--enable-features=WebMCPTesting`, and `test/step21w.ts` checks first that a page gets the object.
+- Whether `navigator.modelContext` exists anywhere. In the box's Chromium only `document.modelContext` does, with `registerTool`, `getTools` and `executeTool`. `executeTool` takes the tool and an input object and answers with the result as text. Step 22 still reads both until Electron's Chromium is checked.
 - Whether any of the four hosted servers returns a view. None of the pages read says so, which is why apps start off (decision 18).
 - Which protocol version each hosted server speaks. The SDK here speaks up to 2025-11-25, and the 2026-07-28 revision drops `initialize` and sessions.
 - Atlassian's pages do not say that third-party clients register dynamically. A customer's request in Atlassian's tracker (ROVO-870, July 2026) says the server "exclusively uses OAuth 2.1 with Dynamic Client Registration" and allows only localhost and listed partner domains. Atlassian's pages do say an admin can add an HTTPS origin.

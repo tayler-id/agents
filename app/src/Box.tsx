@@ -1,7 +1,8 @@
 import { useState, type ReactNode, type SyntheticEvent } from 'react'
 import { ClaudeLoginRow } from '../../shared/onboarding.ts'
+import { FIRST_SEAT, SeatRow } from '../../shared/seats.ts'
 import { go } from './App.tsx'
-import { act, api, messageOf, parseTime, useSnapshot, useSnapshotOf, type Instance, type Me } from './data.ts'
+import { act, api, messageOf, parseTime, useSnapshot, useSnapshotOf, type Agent, type Instance, type Me } from './data.ts'
 import { boxState } from './Team.tsx'
 
 // How often the box page looks again while a box starts or a sign-in moves on.
@@ -81,6 +82,7 @@ export function BoxPage({ me }: { me: Me }) {
           </>
         )}
         {box && <BoxState box={box} />}
+        {box && <Seats box={box} />}
         {box && <ClaudeSignIn box={box} login={login} />}
         {box && (
           <>
@@ -111,6 +113,42 @@ function BoxState({ box }: { box: Instance }) {
           <p className="small muted">The server keeps trying to start it. An admin can look at the server.</p>
         </>
       )}
+    </>
+  )
+}
+
+// The box's seats: each agent at work on it has one, with its own screen and
+// browser. Seat 1's screen is on while the box runs, and another seat's while
+// an agent holds it.
+function Seats({ box }: { box: Instance }) {
+  const { rows, error } = useSnapshotOf(SeatRow, 'seats', {}, BOX_POLL_MS)
+  const { rows: agents } = useSnapshot<Agent>('agents', {}, BOX_POLL_MS)
+  const seats = rows.filter((seat) => seat.instance_id === box.id).sort((a, b) => a.n - b.n)
+  const held = seats.filter((seat) => seat.agent_id !== null).length
+  const live = box.status === 'online' && box.screen_width !== null
+  return (
+    <>
+      <h2 className="kicker section">Seats</h2>
+      <p className="small muted">
+        Each agent at work on your box gets a seat with a screen and a browser of its own. A login made in one seat's browser works in every seat.
+        {seats.length ? ` ${held} of ${seats.length} in use.` : ''}
+      </p>
+      <ul className="seats" aria-label="Seats">
+        {seats.map((seat) => (
+          <li key={seat.id} className={seat.agent_id === null ? '' : 'held'}>
+            <span className="seat-number">Seat {seat.n}</span>
+            <span className="seat-holder">{seat.agent_id === null ? 'Free' : agents.find((agent) => agent.id === seat.agent_id)?.name ?? 'An agent'}</span>
+            {seat.status !== 'free' && (
+              <span className="small muted"><span className={`dot ${seat.status === 'ready' ? 'online' : 'starting'}`} aria-hidden="true" />{seat.status === 'ready' ? 'Ready' : 'Starting'}</span>
+            )}
+            {live && (seat.status === 'ready' || seat.n === FIRST_SEAT) && (
+              <button type="button" className="link small" aria-label={`Screen of seat ${seat.n}`}
+                onClick={() => go({ page: 'box', screen: { instance: box.id, session: null, seat: seat.n } })}>Screen</button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && <p className="error small" role="alert">{error}</p>}
     </>
   )
 }

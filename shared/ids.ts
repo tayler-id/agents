@@ -50,3 +50,5 @@ export const TurnId = z.uuid().brand<'TurnId'>()
 export type TurnId = z.infer<typeof TurnId>
 export const RoutineId = z.uuid().brand<'RoutineId'>()
 export type RoutineId = z.infer<typeof RoutineId>
+export const SeatId = z.uuid().brand<'SeatId'>()
+export type SeatId = z.infer<typeof SeatId>

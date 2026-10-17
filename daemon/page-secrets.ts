@@ -5,11 +5,9 @@
 // canvas or outside the browser's pages is not seen. The design is
 // docs/design/computers.md.
 
-import WebSocket from 'ws'
 import { z } from 'zod'
-import { parseJson } from '../shared/json.ts'
 import { MIN_SECRET_LENGTH } from '../shared/scrub.ts'
-import { bytesOf } from '../shared/websocket.ts'
+import { devtools, type Speaker } from './devtools.ts'
 
 // How long the browser may take to list its pages, and each page to give its
 // text. A page that doesn't answer, such as one held by an alert, fails the
@@ -57,11 +55,6 @@ const ROOT_TEXT = `function () {
   return texts
 }`
 
-// A command's reply. Events carry no id.
-const Reply = z.union([
-  z.object({ id: z.int(), error: z.object({ message: z.string() }) }),
-  z.object({ id: z.int(), result: z.unknown() }),
-])
 const DocumentReply = z.object({ root: DomNode })
 const Resolved = z.object({ object: z.object({ objectId: z.string() }) })
 const Called = z.union([
@@ -69,55 +62,13 @@ const Called = z.union([
   z.object({ result: z.object({ value: z.array(z.string()) }) }),
 ])
 
-type Devtools = { send(method: string, params: Record<string, unknown>): Promise<unknown>; close(): void }
-
-// One DevTools connection to a page or a frame, matching each reply to its
-// command by id. When `signal` fires the connection closes, which fails every
-// command still waiting and every one sent after.
-function devtools(debuggerUrl: string, signal: AbortSignal): Promise<Devtools> {
-  const ws = new WebSocket(debuggerUrl)
-  const waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>()
-  let lastId = 0
-  const ended = () => new Error(signal.aborted
-    ? `a page in the browser gave no text within ${READ_WAIT_MS} ms`
-    : 'a page in the browser closed its DevTools connection')
-  const failAll = (error: Error) => {
-    for (const command of waiting.values()) command.reject(error)
-    waiting.clear()
-  }
-  signal.addEventListener('abort', () => { ws.terminate() }, { once: true })
-  ws.on('message', (data) => {
-    const reply = parseJson(Reply, bytesOf(data).toString('utf8'))
-    if (!reply.ok) return
-    const command = waiting.get(reply.value.id)
-    if (!command) return
-    waiting.delete(reply.value.id)
-    if ('error' in reply.value) command.reject(new Error(`a page in the browser refused a DevTools command: ${reply.value.error.message}`))
-    else command.resolve(reply.value.result)
-  })
-  ws.on('close', () => { failAll(ended()) })
-  const send = (method: string, params: Record<string, unknown>) => new Promise<unknown>((resolve, reject) => {
-    if (ws.readyState !== WebSocket.OPEN) {
-      reject(ended())
-      return
-    }
-    lastId += 1
-    waiting.set(lastId, { resolve, reject })
-    ws.send(JSON.stringify({ id: lastId, method, params }))
-  })
-  return new Promise((resolve, reject) => {
-    ws.once('open', () => { resolve({ send, close: () => { ws.terminate() } }) })
-    ws.on('error', (error) => {
-      reject(signal.aborted ? ended() : error)
-      failAll(error)
-    })
-  })
-}
+// Failures name the page, and a page that doesn't answer in time.
+const PAGE: Speaker = { what: 'a page in the browser', timedOut: `a page in the browser gave no text within ${READ_WAIT_MS} ms` }
 
 // The address, titles, rendered text and field values of one page or frame,
 // with every frame its process runs and every shadow root in it.
 async function pageText(debuggerUrl: string): Promise<string[]> {
-  const page = await devtools(debuggerUrl, AbortSignal.timeout(READ_WAIT_MS))
+  const page = await devtools(debuggerUrl, AbortSignal.timeout(READ_WAIT_MS), PAGE)
   try {
     const { root } = DocumentReply.parse(await page.send('DOM.getDocument', { depth: -1, pierce: true }))
     const read = async (nodeId: number): Promise<string[]> => {
