@@ -131,7 +131,7 @@ const BREAKS: Break[] = [
   { name: 'keeps-idle-process', check: '25', why: 'an idle session keeps running with the value that was replaced', red: ['the process that held the old value is stopped when the new one is set', 'and the idle process whose plugin held the value is stopped'],
     edits: [{ file: DAEMON, anchor: '        if (session && !session.busy) session.stop()\n        else staleSecrets.add(sessionId)\n', replace: '        staleSecrets.add(sessionId)\n' }] },
   { name: 'never-restarts-a-busy-session', check: '25', why: "a session in a turn keeps the old value after the turn", red: ['and its next message starts a new process'],
-    edits: [{ file: DAEMON, anchor: '      && (staleSecrets.has(command.sessionId) || setups.get(command.sessionId) !== setupOf(command.payload))) live.stop()', replace: '      && (setups.get(command.sessionId) !== setupOf(command.payload))) live.stop()' }] },
+    edits: [{ file: DAEMON, anchor: '      && (staleSecrets.has(command.sessionId) || setups.get(command.sessionId) !== setupOf(command.payload, seat))) live.stop()', replace: '      && (setups.get(command.sessionId) !== setupOf(command.payload, seat))) live.stop()' }] },
   // What the computer and the record end up holding.
   { name: 'stores-nothing', check: '25', why: 'the daemon answers that it stored a value and stores nothing', red: ["the computer's secrets.json holds the value, and the one a person put there by hand"],
     edits: [{ file: FILES, anchor: '  } else {\n    entries[name] = value\n  }\n', replace: '  } else {\n    // stores nothing\n  }\n' }] },
