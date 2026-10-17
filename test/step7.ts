@@ -138,7 +138,9 @@ try {
   })
   children.push(api)
   await within(20, () => fetch(API).then(() => true, () => false))
-  await within(60, () => one(`select 1 from pipelines where team_id = $1 and name = 'box-check' and current_version_id is not null`, [teamId]))
+  // The API records each pipeline file in a transaction of its own, box-check before bug-fix, so wait for both.
+  await within(60, async () => (await one<{ n: number }>(
+    `select count(*)::int as n from pipelines where team_id = $1 and name in ('box-check', 'bug-fix') and current_version_id is not null`, [teamId]))?.n === 2)
   const pipelineId = async (name: string) => must(await one<{ id: string }>('select id from pipelines where team_id = $1 and name = $2', [teamId, name]), 'pipelineId').id
   const { id: repoId } = must(await one<{ id: string }>('select id from repos where team_id = $1 and remote_url like $2', [teamId, `%/${SHOP}.git`]), 'repoId')
 
