@@ -8,7 +8,8 @@ services:
       POSTGRES_USER: agents
       POSTGRES_DB: agents
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    command: ["postgres", "-c", "wal_level=logical"]
+    # 61 of the default 100 connections were in use before seats landed.
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_connections=300"]
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
