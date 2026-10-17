@@ -512,6 +512,25 @@ Decided by Tayler on 2026-10-16.
 - **Decided by Tayler on 2026-10-16.** Colima, the Docker VM on the server Mac, runs with 4 CPUs and 8 GiB, shared by the live Postgres, Electric and the forge. A person's computer is 4 CPUs and 8 GB (decision 2), so not even one full-size computer fits beside the database. The Mac has 18 CPUs and 48 GB.
 - **What changes.** At the restart that lands seats, Colima goes to about 14 CPUs and 32 GiB, after a fresh backup. Stopping and starting Colima takes the live app and database down for a minute or two. That fits about three people's computers at full size. More people, or the parallel coding computers, need AWS.
 
+### Who may take control of a seat, the computer plugin fix, and the next landing
+
+Decided on 2026-10-16. Tayler left these to the coordinator ("you pick"), and the coordinator's picks are recorded here.
+
+- **Only a computer's owner and team admins may take control of its seats.** Other teammates may watch. A seat's terminal can read the team's Claude token and the owner's own, so this keeps both from every other teammate. The server enforces it, not only the page.
+- **A plugin named `computer` no longer switches off the asks for a session's own computer tools.** Before the fix, a plugin with that name let computer tools run without asking.
+- **Agents leave the Mac only when their computer can run them.** The seats branch moves agents to the person's computer as a step that waits for a Claude token or the person's sign-in and the built box image, not inside migration 0024. Their memory, skills and conversations move. Files left in folders on the Mac stay there.
+- **The next landing's protected files are approved:** `daemon/agentsd.ts`, `server/tasks.ts`, one line of `server/runner.ts`, and migrations 0016, 0017, 0018, 0019, 0022 and 0025. It combines voice, attachments, agents working together, keys from the app, agent copies, WebMCP in agents' browsers and History.
+
+### Seats joins the next landing
+
+Decided on 2026-10-16. Tayler said "just keep going" to the coordinator's ask, which the coordinator recorded as yes.
+
+- **Seats lands with the combined landing**, so one full suite and one restart cover all eight branches.
+- **Its protected files are approved:** `box/Dockerfile`, `server/admin.ts` (the new `move-agents` command), and migrations 0015 and 0024. `daemon/agentsd.ts` was already approved.
+- **Its packages are approved,** all inside the box image: `jwm`, `xterm`, `libutempter0` and `xbitmaps` from apt, and `@excalidraw/excalidraw` 0.17.6 with React 18.3.1 for the whiteboard.
+- **The improver agent moves with the others.** The coach and improve pipelines then run on its person's computer.
+- **At the restart:** a fresh backup, Colima to about 14 CPUs and 32 GiB with more Postgres connections, the box image rebuilt, Tayler runs `claude setup-token` once, then `move-agents` moves the agents whose computers can run them.
+
 ### Under evaluation
 
 - **A Chrome DevTools-based browser driver,** for the verifier's performance and memory evidence.
